@@ -1,0 +1,10 @@
+.env
+config.json
+lockfile.json
+credentials/
+/tracker.exe
+testdata/cash/
+testdata/spingo/
+/tracker
+/self-tracker
+*.md
