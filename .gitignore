@@ -1,3 +1,4 @@
+.claude/
 .env
 config.json
 lockfile.json
