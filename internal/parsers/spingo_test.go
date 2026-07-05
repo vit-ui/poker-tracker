@@ -16,7 +16,7 @@ func TestParseSpinGo(t *testing.T) {
 	}
 	for _, f := range files {
 		game, err := ParseSpinGo(f, testScreenName)
-		if errors.Is(err, ErrFreeroll) {
+		if errors.Is(err, ErrFreeroll) || errors.Is(err, ErrNotSpinGo) {
 			continue
 		}
 		if err != nil {

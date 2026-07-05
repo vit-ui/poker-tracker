@@ -13,6 +13,10 @@ import (
 // The caller should skip freerolls — they have no monetary value.
 var ErrFreeroll = errors.New("freeroll")
 
+// ErrNotSpinGo is returned by ParseSpinGo for tournament files that are not
+// 3-player Spin & Go games (MTTs, HORSE, Stud, etc.). The caller should skip them.
+var ErrNotSpinGo = errors.New("not a spin & go")
+
 // SpinGoGame holds results for a single Spin & Go tournament.
 type SpinGoGame struct {
 	Date         time.Time
@@ -39,13 +43,21 @@ func ParseSpinGo(path, screenName string) (SpinGoGame, error) {
 		}
 	}
 
-	var g SpinGoGame
+	var (
+		g           SpinGoGame
+		playerCount int
+	)
 	playerMarker := ": " + screenName + " ("
 
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, "\r")
 
 		switch {
+		case strings.HasSuffix(line, " players"):
+			if n, err := strconv.Atoi(strings.TrimSuffix(line, " players")); err == nil {
+				playerCount = n
+			}
+
 		case strings.HasPrefix(line, "Buy-In: $"):
 			rest := line[len("Buy-In: $"):]
 			slashIdx := strings.Index(rest, "/")
@@ -96,6 +108,9 @@ func ParseSpinGo(path, screenName string) (SpinGoGame, error) {
 
 	if g.BuyInUSD == 0 {
 		return SpinGoGame{}, ErrFreeroll
+	}
+	if playerCount != 3 {
+		return SpinGoGame{}, ErrNotSpinGo
 	}
 	g.Multiplier = g.PrizePoolUSD / g.BuyInUSD
 
