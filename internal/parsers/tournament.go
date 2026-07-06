@@ -9,30 +9,29 @@ import (
 	"time"
 )
 
-// ErrFreeroll is returned by ParseSpinGo when the file has no buy-in.
+// ErrFreeroll is returned by ParseTournamentFile when the file has no buy-in.
 // The caller should skip freerolls — they have no monetary value.
 var ErrFreeroll = errors.New("freeroll")
 
-// ErrNotSpinGo is returned by ParseSpinGo for tournament files that are not
-// 3-player Spin & Go games (MTTs, HORSE, Stud, etc.). The caller should skip them.
-var ErrNotSpinGo = errors.New("not a spin & go")
-
-// SpinGoGame holds results for a single Spin & Go tournament.
-type SpinGoGame struct {
+// Tournament holds results for a single tournament (Spin & Go or MTT).
+type Tournament struct {
 	Date         time.Time
+	Type         string   // "spingo" or "mtt"
 	BuyInUSD     float64
 	PrizePoolUSD float64
-	Multiplier   float64
+	Multiplier   *float64 // non-nil only for spingo
 	FinishPos    int
+	TotalPlayers int
 	NetUSD       float64
 }
 
-// ParseSpinGo parses a PokerStars tournament summary (.txt) file.
-// screenName is the player to track, passed from POKERSTARS_SCREEN_NAME.
-func ParseSpinGo(path, screenName string) (SpinGoGame, error) {
+// ParseTournamentFile parses a PokerStars tournament summary (.txt) file.
+// screenName is the player to track. Spin & Go games are identified by having
+// exactly 3 players; all others are classified as MTT.
+func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return SpinGoGame{}, fmt.Errorf("reading %s: %w", path, err)
+		return Tournament{}, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -44,8 +43,8 @@ func ParseSpinGo(path, screenName string) (SpinGoGame, error) {
 	}
 
 	var (
-		g           SpinGoGame
-		playerCount int
+		t            Tournament
+		playerCount  int
 	)
 	playerMarker := ": " + screenName + " ("
 
@@ -65,13 +64,13 @@ func ParseSpinGo(path, screenName string) (SpinGoGame, error) {
 				prize, ok1 := parseLeadingAmount(rest[:slashIdx])
 				rake, ok2 := parseLeadingAmount(rest[slashIdx+1:])
 				if ok1 && ok2 {
-					g.BuyInUSD = prize + rake
+					t.BuyInUSD = prize + rake
 				}
 			}
 
 		case strings.HasPrefix(line, "Total Prize Pool: $"):
 			if amt, ok := parseLeadingAmount(line[len("Total Prize Pool: $"):]); ok {
-				g.PrizePoolUSD = amt
+				t.PrizePoolUSD = amt
 			}
 
 		case strings.HasPrefix(line, "Tournament started "):
@@ -81,8 +80,8 @@ func ParseSpinGo(path, screenName string) (SpinGoGame, error) {
 				ts = ts[:11] + "0" + ts[11:]
 			}
 			if len(ts) >= 19 {
-				if t, err := time.Parse("2006/01/02 15:04:05", ts[:19]); err == nil {
-					g.Date = t
+				if parsed, err := time.Parse("2006/01/02 15:04:05", ts[:19]); err == nil {
+					t.Date = parsed
 				}
 			}
 
@@ -91,28 +90,34 @@ func ParseSpinGo(path, screenName string) (SpinGoGame, error) {
 			colonIdx := strings.Index(trimmed, ":")
 			if colonIdx > 0 {
 				if pos, err := strconv.Atoi(strings.TrimSpace(trimmed[:colonIdx])); err == nil {
-					g.FinishPos = pos
+					t.FinishPos = pos
 				}
 			}
 			// Payout is after "), $" — absent when player won nothing.
 			const payoutMarker = "), $"
 			if payIdx := strings.Index(line, payoutMarker); payIdx >= 0 {
 				if payout, ok := parseLeadingAmount(line[payIdx+len(payoutMarker):]); ok {
-					g.NetUSD = payout - g.BuyInUSD
+					t.NetUSD = payout - t.BuyInUSD
 				}
 			} else {
-				g.NetUSD = -g.BuyInUSD
+				t.NetUSD = -t.BuyInUSD
 			}
 		}
 	}
 
-	if g.BuyInUSD == 0 {
-		return SpinGoGame{}, ErrFreeroll
+	if t.BuyInUSD == 0 {
+		return Tournament{}, ErrFreeroll
 	}
-	if playerCount != 3 {
-		return SpinGoGame{}, ErrNotSpinGo
-	}
-	g.Multiplier = g.PrizePoolUSD / g.BuyInUSD
 
-	return g, nil
+	t.TotalPlayers = playerCount
+
+	if playerCount == 3 {
+		t.Type = "spingo"
+		m := t.PrizePoolUSD / t.BuyInUSD
+		t.Multiplier = &m
+	} else {
+		t.Type = "mtt"
+	}
+
+	return t, nil
 }

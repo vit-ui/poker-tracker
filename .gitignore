@@ -5,7 +5,7 @@ lockfile.json
 credentials/
 /tracker.exe
 testdata/cash/
-testdata/spingo/
+testdata/tournaments/
 /tracker
 /self-tracker
 *.md
