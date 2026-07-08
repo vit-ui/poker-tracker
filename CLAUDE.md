@@ -492,7 +492,7 @@ Each tag triggers the GitHub Actions release build and produces `tracker.exe + S
 | v0.10 | Part 9 — Manual packaging + Task Scheduler |
 | v1.0  | Part 10 — Installer |
 
-**Tag only when the build order part meets its full verification criterion** as written in the Build Order section — tests passing alone is not sufficient. Tag immediately in the same session as verification, and push immediately: `git push origin <tag>`.
+**Tag only when the build order part meets its full verification criterion** as written in the Build Order section — tests passing alone is not sufficient. Tag immediately in the same session as verification.
 
 ---
 
