@@ -9,4 +9,6 @@ testdata/tournaments/
 /tracker
 /self-tracker
 *.md
+!CLAUDE.md
+!poker-tracker-plan.md
 cmd/testsheets/
