@@ -16,6 +16,7 @@ var mu sync.RWMutex
 // Setup holds values written once during --setup mode.
 type Setup struct {
 	TelegramChatID       *string `json:"telegram_chat_id"`
+	GoogleSheetID        *string `json:"google_sheet_id"`
 	GoogleSheetName      *string `json:"google_sheet_name"`
 	PokerStarsScreenName *string `json:"pokerstars_screen_name"`
 }
