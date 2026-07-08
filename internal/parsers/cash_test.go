@@ -28,25 +28,33 @@ func isCashGameFile(path string) bool {
 	return strings.HasPrefix(line, "PokerStars Hand #") && !strings.Contains(line, "Tournament #")
 }
 
-func TestParseCashSession(t *testing.T) {
+func TestParseCashFile(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "cash", "*.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed := 0
+	cashParsed := 0
+	tourneyParsed := 0
 	for _, f := range files {
-		if !isCashGameFile(f) {
-			continue
-		}
-		session, err := ParseCashSession(f, testScreenName)
+		session, tourneyStats, err := ParseCashFile(f, testScreenName)
 		if err != nil {
-			t.Errorf("ParseCashSession(%s): %v", filepath.Base(f), err)
+			t.Errorf("ParseCashFile(%s): %v", filepath.Base(f), err)
 			continue
 		}
-		t.Logf("%s: %+v", filepath.Base(f), session)
-		parsed++
+		if session != nil {
+			t.Logf("cash %s: %+v", filepath.Base(f), *session)
+			cashParsed++
+		} else if tourneyStats != nil {
+			t.Logf("tourney %s: %+v", filepath.Base(f), *tourneyStats)
+			tourneyParsed++
+		} else {
+			t.Errorf("ParseCashFile(%s): both session and tourneyStats are nil", filepath.Base(f))
+		}
 	}
-	if parsed == 0 {
+	if cashParsed == 0 {
 		t.Fatal("no cash game files found in testdata/cash/")
+	}
+	if tourneyParsed == 0 {
+		t.Fatal("no tournament hand history files found in testdata/cash/")
 	}
 }

@@ -17,12 +17,15 @@ var ErrFreeroll = errors.New("freeroll")
 type Tournament struct {
 	Date         time.Time
 	Type         string   // "spingo" or "mtt"
+	TournamentID string
 	BuyInUSD     float64
 	PrizePoolUSD float64
-	Multiplier   *float64 // non-nil only for spingo
+	Multiplier   *float64  // non-nil only for spingo
 	FinishPos    int
 	TotalPlayers int
 	NetUSD       float64
+	VPIP         *float64  // populated from hand history via UpdateTournamentVPIPPFR
+	PFR          *float64  // populated from hand history via UpdateTournamentVPIPPFR
 }
 
 // ParseTournamentFile parses a PokerStars tournament summary (.txt) file.
@@ -52,6 +55,12 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		line := strings.TrimRight(raw, "\r")
 
 		switch {
+		case strings.HasPrefix(line, "PokerStars Tournament #"):
+			rest := line[len("PokerStars Tournament #"):]
+			if end := strings.Index(rest, ","); end > 0 {
+				t.TournamentID = rest[:end]
+			}
+
 		case strings.HasSuffix(line, " players"):
 			if n, err := strconv.Atoi(strings.TrimSuffix(line, " players")); err == nil {
 				playerCount = n

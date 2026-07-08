@@ -24,12 +24,21 @@ type CashSession struct {
 	PFR         float64
 }
 
-// ParseCashSession parses a PokerStars cash game hand history file.
-// screenName is the player to track, passed from POKERSTARS_SCREEN_NAME.
-func ParseCashSession(path, screenName string) (CashSession, error) {
+// TournamentHandStats holds VPIP/PFR stats extracted from a tournament hand
+// history file. Returned by ParseCashFile when the file is a tournament session.
+type TournamentHandStats struct {
+	TournamentID string
+	VPIP         float64
+	PFR          float64
+}
+
+// ParseCashFile parses a PokerStars hand history file from the hand history
+// folder. Returns a CashSession for cash game files, or TournamentHandStats
+// for tournament hand history files. Exactly one of the two will be non-nil.
+func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats *TournamentHandStats, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return CashSession{}, fmt.Errorf("opening %s: %w", path, err)
+		return nil, nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -43,6 +52,9 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 		hands               int
 		netUSD, rakeUSD     float64
 		vpipCount, pfrCount int
+
+		isTournament bool
+		tournamentID string
 
 		handActive    bool
 		inPreflop     bool
@@ -58,8 +70,8 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 
 	ap := screenName + ": "
 	dealtPfx := "Dealt to " + screenName + " ["
-	collectedPfx := screenName + " collected $"
-	uncalledPfx := "Uncalled bet ($"
+	collectedPfx := screenName + " collected "
+	uncalledPfx := "Uncalled bet ("
 	uncalledSfx := ") returned to " + screenName
 
 	finalizeHand := func() {
@@ -96,59 +108,70 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 		}
 
 		switch {
-		case strings.HasPrefix(line, "PokerStars Hand #"):
+		case strings.HasPrefix(line, "PokerStars Hand #") || strings.HasPrefix(line, "PokerStars Zoom Hand #"):
 			if strings.Contains(line, "Tournament #") {
-				return CashSession{}, fmt.Errorf("%s is a tournament hand history, not a cash game", path)
-			}
-			finalizeHand()
-
-			if bigBlind == 0 {
-				parenIdx := strings.Index(line, "($")
-				if parenIdx == -1 {
-					return CashSession{}, fmt.Errorf("no blinds in header: %s", line)
-				}
-				afterParen := line[parenIdx+2:]
-				slashIdx := strings.Index(afterParen, "/")
-				if slashIdx == -1 {
-					return CashSession{}, fmt.Errorf("no / in blinds: %s", line)
-				}
-				bbStr := afterParen[slashIdx+1:]
-				if len(bbStr) > 0 && bbStr[0] == '$' {
-					bbStr = bbStr[1:]
-				}
-				bb, ok := parseLeadingAmount(bbStr)
-				if !ok {
-					return CashSession{}, fmt.Errorf("bad BB in header: %s", line)
-				}
-				bigBlind = bb
-				stake = "NL" + strconv.Itoa(int(math.Round(bb*100)))
-			}
-
-			// Timestamp is after the last " - " in the header.
-			tsPart := line
-			for {
-				idx := strings.Index(tsPart, " - ")
-				if idx == -1 {
-					break
-				}
-				tsPart = tsPart[idx+3:]
-			}
-			ts := tsPart
-			// PokerStars sometimes emits single-digit hours ("1:01:07" not "01:01:07").
-			if len(ts) >= 18 && ts[12] == ':' {
-				ts = ts[:11] + "0" + ts[11:]
-			}
-			if len(ts) >= 19 {
-				t, err := time.Parse("2006/01/02 15:04:05", ts[:19])
-				if err == nil {
-					if firstTime.IsZero() {
-						firstTime = t
+				if !isTournament {
+					isTournament = true
+					if tidx := strings.Index(line, "Tournament #"); tidx >= 0 {
+						rest := line[tidx+len("Tournament #"):]
+						if end := strings.Index(rest, ","); end > 0 {
+							tournamentID = rest[:end]
+						}
 					}
-					lastTime = t
 				}
-			}
+				finalizeHand()
+				handActive = true
+			} else {
+				finalizeHand()
 
-			handActive = true
+				if bigBlind == 0 {
+					parenIdx := strings.Index(line, "($")
+					if parenIdx == -1 {
+						return nil, nil, fmt.Errorf("no blinds in header: %s", line)
+					}
+					afterParen := line[parenIdx+2:]
+					slashIdx := strings.Index(afterParen, "/")
+					if slashIdx == -1 {
+						return nil, nil, fmt.Errorf("no / in blinds: %s", line)
+					}
+					bbStr := afterParen[slashIdx+1:]
+					if len(bbStr) > 0 && bbStr[0] == '$' {
+						bbStr = bbStr[1:]
+					}
+					bb, ok := parseLeadingAmount(bbStr)
+					if !ok {
+						return nil, nil, fmt.Errorf("bad BB in header: %s", line)
+					}
+					bigBlind = bb
+					stake = "NL" + strconv.Itoa(int(math.Round(bb*100)))
+				}
+
+				// Timestamp is after the last " - " in the header.
+				tsPart := line
+				for {
+					idx := strings.Index(tsPart, " - ")
+					if idx == -1 {
+						break
+					}
+					tsPart = tsPart[idx+3:]
+				}
+				ts := tsPart
+				// PokerStars sometimes emits single-digit hours ("1:01:07" not "01:01:07").
+				if len(ts) >= 18 && ts[12] == ':' {
+					ts = ts[:11] + "0" + ts[11:]
+				}
+				if len(ts) >= 19 {
+					t, err := time.Parse("2006/01/02 15:04:05", ts[:19])
+					if err == nil {
+						if firstTime.IsZero() {
+							firstTime = t
+						}
+						lastTime = t
+					}
+				}
+
+				handActive = true
+			}
 
 		case line == "*** HOLE CARDS ***":
 			inPreflop = true
@@ -179,8 +202,9 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 				}
 			}
 
-		case strings.HasPrefix(line, ap+"calls $"):
-			if amt, ok := parseLeadingAmount(line[len(ap+"calls $"):]); ok {
+		case strings.HasPrefix(line, ap+"calls "):
+			// Both cash ($X) and tournament (X chips) use this prefix.
+			if amt, ok := parseLeadingAmount(line[len(ap+"calls "):]); ok {
 				handInvested += amt
 				streetTotal += amt
 				if inPreflop {
@@ -188,16 +212,17 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 				}
 			}
 
-		case strings.HasPrefix(line, ap+"bets $"):
-			if amt, ok := parseLeadingAmount(line[len(ap+"bets $"):]); ok {
+		case strings.HasPrefix(line, ap+"bets "):
+			if amt, ok := parseLeadingAmount(line[len(ap+"bets "):]); ok {
 				handInvested += amt
 				streetTotal += amt
 			}
 
 		case strings.HasPrefix(line, ap+"raises "):
-			toIdx := strings.Index(line, " to $")
+			// Cash: "raises $X to $Y"; tournament: "raises X to Y [and is all-in]"
+			toIdx := strings.Index(line, " to ")
 			if toIdx >= 0 {
-				if total, ok := parseLeadingAmount(line[toIdx+5:]); ok {
+				if total, ok := parseLeadingAmount(line[toIdx+4:]); ok {
 					increment := total - streetTotal
 					if increment < 0 {
 						increment = 0
@@ -235,10 +260,21 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 	finalizeHand()
 
 	if err := scanner.Err(); err != nil {
-		return CashSession{}, fmt.Errorf("scanning %s: %w", path, err)
+		return nil, nil, fmt.Errorf("scanning %s: %w", path, err)
 	}
 	if hands == 0 {
-		return CashSession{}, fmt.Errorf("no dealt hands found in %s", path)
+		return nil, nil, fmt.Errorf("no dealt hands found in %s", path)
+	}
+
+	if isTournament {
+		if tournamentID == "" {
+			return nil, nil, fmt.Errorf("could not extract tournament ID from %s", path)
+		}
+		return nil, &TournamentHandStats{
+			TournamentID: tournamentID,
+			VPIP:         float64(vpipCount) / float64(hands) * 100,
+			PFR:          float64(pfrCount) / float64(hands) * 100,
+		}, nil
 	}
 
 	dur := int(lastTime.Sub(firstTime).Minutes())
@@ -248,7 +284,7 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 		bb100 = (netUSD / bigBlind) / float64(hands) * 100
 	}
 
-	return CashSession{
+	return &CashSession{
 		Date:        firstTime,
 		Stake:       stake,
 		BuyInUSD:    bigBlind * 100,
@@ -259,7 +295,7 @@ func ParseCashSession(path, screenName string) (CashSession, error) {
 		BB100:       bb100,
 		VPIP:        float64(vpipCount) / float64(hands) * 100,
 		PFR:         float64(pfrCount) / float64(hands) * 100,
-	}, nil
+	}, nil, nil
 }
 
 // parseLeadingAmount parses a leading decimal number from s, ignoring a leading '$'.
