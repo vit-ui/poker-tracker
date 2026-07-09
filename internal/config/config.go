@@ -9,6 +9,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
 var mu sync.RWMutex
@@ -57,6 +59,19 @@ type LockFile struct {
 	ExpiresAt     time.Time `json:"expires_at"`
 	Reason        string    `json:"reason"`
 	DurationHours int       `json:"duration_hours"`
+}
+
+// PendingTournament is one tournament awaiting a satellite/ticket answer from
+// the player, held in pending_tournaments.json.
+type PendingTournament struct {
+	Tournament     parsers.Tournament `json:"tournament"`
+	FirstQueuedAt  time.Time          `json:"first_queued_at"`
+	LastRemindedAt time.Time          `json:"last_reminded_at"`
+}
+
+// PendingTournaments is the in-memory representation of pending_tournaments.json.
+type PendingTournaments struct {
+	Pending []PendingTournament `json:"pending"`
 }
 
 // LoadConfig reads config.json at path. If the file does not exist it is
@@ -143,4 +158,38 @@ func DeleteLock(path string) error {
 // IsLockExpired reports whether the lock's expiry time is in the past.
 func IsLockExpired(lock *LockFile) bool {
 	return lock.ExpiresAt.Before(time.Now().UTC())
+}
+
+// LoadPendingTournaments reads pending_tournaments.json at path. Returns an
+// empty slice and nil error if the file does not exist — that is the normal
+// state when nothing is awaiting a satellite/ticket answer.
+func LoadPendingTournaments(path string) ([]PendingTournament, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading pending tournaments: %w", err)
+	}
+	var pt PendingTournaments
+	if err := json.Unmarshal(data, &pt); err != nil {
+		return nil, fmt.Errorf("parsing pending tournaments: %w", err)
+	}
+	return pt.Pending, nil
+}
+
+// SavePendingTournaments writes pending to path.
+func SavePendingTournaments(path string, pending []PendingTournament) error {
+	data, err := json.MarshalIndent(PendingTournaments{Pending: pending}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling pending tournaments: %w", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("writing pending tournaments: %w", err)
+	}
+	return nil
 }

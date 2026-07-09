@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/vit-ui/self-tracker/internal/bot"
@@ -217,6 +218,27 @@ func runWorker(
 				slog.Error("parsing tournament", "path", event.Path, "err", err)
 				continue
 			}
+
+			if t.LikelySatellite {
+				pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
+				pending, err := config.LoadPendingTournaments(pendingPath)
+				if err != nil {
+					slog.Error("loading pending tournaments", "err", err)
+					continue
+				}
+				now := time.Now()
+				pending = append(pending, config.PendingTournament{
+					Tournament:     t,
+					FirstQueuedAt:  now,
+					LastRemindedAt: now,
+				})
+				if err := config.SavePendingTournaments(pendingPath, pending); err != nil {
+					slog.Error("saving pending tournaments", "err", err)
+				}
+				slog.Info("tournament queued for satellite/ticket confirmation", "tournament_id", t.TournamentID)
+				continue
+			}
+
 			if err := sc.AppendTournament(t); err != nil {
 				slog.Error("appending tournament to sheets", "err", err)
 			}

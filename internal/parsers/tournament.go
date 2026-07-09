@@ -15,17 +15,19 @@ var ErrFreeroll = errors.New("freeroll")
 
 // Tournament holds results for a single tournament (Spin & Go or MTT).
 type Tournament struct {
-	Date         time.Time
-	Type         string   // "spingo" or "mtt"
-	TournamentID string
-	BuyInUSD     float64
-	PrizePoolUSD float64
-	Multiplier   *float64  // non-nil only for spingo
-	FinishPos    int
-	TotalPlayers int
-	NetUSD       float64
-	VPIP         *float64  // populated from hand history via UpdateTournamentVPIPPFR
-	PFR          *float64  // populated from hand history via UpdateTournamentVPIPPFR
+	Date                   time.Time
+	Type                   string // "spingo" or "mtt"
+	TournamentID           string
+	BuyInUSD               float64
+	PrizePoolUSD           float64
+	Multiplier             *float64 // non-nil only for spingo
+	FinishPos              int
+	TotalPlayers           int
+	NetUSD                 float64
+	VPIP                   *float64 // populated from hand history via UpdateTournamentVPIPPFR
+	PFR                    *float64 // populated from hand history via UpdateTournamentVPIPPFR
+	LikelySatellite        bool     // true if finish position 1's payout reads as a ticket/pass, not a cash prize
+	WinnerPrizeDescription string   // finish position 1's exact payout text. Empty if not flagged.
 }
 
 // ParseTournamentFile parses a PokerStars tournament summary (.txt) file.
@@ -46,8 +48,8 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	}
 
 	var (
-		t            Tournament
-		playerCount  int
+		t           Tournament
+		playerCount int
 	)
 	playerMarker := ": " + screenName + " ("
 
@@ -112,6 +114,16 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 				t.NetUSD = -t.BuyInUSD
 			}
 		}
+
+		// Finish position 1 is checked independently of the switch above since
+		// it's often a different player than screenName.
+		if pos, payout, ok := parseFinishLine(line); ok && pos == 1 {
+			lower := strings.ToLower(payout)
+			if strings.Contains(lower, "ticket") || strings.Contains(lower, "pass") {
+				t.LikelySatellite = true
+				t.WinnerPrizeDescription = payout
+			}
+		}
 	}
 
 	if t.BuyInUSD == 0 {
@@ -129,4 +141,26 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	}
 
 	return t, nil
+}
+
+// parseFinishLine extracts the finish position and exact payout text from a
+// results line like "  1: Name (Country), $1.50 Power Path Step 2 Ticket".
+// ok is false for lines that aren't results lines (no "), " marker, or the
+// text before the colon isn't a number).
+func parseFinishLine(line string) (pos int, payout string, ok bool) {
+	const marker = "), "
+	idx := strings.Index(line, marker)
+	if idx < 0 {
+		return 0, "", false
+	}
+	trimmed := strings.TrimLeft(line, " ")
+	colonIdx := strings.Index(trimmed, ":")
+	if colonIdx <= 0 {
+		return 0, "", false
+	}
+	p, err := strconv.Atoi(strings.TrimSpace(trimmed[:colonIdx]))
+	if err != nil {
+		return 0, "", false
+	}
+	return p, strings.TrimRight(line[idx+len(marker):], " \r"), true
 }
