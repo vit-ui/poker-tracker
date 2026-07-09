@@ -193,12 +193,12 @@ func runWorker(
 				}
 				hardstop.Evaluate(*session, sc, configPath, lockfilePath, alertChan)
 				bankroll, _ := sc.GetCurrentBankroll()
-				sign := "+"
-				if session.NetUSD < 0 {
-					sign = ""
+				sign, absNet := "+", session.NetUSD
+				if absNet < 0 {
+					sign, absNet = "-", -absNet
 				}
-				alertChan <- fmt.Sprintf("Cash %s | Net: %s$%.2f | Hands: %d | %dmin | Bankroll: $%.2f",
-					session.Stake, sign, session.NetUSD, session.Hands, session.DurationMin, bankroll)
+				alertChan <- fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s$%.2f\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
+					session.Stake, sign, absNet, session.Hands, session.DurationMin, bankroll)
 			} else if tourneyStats != nil {
 				if err := sc.UpdateTournamentVPIPPFR(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR); err != nil {
 					slog.Error("updating tournament VPIP/PFR", "err", err)
@@ -222,16 +222,36 @@ func runWorker(
 			}
 			hardstop.EvaluateTournament(t, sc, configPath, lockfilePath, alertChan)
 			bankroll, _ := sc.GetCurrentBankroll()
-			gameType := "MTT"
+			sign, absNet := "+", t.NetUSD
+			if absNet < 0 {
+				sign, absNet = "-", -absNet
+			}
+			var alert string
 			if t.Type == "spingo" {
-				gameType = "Spin & Go"
+				alert = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: $%.2f (%gx)\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
+					t.BuyInUSD, t.PrizePoolUSD, *t.Multiplier, ordinal(t.FinishPos), sign, absNet, bankroll)
+			} else {
+				alert = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s$%.2f\nBankroll: $%.2f",
+					t.BuyInUSD, ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
 			}
-			sign := "+"
-			if t.NetUSD < 0 {
-				sign = ""
-			}
-			alertChan <- fmt.Sprintf("%s $%.2f | Net: %s$%.2f | Pos: %d/%d | Bankroll: $%.2f",
-				gameType, t.BuyInUSD, sign, t.NetUSD, t.FinishPos, t.TotalPlayers, bankroll)
+			alertChan <- alert
 		}
+	}
+}
+
+// ordinal formats n as "1st", "2nd", "3rd", "4th", etc.
+func ordinal(n int) string {
+	if n%100 >= 11 && n%100 <= 13 {
+		return fmt.Sprintf("%dth", n)
+	}
+	switch n % 10 {
+	case 1:
+		return fmt.Sprintf("%dst", n)
+	case 2:
+		return fmt.Sprintf("%dnd", n)
+	case 3:
+		return fmt.Sprintf("%drd", n)
+	default:
+		return fmt.Sprintf("%dth", n)
 	}
 }
