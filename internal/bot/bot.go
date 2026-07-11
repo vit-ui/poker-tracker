@@ -155,15 +155,23 @@ func buildWeeklySummary(sc *sheets.Client, now time.Time) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("loading tournaments: %w", err)
 	}
+	// Net is session results only, unlike /status — deposits/withdrawals are
+	// excluded so a deposit this week can't turn a losing week into an
+	// apparent winning one.
+	rawLedger, err := sc.GetLedgerEntriesSince(since)
+	if err != nil {
+		return "", fmt.Errorf("loading ledger entries: %w", err)
+	}
+	var netUSD float64
+	for _, e := range rawLedger {
+		if e.Type == "cash_session" || e.Type == "tournament" {
+			netUSD += e.AmountUSD
+		}
+	}
 
 	var totalHands int
-	var netUSD float64
 	for _, s := range cashSessions {
 		totalHands += s.Hands
-		netUSD += s.NetUSD
-	}
-	for _, t := range tournaments {
-		netUSD += t.NetUSD
 	}
 	sessionCount := len(cashSessions) + len(tournaments)
 
@@ -220,13 +228,27 @@ func buildMonthlySummary(sc *sheets.Client, now time.Time) (string, error) {
 	}
 	sessionCount := len(cashSessions) + len(tournaments)
 
+	// Total is session results only, unlike /status — deposits/withdrawals
+	// are excluded so a deposit last month can't turn a losing month into an
+	// apparent winning one.
+	rawLedger, err := sc.GetLedgerEntriesSince(firstOfPrevMonth)
+	if err != nil {
+		return "", fmt.Errorf("loading ledger entries: %w", err)
+	}
+	var totalNet float64
+	for _, e := range rawLedger {
+		if e.Date.Before(firstOfThisMonth) && (e.Type == "cash_session" || e.Type == "tournament") {
+			totalNet += e.AmountUSD
+		}
+	}
+
 	return fmt.Sprintf(
 		"📅 Monthly Summary — %s\nCash Net: %s\nSpins Net: %s\nMTT Net: %s\nTotal: %s\nBB/100: %.1f\nSpins ROI: %s\nMTT ROI: %s\nHands: %s\nVolume: %d sessions",
 		firstOfPrevMonth.Format("January 2006"),
 		formatSignedUSD(cashNet),
 		formatSignedUSD(spinsNet),
 		formatSignedUSD(mttNet),
-		formatSignedUSD(cashNet+spinsNet+mttNet),
+		formatSignedUSD(totalNet),
 		weightedBB100(cashSessions),
 		formatSignedPercent(roi(tournaments, "spingo")),
 		formatSignedPercent(roi(tournaments, "mtt")),
