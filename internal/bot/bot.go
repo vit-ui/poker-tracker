@@ -386,13 +386,23 @@ func sendSatelliteMenu(tgBot *tgbotapi.BotAPI, configPath string, t parsers.Tour
 // the single configured chat. It lives entirely inside the update-processing
 // goroutine (pollUpdates), so no locking is needed.
 type conversationState struct {
-	flow  string // "", "paths", "alerts", "hardstop"
+	flow  string // "", "screen_name", "paths", "alerts", "hardstop", "schedule"
 	field string // field awaiting a text reply within flow, "" if none
 
 	// pathsFirstTimeSetup is captured when the /paths flow starts, recording
 	// whether both paths were null at that point — used to pick between the
 	// "watcher restarted" and "tracker now active" messages on Done.
 	pathsFirstTimeSetup bool
+
+	// startWizard is true while /start is chaining paths -> alerts ->
+	// hardstop -> schedule. Each flow's Done handler checks it to decide
+	// whether to auto-advance into the next flow instead of just stopping.
+	// reset() doesn't touch it, so it survives across the four flows.
+	startWizard bool
+
+	// resumeFlow names the flow (see ensureScreenName) to start once the
+	// screen-name recovery prompt is answered.
+	resumeFlow string
 }
 
 func (s *conversationState) reset() {
@@ -473,6 +483,8 @@ func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi
 
 func (s *conversationState) handleFlowReply(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, configPath string) {
 	switch s.flow {
+	case "screen_name":
+		s.handleScreenNameReply(tgBot, msg.Chat.ID, msg.Text, configPath)
 	case "paths":
 		s.handlePathsReply(tgBot, msg.Chat.ID, msg.Text, configPath)
 	case "alerts":
@@ -501,9 +513,9 @@ func (s *conversationState) handleCallback(tgBot *tgbotapi.BotAPI, cb *tgbotapi.
 	case strings.HasPrefix(data, "paths:"):
 		s.handlePathsCallback(tgBot, chatID, strings.TrimPrefix(data, "paths:"), configPath, restartWatcher)
 	case strings.HasPrefix(data, "alerts:"):
-		s.handleAlertsCallback(tgBot, chatID, strings.TrimPrefix(data, "alerts:"))
+		s.handleAlertsCallback(tgBot, chatID, strings.TrimPrefix(data, "alerts:"), configPath)
 	case strings.HasPrefix(data, "hardstop:"):
-		s.handleHardstopCallback(tgBot, chatID, strings.TrimPrefix(data, "hardstop:"))
+		s.handleHardstopCallback(tgBot, chatID, strings.TrimPrefix(data, "hardstop:"), configPath)
 	case strings.HasPrefix(data, "schedule:"):
 		s.handleScheduleCallback(tgBot, chatID, strings.TrimPrefix(data, "schedule:"))
 	}
@@ -576,9 +588,17 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 // handleCommand dispatches a slash command to its handler.
 func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, sc *sheets.Client, configPath, lockfilePath string, restartWatcher func()) {
 	chatID := msg.Chat.ID
+	// Disarm wizard chaining for every command except the one that (re-)arms
+	// it. Without this, abandoning /start partway (or running /paths, /alerts,
+	// etc. standalone afterwards) would leave startWizard stuck true, and a
+	// later unrelated flow's Done would silently chain into the next wizard
+	// step.
+	s.startWizard = false
 	switch msg.Command() {
 	case "start":
-		send(tgBot, chatID, "Setup wizard coming soon.")
+		s.startWizard = true
+		send(tgBot, chatID, "Welcome to Poker Tracker. Let's configure your settings.\nYou can re-run /start at any time to update these settings.")
+		s.startPathsFlow(tgBot, chatID, configPath)
 	case "deposit":
 		handleDepositWithdraw(tgBot, chatID, msg.CommandArguments(), sc, "deposit")
 	case "withdraw":
@@ -918,6 +938,26 @@ func tournamentStatsMessage(sc *sheets.Client, since time.Time, tType, periodLab
 		emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), len(filtered), avgFinish), nil
 }
 
+// ensureScreenName checks Setup.PokerStarsScreenName before any of the four
+// config flows (paths, alerts, hardstop, schedule) starts. Screen name is
+// normally set once by --setup and never touched again — but --serve no
+// longer requires it to be set at startup, and config.json is re-read from
+// disk on every message, so it can still be null here (fresh install before
+// --setup is fully built, or lost/reset while --serve keeps running). If
+// it's missing, this interrupts with a recovery prompt instead of the
+// caller's own flow, and remembers resumeFlow so the right flow starts once
+// it's answered. Returns true if the caller may proceed immediately.
+func (s *conversationState) ensureScreenName(tgBot *tgbotapi.BotAPI, chatID int64, cfg *config.Config, resumeFlow string) bool {
+	if cfg.Setup.PokerStarsScreenName != nil {
+		return true
+	}
+	s.flow = "screen_name"
+	s.field = "screen_name"
+	s.resumeFlow = resumeFlow
+	send(tgBot, chatID, "Your PokerStars screen name isn't set. Send it now (exact spelling, case-sensitive) before continuing.")
+	return false
+}
+
 // --- /paths flow ---
 
 func (s *conversationState) startPathsFlow(tgBot *tgbotapi.BotAPI, chatID int64, configPath string) {
@@ -925,6 +965,9 @@ func (s *conversationState) startPathsFlow(tgBot *tgbotapi.BotAPI, chatID int64,
 	if err != nil {
 		slog.Error("loading config", "err", err)
 		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if !s.ensureScreenName(tgBot, chatID, cfg, "paths") {
 		return
 	}
 	s.flow = "paths"
@@ -956,9 +999,6 @@ func sendPathsKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, cfg *config.Config)
 
 func (s *conversationState) handlePathsCallback(tgBot *tgbotapi.BotAPI, chatID int64, action, configPath string, restartWatcher func()) {
 	if action == "done" {
-		wasFirstTime := s.pathsFirstTimeSetup
-		s.reset()
-
 		cfg, err := config.LoadConfig(configPath)
 		if err != nil {
 			slog.Error("loading config", "err", err)
@@ -966,12 +1006,26 @@ func (s *conversationState) handlePathsCallback(tgBot *tgbotapi.BotAPI, chatID i
 			return
 		}
 
+		if cfg.Paths.HandHistory == nil || cfg.Paths.TournamentSummary == nil {
+			send(tgBot, chatID, "Both paths must be set before continuing. Tap a field to configure it.")
+			sendPathsKeyboard(tgBot, chatID, cfg)
+			return
+		}
+
+		wasFirstTime := s.pathsFirstTimeSetup
+		inWizard := s.startWizard
+		s.reset()
+
 		restartWatcher()
 
-		if wasFirstTime && cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil {
+		if wasFirstTime {
 			send(tgBot, chatID, "✅ Paths saved. Tracker is now active.")
 		} else {
 			send(tgBot, chatID, "✅ Paths saved. Watcher restarted.")
+		}
+
+		if inWizard {
+			s.startAlertsFlow(tgBot, chatID, configPath)
 		}
 		return
 	}
@@ -1067,6 +1121,47 @@ func displayRelativeToHome(path string) string {
 	return path
 }
 
+// handleScreenNameReply saves the PokerStars screen name entered in
+// response to ensureScreenName's recovery prompt, then resumes whichever
+// flow (paths, alerts, hardstop, schedule) triggered it.
+func (s *conversationState) handleScreenNameReply(tgBot *tgbotapi.BotAPI, chatID int64, text, configPath string) {
+	name := strings.TrimSpace(text)
+	if name == "" {
+		send(tgBot, chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
+		return
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		s.reset()
+		return
+	}
+	cfg.Setup.PokerStarsScreenName = &name
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		s.reset()
+		return
+	}
+
+	send(tgBot, chatID, fmt.Sprintf("✅ Screen name saved: %s", name))
+
+	resumeFlow := s.resumeFlow
+	s.resumeFlow = ""
+	switch resumeFlow {
+	case "paths":
+		s.startPathsFlow(tgBot, chatID, configPath)
+	case "alerts":
+		s.startAlertsFlow(tgBot, chatID, configPath)
+	case "hardstop":
+		s.startHardstopFlow(tgBot, chatID, configPath)
+	case "schedule":
+		s.startScheduleFlow(tgBot, chatID, configPath)
+	}
+}
+
 func (s *conversationState) handlePathsReply(tgBot *tgbotapi.BotAPI, chatID int64, text, configPath string) {
 	normalized := fixMissingDriveColon(NormalizeWindowsPath(text))
 
@@ -1075,6 +1170,13 @@ func (s *conversationState) handlePathsReply(tgBot *tgbotapi.BotAPI, chatID int6
 		slog.Error("loading config", "err", err)
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		s.reset()
+		return
+	}
+	if cfg.Setup.PokerStarsScreenName == nil {
+		// Lost between startPathsFlow and this reply (e.g. config.json
+		// touched externally mid-flow) — re-enter recovery rather than
+		// dead-ending on an error.
+		s.startPathsFlow(tgBot, chatID, configPath)
 		return
 	}
 
@@ -1179,6 +1281,9 @@ func (s *conversationState) startAlertsFlow(tgBot *tgbotapi.BotAPI, chatID int64
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		return
 	}
+	if !s.ensureScreenName(tgBot, chatID, cfg, "alerts") {
+		return
+	}
 	s.flow = "alerts"
 	s.field = ""
 	sendAlertsKeyboard(tgBot, chatID, cfg)
@@ -1219,10 +1324,14 @@ func sendAlertsKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, cfg *config.Config
 	sendWithKeyboard(tgBot, chatID, "Configure alert thresholds:", markup)
 }
 
-func (s *conversationState) handleAlertsCallback(tgBot *tgbotapi.BotAPI, chatID int64, action string) {
+func (s *conversationState) handleAlertsCallback(tgBot *tgbotapi.BotAPI, chatID int64, action, configPath string) {
 	if action == "done" {
+		inWizard := s.startWizard
 		s.reset()
 		send(tgBot, chatID, "✅ Alert settings saved.")
+		if inWizard {
+			s.startHardstopFlow(tgBot, chatID, configPath)
+		}
 		return
 	}
 	s.flow = "alerts"
@@ -1345,6 +1454,9 @@ func (s *conversationState) startHardstopFlow(tgBot *tgbotapi.BotAPI, chatID int
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		return
 	}
+	if !s.ensureScreenName(tgBot, chatID, cfg, "hardstop") {
+		return
+	}
 	s.flow = "hardstop"
 	s.field = ""
 	sendHardstopKeyboard(tgBot, chatID, cfg)
@@ -1387,10 +1499,32 @@ func sendHardstopKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, cfg *config.Conf
 	sendWithKeyboard(tgBot, chatID, "Configure hard stop rules:", markup)
 }
 
-func (s *conversationState) handleHardstopCallback(tgBot *tgbotapi.BotAPI, chatID int64, action string) {
+func (s *conversationState) handleHardstopCallback(tgBot *tgbotapi.BotAPI, chatID int64, action, configPath string) {
 	if action == "done" {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			slog.Error("loading config", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			return
+		}
+
+		anyRuleConfigured := cfg.Hardstop.SessionLossBuyins != nil ||
+			cfg.Hardstop.DownswingBuyins != nil ||
+			cfg.Hardstop.ConsecutiveLosses != nil ||
+			cfg.Hardstop.DailyLossUSD != nil ||
+			cfg.Hardstop.SpingoDailyLossUSD != nil
+		if cfg.Hardstop.DurationHours == nil && anyRuleConfigured {
+			send(tgBot, chatID, "Duration must be set if any hard stop rule is configured. Tap Duration to set it.")
+			sendHardstopKeyboard(tgBot, chatID, cfg)
+			return
+		}
+
+		inWizard := s.startWizard
 		s.reset()
 		send(tgBot, chatID, "✅ Hard stop settings saved.")
+		if inWizard {
+			s.startScheduleFlow(tgBot, chatID, configPath)
+		}
 		return
 	}
 	s.flow = "hardstop"
@@ -1509,6 +1643,9 @@ func (s *conversationState) startScheduleFlow(tgBot *tgbotapi.BotAPI, chatID int
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		return
 	}
+	if !s.ensureScreenName(tgBot, chatID, cfg, "schedule") {
+		return
+	}
 	s.flow = "schedule"
 	s.field = ""
 	sendScheduleKeyboard(tgBot, chatID, cfg)
@@ -1529,8 +1666,13 @@ func sendScheduleKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, cfg *config.Conf
 
 func (s *conversationState) handleScheduleCallback(tgBot *tgbotapi.BotAPI, chatID int64, action string) {
 	if action == "done" {
+		inWizard := s.startWizard
+		s.startWizard = false
 		s.reset()
 		send(tgBot, chatID, "✅ Schedule saved.")
+		if inWizard {
+			send(tgBot, chatID, "✅ Setup complete. The tracker is running. Type /help to see all commands.")
+		}
 		return
 	}
 	s.flow = "schedule"
@@ -1575,7 +1717,7 @@ var commandList = []struct {
 	name string
 	desc string
 }{
-	{"start", "Run the full setup wizard (paths, alerts, hard stop)."},
+	{"start", "Run the full setup wizard (paths, alerts, hard stop, schedule)."},
 	{"deposit", "Log a deposit to your bankroll ledger."},
 	{"withdraw", "Log a withdrawal from your bankroll ledger."},
 	{"status", "Show current bankroll and P&L."},
@@ -1624,7 +1766,7 @@ var commandHelp = map[string]string{
 	"lastsession": "Shows the summary of the last recorded session (cash or Spin & Go).\n" +
 		"Usage: /lastsession\n" +
 		"No arguments.",
-	"start": "Runs the full setup wizard: /paths, then /alerts, then /hardstop.\n" +
+	"start": "Runs the full setup wizard: /paths, then /alerts, then /hardstop, then /schedule.\n" +
 		"Usage: /start\n" +
 		"Re-runnable at any time.",
 	"status": "Shows current bankroll and profit/loss.\n" +
