@@ -113,7 +113,7 @@ func runServe() {
 	if err != nil {
 		panic("loading config: " + err.Error())
 	}
-	if cfg.Setup.GoogleSheetID == nil || cfg.Setup.PokerStarsScreenName == nil {
+	if cfg.Setup.GoogleSheetID == nil {
 		panic("Run setup first: use the installer or tracker.exe --setup")
 	}
 
@@ -160,8 +160,7 @@ func runServe() {
 		}()
 	}
 
-	screenName := *cfg.Setup.PokerStarsScreenName
-	go runWorker(sessionChan, alertChan, sheetsClient, screenName, configPath, lockfilePath)
+	go runWorker(sessionChan, alertChan, sheetsClient, configPath, lockfilePath)
 	go bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, restartWatcher)
 
 	select {}
@@ -178,9 +177,24 @@ func runWorker(
 	sessionChan <-chan watcher.FileEvent,
 	alertChan chan<- string,
 	sc *sheets.Client,
-	screenName, configPath, lockfilePath string,
+	configPath, lockfilePath string,
 ) {
 	for event := range sessionChan {
+		// Re-read on every event rather than capturing once at startup —
+		// the startup guard no longer requires pokerstars_screen_name to be
+		// set, so it can still be null when this goroutine launches and get
+		// filled in later via the bot's recovery prompt.
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			slog.Error("loading config for screen name", "err", err)
+			continue
+		}
+		if cfg.Setup.PokerStarsScreenName == nil {
+			slog.Error("pokerstars screen name not configured, skipping file", "path", event.Path)
+			continue
+		}
+		screenName := *cfg.Setup.PokerStarsScreenName
+
 		switch event.Type {
 		case "cash":
 			session, tourneyStats, err := parsers.ParseCashFile(event.Path, screenName)
