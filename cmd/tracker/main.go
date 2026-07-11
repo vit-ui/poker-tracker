@@ -64,7 +64,7 @@ func runCheckLock() {
 		os.Exit(0)
 	}
 	fmt.Printf("PokerStars is locked until %s. Check Telegram for details.\n",
-		lock.ExpiresAt.Format("2006-01-02 15:04:05 UTC"))
+		lock.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
 	os.Exit(1)
 }
 
@@ -192,7 +192,9 @@ func runWorker(
 				if err := sc.AppendCashSession(*session); err != nil {
 					slog.Error("appending cash session to sheets", "err", err)
 				}
-				hardstop.Evaluate(*session, sc, configPath, lockfilePath, alertChan)
+				if err := hardstop.Evaluate(*session, sc, configPath, lockfilePath, alertChan); err != nil {
+					slog.Error("evaluating hard stop", "err", err)
+				}
 				bankroll, _ := sc.GetCurrentBankroll()
 				sign, absNet := "+", session.NetUSD
 				if absNet < 0 {
@@ -242,7 +244,9 @@ func runWorker(
 			if err := sc.AppendTournament(t); err != nil {
 				slog.Error("appending tournament to sheets", "err", err)
 			}
-			hardstop.EvaluateTournament(t, sc, configPath, lockfilePath, alertChan)
+			if err := hardstop.EvaluateTournament(t, sc, configPath, lockfilePath, alertChan); err != nil {
+				slog.Error("evaluating hard stop", "err", err)
+			}
 			bankroll, _ := sc.GetCurrentBankroll()
 			sign, absNet := "+", t.NetUSD
 			if absNet < 0 {
