@@ -195,6 +195,12 @@ func runWorker(
 				if err := hardstop.Evaluate(*session, sc, configPath, lockfilePath, alertChan); err != nil {
 					slog.Error("evaluating hard stop", "err", err)
 				}
+				if err := bot.EvaluateSessionLossAlert(*session, sc, configPath, alertChan); err != nil {
+					slog.Error("evaluating session loss alert", "err", err)
+				}
+				if err := bot.EvaluateDownswingAlert(session.BuyInUSD, sc, configPath, alertChan); err != nil {
+					slog.Error("evaluating downswing alert", "err", err)
+				}
 				bankroll, _ := sc.GetCurrentBankroll()
 				sign, absNet := "+", session.NetUSD
 				if absNet < 0 {
@@ -228,11 +234,15 @@ func runWorker(
 					slog.Error("loading pending tournaments", "err", err)
 					continue
 				}
-				now := time.Now()
 				pending = append(pending, config.PendingTournament{
-					Tournament:     t,
-					FirstQueuedAt:  now,
-					LastRemindedAt: now,
+					Tournament:    t,
+					FirstQueuedAt: time.Now(),
+					// Zero value, not time.Now(): the ticker only sends once
+					// time.Since(LastRemindedAt) exceeds 30 minutes, and a
+					// zero time is always more than 30 minutes in the past —
+					// this makes the first prompt fire on the next tick
+					// instead of being delayed by a full reminder interval.
+					LastRemindedAt: time.Time{},
 				})
 				if err := config.SavePendingTournaments(pendingPath, pending); err != nil {
 					slog.Error("saving pending tournaments", "err", err)
@@ -246,6 +256,9 @@ func runWorker(
 			}
 			if err := hardstop.EvaluateTournament(t, sc, configPath, lockfilePath, alertChan); err != nil {
 				slog.Error("evaluating hard stop", "err", err)
+			}
+			if err := bot.EvaluateDownswingAlert(t.BuyInUSD, sc, configPath, alertChan); err != nil {
+				slog.Error("evaluating downswing alert", "err", err)
 			}
 			bankroll, _ := sc.GetCurrentBankroll()
 			sign, absNet := "+", t.NetUSD
