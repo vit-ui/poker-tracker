@@ -33,15 +33,27 @@ type Paths struct {
 type Alerts struct {
 	DownswingBuyins    *float64 `json:"downswing_buyins"`
 	LosingStreakCount  *int     `json:"losing_streak_count"`
+	DailyLossUSD       *float64 `json:"daily_loss_usd"`
 	SpingoDailyLossUSD *float64 `json:"spingo_daily_loss_usd"`
+	SessionLossBuyins  *float64 `json:"session_loss_buyins"`
 }
 
 // Hardstop holds the hard stop trigger rules and lock duration.
 type Hardstop struct {
 	SessionLossBuyins  *float64 `json:"session_loss_buyins"`
 	ConsecutiveLosses  *int     `json:"consecutive_losses"`
+	DailyLossUSD       *float64 `json:"daily_loss_usd"`
 	SpingoDailyLossUSD *float64 `json:"spingo_daily_loss_usd"`
 	DurationHours      *int     `json:"duration_hours"`
+	DownswingBuyins    *float64 `json:"downswing_buyins"`
+}
+
+// Schedule holds player-specific timing settings.
+type Schedule struct {
+	// DayStartHour is the local hour (0-23) the player's poker day starts,
+	// used as the daily reset boundary for daily loss tracking. Nil means
+	// default to 6 (6am local time).
+	DayStartHour *int `json:"day_start_hour"`
 }
 
 // Config is the in-memory representation of config.json.
@@ -51,6 +63,7 @@ type Config struct {
 	Paths    Paths    `json:"paths"`
 	Alerts   Alerts   `json:"alerts"`
 	Hardstop Hardstop `json:"hardstop"`
+	Schedule Schedule `json:"schedule"`
 }
 
 // LockFile is the in-memory representation of lockfile.json.

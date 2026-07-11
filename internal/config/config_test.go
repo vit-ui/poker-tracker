@@ -38,8 +38,8 @@ func TestLoadConfig_MissingFileCreatesAllNulls(t *testing.T) {
 	if cfg.Alerts.LosingStreakCount != nil {
 		t.Error("LosingStreakCount should be nil")
 	}
-	if cfg.Alerts.SpingoDailyLossUSD != nil {
-		t.Error("SpingoDailyLossUSD should be nil")
+	if cfg.Alerts.DailyLossUSD != nil {
+		t.Error("DailyLossUSD should be nil")
 	}
 	if cfg.Hardstop.SessionLossBuyins != nil {
 		t.Error("SessionLossBuyins should be nil")
@@ -47,8 +47,8 @@ func TestLoadConfig_MissingFileCreatesAllNulls(t *testing.T) {
 	if cfg.Hardstop.ConsecutiveLosses != nil {
 		t.Error("ConsecutiveLosses should be nil")
 	}
-	if cfg.Hardstop.SpingoDailyLossUSD != nil {
-		t.Error("SpingoDailyLossUSD should be nil")
+	if cfg.Hardstop.DailyLossUSD != nil {
+		t.Error("DailyLossUSD should be nil")
 	}
 	if cfg.Hardstop.DurationHours != nil {
 		t.Error("DurationHours should be nil")
@@ -72,7 +72,7 @@ func TestSaveConfig_LoadConfig_RoundTrip(t *testing.T) {
 			GoogleSheetName: &sheetName,
 		},
 		Alerts: config.Alerts{
-			DownswingBuyins:  &buyins,
+			DownswingBuyins:   &buyins,
 			LosingStreakCount: &streak,
 		},
 		Hardstop: config.Hardstop{
