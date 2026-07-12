@@ -240,6 +240,30 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 		return *cfg.Setup.GoogleSheetID, nil
 	}
 
+	// A name may already be sitting here from a step that couldn't
+	// resolve it itself — setup.iss's manual-install path collects a
+	// sheet name via a native dialog, but has no Drive API access from
+	// Pascal Script to turn it into an ID, so it saves the name alone and
+	// leaves the ID null for this function to finish later. Try it before
+	// ever bothering Telegram: if it resolves and the sheet is reachable,
+	// this returns immediately with zero user interaction, instead of
+	// silently discarding something already provided and asking again
+	// from scratch.
+	if cfg.Setup.GoogleSheetName != nil {
+		name, id, err := resolveSheetInput(serviceAccountPath, *cfg.Setup.GoogleSheetName)
+		if err == nil {
+			if _, err := sheets.NewClient(serviceAccountPath, id); err == nil {
+				cfg.Setup.GoogleSheetName = name
+				cfg.Setup.GoogleSheetID = &id
+				if err := config.SaveConfig(configPath, cfg); err != nil {
+					return "", fmt.Errorf("saving config: %w", err)
+				}
+				slog.Info("resolved previously-saved sheet name automatically", "name", *name)
+				return id, nil
+			}
+		}
+	}
+
 	tgBot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return "", fmt.Errorf("starting telegram bot: %w", err)
