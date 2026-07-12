@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,9 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode/utf16"
 
-	"github.com/joho/godotenv"
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
@@ -21,6 +23,36 @@ import (
 
 // BotToken is injected at build time via -ldflags "-X main.BotToken=...".
 var BotToken string
+
+// serviceAccountPath, configPath, and lockfilePath are resolved relative to
+// the directory tracker.exe itself lives in — never the process's current
+// working directory. Task Scheduler defaults an unspecified working
+// directory to %SystemRoot%\System32, and relying on cwd here would
+// silently resolve these to files in the wrong place whenever the service
+// is launched by the scheduled task rather than a shell already sitting in
+// C:\poker-tracker (this actually happened: schtasks /Run in runSetup
+// launched --serve with cwd=System32, which read/wrote a fresh, empty
+// config.json there instead of the real one, making it look like the
+// sheet and credentials were never configured). The installer always
+// installs to a fixed, non-user-selectable directory (setup.iss:
+// DefaultDirName=C:\poker-tracker), so wherever tracker.exe itself is is
+// always the right anchor, regardless of who launched it or how.
+var (
+	serviceAccountPath string
+	configPath         string
+	lockfilePath       string
+)
+
+func init() {
+	exePath, err := os.Executable()
+	if err != nil {
+		panic("getting executable path: " + err.Error())
+	}
+	dir := filepath.Dir(exePath)
+	serviceAccountPath = filepath.Join(dir, "credentials", "google_service_account.json")
+	configPath = filepath.Join(dir, "config.json")
+	lockfilePath = filepath.Join(dir, "lockfile.json")
+}
 
 func main() {
 	serve := flag.Bool("serve", false, "run the background service")
@@ -42,13 +74,6 @@ func main() {
 }
 
 func runCheckLock() {
-	// Ignore .env load error; LOCKFILE_PATH may also be set in the system environment.
-	_ = godotenv.Load()
-	lockfilePath := os.Getenv("LOCKFILE_PATH")
-	if lockfilePath == "" {
-		fmt.Fprintln(os.Stderr, "LOCKFILE_PATH not set in .env or environment")
-		os.Exit(1)
-	}
 	lock, err := config.LoadLock(lockfilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "reading lockfile: %v\n", err)
@@ -69,55 +94,157 @@ func runCheckLock() {
 }
 
 func runSetup() {
-	if err := godotenv.Load(); err != nil {
-		panic("loading .env: " + err.Error())
-	}
-	serviceAccountPath := os.Getenv("GOOGLE_SERVICE_ACCOUNT_PATH")
-	configPath := os.Getenv("CONFIG_PATH")
-	lockfilePath := os.Getenv("LOCKFILE_PATH")
-	if serviceAccountPath == "" || configPath == "" || lockfilePath == "" {
-		panic("GOOGLE_SERVICE_ACCOUNT_PATH, CONFIG_PATH, and LOCKFILE_PATH must be set in .env")
-	}
-
 	bot.RunSetup(BotToken, configPath, serviceAccountPath)
 
 	exePath, err := os.Executable()
 	if err != nil {
 		panic("getting executable path: " + err.Error())
 	}
-	if err := exec.Command("schtasks.exe",
+
+	// Plain schtasks flags (/SC ONLOGON /RL HIGHEST) can't turn off "Start
+	// the task only if the computer is on AC power" or the default
+	// execution time limit — there's no flag for either. /Create /XML is
+	// the only way to control every task property, so the task definition
+	// is built inline and written to a temp file for schtasks to read.
+	// schtasks /Create /XML rejects a UTF-8 file — it requires UTF-16 with
+	// a byte-order mark, hence utf16File instead of a plain WriteString.
+	xmlFile, err := os.CreateTemp("", "poker-tracker-task-*.xml")
+	if err != nil {
+		panic("creating task scheduler xml: " + err.Error())
+	}
+	defer os.Remove(xmlFile.Name())
+	if err := xmlFile.Close(); err != nil {
+		panic("closing task scheduler xml: " + err.Error())
+	}
+	if err := os.WriteFile(xmlFile.Name(), utf16File(fmt.Sprintf(taskSchedulerXML, exePath, filepath.Dir(exePath))), 0644); err != nil {
+		panic("writing task scheduler xml: " + err.Error())
+	}
+
+	if out, err := exec.Command("schtasks.exe",
 		"/Create",
 		"/TN", "Poker Tracker",
-		"/TR", exePath+" --serve",
-		"/SC", "ONLOGON",
-		"/RL", "HIGHEST",
+		"/XML", xmlFile.Name(),
 		"/F",
-	).Run(); err != nil {
-		panic("registering Task Scheduler entry: " + err.Error())
+	).CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("registering Task Scheduler entry: %v: %s", err, out))
+	}
+
+	// Starts the service now instead of leaving the player to reboot or
+	// start it manually. Not fatal if it fails — the task is already
+	// registered and will still run on the next logon — so this only logs.
+	if out, err := exec.Command("schtasks.exe", "/Run", "/TN", "Poker Tracker").CombinedOutput(); err != nil {
+		slog.Error("starting task scheduler entry", "err", err, "output", string(out))
 	}
 	os.Exit(0)
 }
 
-func runServe() {
-	if err := godotenv.Load(); err != nil {
-		panic("loading .env: " + err.Error())
+// utf16File encodes s as UTF-16LE with a leading byte-order mark — the
+// encoding schtasks /Create /XML requires; it rejects a plain UTF-8 file.
+func utf16File(s string) []byte {
+	points := utf16.Encode([]rune(s))
+	buf := make([]byte, 2+2*len(points))
+	buf[0], buf[1] = 0xFF, 0xFE
+	for i, p := range points {
+		buf[2+2*i] = byte(p)
+		buf[2+2*i+1] = byte(p >> 8)
 	}
-	serviceAccountPath := os.Getenv("GOOGLE_SERVICE_ACCOUNT_PATH")
-	configPath := os.Getenv("CONFIG_PATH")
-	lockfilePath := os.Getenv("LOCKFILE_PATH")
-	if serviceAccountPath == "" || configPath == "" || lockfilePath == "" {
-		panic("GOOGLE_SERVICE_ACCOUNT_PATH, CONFIG_PATH, and LOCKFILE_PATH must be set in .env")
+	return buf
+}
+
+// taskSchedulerXML is the Task Scheduler task definition registered during
+// --setup, with the tracker.exe path substituted twice: once for Command,
+// once for WorkingDirectory (both %s, same value — see the exePath/dir
+// split in runSetup). LogonTrigger with no UserId fires on any user's
+// logon; the Administrators-group Principal (S-1-5-32-544) keeps the task
+// runnable regardless of which admin account logs in, while RunLevel
+// HighestAvailable matches the previous /RL HIGHEST. WorkingDirectory is
+// belt-and-suspenders now that the three deployment paths are resolved
+// from os.Executable() rather than cwd (see the var block above) — but it
+// matches the documented manual Task Scheduler setup ("Start in
+// C:\poker-tracker") and costs nothing to set correctly.
+const taskSchedulerXML = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <GroupId>S-1-5-32-544</GroupId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>true</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>%s</Command>
+      <Arguments>--serve</Arguments>
+      <WorkingDirectory>%s</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`
+
+// telegramErrorHandler wraps the default slog handler and additionally
+// forwards Error-level records to alertChan, so operational failures stay
+// visible via Telegram now that release builds use -H=windowsgui (no
+// console window is ever created, so a Task-Scheduler-launched --serve
+// has nowhere else to show them — see the release build command). Records
+// below Error still go through the wrapped handler unchanged; this never
+// suppresses anything, only adds a second destination for the ones that
+// matter operationally.
+type telegramErrorHandler struct {
+	slog.Handler
+	alertChan chan<- string
+}
+
+func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		var attrs strings.Builder
+		r.Attrs(func(a slog.Attr) bool {
+			fmt.Fprintf(&attrs, " %s=%v", a.Key, a.Value)
+			return true
+		})
+		h.alertChan <- fmt.Sprintf("⚠️ %s%s", r.Message, attrs.String())
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func runServe() {
+	// Blocks and asks via Telegram if google_sheet_id isn't set yet, rather
+	// than refusing to start — nothing else here can run without a sheets
+	// client, so this has to resolve before the watcher/worker/bot
+	// goroutines exist.
+	sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
+	if err != nil {
+		panic("resolving google sheet: " + err.Error())
 	}
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		panic("loading config: " + err.Error())
 	}
-	if cfg.Setup.GoogleSheetID == nil {
-		panic("Run setup first: use the installer or tracker.exe --setup")
-	}
 
-	sheetsClient, err := sheets.NewClient(serviceAccountPath, *cfg.Setup.GoogleSheetID)
+	sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
 	if err != nil {
 		panic("initializing sheets client: " + err.Error())
 	}
@@ -125,6 +252,16 @@ func runServe() {
 
 	sessionChan := make(chan watcher.FileEvent, 10)
 	alertChan := make(chan string, 20)
+
+	// From here on, an slog.Error anywhere in this process also reaches
+	// Telegram via alertChan (see telegramErrorHandler) — the bot goroutine
+	// started below is the only thing that ever reads alertChan and sends
+	// to Telegram, so this doesn't violate that rule, it just adds a
+	// second producer.
+	slog.SetDefault(slog.New(&telegramErrorHandler{
+		Handler:   slog.Default().Handler(),
+		alertChan: alertChan,
+	}))
 
 	var watcherDone chan struct{}
 	if cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil {
@@ -161,7 +298,7 @@ func runServe() {
 	}
 
 	go runWorker(sessionChan, alertChan, sheetsClient, configPath, lockfilePath)
-	go bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, restartWatcher)
+	go bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 
 	select {}
 }

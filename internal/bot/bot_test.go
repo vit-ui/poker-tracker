@@ -51,6 +51,28 @@ func TestIsAbsoluteWindowsPath(t *testing.T) {
 	}
 }
 
+func TestExtractSheetIDFromURL(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		wantID string
+		wantOK bool
+	}{
+		{"edit URL", "https://docs.google.com/spreadsheets/d/1AbC-23_xyz/edit#gid=0", "1AbC-23_xyz", true},
+		{"bare URL", "https://docs.google.com/spreadsheets/d/1AbC-23_xyz", "1AbC-23_xyz", true},
+		{"plain sheet name is not a URL", "My Poker Tracker", "", false},
+		{"empty string is not a URL", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			id, ok := extractSheetIDFromURL(c.input)
+			if ok != c.wantOK || id != c.wantID {
+				t.Errorf("extractSheetIDFromURL(%q) = (%q, %v), want (%q, %v)", c.input, id, ok, c.wantID, c.wantOK)
+			}
+		})
+	}
+}
+
 func TestValidateNotBelow(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 	n := func(v int) *int { return &v }

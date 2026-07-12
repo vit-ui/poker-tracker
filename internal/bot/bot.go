@@ -4,9 +4,12 @@ package bot
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +30,10 @@ import (
 // restartWatcher is called by the /paths command once new folder paths are
 // saved — it re-joins the base paths with the screen name and restarts the
 // watcher goroutine.
-func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, configPath, lockfilePath string, restartWatcher func()) error {
+//
+// serviceAccountPath is only used by /sheet when switching to a different
+// spreadsheet — see handleSheetCommand.
+func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -63,7 +69,7 @@ func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, 
 		}
 	}()
 
-	go pollUpdates(tgBot, sheetsClient, configPath, lockfilePath, restartWatcher)
+	go pollUpdates(tgBot, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 
 	for msg := range alertChan {
 		sendMessage(tgBot, configPath, msg)
@@ -71,11 +77,501 @@ func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, 
 	return nil
 }
 
-// RunSetup starts the bot in setup mode and blocks until the user completes
-// the configuration wizard via Telegram. Used by --setup mode only; the
-// full conversation flow is implemented alongside the installer (build
-// order part 10).
+// RunSetup starts the bot in setup mode and blocks until the player
+// completes the configuration wizard via Telegram: chat ID detection,
+// an optional service account credentials upload, Google Sheet, PokerStars
+// screen name, and both base folder paths. Used only by --setup — no
+// sheets client and no watcher exist yet at this point, so this runs
+// sequentially rather than through the conversationState machinery used by
+// the four config flows in --serve mode.
 func RunSetup(token, configPath, serviceAccountPath string) {
+	tgBot, err := tgbotapi.NewBotAPI(token)
+	if err != nil {
+		slog.Error("starting telegram bot", "err", err)
+		return
+	}
+	slog.Info("telegram bot ready for setup", "username", tgBot.Self.UserName)
+
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 30
+	updates := tgBot.GetUpdatesChan(u)
+
+	chatID := waitForFirstMessage(updates)
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		return
+	}
+	chatIDStr := strconv.FormatInt(chatID, 10)
+	cfg.Setup.TelegramChatID = &chatIDStr
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		return
+	}
+	send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
+
+	// Step 1.5 — Google service account credentials. Optional: the
+	// installer's manual-setup path already places this file at
+	// serviceAccountPath before --setup ever runs, so this is a fallback
+	// for --setup run standalone (or a fresh reinstall reusing an existing
+	// credentials file left on disk). "skip" is only accepted once a file
+	// actually exists there — otherwise every later step needing Sheets
+	// access would fail with an opaque file-not-found error with no way
+	// to back up and upload it, since this is the only step that accepts
+	// a document.
+	send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip if it's already in place.")
+	for {
+		text, fileID := readReplyOrDocument(tgBot, updates, chatID)
+		if fileID != "" {
+			if err := downloadTelegramFile(tgBot, fileID, serviceAccountPath); err != nil {
+				slog.Error("downloading credentials file", "err", err)
+				send(tgBot, chatID, "Couldn't download that file. Try again, or type skip.")
+				continue
+			}
+			send(tgBot, chatID, "✅ Credentials file saved.")
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(text), "skip") {
+			if _, err := os.Stat(serviceAccountPath); err != nil {
+				send(tgBot, chatID, "No credentials file found at the expected location yet. Send it as an attachment now, or place it correctly before typing skip again.")
+				continue
+			}
+			break
+		}
+		send(tgBot, chatID, "Send the file as an attachment, or type skip.")
+	}
+
+	// Step 2 — Google Sheet. Accepts either a pasted Sheets URL (ID is
+	// already known, no Drive lookup needed) or a sheet name (resolved via
+	// the Drive API) — see resolveSheetInput.
+	send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
+	for {
+		reply := readReply(tgBot, updates, chatID)
+		name, id, err := resolveSheetInput(serviceAccountPath, reply)
+		if err != nil {
+			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
+			continue
+		}
+
+		if _, err := sheets.NewClient(serviceAccountPath, id); err != nil {
+			send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
+			continue
+		}
+
+		cfg.Setup.GoogleSheetName = name
+		cfg.Setup.GoogleSheetID = &id
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			slog.Error("saving config", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			return
+		}
+		send(tgBot, chatID, "✅ Connected to sheet.")
+		break
+	}
+
+	// Step 3 — PokerStars screen name.
+	send(tgBot, chatID, "What is your PokerStars screen name? (Exact capitalisation matters)")
+	var screenName string
+	for {
+		screenName = strings.TrimSpace(readReply(tgBot, updates, chatID))
+		if screenName != "" {
+			break
+		}
+		send(tgBot, chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
+	}
+	cfg.Setup.PokerStarsScreenName = &screenName
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	send(tgBot, chatID, "✅ Screen name saved.")
+
+	// Step 4 — Hand history path.
+	handHistory := setupResolvePath(tgBot, updates, chatID, "Hand History", `AppData\Local\PokerStars\HandHistory`, screenName)
+	cfg.Paths.HandHistory = &handHistory
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+
+	// Step 5 — Tournament summary path.
+	tournamentSummary := setupResolvePath(tgBot, updates, chatID, "Tournament Summary", `AppData\Local\PokerStars\TournamentSummaries`, screenName)
+	cfg.Paths.TournamentSummary = &tournamentSummary
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+
+	// Step 6 — Complete.
+	send(tgBot, chatID, "✅ Setup complete! Poker Tracker will start automatically on next login.\nSend /start to configure alerts and hard stop rules.")
+}
+
+// EnsureSheetID guarantees Setup.GoogleSheetID is set before --serve
+// continues starting up, self-healing the same way ensureScreenName does
+// for pokerstars_screen_name rather than hard-panicking. If it's already
+// configured, this returns immediately without touching Telegram at all —
+// the normal case once --setup has run.
+//
+// Otherwise it opens its own bot connection (bot.Run and its watcher/worker
+// goroutines can't start yet without a sheets client, so nothing else can
+// ask through Telegram at this point in startup) and blocks until a working
+// sheet ID is saved, asking through whichever chat is already configured —
+// or the first chat to message in if even that's unset. The connection is
+// torn down via StopReceivingUpdates before returning, so it doesn't keep
+// polling Telegram alongside the fresh connection bot.Run opens right after.
+func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return "", fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.Setup.GoogleSheetID != nil {
+		return *cfg.Setup.GoogleSheetID, nil
+	}
+
+	tgBot, err := tgbotapi.NewBotAPI(token)
+	if err != nil {
+		return "", fmt.Errorf("starting telegram bot: %w", err)
+	}
+	defer tgBot.StopReceivingUpdates()
+	slog.Info("google sheet not configured, asking via telegram before starting")
+
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 30
+	updates := tgBot.GetUpdatesChan(u)
+
+	var chatID int64
+	if cfg.Setup.TelegramChatID != nil {
+		chatID, err = strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("parsing telegram chat id: %w", err)
+		}
+	} else {
+		chatID = waitForFirstMessage(updates)
+		chatIDStr := strconv.FormatInt(chatID, 10)
+		cfg.Setup.TelegramChatID = &chatIDStr
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return "", fmt.Errorf("saving config: %w", err)
+		}
+	}
+
+	send(tgBot, chatID, "Your Google Sheet isn't configured. Send the sheet name or paste its full URL to continue.\n(Create a blank sheet and share it with the service account before answering)")
+	for {
+		reply := readReply(tgBot, updates, chatID)
+		name, id, err := resolveSheetInput(serviceAccountPath, reply)
+		if err != nil {
+			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
+			continue
+		}
+		if _, err := sheets.NewClient(serviceAccountPath, id); err != nil {
+			send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
+			continue
+		}
+
+		cfg.Setup.GoogleSheetName = name
+		cfg.Setup.GoogleSheetID = &id
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return "", fmt.Errorf("saving config: %w", err)
+		}
+		send(tgBot, chatID, "✅ Connected to sheet.")
+		return id, nil
+	}
+}
+
+// waitForFirstMessage blocks until the first text message arrives on
+// updates and returns its sender's chat ID.
+func waitForFirstMessage(updates tgbotapi.UpdatesChannel) int64 {
+	for update := range updates {
+		if update.Message == nil || update.Message.Text == "" {
+			continue
+		}
+		return update.Message.Chat.ID
+	}
+	return 0
+}
+
+// readReply blocks until the next text message from chatID arrives on
+// updates, ignoring messages from any other chat.
+func readReply(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64) string {
+	for update := range updates {
+		if update.Message == nil || update.Message.Chat.ID != chatID || update.Message.Text == "" {
+			continue
+		}
+		return update.Message.Text
+	}
+	return ""
+}
+
+// readReplyOrDocument blocks until the next message from chatID that is
+// either a document (returns its file ID, text empty) or non-empty text
+// (returns the text, fileID empty). Used only where a reply may
+// legitimately be either — the optional credentials-upload step in
+// RunSetup, and the /credentials command's document upload.
+func readReplyOrDocument(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64) (text, fileID string) {
+	for update := range updates {
+		if update.Message == nil || update.Message.Chat.ID != chatID {
+			continue
+		}
+		if update.Message.Document != nil {
+			return "", update.Message.Document.FileID
+		}
+		if update.Message.Text != "" {
+			return update.Message.Text, ""
+		}
+	}
+	return "", ""
+}
+
+// downloadTelegramFile downloads the Telegram-hosted file identified by
+// fileID and writes it to destPath, overwriting any existing file there.
+func downloadTelegramFile(tgBot *tgbotapi.BotAPI, fileID, destPath string) error {
+	url, err := tgBot.GetFileDirectURL(fileID)
+	if err != nil {
+		return fmt.Errorf("getting file url: %w", err)
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("downloading file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("downloading file: unexpected status %s", resp.Status)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading downloaded file: %w", err)
+	}
+	if err := os.WriteFile(destPath, data, 0644); err != nil {
+		return fmt.Errorf("writing file: %w", err)
+	}
+	return nil
+}
+
+// sheetURLPattern matches a Google Sheets URL and captures its spreadsheet ID.
+var sheetURLPattern = regexp.MustCompile(`docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)`)
+
+// extractSheetIDFromURL returns the spreadsheet ID embedded in a pasted
+// Google Sheets URL, and whether input looked like one at all.
+func extractSheetIDFromURL(input string) (id string, ok bool) {
+	m := sheetURLPattern.FindStringSubmatch(input)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// resolveSheetInput accepts either a pasted Google Sheets URL or a sheet
+// name typed during setup. A URL's ID is already known, so it's used
+// directly with no Drive API lookup and no resolved name to save — a name
+// is resolved to an ID via sheets.ResolveSheetID (the Drive API).
+func resolveSheetInput(serviceAccountPath, input string) (name *string, id string, err error) {
+	input = strings.TrimSpace(input)
+	if sheetID, ok := extractSheetIDFromURL(input); ok {
+		return nil, sheetID, nil
+	}
+	id, err = sheets.ResolveSheetID(serviceAccountPath, input)
+	if err != nil {
+		return nil, "", err
+	}
+	return &input, id, nil
+}
+
+// handleSheetCommand implements /sheet. With no argument, replies with the
+// current sheet's URL (the original, only behavior). With an argument
+// (a sheet name or a pasted URL — same resolveSheetInput branch RunSetup
+// and EnsureSheetID use), switches to a different Google Sheet: validates
+// with sheets.NewClient (which also creates any missing tabs on the new
+// sheet) before saving, so an unreachable sheet is never persisted.
+//
+// This only updates config.json — it deliberately does not attempt to swap
+// the already-running sheetsClient passed throughout bot.Run/runWorker for
+// the rest of this process's life (see the google_sheet_id recovery note
+// in CLAUDE.md for why: sheetsClient is a required non-nil dependency
+// threaded through goroutines that are already running, and hot-swapping
+// it would need a much larger refactor for what's a rare, deliberate
+// action). The reply says a restart is required for the switch to take
+// effect on this running instance.
+func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client, configPath, serviceAccountPath string) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		send(tgBot, chatID, sc.GetSheetURL())
+		return
+	}
+
+	name, id, err := resolveSheetInput(serviceAccountPath, args)
+	if err != nil {
+		send(tgBot, chatID, fmt.Sprintf("Couldn't find that sheet: %v", err))
+		return
+	}
+	newClient, err := sheets.NewClient(serviceAccountPath, id)
+	if err != nil {
+		send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
+		return
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	cfg.Setup.GoogleSheetName = name
+	cfg.Setup.GoogleSheetID = &id
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+
+	send(tgBot, chatID, "✅ Switched to the new sheet: "+newClient.GetSheetURL()+"\nRestart the tracker service for this to take effect (Task Scheduler → Poker Tracker → Run, or reboot).")
+}
+
+// handleScreenNameCommand implements /screenname. With no argument, replies
+// with the current PokerStars screen name. With an argument, changes it —
+// unlike /sheet and /credentials, this takes effect immediately via
+// restartWatcher rather than needing a service restart: the watched folder
+// path is the base path joined with the screen name (see resolvePaths in
+// main.go), resolved once at watcher-start time, so a stale watcher would
+// otherwise keep watching the old screen name's subfolder until restarted
+// — exactly the same reason /paths calls restartWatcher on save.
+//
+// This is the always-available counterpart to ensureScreenName's recovery
+// path, which only ever fires when the screen name is still null — once
+// it's set, ensureScreenName never touches it again, so this was the only
+// way to change an already-configured screen name.
+func handleScreenNameCommand(tgBot *tgbotapi.BotAPI, chatID int64, args, configPath string, restartWatcher func()) {
+	args = strings.TrimSpace(args)
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+
+	if args == "" {
+		if cfg.Setup.PokerStarsScreenName == nil {
+			send(tgBot, chatID, "No screen name configured yet. Usage: /screenname <name>")
+			return
+		}
+		send(tgBot, chatID, "Current PokerStars screen name: "+*cfg.Setup.PokerStarsScreenName)
+		return
+	}
+
+	cfg.Setup.PokerStarsScreenName = &args
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+
+	restartWatcher()
+	send(tgBot, chatID, "✅ Screen name updated to "+args+". Watcher restarted.")
+}
+
+// --- /credentials flow ---
+
+// startCredentialsFlow implements /credentials: swaps the Google service
+// account JSON used to authenticate to Sheets/Drive. Unlike the four
+// config flows (paths/alerts/hardstop/schedule), this one expects a file
+// upload rather than a plain-text reply — see handleCredentialsDocument.
+func (s *conversationState) startCredentialsFlow(tgBot *tgbotapi.BotAPI, chatID int64) {
+	s.flow = "credentials"
+	s.field = "file"
+	send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")
+}
+
+// handleCredentialsTextReply handles a plain-text reply during the
+// /credentials flow — the only valid one is "skip"; anything else
+// re-prompts, since a real reply here is a file, not text.
+func (s *conversationState) handleCredentialsTextReply(tgBot *tgbotapi.BotAPI, chatID int64, text string) {
+	if strings.EqualFold(strings.TrimSpace(text), "skip") {
+		s.reset()
+		send(tgBot, chatID, "Kept the existing credentials file.")
+		return
+	}
+	send(tgBot, chatID, "Send the google_service_account.json file as an attachment, or type skip.")
+}
+
+// handleCredentialsDocument saves an uploaded google_service_account.json
+// to serviceAccountPath (overwriting whatever was there), then
+// re-validates the currently configured sheet against it. A different
+// service account is very likely a different Google Cloud identity, and a
+// sheet only works if it's been explicitly shared with whichever service
+// account is actually in use — the sheet that worked under the old
+// credentials may well not be reachable under the new ones. If it isn't,
+// the now-unreachable sheet is cleared from config (rather than left
+// pointing at something the tracker can no longer write to) and the
+// player is told to run /sheet to reconnect one. Either way this only
+// touches config.json and the credentials file on disk — same as /sheet,
+// the already-running sheetsClient isn't affected until the service
+// restarts.
+func (s *conversationState) handleCredentialsDocument(tgBot *tgbotapi.BotAPI, chatID int64, fileID, configPath, serviceAccountPath string) {
+	if err := downloadTelegramFile(tgBot, fileID, serviceAccountPath); err != nil {
+		slog.Error("downloading credentials file", "err", err)
+		send(tgBot, chatID, "Couldn't download that file. Try again, or type skip.")
+		return
+	}
+	s.reset()
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "✅ Credentials file saved, but something went wrong checking your sheet. Check logs, and run /sheet to reconnect if needed.")
+		return
+	}
+
+	if cfg.Setup.GoogleSheetID == nil {
+		send(tgBot, chatID, "✅ Credentials file saved. Restart the tracker service for this to take effect. No sheet is configured yet — run /sheet to connect one.")
+		return
+	}
+
+	if _, err := sheets.NewClient(serviceAccountPath, *cfg.Setup.GoogleSheetID); err != nil {
+		cfg.Setup.GoogleSheetID = nil
+		cfg.Setup.GoogleSheetName = nil
+		if saveErr := config.SaveConfig(configPath, cfg); saveErr != nil {
+			slog.Error("saving config", "err", saveErr)
+		}
+		send(tgBot, chatID, "✅ Credentials file saved, but your current sheet isn't accessible with it — it needs to be shared with the new service account, or you're pointing at a different Google Cloud project entirely. Run /sheet to connect a sheet this service account can reach.")
+		return
+	}
+
+	send(tgBot, chatID, "✅ Credentials file saved. Your existing sheet is still accessible with it. Restart the tracker service for this to take effect.")
+}
+
+// setupResolvePath asks for a base PokerStars folder path (relative to the
+// player's home directory, or a full path starting with a drive letter),
+// validates it by checking the screen-name-joined path exists on disk, and
+// loops until a valid one is given. Returns the base path (not joined).
+func setupResolvePath(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64, folderLabel, exampleSuffix, screenName string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		slog.Error("getting user home directory", "err", err)
+	}
+	send(tgBot, chatID, fmt.Sprintf(
+		"What is the base %s folder path?\nYour home directory is: %s\nYou can type just the subfolder from there (e.g. %s)\nor type a full path starting with a drive letter if your folder is elsewhere.\nDo NOT include your screen name at the end — that part is added automatically.",
+		folderLabel, homeDir, exampleSuffix))
+
+	for {
+		reply := readReply(tgBot, updates, chatID)
+		normalized := fixMissingDriveColon(NormalizeWindowsPath(reply))
+		full, err := resolveAgainstHomeDir(normalized)
+		if err != nil {
+			slog.Error("resolving home directory", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			continue
+		}
+
+		joined := filepath.Join(full, screenName)
+		if !windowsPathExists(joined) {
+			send(tgBot, chatID, fmt.Sprintf("That path doesn't exist: %s\nSend the folder path again.", joined))
+			continue
+		}
+		return full
+	}
 }
 
 // inSummaryWindow reports whether now falls within the 09:00–09:01 local
@@ -386,7 +882,7 @@ func sendSatelliteMenu(tgBot *tgbotapi.BotAPI, configPath string, t parsers.Tour
 // the single configured chat. It lives entirely inside the update-processing
 // goroutine (pollUpdates), so no locking is needed.
 type conversationState struct {
-	flow  string // "", "screen_name", "paths", "alerts", "hardstop", "schedule"
+	flow  string // "", "screen_name", "paths", "alerts", "hardstop", "schedule", "credentials"
 	field string // field awaiting a text reply within flow, "" if none
 
 	// pathsFirstTimeSetup is captured when the /paths flow starts, recording
@@ -412,7 +908,7 @@ func (s *conversationState) reset() {
 
 // pollUpdates polls Telegram for incoming messages and callback queries and
 // dispatches them. Runs in its own goroutine so it never blocks alertChan.
-func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfilePath string, restartWatcher func()) {
+func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
@@ -430,11 +926,11 @@ func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfile
 			}
 			continue
 		}
-		state.handleUpdate(tgBot, update, sc, configPath, lockfilePath, restartWatcher)
+		state.handleUpdate(tgBot, update, sc, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 	}
 }
 
-func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc *sheets.Client, configPath, lockfilePath string, restartWatcher func()) {
+func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	var senderChatID int64
 	switch {
 	case update.Message != nil:
@@ -467,6 +963,15 @@ func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi
 	}
 
 	msg := update.Message
+
+	// A document upload has no Text — the check below would otherwise
+	// silently drop it. This is the only flow that ever expects a file
+	// instead of a text reply.
+	if s.flow == "credentials" && s.field == "file" && msg.Document != nil {
+		s.handleCredentialsDocument(tgBot, msg.Chat.ID, msg.Document.FileID, configPath, serviceAccountPath)
+		return
+	}
+
 	if msg.Text == "" {
 		return
 	}
@@ -477,7 +982,7 @@ func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi
 	}
 
 	if strings.HasPrefix(msg.Text, "/") {
-		s.handleCommand(tgBot, msg, sc, configPath, lockfilePath, restartWatcher)
+		s.handleCommand(tgBot, msg, sc, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 	}
 }
 
@@ -493,6 +998,8 @@ func (s *conversationState) handleFlowReply(tgBot *tgbotapi.BotAPI, msg *tgbotap
 		s.handleHardstopReply(tgBot, msg.Chat.ID, msg.Text, configPath)
 	case "schedule":
 		s.handleScheduleReply(tgBot, msg.Chat.ID, msg.Text, configPath)
+	case "credentials":
+		s.handleCredentialsTextReply(tgBot, msg.Chat.ID, msg.Text)
 	}
 }
 
@@ -586,7 +1093,7 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 }
 
 // handleCommand dispatches a slash command to its handler.
-func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, sc *sheets.Client, configPath, lockfilePath string, restartWatcher func()) {
+func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	chatID := msg.Chat.ID
 	// Disarm wizard chaining for every command except the one that (re-)arms
 	// it. Without this, abandoning /start partway (or running /paths, /alerts,
@@ -610,7 +1117,11 @@ func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.
 	case "stats":
 		handleStats(tgBot, chatID, msg.CommandArguments(), sc)
 	case "sheet":
-		send(tgBot, chatID, sc.GetSheetURL())
+		handleSheetCommand(tgBot, chatID, msg.CommandArguments(), sc, configPath, serviceAccountPath)
+	case "credentials":
+		s.startCredentialsFlow(tgBot, chatID)
+	case "screenname":
+		handleScreenNameCommand(tgBot, chatID, msg.CommandArguments(), configPath, restartWatcher)
 	case "paths":
 		s.startPathsFlow(tgBot, chatID, configPath)
 	case "alerts":
@@ -1723,7 +2234,9 @@ var commandList = []struct {
 	{"status", "Show current bankroll and P&L."},
 	{"lastsession", "Show the summary of the last recorded session."},
 	{"stats", "Show filtered performance stats."},
-	{"sheet", "Get the Google Sheets URL."},
+	{"sheet", "Get the Google Sheets URL, or switch to a different sheet."},
+	{"credentials", "Swap the Google service account credentials file."},
+	{"screenname", "Get or change your PokerStars screen name."},
 	{"paths", "Configure PokerStars folder locations."},
 	{"alerts", "Configure alert thresholds."},
 	{"hardstop", "Configure hard stop rules, or trigger one manually."},
@@ -1772,9 +2285,22 @@ var commandHelp = map[string]string{
 	"status": "Shows current bankroll and profit/loss.\n" +
 		"Usage: /status\n" +
 		"No arguments.",
-	"sheet": "Returns the URL of your Google Sheets tracker.\n" +
-		"Usage: /sheet\n" +
-		"No arguments.",
+	"sheet": "With no argument, returns the URL of your Google Sheets tracker. With an argument, switches to a different sheet — send its name (resolved via Drive) or paste its full URL. Validates access before saving; requires a restart of the tracker service to take effect.\n" +
+		"Usage: /sheet [name or URL]\n" +
+		"Examples:\n" +
+		"  /sheet — show the current sheet URL\n" +
+		"  /sheet My Other Bankroll — switch by name\n" +
+		"  /sheet https://docs.google.com/spreadsheets/d/... — switch by URL",
+	"credentials": "Swaps the Google service account credentials file used to access Sheets/Drive.\n" +
+		"Usage: /credentials — then send the google_service_account.json file as an attachment, or type skip to cancel.\n" +
+		"If a sheet is already configured, it's re-checked against the new credentials — if it's no longer reachable (not shared with the new service account, or a different Google Cloud project entirely), the sheet is cleared from config and you'll need to run /sheet again.\n" +
+		"Requires a restart of the tracker service to take effect.",
+	"screenname": "Gets or changes your PokerStars screen name (exact capitalisation matters).\n" +
+		"Usage: /screenname [name]\n" +
+		"With no argument, shows the current screen name. With an argument, changes it and restarts the watcher immediately — no service restart needed.\n" +
+		"Examples:\n" +
+		"  /screenname — show the current screen name\n" +
+		"  /screenname NewHandle99 — change it",
 	"paths": "Configures the PokerStars hand history and tournament summary folder locations.\n" +
 		"Usage: /paths — opens the settings menu\n" +
 		"Enter the base folder only — not the folder with your screen name in it.",

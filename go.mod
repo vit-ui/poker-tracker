@@ -5,7 +5,6 @@ go 1.26.3
 require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
-	github.com/joho/godotenv v1.5.1
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.287.0
 )
