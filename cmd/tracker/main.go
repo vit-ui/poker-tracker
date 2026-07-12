@@ -94,6 +94,14 @@ func runCheckLock() {
 }
 
 func runSetup() {
+	// TEMP-DEBUG
+	debugLogFile := setupDebugFileLogging("debug-setup.log")
+	if debugLogFile != nil {
+		defer debugLogFile.Close()
+	}
+	debugExePath, debugExeErr := os.Executable()
+	slog.Info("TEMP-DEBUG runSetup starting", "exePath", debugExePath, "exePathErr", debugExeErr, "botTokenLength", len(BotToken))
+
 	// Kills any previously-running tracker.exe --serve before starting the
 	// wizard — found the hard way: MultipleInstancesPolicy=IgnoreNew (both
 	// task XML templates) means schtasks /Run below silently no-ops if an
@@ -109,12 +117,15 @@ func runSetup() {
 		slog.Info("no previous tracker.exe instance to stop", "output", string(out))
 	}
 
+	slog.Info("TEMP-DEBUG calling bot.RunSetup — blocks until the Telegram wizard finishes")
 	bot.RunSetup(BotToken, configPath, serviceAccountPath)
+	slog.Info("TEMP-DEBUG bot.RunSetup returned")
 
 	exePath, err := os.Executable()
 	if err != nil {
 		panic("getting executable path: " + err.Error())
 	}
+	slog.Info("TEMP-DEBUG registering task", "exePath", exePath)
 
 	// Plain schtasks flags (/SC ONLOGON /RL HIGHEST) can't turn off "Start
 	// the task only if the computer is on AC power" or the default
@@ -141,15 +152,20 @@ func runSetup() {
 		"/XML", xmlFile.Name(),
 		"/F",
 	).CombinedOutput(); err != nil {
+		slog.Error("TEMP-DEBUG schtasks /Create failed", "err", err, "output", string(out))
 		panic(fmt.Sprintf("registering Task Scheduler entry: %v: %s", err, out))
 	}
+	slog.Info("TEMP-DEBUG schtasks /Create succeeded")
 
 	// Starts the service now instead of leaving the player to reboot or
 	// start it manually. Not fatal if it fails — the task is already
 	// registered and will still run on the next logon — so this only logs.
 	if out, err := exec.Command("schtasks.exe", "/Run", "/TN", "Poker Tracker").CombinedOutput(); err != nil {
 		slog.Error("starting task scheduler entry", "err", err, "output", string(out))
+	} else {
+		slog.Info("TEMP-DEBUG schtasks /Run succeeded")
 	}
+	slog.Info("TEMP-DEBUG runSetup complete, exiting with code 0")
 	os.Exit(0)
 }
 
@@ -247,9 +263,12 @@ func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error 
 // TEMP-DEBUG: writes every log line to a file, since -H=windowsgui means
 // there is no console for anything to show up in otherwise. Grep this
 // file for "TEMP-DEBUG" to find every line added for this diagnostic pass
-// and remove them once the bot-not-responding issue is found.
-func setupDebugFileLogging() *os.File {
-	logPath := filepath.Join(filepath.Dir(configPath), "debug.log")
+// and remove them once the bot-not-responding issue is found. name is
+// "debug-setup.log" or "debug-serve.log" — separate files so a --serve
+// auto-started right after --setup finishes doesn't truncate --setup's
+// own log before it can be read.
+func setupDebugFileLogging(name string) *os.File {
+	logPath := filepath.Join(filepath.Dir(configPath), name)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return nil
@@ -260,7 +279,7 @@ func setupDebugFileLogging() *os.File {
 
 func runServe() {
 	// TEMP-DEBUG
-	debugLogFile := setupDebugFileLogging()
+	debugLogFile := setupDebugFileLogging("debug-serve.log")
 	if debugLogFile != nil {
 		defer debugLogFile.Close()
 	}

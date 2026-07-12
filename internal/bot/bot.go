@@ -92,18 +92,24 @@ func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, 
 // sequentially rather than through the conversationState machinery used by
 // the four config flows in --serve mode.
 func RunSetup(token, configPath, serviceAccountPath string) {
+	slog.Info("TEMP-DEBUG RunSetup called", "tokenLength", len(token), "tokenEmpty", token == "",
+		"configPath", configPath, "serviceAccountPath", serviceAccountPath)
 	tgBot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		slog.Error("starting telegram bot", "err", err)
+		slog.Error("TEMP-DEBUG RunSetup: NewBotAPI failed, returning immediately — nothing was ever launched", "err", err)
 		return
 	}
 	slog.Info("telegram bot ready for setup", "username", tgBot.Self.UserName)
+	slog.Info("TEMP-DEBUG RunSetup: NewBotAPI succeeded", "username", tgBot.Self.UserName, "botID", tgBot.Self.ID)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
 
+	slog.Info("TEMP-DEBUG RunSetup: calling waitForFirstMessage — blocks until any message arrives")
 	chatID := waitForFirstMessage(updates)
+	slog.Info("TEMP-DEBUG RunSetup: waitForFirstMessage returned", "chatID", chatID)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -116,6 +122,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		slog.Error("saving config", "err", err)
 		return
 	}
+	slog.Info("TEMP-DEBUG RunSetup: chat id saved, sending greeting", "chatID", chatID)
 	send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
 
 	// Step 1.5 — Google service account credentials. Optional: the
@@ -148,6 +155,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		}
 		send(tgBot, chatID, "Send the file as an attachment, or type skip.")
 	}
+	slog.Info("TEMP-DEBUG RunSetup: Step 1.5 (credentials) complete")
 
 	// Step 2 — Google Sheet. Accepts either a pasted Sheets URL (ID is
 	// already known, no Drive lookup needed) or a sheet name (resolved via
@@ -180,6 +188,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "✅ Connected to sheet.")
 		break
 	}
+	slog.Info("TEMP-DEBUG RunSetup: Step 2 (sheet) complete")
 
 	// Step 3 — PokerStars screen name.
 	send(tgBot, chatID, "What is your PokerStars screen name? (Exact capitalisation matters)")
@@ -202,6 +211,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		return
 	}
 	send(tgBot, chatID, "✅ Screen name saved.")
+	slog.Info("TEMP-DEBUG RunSetup: Step 3 (screen name) complete", "screenName", screenName)
 
 	// Step 4 — Hand history path.
 	handHistory := setupResolvePath(tgBot, updates, chatID, "Hand History", `AppData\Local\PokerStars\HandHistory`, screenName)
@@ -211,6 +221,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		return
 	}
+	slog.Info("TEMP-DEBUG RunSetup: Step 4 (hand history path) complete", "path", handHistory)
 
 	// Step 5 — Tournament summary path.
 	tournamentSummary := setupResolvePath(tgBot, updates, chatID, "Tournament Summary", `AppData\Local\PokerStars\TournamentSummaries`, screenName)
@@ -220,8 +231,10 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		return
 	}
+	slog.Info("TEMP-DEBUG RunSetup: Step 5 (tournament summary path) complete", "path", tournamentSummary)
 
 	// Step 6 — Complete.
+	slog.Info("TEMP-DEBUG RunSetup: all steps complete, sending final message and returning")
 	send(tgBot, chatID, "✅ Setup complete! Poker Tracker will start automatically on next login.\nSend /start to configure alerts and hard stop rules.")
 }
 

@@ -24,8 +24,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "tracker.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Second copy, flagged dontcopy, exists only so ExtractTemporaryFile can pull
-; tracker.exe out to {tmp} and run it *during* the wizard (Telegram setup) —
-; before the real install step below has copied anything to {app} yet.
+; tracker.exe's bytes out during the wizard (Telegram setup), before the
+; real install step below has copied anything to {app} yet. PreInstallFiles
+; then copies this {tmp} extraction onward to {app} and runs it from there
+; — not from {tmp} directly — since tracker.exe resolves its own config/
+; credentials paths from its own executable location.
 Source: "tracker.exe"; DestDir: "{tmp}"; Flags: dontcopy
 
 [UninstallDelete]
@@ -64,7 +67,20 @@ var
 
 procedure InitializeWizard();
 begin
-  PageMethod := CreateInputOptionPage(wpWelcome,
+  // Anchored at wpSelectDir, not wpWelcome — {app} only becomes valid for
+  // ExpandConstant once the wizard's internal position passes wpSelectDir,
+  // regardless of DisableDirPage hiding that page from view (it hides the
+  // page, not its position in the underlying sequence). Every page in this
+  // chain sat before wpSelectDir when anchored at wpWelcome, so the first
+  // ExpandConstant('{app}') call anywhere (PreInstallFiles, triggered by
+  // the "Complete setup in Telegram" page's Next click) threw "An attempt
+  // was made to expand the 'app' constant before it was initialized" —
+  // and since that happens before RunTelegramSetup ever reaches the Exec
+  // call that launches tracker.exe --setup, the Telegram flow never
+  // actually started, which is why nothing ever responded. Visually
+  // nothing changes: wpSelectDir is still never shown, so Welcome is still
+  // immediately followed by this page either way.
+  PageMethod := CreateInputOptionPage(wpSelectDir,
     'Setup Method',
     'Would you like to set up via Telegram? (Recommended)',
     '',
@@ -294,14 +310,22 @@ begin
     '</Task>';
 end;
 
-// PreInstallFiles creates {app} and writes the credentials copy — needed
-// before tracker.exe --setup can run (Telegram path, called mid-wizard)
-// and again, harmlessly idempotent, during the real install step (both
-// paths). tracker.exe resolves its three deployment paths (service
-// account, config, lockfile) relative to its own executable location at
-// runtime — see cmd/tracker/main.go — so there's no .env to write here
-// anymore, and no dependency on this process's own working directory
-// either.
+// PreInstallFiles creates {app} and writes the credentials copy, plus a
+// copy of tracker.exe itself — both needed before tracker.exe --setup can
+// run (Telegram path, called mid-wizard) and again, harmlessly idempotent,
+// during the real install step (both paths).
+//
+// tracker.exe resolves its three deployment paths (service account,
+// config, lockfile) via os.Executable() — wherever the running binary's
+// own file actually is, not the process's working directory (see
+// cmd/tracker/main.go). That's correct for a normally-installed,
+// long-running --serve, but it means RunTelegramSetup running --setup
+// from a {tmp}-extracted copy would resolve those paths to {tmp}, not
+// {app} — WorkingDirectory doesn't matter to os.Executable() at all. So
+// tracker.exe has to actually *be* at {app} before it's ever run for
+// setup, not just at {tmp} where ExtractTemporaryFile puts it. The real
+// [Files]-driven copy to {app} doesn't happen until the Install step,
+// which is after this — too late for RunTelegramSetup, called mid-wizard.
 procedure PreInstallFiles();
 var
   ResultCode: Integer;
@@ -309,6 +333,9 @@ begin
   ForceDirectories(ExpandConstant('{app}'));
   ForceDirectories(ExpandConstant('{app}\credentials'));
   FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
+
+  ExtractTemporaryFile('tracker.exe');
+  FileCopy(ExpandConstant('{tmp}\tracker.exe'), ExpandConstant('{app}\tracker.exe'), True);
 
   // Kill any previously-running tracker.exe before this install's task
   // gets (re)started below — MultipleInstancesPolicy=IgnoreNew
@@ -348,9 +375,11 @@ begin
     MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
 end;
 
-// RunTelegramSetup extracts tracker.exe to {tmp} (the real {app} copy
-// hasn't been installed yet at this point in the wizard) and runs
-// --setup, which handles config.json, the Task Scheduler entry, and
+// RunTelegramSetup runs tracker.exe --setup from {app} — PreInstallFiles
+// has already copied it there, precisely so it resolves its own
+// deployment paths against the real install directory rather than {tmp}
+// — see PreInstallFiles' doc comment for why running it from {tmp} was
+// wrong. --setup handles config.json, the Task Scheduler entry, and
 // starting the service itself — see bot.RunSetup and runSetup in main.go.
 // Release builds use -H=windowsgui, so tracker.exe never creates a console
 // regardless of ShowCmd — SW_HIDE here just states that honestly; all of
@@ -360,8 +389,7 @@ var
   ResultCode: Integer;
 begin
   PreInstallFiles();
-  ExtractTemporaryFile('tracker.exe');
-  if not Exec(ExpandConstant('{tmp}\tracker.exe'), '--setup', ExpandConstant('{app}'),
+  if not Exec(ExpandConstant('{app}\tracker.exe'), '--setup', ExpandConstant('{app}'),
      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     MsgBox('Could not start tracker.exe --setup.', mbError, MB_OK);
