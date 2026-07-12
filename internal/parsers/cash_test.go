@@ -9,7 +9,7 @@ import (
 )
 
 // testScreenName matches the anonymized player in the testdata/ files.
-const testScreenName = "Mayor2003"
+const testScreenName = "AnonHero01"
 
 func isCashGameFile(path string) bool {
 	f, err := os.Open(path)
