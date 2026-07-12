@@ -230,6 +230,10 @@ func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error 
 }
 
 func runServe() {
+	// Belt-and-suspenders on top of -H=windowsgui — see hideConsole's doc
+	// comment for why the build flag alone wasn't enough in practice.
+	hideConsole()
+
 	// Blocks and asks via Telegram if google_sheet_id isn't set yet, rather
 	// than refusing to start — nothing else here can run without a sheets
 	// client, so this has to resolve before the watcher/worker/bot
