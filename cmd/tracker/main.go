@@ -94,6 +94,21 @@ func runCheckLock() {
 }
 
 func runSetup() {
+	// Kills any previously-running tracker.exe --serve before starting the
+	// wizard — found the hard way: MultipleInstancesPolicy=IgnoreNew (both
+	// task XML templates) means schtasks /Run below silently no-ops if an
+	// old instance is still alive, so a stale process from an earlier
+	// setup keeps running with old config forever, never picking up
+	// what this run is about to write. The stale process also risks
+	// polling the same bot token concurrently with bot.RunSetup below.
+	// /FI excludes this process's own PID — taskkill /IM tracker.exe
+	// would otherwise kill itself, since this process is also named
+	// tracker.exe.
+	if out, err := exec.Command("taskkill.exe", "/F", "/IM", "tracker.exe",
+		"/FI", fmt.Sprintf("PID ne %d", os.Getpid())).CombinedOutput(); err != nil {
+		slog.Info("no previous tracker.exe instance to stop", "output", string(out))
+	}
+
 	bot.RunSetup(BotToken, configPath, serviceAccountPath)
 
 	exePath, err := os.Executable()

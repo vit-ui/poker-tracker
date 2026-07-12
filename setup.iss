@@ -303,10 +303,23 @@ end;
 // anymore, and no dependency on this process's own working directory
 // either.
 procedure PreInstallFiles();
+var
+  ResultCode: Integer;
 begin
   ForceDirectories(ExpandConstant('{app}'));
   ForceDirectories(ExpandConstant('{app}\credentials'));
   FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
+
+  // Kill any previously-running tracker.exe before this install's task
+  // gets (re)started below — MultipleInstancesPolicy=IgnoreNew
+  // (BuildTaskXML) means schtasks /Run silently no-ops if an old
+  // instance is still alive, leaving it running with stale config
+  // forever instead of picking up what this install just wrote. Safe to
+  // run unconditionally: this installer process is never itself named
+  // tracker.exe (unlike cmd/tracker/main.go's runSetup, which needs a
+  // PID filter to avoid killing itself). Result ignored — "nothing to
+  // kill" is the expected, common case on a first install.
+  Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 // RegisterScheduledTask is the manual-setup path's equivalent of what
