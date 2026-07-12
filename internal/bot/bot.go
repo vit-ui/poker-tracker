@@ -148,6 +148,10 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 	send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
 	for {
 		reply := readReply(tgBot, updates, chatID)
+		if looksLikeCommand(reply) {
+			send(tgBot, chatID, "Commands aren't available until setup finishes — send your Google Sheet name or paste its URL to continue.")
+			continue
+		}
 		name, id, err := resolveSheetInput(serviceAccountPath, reply)
 		if err != nil {
 			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
@@ -175,6 +179,10 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 	var screenName string
 	for {
 		screenName = strings.TrimSpace(readReply(tgBot, updates, chatID))
+		if looksLikeCommand(screenName) {
+			send(tgBot, chatID, "Commands aren't available until setup finishes — send your exact PokerStars screen name to continue.")
+			continue
+		}
 		if screenName != "" {
 			break
 		}
@@ -261,6 +269,10 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 	send(tgBot, chatID, "Your Google Sheet isn't configured. Send the sheet name or paste its full URL to continue.\n(Create a blank sheet and share it with the service account before answering)")
 	for {
 		reply := readReply(tgBot, updates, chatID)
+		if looksLikeCommand(reply) {
+			send(tgBot, chatID, "Commands aren't available until the sheet is configured — send your Google Sheet name or paste its URL to continue.")
+			continue
+		}
 		name, id, err := resolveSheetInput(serviceAccountPath, reply)
 		if err != nil {
 			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
@@ -361,6 +373,20 @@ func extractSheetIDFromURL(input string) (id string, ok bool) {
 		return "", false
 	}
 	return m[1], true
+}
+
+// looksLikeCommand reports whether reply is a Telegram slash command
+// rather than an actual answer — sent reflexively (habit, or just
+// checking whether the bot is alive) while a setup prompt is blocking on
+// free text. RunSetup and EnsureSheetID's blocking prompts have no
+// command dispatch at all yet (the real command loop, bot.Run, doesn't
+// exist until setup finishes), so without this check a stray "/status"
+// either gets silently accepted as if it were the real answer (e.g.
+// saved as the screen name) or run through a lookup as if it were real
+// data (e.g. resolveSheetInput reporting a confusing "spreadsheet
+// '/status' not found" instead of a clear one).
+func looksLikeCommand(reply string) bool {
+	return strings.HasPrefix(strings.TrimSpace(reply), "/")
 }
 
 // resolveSheetInput accepts either a pasted Google Sheets URL or a sheet

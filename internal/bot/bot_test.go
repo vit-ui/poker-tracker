@@ -73,6 +73,29 @@ func TestExtractSheetIDFromURL(t *testing.T) {
 	}
 }
 
+func TestLooksLikeCommand(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"slash command", "/status", true},
+		{"slash command with leading/trailing whitespace", "  /start  ", true},
+		{"plain sheet name", "My Poker Tracker", false},
+		{"sheet URL", "https://docs.google.com/spreadsheets/d/1AbC-23_xyz", false},
+		{"empty string", "", false},
+		{"single slash", "/", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := looksLikeCommand(c.input)
+			if got != c.want {
+				t.Errorf("looksLikeCommand(%q) = %v, want %v", c.input, got, c.want)
+			}
+		})
+	}
+}
+
 func TestValidateNotBelow(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 	n := func(v int) *int { return &v }
