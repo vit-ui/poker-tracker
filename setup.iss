@@ -491,7 +491,25 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   SheetInput, SheetName, SheetID: String;
+  ResultCode: Integer;
 begin
+  if CurStep = ssInstall then
+  begin
+    // Inno is about to copy tracker.exe into {app} (the [Files] entry) —
+    // this fails with "Setup was unable to automatically close all
+    // applications" if a --serve process still has that file open,
+    // since a pure background service (-H=windowsgui, no window) has no
+    // way to respond to Windows' graceful-close request. PreInstallFiles'
+    // own taskkill (mid-wizard, Telegram path) isn't enough by itself:
+    // tracker.exe --setup's own last step starts a *fresh* --serve via
+    // schtasks /Run before the wizard even reaches this point, and that
+    // new process is what's actually holding the file, not whatever
+    // PreInstallFiles killed earlier. Safe to run unconditionally, same
+    // as PreInstallFiles' own taskkill — this installer process is never
+    // itself named tracker.exe.
+    Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+
   if CurStep = ssPostInstall then
   begin
     // Idempotent for the Telegram path (already done once in
