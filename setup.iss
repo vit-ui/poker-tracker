@@ -89,10 +89,12 @@ begin
   PageMethod.Add('No, set up manually');
   PageMethod.SelectedValueIndex := 0;
 
+  // Manual setup only — skipped entirely for Telegram (see ShouldSkipPage),
+  // since --setup has its own optional upload-or-skip step for this file.
   PageCredentials := CreateInputFilePage(PageMethod.ID,
     'Google Service Account',
     'Locate your service account credentials file',
-    'Poker Tracker needs this file to read and write your Google Sheet — required either way, Telegram or manual setup.');
+    'Poker Tracker needs this file to read and write your Google Sheet.');
   PageCredentials.Add('Select your google_service_account.json file', 'JSON files|*.json|All files|*.*', '.json');
 
   PageWaiting := CreateOutputMsgPage(PageCredentials.ID,
@@ -132,7 +134,11 @@ begin
   Result := False;
   if UsingTelegram then
   begin
-    if (PageID = PageSheetName.ID) or (PageID = PageScreenName.ID) or
+    // PageCredentials is skipped for Telegram too — bot.RunSetup's own
+    // Step 1.5 (send the file as a Telegram attachment, or skip if
+    // already in place) covers it; asking again here via a native
+    // browse dialog would just be redundant.
+    if (PageID = PageCredentials.ID) or (PageID = PageSheetName.ID) or (PageID = PageScreenName.ID) or
        (PageID = PageHandHistoryDir.ID) or (PageID = PageTournamentDir.ID) then
       Result := True;
   end
@@ -332,7 +338,11 @@ var
 begin
   ForceDirectories(ExpandConstant('{app}'));
   ForceDirectories(ExpandConstant('{app}\credentials'));
-  FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
+  // Manual path only — PageCredentials is skipped entirely for Telegram
+  // (see ShouldSkipPage), so Values[0] would be empty here; that flow's
+  // credentials come from bot.RunSetup's own upload-or-skip step instead.
+  if not UsingTelegram then
+    FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
 
   ExtractTemporaryFile('tracker.exe');
   FileCopy(ExpandConstant('{tmp}\tracker.exe'), ExpandConstant('{app}\tracker.exe'), True);
