@@ -387,7 +387,11 @@ begin
 
   else if CurPageID = PageSheetName.ID then
   begin
-    if Trim(PageSheetName.Values[0]) = '' then
+    // Written back trimmed, matching resolveSheetInput's TrimSpace (Go) —
+    // otherwise a trailing space would pass this check but still end up
+    // saved untrimmed in CurStepChanged, unlike the Telegram flow.
+    PageSheetName.Values[0] := Trim(PageSheetName.Values[0]);
+    if PageSheetName.Values[0] = '' then
     begin
       MsgBox('Enter your Google Sheet name.', mbError, MB_OK);
       Result := False;
@@ -396,7 +400,10 @@ begin
 
   else if CurPageID = PageScreenName.ID then
   begin
-    if Trim(PageScreenName.Values[0]) = '' then
+    // Matches bot.RunSetup's screen name step exactly: trimmed before
+    // both the emptiness check and being saved/used to join paths below.
+    PageScreenName.Values[0] := Trim(PageScreenName.Values[0]);
+    if PageScreenName.Values[0] = '' then
     begin
       MsgBox('Enter your PokerStars screen name.', mbError, MB_OK);
       Result := False;
@@ -409,6 +416,7 @@ begin
     // alone isn't enough — any real, unrelated folder would pass that
     // check. The base only matters joined with the screen name, since
     // that's the actual folder PokerStars writes into.
+    PageHandHistoryDir.Values[0] := Trim(PageHandHistoryDir.Values[0]);
     JoinedPath := AddBackslash(PageHandHistoryDir.Values[0]) + PageScreenName.Values[0];
     if not DirExists(JoinedPath) then
     begin
@@ -419,6 +427,7 @@ begin
 
   else if CurPageID = PageTournamentDir.ID then
   begin
+    PageTournamentDir.Values[0] := Trim(PageTournamentDir.Values[0]);
     JoinedPath := AddBackslash(PageTournamentDir.Values[0]) + PageScreenName.Values[0];
     if not DirExists(JoinedPath) then
     begin
