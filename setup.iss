@@ -86,9 +86,9 @@ begin
 
   PageSheetName := CreateInputQueryPage(PageWaiting.ID,
     'Google Sheet',
-    'Enter your Google Sheet name',
+    'Enter your Google Sheet name, or paste its full URL',
     'Create a blank sheet and share it with the service account before continuing.');
-  PageSheetName.Add('Google Sheet name:', False);
+  PageSheetName.Add('Sheet name or URL:', False);
 
   PageScreenName := CreateInputQueryPage(PageSheetName.ID,
     'PokerStars Screen Name',
@@ -99,16 +99,16 @@ begin
   PageHandHistoryDir := CreateInputDirPage(PageScreenName.ID,
     'Hand History Folder',
     'Select the base Hand History folder',
-    'Select the parent HandHistory folder — do NOT browse into your screen name''s subfolder underneath it, that part is added automatically.',
+    'Do NOT browse into your screen name''s subfolder underneath it — that part is added automatically.',
     False, '');
-  PageHandHistoryDir.Add('Select the parent HandHistory folder — do NOT browse into your screen name''s subfolder underneath it, that part is added automatically:');
+  PageHandHistoryDir.Add('Parent HandHistory folder:');
 
   PageTournamentDir := CreateInputDirPage(PageHandHistoryDir.ID,
     'Tournament Summary Folder',
     'Select the base TournamentSummaries folder',
-    'Select the parent TournamentSummaries folder — do NOT browse into your screen name''s subfolder underneath it, that part is added automatically.',
+    'Do NOT browse into your screen name''s subfolder underneath it — that part is added automatically.',
     False, '');
-  PageTournamentDir.Add('Select the parent TournamentSummaries folder — do NOT browse into your screen name''s subfolder underneath it, that part is added automatically:');
+  PageTournamentDir.Add('Parent TournamentSummaries folder:');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -140,19 +140,57 @@ begin
   Result := R;
 end;
 
+// ExtractSheetIDFromURL mirrors bot.extractSheetIDFromURL (Go) — returns
+// the spreadsheet ID from a pasted Google Sheets URL, or '' if Input
+// doesn't contain one. Doesn't require a regex engine (Pascal Script has
+// none): "spreadsheets/d/" is an unambiguous marker, and the ID is
+// whatever follows it up to the next path/query/fragment separator.
+function ExtractSheetIDFromURL(const Input: String): String;
+var
+  Marker: String;
+  MarkerPos, IDStart, IDEnd: Integer;
+begin
+  Result := '';
+  Marker := 'spreadsheets/d/';
+  MarkerPos := Pos(Marker, Input);
+  if MarkerPos = 0 then
+    Exit;
+  IDStart := MarkerPos + Length(Marker);
+  IDEnd := IDStart;
+  while (IDEnd <= Length(Input)) and (Input[IDEnd] <> '/') and (Input[IDEnd] <> '?') and (Input[IDEnd] <> '#') do
+    IDEnd := IDEnd + 1;
+  Result := Copy(Input, IDStart, IDEnd - IDStart);
+end;
+
+// JSONStringOrNull renders S as a JSON string, or the literal null if S
+// is empty — used for google_sheet_id/google_sheet_name, which are
+// pointer fields in config.Config (see internal/config/config.go): empty
+// must produce null, not an empty string, or config.LoadConfig would
+// treat "not configured" as "configured to an empty string" instead.
+function JSONStringOrNull(const S: String): String;
+begin
+  if S = '' then
+    Result := 'null'
+  else
+    Result := '"' + JSONEscape(S) + '"';
+end;
+
 // BuildConfigJSON mirrors config.Config's JSON shape exactly (see
-// internal/config/config.go) — only the four fields collected by manual
-// setup are non-null; everything else (chat ID, sheet ID, alerts, hard
-// stop, schedule) stays null, configured later via the bot or self-healed
-// by bot.EnsureSheetID on first --serve launch.
-function BuildConfigJSON(const SheetName, ScreenName, HandHistoryPath, TournamentPath: String): String;
+// internal/config/config.go). SheetName/SheetID: exactly one is set,
+// matching bot.resolveSheetInput's URL-vs-name branch — see
+// ExtractSheetIDFromURL at the CurStepChanged call site. Everything else
+// (chat ID, alerts, hard stop, schedule) stays null, configured later via
+// the bot; a name-only sheet is resolved later too, by bot.EnsureSheetID
+// on first --serve launch — this installer has no way to call the Drive
+// API itself.
+function BuildConfigJSON(const SheetName, SheetID, ScreenName, HandHistoryPath, TournamentPath: String): String;
 begin
   Result :=
     '{' + #13#10 +
     '  "setup": {' + #13#10 +
     '    "telegram_chat_id": null,' + #13#10 +
-    '    "google_sheet_id": null,' + #13#10 +
-    '    "google_sheet_name": "' + JSONEscape(SheetName) + '",' + #13#10 +
+    '    "google_sheet_id": ' + JSONStringOrNull(SheetID) + ',' + #13#10 +
+    '    "google_sheet_name": ' + JSONStringOrNull(SheetName) + ',' + #13#10 +
     '    "pokerstars_screen_name": "' + JSONEscape(ScreenName) + '"' + #13#10 +
     '  },' + #13#10 +
     '  "paths": {' + #13#10 +
@@ -319,6 +357,8 @@ begin
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  JoinedPath: String;
 begin
   Result := True;
 
@@ -357,24 +397,32 @@ begin
 
   else if CurPageID = PageHandHistoryDir.ID then
   begin
-    if not DirExists(PageHandHistoryDir.Values[0]) then
+    // Matches bot.handlePathsReply exactly: DirExists on the base folder
+    // alone isn't enough — any real, unrelated folder would pass that
+    // check. The base only matters joined with the screen name, since
+    // that's the actual folder PokerStars writes into.
+    JoinedPath := AddBackslash(PageHandHistoryDir.Values[0]) + PageScreenName.Values[0];
+    if not DirExists(JoinedPath) then
     begin
-      MsgBox('Select a valid Hand History folder.', mbError, MB_OK);
+      MsgBox('That path doesn''t exist: ' + JoinedPath + #13#10 + 'Select the folder again.', mbError, MB_OK);
       Result := False;
     end;
   end
 
   else if CurPageID = PageTournamentDir.ID then
   begin
-    if not DirExists(PageTournamentDir.Values[0]) then
+    JoinedPath := AddBackslash(PageTournamentDir.Values[0]) + PageScreenName.Values[0];
+    if not DirExists(JoinedPath) then
     begin
-      MsgBox('Select a valid Tournament Summary folder.', mbError, MB_OK);
+      MsgBox('That path doesn''t exist: ' + JoinedPath + #13#10 + 'Select the folder again.', mbError, MB_OK);
       Result := False;
     end;
   end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  SheetInput, SheetName, SheetID: String;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -384,8 +432,15 @@ begin
     PreInstallFiles();
     if not UsingTelegram then
     begin
+      SheetInput := PageSheetName.Values[0];
+      SheetID := ExtractSheetIDFromURL(SheetInput);
+      if SheetID <> '' then
+        SheetName := ''
+      else
+        SheetName := SheetInput;
+
       SaveStringToFile(ExpandConstant('{app}\config.json'),
-        BuildConfigJSON(PageSheetName.Values[0], PageScreenName.Values[0],
+        BuildConfigJSON(SheetName, SheetID, PageScreenName.Values[0],
           PageHandHistoryDir.Values[0], PageTournamentDir.Values[0]),
         False);
       RegisterScheduledTask();
