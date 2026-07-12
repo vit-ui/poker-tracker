@@ -311,8 +311,12 @@ end;
 
 // RegisterScheduledTask is the manual-setup path's equivalent of what
 // tracker.exe --setup already does for itself on the Telegram path — see
-// runSetup in cmd/tracker/main.go. Not fatal if it fails: the rest of the
-// install has already succeeded, so this only warns.
+// runSetup in cmd/tracker/main.go. Not fatal if either step fails: the
+// rest of the install has already succeeded, so this only warns. Also
+// starts the task immediately (schtasks /Run) the same way runSetup does
+// — without this, the manual path left the player with a registered but
+// not-yet-running service until the next logon/reboot, unlike the
+// Telegram path, which starts it right away.
 procedure RegisterScheduledTask();
 var
   XMLPath, ExePath: String;
@@ -325,6 +329,10 @@ begin
      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
     MsgBox('Could not register the Task Scheduler entry. You can set it up manually — see CLAUDE.md''s Windows Task Scheduler Setup section.', mbError, MB_OK);
   DeleteFile(XMLPath);
+
+  if not Exec('schtasks.exe', '/Run /TN "Poker Tracker"',
+     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
 end;
 
 // RunTelegramSetup extracts tracker.exe to {tmp} (the real {app} copy
