@@ -38,7 +38,6 @@ func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, 
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
 	}
-	slog.Info("telegram bot ready", "username", tgBot.Self.UserName)
 
 	var lastWeeklySent, lastMonthlySent time.Time
 
@@ -90,7 +89,6 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		slog.Error("starting telegram bot", "err", err)
 		return
 	}
-	slog.Info("telegram bot ready for setup", "username", tgBot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
@@ -259,7 +257,6 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 				if err := config.SaveConfig(configPath, cfg); err != nil {
 					return "", fmt.Errorf("saving config: %w", err)
 				}
-				slog.Info("resolved previously-saved sheet name automatically", "name", *name)
 				return id, nil
 			}
 		}
@@ -270,7 +267,6 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 		return "", fmt.Errorf("starting telegram bot: %w", err)
 	}
 	defer tgBot.StopReceivingUpdates()
-	slog.Info("google sheet not configured, asking via telegram before starting")
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
@@ -646,7 +642,6 @@ func configuredChatID(configPath string) (chatID int64, ok bool) {
 		return 0, false
 	}
 	if cfg.Setup.TelegramChatID == nil {
-		slog.Info("no chat ID configured yet — message the bot once, or set telegram_chat_id manually in config.json for testing")
 		return 0, false
 	}
 	chatID, err = strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)

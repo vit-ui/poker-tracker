@@ -333,11 +333,7 @@ func ManualTrigger(configPath, lockfilePath string, alertChan chan<- string) err
 // trigger kills PokerStars, writes the lockfile, and sends the hard stop
 // alert.
 func trigger(reason string, durationHours int, lockfilePath string, alertChan chan<- string) {
-	if err := exec.Command("taskkill.exe", "/IM", "PokerStars.exe", "/F").Run(); err != nil {
-		slog.Info("taskkill PokerStars.exe", "error", err)
-	} else {
-		slog.Info("taskkill PokerStars.exe succeeded")
-	}
+	_ = exec.Command("taskkill.exe", "/IM", "PokerStars.exe", "/F").Run()
 
 	now := time.Now().UTC()
 	expiresAt := now.Add(time.Duration(durationHours) * time.Hour)

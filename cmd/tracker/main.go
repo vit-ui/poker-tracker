@@ -105,10 +105,8 @@ func runSetup() {
 	// /FI excludes this process's own PID — taskkill /IM tracker.exe
 	// would otherwise kill itself, since this process is also named
 	// tracker.exe.
-	if out, err := exec.Command("taskkill.exe", "/F", "/IM", "tracker.exe",
-		"/FI", fmt.Sprintf("PID ne %d", os.Getpid())).CombinedOutput(); err != nil {
-		slog.Info("no previous tracker.exe instance to stop", "output", string(out))
-	}
+	_, _ = exec.Command("taskkill.exe", "/F", "/IM", "tracker.exe",
+		"/FI", fmt.Sprintf("PID ne %d", os.Getpid())).CombinedOutput()
 
 	bot.RunSetup(BotToken, configPath, serviceAccountPath)
 
@@ -283,7 +281,6 @@ func runServe() {
 	if err != nil {
 		panic("initializing sheets client: " + err.Error())
 	}
-	slog.Info("startup complete")
 
 	sessionChan := make(chan watcher.FileEvent, 10)
 	alertChan := make(chan string, 20)
@@ -307,8 +304,6 @@ func runServe() {
 				slog.Error("watcher stopped", "err", err)
 			}
 		}()
-	} else {
-		slog.Info("watcher not started: run /paths to configure folder locations")
 	}
 
 	restartWatcher := func() {
@@ -410,7 +405,6 @@ func runWorker(
 				if err := sc.UpdateTournamentVPIPPFR(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR); err != nil {
 					slog.Error("updating tournament VPIP/PFR", "err", err)
 				}
-				slog.Info("tournament hand stats recorded", "tournament_id", tourneyStats.TournamentID)
 			} else {
 				slog.Error("ParseCashFile returned no session and no tournament stats", "path", event.Path)
 			}
@@ -445,7 +439,6 @@ func runWorker(
 				if err := config.SavePendingTournaments(pendingPath, pending); err != nil {
 					slog.Error("saving pending tournaments", "err", err)
 				}
-				slog.Info("tournament queued for satellite/ticket confirmation", "tournament_id", t.TournamentID)
 				continue
 			}
 

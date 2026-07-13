@@ -5,7 +5,6 @@ package sheets
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -63,7 +62,6 @@ func NewClient(serviceAccountPath, spreadsheetID string) (*Client, error) {
 		return nil, err
 	}
 
-	slog.Info("sheets client ready", "spreadsheet", spreadsheetID)
 	return c, nil
 }
 
@@ -144,7 +142,6 @@ func (c *Client) ensureTabs() error {
 		if err != nil {
 			return fmt.Errorf("creating tab %q: %w", tab.name, err)
 		}
-		slog.Info("created sheet tab", "tab", tab.name)
 
 		if tab.headers != nil {
 			if err := c.appendRow(tab.name, tab.headers); err != nil {
