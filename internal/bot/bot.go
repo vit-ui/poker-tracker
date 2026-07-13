@@ -34,14 +34,11 @@ import (
 // serviceAccountPath is only used by /sheet when switching to a different
 // spreadsheet — see handleSheetCommand.
 func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
-	slog.Info("TEMP-DEBUG bot.Run called", "tokenLength", len(botToken), "tokenEmpty", botToken == "")
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
-		slog.Error("TEMP-DEBUG bot.Run: NewBotAPI failed — this is fatal, Run is about to return and nothing will ever listen for Telegram messages", "err", err)
 		return fmt.Errorf("starting telegram bot: %w", err)
 	}
 	slog.Info("telegram bot ready", "username", tgBot.Self.UserName)
-	slog.Info("TEMP-DEBUG bot.Run: NewBotAPI succeeded", "username", tgBot.Self.UserName, "botID", tgBot.Self.ID)
 
 	var lastWeeklySent, lastMonthlySent time.Time
 
@@ -72,15 +69,11 @@ func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, 
 		}
 	}()
 
-	slog.Info("TEMP-DEBUG bot.Run: launching pollUpdates goroutine")
 	go pollUpdates(tgBot, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 
-	slog.Info("TEMP-DEBUG bot.Run: entering alertChan range loop")
 	for msg := range alertChan {
-		slog.Info("TEMP-DEBUG bot.Run: got message on alertChan, sending", "len", len(msg))
 		sendMessage(tgBot, configPath, msg)
 	}
-	slog.Info("TEMP-DEBUG bot.Run: alertChan closed, Run is returning nil")
 	return nil
 }
 
@@ -92,24 +85,18 @@ func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, 
 // sequentially rather than through the conversationState machinery used by
 // the four config flows in --serve mode.
 func RunSetup(token, configPath, serviceAccountPath string) {
-	slog.Info("TEMP-DEBUG RunSetup called", "tokenLength", len(token), "tokenEmpty", token == "",
-		"configPath", configPath, "serviceAccountPath", serviceAccountPath)
 	tgBot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		slog.Error("starting telegram bot", "err", err)
-		slog.Error("TEMP-DEBUG RunSetup: NewBotAPI failed, returning immediately — nothing was ever launched", "err", err)
 		return
 	}
 	slog.Info("telegram bot ready for setup", "username", tgBot.Self.UserName)
-	slog.Info("TEMP-DEBUG RunSetup: NewBotAPI succeeded", "username", tgBot.Self.UserName, "botID", tgBot.Self.ID)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
 
-	slog.Info("TEMP-DEBUG RunSetup: calling waitForFirstMessage — blocks until any message arrives")
 	chatID := waitForFirstMessage(updates)
-	slog.Info("TEMP-DEBUG RunSetup: waitForFirstMessage returned", "chatID", chatID)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -122,7 +109,6 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		slog.Error("saving config", "err", err)
 		return
 	}
-	slog.Info("TEMP-DEBUG RunSetup: chat id saved, sending greeting", "chatID", chatID)
 	send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
 
 	// Step 1.5 — Google service account credentials. Optional: the
@@ -155,7 +141,6 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		}
 		send(tgBot, chatID, "Send the file as an attachment, or type skip.")
 	}
-	slog.Info("TEMP-DEBUG RunSetup: Step 1.5 (credentials) complete")
 
 	// Step 2 — Google Sheet. Accepts either a pasted Sheets URL (ID is
 	// already known, no Drive lookup needed) or a sheet name (resolved via
@@ -188,7 +173,6 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "✅ Connected to sheet.")
 		break
 	}
-	slog.Info("TEMP-DEBUG RunSetup: Step 2 (sheet) complete")
 
 	// Step 3 — PokerStars screen name.
 	send(tgBot, chatID, "What is your PokerStars screen name? (Exact capitalisation matters)")
@@ -211,7 +195,6 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		return
 	}
 	send(tgBot, chatID, "✅ Screen name saved.")
-	slog.Info("TEMP-DEBUG RunSetup: Step 3 (screen name) complete", "screenName", screenName)
 
 	// Step 4 — Hand history path.
 	handHistory := setupResolvePath(tgBot, updates, chatID, "Hand History", `AppData\Local\PokerStars\HandHistory`, screenName)
@@ -221,7 +204,6 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		return
 	}
-	slog.Info("TEMP-DEBUG RunSetup: Step 4 (hand history path) complete", "path", handHistory)
 
 	// Step 5 — Tournament summary path.
 	tournamentSummary := setupResolvePath(tgBot, updates, chatID, "Tournament Summary", `AppData\Local\PokerStars\TournamentSummaries`, screenName)
@@ -231,10 +213,8 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "Something went wrong. Check logs.")
 		return
 	}
-	slog.Info("TEMP-DEBUG RunSetup: Step 5 (tournament summary path) complete", "path", tournamentSummary)
 
 	// Step 6 — Complete.
-	slog.Info("TEMP-DEBUG RunSetup: all steps complete, sending final message and returning")
 	send(tgBot, chatID, "✅ Setup complete! Poker Tracker will start automatically on next login.\nSend /start to configure alerts and hard stop rules.")
 }
 
@@ -252,17 +232,11 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 // torn down via StopReceivingUpdates before returning, so it doesn't keep
 // polling Telegram alongside the fresh connection bot.Run opens right after.
 func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error) {
-	slog.Info("TEMP-DEBUG EnsureSheetID called")
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		slog.Error("TEMP-DEBUG EnsureSheetID: LoadConfig failed", "err", err)
 		return "", fmt.Errorf("loading config: %w", err)
 	}
-	slog.Info("TEMP-DEBUG EnsureSheetID: config loaded",
-		"googleSheetID", cfg.Setup.GoogleSheetID, "googleSheetName", cfg.Setup.GoogleSheetName,
-		"telegramChatID", cfg.Setup.TelegramChatID)
 	if cfg.Setup.GoogleSheetID != nil {
-		slog.Info("TEMP-DEBUG EnsureSheetID: fast path, GoogleSheetID already set", "id", *cfg.Setup.GoogleSheetID)
 		return *cfg.Setup.GoogleSheetID, nil
 	}
 
@@ -276,33 +250,25 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 	// silently discarding something already provided and asking again
 	// from scratch.
 	if cfg.Setup.GoogleSheetName != nil {
-		slog.Info("TEMP-DEBUG EnsureSheetID: trying saved GoogleSheetName", "name", *cfg.Setup.GoogleSheetName)
 		name, id, err := resolveSheetInput(serviceAccountPath, *cfg.Setup.GoogleSheetName)
-		slog.Info("TEMP-DEBUG EnsureSheetID: resolveSheetInput(savedName) returned", "id", id, "err", err)
 		if err == nil {
 			_, clientErr := sheets.NewClient(serviceAccountPath, id)
-			slog.Info("TEMP-DEBUG EnsureSheetID: sheets.NewClient(savedName resolved id) returned", "err", clientErr)
 			if clientErr == nil {
 				cfg.Setup.GoogleSheetName = name
 				cfg.Setup.GoogleSheetID = &id
 				if err := config.SaveConfig(configPath, cfg); err != nil {
-					slog.Error("TEMP-DEBUG EnsureSheetID: SaveConfig after auto-resolve failed", "err", err)
 					return "", fmt.Errorf("saving config: %w", err)
 				}
 				slog.Info("resolved previously-saved sheet name automatically", "name", *name)
 				return id, nil
 			}
 		}
-		slog.Info("TEMP-DEBUG EnsureSheetID: saved name did not resolve/validate, falling through to Telegram prompt")
 	}
 
-	slog.Info("TEMP-DEBUG EnsureSheetID: about to call tgbotapi.NewBotAPI", "tokenLength", len(token), "tokenEmpty", token == "")
 	tgBot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
-		slog.Error("TEMP-DEBUG EnsureSheetID: NewBotAPI failed — this is fatal, runServe will panic right after this returns", "err", err)
 		return "", fmt.Errorf("starting telegram bot: %w", err)
 	}
-	slog.Info("TEMP-DEBUG EnsureSheetID: NewBotAPI succeeded", "username", tgBot.Self.UserName, "botID", tgBot.Self.ID)
 	defer tgBot.StopReceivingUpdates()
 	slog.Info("google sheet not configured, asking via telegram before starting")
 
@@ -314,40 +280,30 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 	if cfg.Setup.TelegramChatID != nil {
 		chatID, err = strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)
 		if err != nil {
-			slog.Error("TEMP-DEBUG EnsureSheetID: parsing saved TelegramChatID failed", "raw", *cfg.Setup.TelegramChatID, "err", err)
 			return "", fmt.Errorf("parsing telegram chat id: %w", err)
 		}
-		slog.Info("TEMP-DEBUG EnsureSheetID: using already-configured chat id", "chatID", chatID)
 	} else {
-		slog.Info("TEMP-DEBUG EnsureSheetID: no chat id configured, calling waitForFirstMessage — blocks until any message arrives")
 		chatID = waitForFirstMessage(updates)
-		slog.Info("TEMP-DEBUG EnsureSheetID: waitForFirstMessage returned", "chatID", chatID)
 		chatIDStr := strconv.FormatInt(chatID, 10)
 		cfg.Setup.TelegramChatID = &chatIDStr
 		if err := config.SaveConfig(configPath, cfg); err != nil {
-			slog.Error("TEMP-DEBUG EnsureSheetID: SaveConfig after chat id detection failed", "err", err)
 			return "", fmt.Errorf("saving config: %w", err)
 		}
 	}
 
-	slog.Info("TEMP-DEBUG EnsureSheetID: sending sheet prompt", "chatID", chatID)
 	send(tgBot, chatID, "Your Google Sheet isn't configured. Send the sheet name or paste its full URL to continue.\n(Create a blank sheet and share it with the service account before answering)")
 	for {
-		slog.Info("TEMP-DEBUG EnsureSheetID: calling readReply, blocks until a message from this chatID arrives", "chatID", chatID)
 		reply := readReply(tgBot, updates, chatID)
-		slog.Info("TEMP-DEBUG EnsureSheetID: readReply returned", "reply", reply)
 		if looksLikeCommand(reply) {
 			send(tgBot, chatID, "Commands aren't available until the sheet is configured — send your Google Sheet name or paste its URL to continue.")
 			continue
 		}
 		name, id, err := resolveSheetInput(serviceAccountPath, reply)
-		slog.Info("TEMP-DEBUG EnsureSheetID: resolveSheetInput(reply) returned", "id", id, "err", err)
 		if err != nil {
 			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
 			continue
 		}
 		_, clientErr := sheets.NewClient(serviceAccountPath, id)
-		slog.Info("TEMP-DEBUG EnsureSheetID: sheets.NewClient(reply resolved id) returned", "err", clientErr)
 		if clientErr != nil {
 			send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", clientErr))
 			continue
@@ -356,10 +312,8 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 		cfg.Setup.GoogleSheetName = name
 		cfg.Setup.GoogleSheetID = &id
 		if err := config.SaveConfig(configPath, cfg); err != nil {
-			slog.Error("TEMP-DEBUG EnsureSheetID: final SaveConfig failed", "err", err)
 			return "", fmt.Errorf("saving config: %w", err)
 		}
-		slog.Info("TEMP-DEBUG EnsureSheetID: success, returning id", "id", id)
 		send(tgBot, chatID, "✅ Connected to sheet.")
 		return id, nil
 	}
@@ -368,36 +322,24 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 // waitForFirstMessage blocks until the first text message arrives on
 // updates and returns its sender's chat ID.
 func waitForFirstMessage(updates tgbotapi.UpdatesChannel) int64 {
-	slog.Info("TEMP-DEBUG waitForFirstMessage: entering range loop, blocks until any text message arrives")
 	for update := range updates {
 		if update.Message == nil || update.Message.Text == "" {
-			slog.Info("TEMP-DEBUG waitForFirstMessage: skipping update with no text message",
-				"hasMessage", update.Message != nil)
 			continue
 		}
-		slog.Info("TEMP-DEBUG waitForFirstMessage: got a text message", "chatID", update.Message.Chat.ID, "text", update.Message.Text)
 		return update.Message.Chat.ID
 	}
-	slog.Error("TEMP-DEBUG waitForFirstMessage: updates channel closed without ever seeing a message — returning 0")
 	return 0
 }
 
 // readReply blocks until the next text message from chatID arrives on
 // updates, ignoring messages from any other chat.
 func readReply(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64) string {
-	slog.Info("TEMP-DEBUG readReply: waiting for a message from chatID", "chatID", chatID)
 	for update := range updates {
 		if update.Message == nil || update.Message.Chat.ID != chatID || update.Message.Text == "" {
-			if update.Message != nil {
-				slog.Info("TEMP-DEBUG readReply: skipping update, not from expected chatID or no text",
-					"updateChatID", update.Message.Chat.ID, "expectedChatID", chatID, "text", update.Message.Text)
-			}
 			continue
 		}
-		slog.Info("TEMP-DEBUG readReply: got matching message", "text", update.Message.Text)
 		return update.Message.Text
 	}
-	slog.Error("TEMP-DEBUG readReply: updates channel closed without a match — returning empty string")
 	return ""
 }
 
@@ -1019,26 +961,12 @@ func (s *conversationState) reset() {
 // pollUpdates polls Telegram for incoming messages and callback queries and
 // dispatches them. Runs in its own goroutine so it never blocks alertChan.
 func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
-	slog.Info("TEMP-DEBUG pollUpdates starting")
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
-	slog.Info("TEMP-DEBUG pollUpdates: GetUpdatesChan obtained, entering range loop — this blocks until an update arrives")
 
 	state := &conversationState{}
 	for update := range updates {
-		if update.Message != nil {
-			slog.Info("TEMP-DEBUG pollUpdates: received update", "updateID", update.UpdateID,
-				"kind", "message", "chatID", update.Message.Chat.ID, "text", update.Message.Text,
-				"hasDocument", update.Message.Document != nil)
-		} else if update.CallbackQuery != nil {
-			slog.Info("TEMP-DEBUG pollUpdates: received update", "updateID", update.UpdateID,
-				"kind", "callback", "data", update.CallbackQuery.Data,
-				"messageNil", update.CallbackQuery.Message == nil)
-		} else {
-			slog.Info("TEMP-DEBUG pollUpdates: received update with neither Message nor CallbackQuery", "updateID", update.UpdateID)
-		}
-
 		// CallbackQuery.Message can be nil if the tapped button is on a
 		// message Telegram no longer has (old or deleted). Every downstream
 		// handler assumes a non-nil Message, so filter here before any of
@@ -1052,7 +980,6 @@ func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfile
 		}
 		state.handleUpdate(tgBot, update, sc, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 	}
-	slog.Error("TEMP-DEBUG pollUpdates: updates channel closed — this goroutine is exiting, no more incoming messages will ever be processed")
 }
 
 func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
@@ -1063,10 +990,8 @@ func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi
 	case update.CallbackQuery != nil:
 		senderChatID = update.CallbackQuery.Message.Chat.ID
 	default:
-		slog.Info("TEMP-DEBUG handleUpdate: neither Message nor CallbackQuery set, ignoring")
 		return
 	}
-	slog.Info("TEMP-DEBUG handleUpdate: senderChatID resolved", "senderChatID", senderChatID)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -1074,19 +999,15 @@ func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi
 		return
 	}
 	senderChatIDStr := strconv.FormatInt(senderChatID, 10)
-	slog.Info("TEMP-DEBUG handleUpdate: chat id comparison", "configuredChatID", cfg.Setup.TelegramChatID, "senderChatIDStr", senderChatIDStr)
 	if cfg.Setup.TelegramChatID == nil {
-		slog.Info("TEMP-DEBUG handleUpdate: no chat id configured yet, auto-detecting from this message", "newChatID", senderChatIDStr)
 		cfg.Setup.TelegramChatID = &senderChatIDStr
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			slog.Error("saving telegram chat id", "err", err)
 			return
 		}
 	} else if *cfg.Setup.TelegramChatID != senderChatIDStr {
-		slog.Info("TEMP-DEBUG handleUpdate: chat id MISMATCH — ignoring this message silently", "configuredChatID", *cfg.Setup.TelegramChatID, "senderChatIDStr", senderChatIDStr)
 		return // not the configured chat — ignore silently
 	}
-	slog.Info("TEMP-DEBUG handleUpdate: chat id accepted, continuing to process this update")
 
 	if update.CallbackQuery != nil {
 		s.handleCallback(tgBot, update.CallbackQuery, sc, configPath, lockfilePath, restartWatcher)

@@ -94,14 +94,6 @@ func runCheckLock() {
 }
 
 func runSetup() {
-	// TEMP-DEBUG
-	debugLogFile := setupDebugFileLogging("debug-setup.log")
-	if debugLogFile != nil {
-		defer debugLogFile.Close()
-	}
-	debugExePath, debugExeErr := os.Executable()
-	slog.Info("TEMP-DEBUG runSetup starting", "exePath", debugExePath, "exePathErr", debugExeErr, "botTokenLength", len(BotToken))
-
 	// Kills any previously-running tracker.exe --serve before starting the
 	// wizard — found the hard way: MultipleInstancesPolicy=IgnoreNew (both
 	// task XML templates) means schtasks /Run below silently no-ops if an
@@ -117,15 +109,12 @@ func runSetup() {
 		slog.Info("no previous tracker.exe instance to stop", "output", string(out))
 	}
 
-	slog.Info("TEMP-DEBUG calling bot.RunSetup — blocks until the Telegram wizard finishes")
 	bot.RunSetup(BotToken, configPath, serviceAccountPath)
-	slog.Info("TEMP-DEBUG bot.RunSetup returned")
 
 	exePath, err := os.Executable()
 	if err != nil {
 		panic("getting executable path: " + err.Error())
 	}
-	slog.Info("TEMP-DEBUG registering task", "exePath", exePath)
 
 	// Plain schtasks flags (/SC ONLOGON /RL HIGHEST) can't turn off "Start
 	// the task only if the computer is on AC power" or the default
@@ -152,20 +141,15 @@ func runSetup() {
 		"/XML", xmlFile.Name(),
 		"/F",
 	).CombinedOutput(); err != nil {
-		slog.Error("TEMP-DEBUG schtasks /Create failed", "err", err, "output", string(out))
 		panic(fmt.Sprintf("registering Task Scheduler entry: %v: %s", err, out))
 	}
-	slog.Info("TEMP-DEBUG schtasks /Create succeeded")
 
 	// Starts the service now instead of leaving the player to reboot or
 	// start it manually. Not fatal if it fails — the task is already
 	// registered and will still run on the next logon — so this only logs.
 	if out, err := exec.Command("schtasks.exe", "/Run", "/TN", "Poker Tracker").CombinedOutput(); err != nil {
 		slog.Error("starting task scheduler entry", "err", err, "output", string(out))
-	} else {
-		slog.Info("TEMP-DEBUG schtasks /Run succeeded")
 	}
-	slog.Info("TEMP-DEBUG runSetup complete, exiting with code 0")
 	os.Exit(0)
 }
 
@@ -260,62 +244,26 @@ func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error 
 	return h.Handler.Handle(ctx, r)
 }
 
-// TEMP-DEBUG: writes every log line to a file, since -H=windowsgui means
-// there is no console for anything to show up in otherwise. Grep this
-// file for "TEMP-DEBUG" to find every line added for this diagnostic pass
-// and remove them once the bot-not-responding issue is found. name is
-// "debug-setup.log" or "debug-serve.log" — separate files so a --serve
-// auto-started right after --setup finishes doesn't truncate --setup's
-// own log before it can be read.
-func setupDebugFileLogging(name string) *os.File {
-	logPath := filepath.Join(filepath.Dir(configPath), name)
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return nil
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	return f
-}
-
 func runServe() {
-	// TEMP-DEBUG
-	debugLogFile := setupDebugFileLogging("debug-serve.log")
-	if debugLogFile != nil {
-		defer debugLogFile.Close()
-	}
-	slog.Info("TEMP-DEBUG runServe starting", "botTokenLength", len(BotToken), "botTokenEmpty", BotToken == "",
-		"configPath", configPath, "serviceAccountPath", serviceAccountPath, "lockfilePath", lockfilePath)
-
 	// Belt-and-suspenders on top of -H=windowsgui — see hideConsole's doc
 	// comment for why the build flag alone wasn't enough in practice.
 	hideConsole()
-	slog.Info("TEMP-DEBUG hideConsole called")
 
 	// Blocks and asks via Telegram if google_sheet_id isn't set yet, rather
 	// than refusing to start — nothing else here can run without a sheets
 	// client, so this has to resolve before the watcher/worker/bot
 	// goroutines exist.
-	slog.Info("TEMP-DEBUG calling EnsureSheetID")
 	sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
-	slog.Info("TEMP-DEBUG EnsureSheetID returned", "sheetID", sheetID, "err", err)
 	if err != nil {
-		slog.Error("TEMP-DEBUG EnsureSheetID failed, about to panic", "err", err)
 		panic("resolving google sheet: " + err.Error())
 	}
 
 	cfg, err := config.LoadConfig(configPath)
-	slog.Info("TEMP-DEBUG LoadConfig after EnsureSheetID", "err", err,
-		"screenNameSet", cfg != nil && cfg.Setup.PokerStarsScreenName != nil,
-		"handHistorySet", cfg != nil && cfg.Paths.HandHistory != nil,
-		"tournamentSummarySet", cfg != nil && cfg.Paths.TournamentSummary != nil,
-		"chatIDSet", cfg != nil && cfg.Setup.TelegramChatID != nil)
 	if err != nil {
 		panic("loading config: " + err.Error())
 	}
 
-	slog.Info("TEMP-DEBUG calling sheets.NewClient", "sheetID", sheetID)
 	sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
-	slog.Info("TEMP-DEBUG sheets.NewClient returned", "err", err, "clientNil", sheetsClient == nil)
 	if err != nil {
 		panic("initializing sheets client: " + err.Error())
 	}
@@ -333,12 +281,10 @@ func runServe() {
 		Handler:   slog.Default().Handler(),
 		alertChan: alertChan,
 	}))
-	slog.Info("TEMP-DEBUG telegramErrorHandler wired up, file logging still active underneath it")
 
 	var watcherDone chan struct{}
 	if cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil {
 		hhPath, tsPath := resolvePaths(cfg)
-		slog.Info("TEMP-DEBUG starting watcher", "handHistory", hhPath, "tournamentSummary", tsPath)
 		watcherDone = make(chan struct{})
 		go func() {
 			if err := watcher.Watch(watcherDone, hhPath, tsPath, sessionChan); err != nil {
@@ -370,10 +316,8 @@ func runServe() {
 		}()
 	}
 
-	slog.Info("TEMP-DEBUG launching runWorker goroutine")
 	go runWorker(sessionChan, alertChan, sheetsClient, configPath, lockfilePath)
 
-	slog.Info("TEMP-DEBUG launching bot.Run goroutine")
 	go func() {
 		err := bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 		// bot.Run's error return was previously discarded entirely by a
@@ -384,10 +328,9 @@ func runServe() {
 		// shows it as running, and the bot simply never listens for
 		// anything. This log is the only way that failure was ever going
 		// to be visible.
-		slog.Error("TEMP-DEBUG bot.Run goroutine returned — the bot is no longer listening for anything", "err", err)
+		slog.Error("bot.Run goroutine returned — the bot is no longer listening for anything", "err", err)
 	}()
 
-	slog.Info("TEMP-DEBUG entering select{} — main goroutine blocks here forever")
 	select {}
 }
 
