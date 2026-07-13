@@ -64,6 +64,10 @@ var
   PageHandHistoryDir: TInputDirWizardPage;
   PageTournamentDir: TInputDirWizardPage;
   UsingTelegram: Boolean;
+  // Guards against CurPageChanged's auto-start and NextButtonClick's manual
+  // path both running RunTelegramSetup for the same visit to PageWaiting —
+  // see CurPageChanged and the PageWaiting branch of NextButtonClick.
+  TelegramSetupDone: Boolean;
 
 procedure InitializeWizard();
 begin
@@ -100,7 +104,7 @@ begin
   PageWaiting := CreateOutputMsgPage(PageCredentials.ID,
     'Telegram Setup',
     'Complete setup in Telegram',
-    'Complete setup in Telegram. Send any message to your bot to begin. The installer will continue automatically when done.');
+    'Setup is starting automatically. This window may look frozen or say "Not Responding" for the whole conversation — that''s expected, please don''t click anything. Once it starts, go to Telegram and send a message to your bot to begin. The installer will continue on its own when you finish there.');
 
   PageSheetName := CreateInputQueryPage(PageWaiting.ID,
     'Google Sheet',
@@ -415,6 +419,41 @@ begin
   Result := True;
 end;
 
+// CurPageChanged fires after a page has actually been displayed (unlike
+// NextButtonClick, which fires when the player tries to leave the
+// *previous* page). PageWaiting's own text tells the player to go to
+// Telegram and send a message "to begin" — before this hook existed, that
+// was false: RunTelegramSetup only ran once NextButtonClick(PageWaiting.ID)
+// fired, i.e. only after the player clicked Next on this same page, so any
+// message sent on arrival just sat queued server-side until that click
+// eventually happened. Running it here instead means --setup genuinely is
+// listening by the time the page's own instructions say it is. On success,
+// WizardForm.NextButton.OnClick(nil) is the documented way to simulate the
+// player clicking Next themselves, advancing the wizard automatically
+// instead of leaving them staring at a page that already finished its job.
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = PageWaiting.ID) and not TelegramSetupDone then
+  begin
+    // Displaying a page only queues its repaint (WM_PAINT), dispatched the
+    // next time the message loop runs. RunTelegramSetup's Exec call blocks
+    // that loop for the whole Telegram conversation, so without forcing
+    // the paint now, the page would sit blank the entire time instead of
+    // showing the "this window may look frozen" text above — worse than
+    // before, when the block only started after a Next click on an
+    // already-painted page.
+    WizardForm.Update;
+    if RunTelegramSetup() then
+    begin
+      TelegramSetupDone := True;
+      WizardForm.NextButton.OnClick(nil);
+    end;
+    // RunTelegramSetup already showed a MsgBox on failure. Leave
+    // TelegramSetupDone False and stay on the page — NextButtonClick's
+    // PageWaiting branch becomes the player's manual retry.
+  end;
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   JoinedPath: String;
@@ -434,7 +473,22 @@ begin
   end
 
   else if CurPageID = PageWaiting.ID then
-    Result := RunTelegramSetup()
+  begin
+    // Normal path: CurPageChanged already ran RunTelegramSetup when this
+    // page appeared and simulated this very click on success, so
+    // TelegramSetupDone is already True here — just let the click through.
+    // Manual-retry path: CurPageChanged's automatic attempt failed (its
+    // own MsgBox already told the player), so TelegramSetupDone is still
+    // False; a real click here means the player is retrying by hand.
+    if TelegramSetupDone then
+      Result := True
+    else
+    begin
+      Result := RunTelegramSetup();
+      if Result then
+        TelegramSetupDone := True;
+    end;
+  end
 
   else if CurPageID = PageSheetName.ID then
   begin
