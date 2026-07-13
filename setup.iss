@@ -561,6 +561,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   SheetInput, SheetName, SheetID: String;
+  ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -582,6 +583,19 @@ begin
           PageHandHistoryDir.Values[0], PageTournamentDir.Values[0]),
         False);
       RegisterScheduledTask();
+    end
+    else
+    begin
+      // The Telegram path's task already exists — tracker.exe --setup
+      // registered it itself (see runSetup in cmd/tracker/main.go) and
+      // started it running. But NextButtonClick(wpReady) then killed
+      // that process (to avoid Inno's "unable to close applications"
+      // prompt during file copy), so by this point the task is
+      // registered but not running. Only a restart is needed, not the
+      // full RegisterScheduledTask the manual path uses above.
+      if not Exec('schtasks.exe', '/Run /TN "Poker Tracker"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+        MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
     end;
   end;
 end;
