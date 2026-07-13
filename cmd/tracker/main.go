@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -245,6 +246,21 @@ func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error 
 }
 
 func runServe() {
+	// The default slog handler writes to os.Stderr. hideConsole's
+	// FreeConsole call below leaves that handle NULL/invalid — confirmed
+	// via live testing (isolated by reverting to a build without this fix
+	// and reproducing the exact same failure) to hang indefinitely on the
+	// first write to it afterward, wedging startup before the
+	// watcher/worker/bot goroutines are ever launched (the "--serve
+	// starts but never responds" bug). runSetup never hits this because
+	// it never calls hideConsole — its console handle, whatever it is,
+	// is never invalidated out from under it. Route the default handler
+	// to io.Discard before hideConsole runs so no log write ever touches
+	// that handle afterward. Error-level records still reach Telegram
+	// once telegramErrorHandler wraps this default further down — only
+	// the dead local destination underneath it is removed.
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
 	// Belt-and-suspenders on top of -H=windowsgui — see hideConsole's doc
 	// comment for why the build flag alone wasn't enough in practice.
 	hideConsole()
