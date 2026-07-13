@@ -329,6 +329,11 @@ func runServe() {
 
 	go runWorker(sessionChan, alertChan, sheetsClient, configPath, lockfilePath)
 
+	// Runs for the life of this process — the done channel is never closed,
+	// since RunEnforcementLoop is only meant to stop when --serve itself
+	// exits.
+	go hardstop.RunEnforcementLoop(lockfilePath, make(chan struct{}))
+
 	go func() {
 		err := bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 		// bot.Run's error return was previously discarded entirely by a

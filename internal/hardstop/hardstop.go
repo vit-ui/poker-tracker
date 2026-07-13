@@ -330,6 +330,49 @@ func ManualTrigger(configPath, lockfilePath string, alertChan chan<- string) err
 	return nil
 }
 
+// lockfileActiveAt reports whether the lockfile at lockfilePath exists and
+// hasn't expired as of now. Goes through config.LoadLock rather than reading
+// the file directly — config.go documents that no other package touches
+// config.json/lockfile.json directly. Never deletes the file even when
+// expired; that stays --check-lock's responsibility (see runCheckLock in
+// main.go).
+func lockfileActiveAt(lockfilePath string, now time.Time) bool {
+	lock, err := config.LoadLock(lockfilePath)
+	if err != nil || lock == nil {
+		return false
+	}
+	return now.Before(lock.ExpiresAt)
+}
+
+// RunEnforcementLoop re-kills PokerStars every 30 seconds for as long as the
+// lockfile at lockfilePath is active, so a player who relaunches PokerStars
+// mid-lockout gets killed again rather than slipping through until the next
+// hand-history file triggers a check. Runs for the life of the --serve
+// process; stops when done is closed. Because it checks lockfile state on
+// every tick from the moment it starts, restarting --serve (e.g. Task
+// Scheduler after a reboot) automatically resumes enforcement if a lockfile
+// written before the restart is still active.
+func RunEnforcementLoop(lockfilePath string, done <-chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if !lockfileActiveAt(lockfilePath, time.Now()) {
+				continue
+			}
+			lock, err := config.LoadLock(lockfilePath)
+			if err != nil || lock == nil {
+				continue
+			}
+			slog.Info("hard stop lock active, killing PokerStars", "expires_at", lock.ExpiresAt)
+			_ = exec.Command("taskkill.exe", "/IM", "PokerStars.exe", "/F").Run()
+		}
+	}
+}
+
 // trigger kills PokerStars, writes the lockfile, and sends the hard stop
 // alert.
 func trigger(reason string, durationHours int, lockfilePath string, alertChan chan<- string) {
