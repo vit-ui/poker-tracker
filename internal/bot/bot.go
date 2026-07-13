@@ -34,10 +34,8 @@ import (
 // serviceAccountPath is only used by /sheet when switching to a different
 // spreadsheet — see handleSheetCommand.
 func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
-	slog.Info("TEMP-DEBUG bot.Run: calling NewBotAPI")
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
-		slog.Error("TEMP-DEBUG bot.Run: NewBotAPI failed", "err", err)
 		return fmt.Errorf("starting telegram bot: %w", err)
 	}
 	slog.Info("telegram bot ready", "username", tgBot.Self.UserName)
@@ -963,15 +961,12 @@ func (s *conversationState) reset() {
 // pollUpdates polls Telegram for incoming messages and callback queries and
 // dispatches them. Runs in its own goroutine so it never blocks alertChan.
 func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
-	slog.Info("TEMP-DEBUG pollUpdates: calling GetUpdatesChan")
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
-	slog.Info("TEMP-DEBUG pollUpdates: entering range loop")
 
 	state := &conversationState{}
 	for update := range updates {
-		slog.Info("TEMP-DEBUG pollUpdates: got update", "hasMessage", update.Message != nil, "hasCallback", update.CallbackQuery != nil)
 		// CallbackQuery.Message can be nil if the tapped button is on a
 		// message Telegram no longer has (old or deleted). Every downstream
 		// handler assumes a non-nil Message, so filter here before any of
@@ -985,7 +980,6 @@ func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfile
 		}
 		state.handleUpdate(tgBot, update, sc, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 	}
-	slog.Error("TEMP-DEBUG pollUpdates: updates channel closed, exiting")
 }
 
 func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
@@ -1005,7 +999,6 @@ func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi
 		return
 	}
 	senderChatIDStr := strconv.FormatInt(senderChatID, 10)
-	slog.Info("TEMP-DEBUG handleUpdate: chat id check", "configured", cfg.Setup.TelegramChatID, "sender", senderChatIDStr)
 	if cfg.Setup.TelegramChatID == nil {
 		cfg.Setup.TelegramChatID = &senderChatIDStr
 		if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -1013,7 +1006,6 @@ func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi
 			return
 		}
 	} else if *cfg.Setup.TelegramChatID != senderChatIDStr {
-		slog.Info("TEMP-DEBUG handleUpdate: chat id MISMATCH, ignoring", "configured", *cfg.Setup.TelegramChatID, "sender", senderChatIDStr)
 		return // not the configured chat — ignore silently
 	}
 
