@@ -104,7 +104,7 @@ begin
   PageWaiting := CreateOutputMsgPage(PageCredentials.ID,
     'Telegram Setup',
     'Complete setup in Telegram',
-    'Setup is starting automatically. This window may look frozen or say "Not Responding" for the whole conversation — that''s expected, please don''t click anything. Once it starts, go to Telegram and send a message to your bot to begin. The installer will continue on its own when you finish there.');
+    'Go to Telegram and send a message to your bot to begin. The buttons on this window will not work until you finish there.');
 
   PageSheetName := CreateInputQueryPage(PageWaiting.ID,
     'Google Sheet',
@@ -457,11 +457,27 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   JoinedPath: String;
+  ResultCode: Integer;
 begin
   Result := True;
 
   if CurPageID = PageMethod.ID then
     UsingTelegram := (PageMethod.SelectedValueIndex = 0)
+
+  else if CurPageID = wpReady then
+    // Leaving the Ready page means the player just clicked Install. This
+    // runs before Inno's own Restart-Manager-based "close applications"
+    // scan (part of the Preparing-to-install step right after this),
+    // which is what actually produces "Setup was unable to automatically
+    // close all applications" if it finds tracker.exe still running —
+    // e.g. the fresh --serve that tracker.exe --setup's own last step
+    // started via schtasks /Run during PageWaiting, well before this
+    // point. A taskkill placed later (CurStepChanged's ssInstall, tried
+    // before) runs after that scan already happened, too late to prevent
+    // the prompt. Safe to run unconditionally, same as PreInstallFiles'
+    // own taskkill — this installer process is never itself named
+    // tracker.exe.
+    Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
 
   else if CurPageID = PageCredentials.ID then
   begin
@@ -545,25 +561,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   SheetInput, SheetName, SheetID: String;
-  ResultCode: Integer;
 begin
-  if CurStep = ssInstall then
-  begin
-    // Inno is about to copy tracker.exe into {app} (the [Files] entry) —
-    // this fails with "Setup was unable to automatically close all
-    // applications" if a --serve process still has that file open,
-    // since a pure background service (-H=windowsgui, no window) has no
-    // way to respond to Windows' graceful-close request. PreInstallFiles'
-    // own taskkill (mid-wizard, Telegram path) isn't enough by itself:
-    // tracker.exe --setup's own last step starts a *fresh* --serve via
-    // schtasks /Run before the wizard even reaches this point, and that
-    // new process is what's actually holding the file, not whatever
-    // PreInstallFiles killed earlier. Safe to run unconditionally, same
-    // as PreInstallFiles' own taskkill — this installer process is never
-    // itself named tracker.exe.
-    Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
-
   if CurStep = ssPostInstall then
   begin
     // Idempotent for the Telegram path (already done once in
