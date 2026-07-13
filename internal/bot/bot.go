@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -436,12 +437,13 @@ func resolveSheetInput(serviceAccountPath, input string) (name *string, id strin
 //
 // This only updates config.json — it deliberately does not attempt to swap
 // the already-running sheetsClient passed throughout bot.Run/runWorker for
-// the rest of this process's life (see the google_sheet_id recovery note
-// in CLAUDE.md for why: sheetsClient is a required non-nil dependency
-// threaded through goroutines that are already running, and hot-swapping
-// it would need a much larger refactor for what's a rare, deliberate
-// action). The reply says a restart is required for the switch to take
-// effect on this running instance.
+// the rest of this process's life (sheetsClient is a required non-nil
+// dependency threaded through goroutines that are already running, and
+// hot-swapping it would need a much larger refactor for what's a rare,
+// deliberate action). Instead, once the new sheet ID is saved this process
+// kills itself and restarts the "Poker Tracker" scheduled task via a
+// detached command, so the fresh process picks up the new sheet ID from
+// config.json on startup.
 func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client, configPath, serviceAccountPath string) {
 	args = strings.TrimSpace(args)
 	if args == "" {
@@ -454,8 +456,7 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *s
 		send(tgBot, chatID, fmt.Sprintf("Couldn't find that sheet: %v", err))
 		return
 	}
-	newClient, err := sheets.NewClient(serviceAccountPath, id)
-	if err != nil {
+	if _, err := sheets.NewClient(serviceAccountPath, id); err != nil {
 		send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
 		return
 	}
@@ -474,7 +475,19 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *s
 		return
 	}
 
-	send(tgBot, chatID, "✅ Switched to the new sheet: "+newClient.GetSheetURL()+"\nRestart the tracker service for this to take effect (Task Scheduler → Poker Tracker → Run, or reboot).")
+	send(tgBot, chatID, "✅ Sheet updated. Restarting tracker in a moment...")
+
+	// Same taskkill-then-schtasks/Run sequence runSetup uses to replace a
+	// stale instance (main.go) — MultipleInstancesPolicy=IgnoreNew means
+	// schtasks /Run silently no-ops while this process is still alive, so
+	// it has to be killed first. `&` (not `&&`) runs the two sequentially
+	// regardless of taskkill's exit code, and targeting this exact PID
+	// (rather than /IM tracker.exe) means this is safe to run without
+	// racing a sleep — by the time schtasks /Run executes, this process is
+	// already gone.
+	_ = exec.Command("cmd.exe", "/C",
+		fmt.Sprintf(`taskkill /F /PID %d & schtasks /Run /TN "Poker Tracker"`, os.Getpid())).Start()
+	os.Exit(0)
 }
 
 // handleScreenNameCommand implements /screenname. With no argument, replies
