@@ -428,6 +428,61 @@ func resolveSheetInput(serviceAccountPath, input string) (name *string, id strin
 	return &input, id, nil
 }
 
+// selfRestart kills this process by PID and re-runs the "Poker Tracker"
+// scheduled task, so the fresh process picks up whatever handleSheetCommand
+// just saved to config.json. Used only there.
+//
+// The kill-then-run sequence is written out as a .bat and run as
+// cmd.exe /C <path> rather than as an inline `cmd.exe /C "a & b & c"`
+// string: passing a single clean path removes a layer of quote-mangling
+// that an inline string doesn't get for free (Go's argv escaping, then
+// cmd.exe's own parser, both operating on the same `"Poker Tracker"`
+// argument — two chances to get it wrong instead of one). Written next to
+// config.json rather than into os.TempDir() — the system temp path can
+// itself contain spaces (e.g. a "First Last" profile directory), which
+// would just relocate the exact quoting hazard this is meant to avoid onto
+// cmd's handling of the .bat path itself; config.json's directory is the
+// installer's fixed, space-free C:\poker-tracker. Every step's output is
+// appended to restart.log alongside it, so a failed restart is diagnosable
+// instead of silent.
+//
+// CREATE_BREAKAWAY_FROM_JOB (see detachedSysProcAttr) keeps the helper
+// alive after this process exits — without it, Task Scheduler's Job Object
+// kills every child of "Poker Tracker" the instant its main process ends,
+// before schtasks /Run ever gets to run. Confirmed in practice: without
+// this flag, /sheet killed the tracker and nothing came back. Some Task
+// Scheduler configurations reject breakaway outright (CreateProcess fails
+// with access denied); if Start fails, this retries once without it rather
+// than giving up — an unprotected restart attempt is still better odds
+// than none.
+func selfRestart(configPath string) error {
+	dir := filepath.Dir(configPath)
+	logPath := filepath.Join(dir, "restart.log")
+	batPath := filepath.Join(dir, "restart.bat")
+	script := fmt.Sprintf(
+		"@echo off\r\n"+
+			"echo restart triggered %%DATE%% %%TIME%% >> \"%[1]s\"\r\n"+
+			"taskkill /F /PID %[2]d >> \"%[1]s\" 2>&1\r\n"+
+			"ping -n 4 127.0.0.1 >nul\r\n"+
+			"schtasks /Run /TN \"Poker Tracker\" >> \"%[1]s\" 2>&1\r\n"+
+			"echo restart script finished >> \"%[1]s\"\r\n",
+		logPath, os.Getpid())
+
+	if err := os.WriteFile(batPath, []byte(script), 0644); err != nil {
+		return fmt.Errorf("writing restart script: %w", err)
+	}
+
+	cmd := exec.Command("cmd.exe", "/C", batPath)
+	cmd.SysProcAttr = detachedSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		cmd = exec.Command("cmd.exe", "/C", batPath)
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("starting restart script: %w", err)
+		}
+	}
+	return nil
+}
+
 // handleSheetCommand implements /sheet. With no argument, replies with the
 // current sheet's URL (the original, only behavior). With an argument
 // (a sheet name or a pasted URL — same resolveSheetInput branch RunSetup
@@ -477,16 +532,13 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *s
 
 	send(tgBot, chatID, "✅ Sheet updated. Restarting tracker in a moment...")
 
-	// Same taskkill-then-schtasks/Run sequence runSetup uses to replace a
-	// stale instance (main.go) — MultipleInstancesPolicy=IgnoreNew means
-	// schtasks /Run silently no-ops while this process is still alive, so
-	// it has to be killed first. `&` (not `&&`) runs the two sequentially
-	// regardless of taskkill's exit code, and targeting this exact PID
-	// (rather than /IM tracker.exe) means this is safe to run without
-	// racing a sleep — by the time schtasks /Run executes, this process is
-	// already gone.
-	_ = exec.Command("cmd.exe", "/C",
-		fmt.Sprintf(`taskkill /F /PID %d & schtasks /Run /TN "Poker Tracker"`, os.Getpid())).Start()
+	if err := selfRestart(configPath); err != nil {
+		// A live process on stale config beats a dead one — don't exit if
+		// the restart helper never got off the ground.
+		slog.Error("restarting tracker after sheet switch", "err", err)
+		send(tgBot, chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
+		return
+	}
 	os.Exit(0)
 }
 
