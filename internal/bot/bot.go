@@ -442,9 +442,11 @@ func resolveSheetInput(serviceAccountPath, input string) (name *string, id strin
 // itself contain spaces (e.g. a "First Last" profile directory), which
 // would just relocate the exact quoting hazard this is meant to avoid onto
 // cmd's handling of the .bat path itself; config.json's directory is the
-// installer's fixed, space-free C:\poker-tracker. Every step's output is
-// appended to restart.log alongside it, so a failed restart is diagnosable
-// instead of silent.
+// installer's fixed, space-free C:\poker-tracker. The script's last line
+// deletes itself, so nothing is left behind in that directory once the
+// restart has fired — confirmed working on the real machine, so this
+// doesn't keep a diagnostic log around for a failure mode that's no
+// longer expected.
 //
 // CREATE_BREAKAWAY_FROM_JOB (see detachedSysProcAttr) keeps the helper
 // alive after this process exits — without it, Task Scheduler's Job Object
@@ -457,16 +459,14 @@ func resolveSheetInput(serviceAccountPath, input string) (name *string, id strin
 // than none.
 func selfRestart(configPath string) error {
 	dir := filepath.Dir(configPath)
-	logPath := filepath.Join(dir, "restart.log")
 	batPath := filepath.Join(dir, "restart.bat")
 	script := fmt.Sprintf(
 		"@echo off\r\n"+
-			"echo restart triggered %%DATE%% %%TIME%% >> \"%[1]s\"\r\n"+
-			"taskkill /F /PID %[2]d >> \"%[1]s\" 2>&1\r\n"+
+			"taskkill /F /PID %d\r\n"+
 			"ping -n 4 127.0.0.1 >nul\r\n"+
-			"schtasks /Run /TN \"Poker Tracker\" >> \"%[1]s\" 2>&1\r\n"+
-			"echo restart script finished >> \"%[1]s\"\r\n",
-		logPath, os.Getpid())
+			"schtasks /Run /TN \"Poker Tracker\"\r\n"+
+			"del \"%%~f0\"\r\n",
+		os.Getpid())
 
 	if err := os.WriteFile(batPath, []byte(script), 0644); err != nil {
 		return fmt.Errorf("writing restart script: %w", err)
@@ -476,6 +476,7 @@ func selfRestart(configPath string) error {
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		cmd = exec.Command("cmd.exe", "/C", batPath)
+		cmd.SysProcAttr = noWindowSysProcAttr()
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("starting restart script: %w", err)
 		}
