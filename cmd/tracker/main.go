@@ -244,10 +244,34 @@ func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error 
 	return h.Handler.Handle(ctx, r)
 }
 
+// TEMP-DEBUG: writes every log line to a file from inside the process,
+// since -H=windowsgui means shell-level stdout/stderr redirection (>,
+// 2>&1) does not reliably capture anything — confirmed empty across
+// multiple redirected runs during live testing. Grep this file for
+// "TEMP-DEBUG" to find every line added for this diagnostic pass and
+// remove them once the --serve-not-responding issue is found.
+func setupDebugFileLogging(name string) *os.File {
+	logPath := filepath.Join(filepath.Dir(configPath), name)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	return f
+}
+
 func runServe() {
+	// TEMP-DEBUG
+	debugLogFile := setupDebugFileLogging("debug-serve.log")
+	if debugLogFile != nil {
+		defer debugLogFile.Close()
+	}
+	slog.Info("TEMP-DEBUG runServe starting")
+
 	// Belt-and-suspenders on top of -H=windowsgui — see hideConsole's doc
 	// comment for why the build flag alone wasn't enough in practice.
 	hideConsole()
+	slog.Info("TEMP-DEBUG hideConsole returned")
 
 	// Blocks and asks via Telegram if google_sheet_id isn't set yet, rather
 	// than refusing to start — nothing else here can run without a sheets
@@ -255,18 +279,24 @@ func runServe() {
 	// goroutines exist.
 	sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
 	if err != nil {
+		slog.Error("TEMP-DEBUG EnsureSheetID failed", "err", err)
 		panic("resolving google sheet: " + err.Error())
 	}
+	slog.Info("TEMP-DEBUG EnsureSheetID returned", "sheetID", sheetID)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		panic("loading config: " + err.Error())
 	}
+	slog.Info("TEMP-DEBUG LoadConfig returned")
 
+	slog.Info("TEMP-DEBUG calling sheets.NewClient")
 	sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
 	if err != nil {
+		slog.Error("TEMP-DEBUG sheets.NewClient failed", "err", err)
 		panic("initializing sheets client: " + err.Error())
 	}
+	slog.Info("TEMP-DEBUG sheets.NewClient returned")
 	slog.Info("startup complete")
 
 	sessionChan := make(chan watcher.FileEvent, 10)
@@ -318,6 +348,7 @@ func runServe() {
 
 	go runWorker(sessionChan, alertChan, sheetsClient, configPath, lockfilePath)
 
+	slog.Info("TEMP-DEBUG launching bot.Run goroutine")
 	go func() {
 		err := bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 		// bot.Run's error return was previously discarded entirely by a
