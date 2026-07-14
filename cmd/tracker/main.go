@@ -169,10 +169,28 @@ func utf16File(s string) []byte {
 // taskSchedulerXML is the Task Scheduler task definition registered during
 // --setup, with the tracker.exe path substituted twice: once for Command,
 // once for WorkingDirectory (both %s, same value — see the exePath/dir
-// split in runSetup). LogonTrigger with no UserId fires on any user's
-// logon; the Administrators-group Principal (S-1-5-32-544) keeps the task
-// runnable regardless of which admin account logs in, while RunLevel
-// HighestAvailable matches the previous /RL HIGHEST. WorkingDirectory is
+// split in runSetup).
+//
+// BootTrigger + a SYSTEM Principal, not LogonTrigger + a group Principal:
+// an earlier version used <LogonTrigger> with the Administrators-group SID
+// (S-1-5-32-544) as Principal, matching CLAUDE.md's original description.
+// That combination showed as "Ready" in Task Scheduler but did not
+// reliably start tracker.exe on a real PC restart — LogonTrigger fires off
+// an interactive logon, and evaluating "is this logon a member of group X"
+// against a UAC-split token is a documented source of trigger misfires,
+// on top of depending on an interactive session existing at all.
+// BootTrigger fires at system startup itself, independent of any user
+// logon, and Principal UserId S-1-5-18 (SYSTEM) needs no logon token to
+// evaluate — Task Scheduler always has a SYSTEM context to run as. This
+// matches the original hand-verified manual setup (plan §Windows Task
+// Scheduler Setup: "At startup", not "At log on"). SYSTEM has full local
+// filesystem access to the player's PokerStars folders and enough
+// privilege to taskkill.exe PokerStars.exe regardless of which user
+// account is running it. The 30-second Delay mirrors that same manual
+// setup, giving the filesystem/network/antivirus time to settle right
+// after boot. RunLevel HighestAvailable is kept even though it's moot for
+// SYSTEM (already maximally privileged) — harmless and keeps the two
+// Principal fields together as one block. WorkingDirectory is
 // belt-and-suspenders now that the three deployment paths are resolved
 // from os.Executable() rather than cwd (see the var block above) — but it
 // matches the documented manual Task Scheduler setup ("Start in
@@ -180,13 +198,14 @@ func utf16File(s string) []byte {
 const taskSchedulerXML = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
-    <LogonTrigger>
+    <BootTrigger>
       <Enabled>true</Enabled>
-    </LogonTrigger>
+      <Delay>PT30S</Delay>
+    </BootTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <GroupId>S-1-5-32-544</GroupId>
+      <UserId>S-1-5-18</UserId>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>

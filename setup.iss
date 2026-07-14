@@ -563,13 +563,14 @@ begin
     '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
     '  <Triggers>' + #13#10 +
-    '    <LogonTrigger>' + #13#10 +
+    '    <BootTrigger>' + #13#10 +
     '      <Enabled>true</Enabled>' + #13#10 +
-    '    </LogonTrigger>' + #13#10 +
+    '      <Delay>PT30S</Delay>' + #13#10 +
+    '    </BootTrigger>' + #13#10 +
     '  </Triggers>' + #13#10 +
     '  <Principals>' + #13#10 +
     '    <Principal id="Author">' + #13#10 +
-    '      <GroupId>S-1-5-32-544</GroupId>' + #13#10 +
+    '      <UserId>S-1-5-18</UserId>' + #13#10 +
     '      <RunLevel>HighestAvailable</RunLevel>' + #13#10 +
     '    </Principal>' + #13#10 +
     '  </Principals>' + #13#10 +
