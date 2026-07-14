@@ -28,6 +28,67 @@ func TestTournament_BaseType(t *testing.T) {
 	}
 }
 
+// TestIsNonCashPrize covers the full word list — ticket/pass confirmed
+// against real PokerStars files, seat/package/T$ added on PokerStars' own
+// documented terminology for non-cash prizes without a confirmed real file
+// yet (deliberately: a false positive here only costs one extra tap on the
+// cash/ticket confirmation, a false negative costs silently wrong bankroll
+// data with no way to notice — see isNonCashPrize's doc comment).
+func TestIsNonCashPrize(t *testing.T) {
+	cases := []struct {
+		name    string
+		payout  string
+		nonCash bool
+	}{
+		{"real cash amount", "$5.00", false},
+		{"real cash amount with percentage", "$0.43 (1.243%)", false},
+		{"ticket, confirmed against a real file", "$1.00 Power Path Step 2 Ticket", true},
+		{"tournament ticket, confirmed against a real file", "Tournament Ticket ($1.50 Step 2 - Power Path)", true},
+		{"pass", "Sunday Storm Freeroll Pass", true},
+		{"seat", "$5,000 Seat Package", true},
+		{"package alone", "WCOOP Main Event Package", true},
+		{"tournament dollars", "T$11.00", true},
+		{"satellite", "Sunday Million Satellite Seat", true},
+		{"sat, deliberately broad — also matches inside an ordinary word", "$50 Saturday Special", true},
+		{"case insensitive", "TICKET", true},
+		{"empty string", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isNonCashPrize(c.payout); got != c.nonCash {
+				t.Errorf("isNonCashPrize(%q) = %v, want %v", c.payout, got, c.nonCash)
+			}
+		})
+	}
+}
+
+// TestParseTournamentFile_TournamentDollarsPayout confirms a T$
+// (Tournament Dollars) payout is treated as non-cash end to end: excluded
+// from NetUSD and flagged as LikelySatellite, the same as a Ticket/Pass
+// payout — even though "T$11.00" starts with a recognizable amount, it's
+// PokerStars' own tournament-only currency, not real cash.
+func TestParseTournamentFile_TournamentDollarsPayout(t *testing.T) {
+	contents := `PokerStars Tournament #666666666, $5.00+$0.50 USD
+Hold'em No Limit
+Buy-In: $5.00/$0.50
+9 players
+Total Prize Pool: $45.00
+  1: AnonHero01 (Cyprus), T$11.00
+  2: Villain1 (Brazil), $9.00
+`
+	path := writeTournamentSummary(t, contents)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+	if !approxEqual(tourn.NetUSD, -5.50) {
+		t.Errorf("NetUSD = %v, want -5.50 (T$ is not real cash — only the buy-in lost)", tourn.NetUSD)
+	}
+	if !tourn.LikelySatellite {
+		t.Error("LikelySatellite = false, want true — hero's own payout is T$ (Tournament Dollars), not cash")
+	}
+}
+
 func TestParseFinishLine(t *testing.T) {
 	cases := []struct {
 		name       string
