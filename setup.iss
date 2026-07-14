@@ -295,7 +295,34 @@ begin
 end;
 
 procedure InitializeWizard();
+var
+  MethodDescription: String;
 begin
+  // Read before {app} is valid for ExpandConstant (see the comment on the
+  // page-anchoring below) — hardcoded to match DefaultDirName ([Setup]
+  // above) rather than expanded, since this runs before the wizard's
+  // internal position has passed wpSelectDir. Done first, before any page
+  // is created, so ExistingConfigJSON is available to build MethodDescription
+  // below and to ShouldSkipPage/CurStepChanged once the wizard is running.
+  ExistingConfigJSON := ReadFileAsString('C:\poker-tracker\config.json');
+  SheetAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_name') or
+                      JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_id');
+  ScreenNameAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'pokerstars_screen_name');
+  HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
+  TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
+  CredentialsAlreadySet := FileExists('C:\poker-tracker\credentials\google_service_account.json');
+
+  // The only visible sign an upgrade is happening at all, on either path
+  // — before this, a rerun over an existing install silently showed fewer
+  // pages (manual) or silently skipped questions (Telegram, once
+  // bot.RunSetup does the same), with nothing explaining why. This is the
+  // first page in the whole wizard, seen regardless of which method gets
+  // picked next.
+  if ExistingConfigJSON <> '' then
+    MethodDescription := 'An existing installation was found. Whatever''s already configured — sheet, screen name, folders, credentials — will be kept as-is; you''ll only be asked about anything still missing.'
+  else
+    MethodDescription := '';
+
   // Anchored at wpSelectDir, not wpWelcome — {app} only becomes valid for
   // ExpandConstant once the wizard's internal position passes wpSelectDir,
   // regardless of DisableDirPage hiding that page from view (it hides the
@@ -312,7 +339,7 @@ begin
   PageMethod := CreateInputOptionPage(wpSelectDir,
     'Setup Method',
     'Would you like to set up via Telegram? (Recommended)',
-    '',
+    MethodDescription,
     True, False);
   PageMethod.Add('Yes, use Telegram');
   PageMethod.Add('No, set up manually');
@@ -356,18 +383,6 @@ begin
     'Do NOT browse into your screen name''s subfolder underneath it — that part is added automatically.',
     False, '');
   PageTournamentDir.Add('Parent TournamentSummaries folder:');
-
-  // Read before {app} is valid for ExpandConstant (see the comment at the
-  // top of this procedure) — hardcoded to match DefaultDirName ([Setup]
-  // above) rather than expanded, since this runs before the wizard's
-  // internal position has passed wpSelectDir.
-  ExistingConfigJSON := ReadFileAsString('C:\poker-tracker\config.json');
-  SheetAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_name') or
-                      JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_id');
-  ScreenNameAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'pokerstars_screen_name');
-  HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
-  TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
-  CredentialsAlreadySet := FileExists('C:\poker-tracker\credentials\google_service_account.json');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
