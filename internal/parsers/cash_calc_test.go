@@ -105,6 +105,9 @@ Total pot $0.15 | Rake $0
 	if session.PFR != 0 {
 		t.Errorf("PFR = %v, want 0", session.PFR)
 	}
+	if session.FirstHandID != "200000000001" {
+		t.Errorf("FirstHandID = %q, want 200000000001", session.FirstHandID)
+	}
 }
 
 // TestParseCashFile_MultiHand covers a 4-hand session exercising fold, call
@@ -193,6 +196,33 @@ Total pot $0.15 | Rake $0
 	}
 	if session.PFR != 25 {
 		t.Errorf("PFR = %v, want 25", session.PFR)
+	}
+	// FirstHandID must stay pinned to the file's first hand, not drift to the
+	// last one parsed — this is what keeps the session's storage key stable
+	// as PokerStars keeps appending hands to the same file.
+	if session.FirstHandID != "200000000001" {
+		t.Errorf("FirstHandID = %q, want 200000000001 (the first hand, not the last)", session.FirstHandID)
+	}
+}
+
+func TestExtractHandID(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"cash hand", "PokerStars Hand #200000000001:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET", "200000000001"},
+		{"zoom hand", "PokerStars Zoom Hand #251912345678:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET", "251912345678"},
+		{"tournament hand", "PokerStars Hand #300000000001: Tournament #987654321, $1.00+$0.10 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET", "300000000001"},
+		{"no hand marker", "Table 'Test' 6-max Seat #1 is the button", ""},
+		{"no colon after id", "PokerStars Hand #123", "123"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := extractHandID(c.line); got != c.want {
+				t.Errorf("extractHandID(%q) = %q, want %q", c.line, got, c.want)
+			}
+		})
 	}
 }
 

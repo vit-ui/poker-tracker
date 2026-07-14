@@ -116,6 +116,93 @@ func TestParseLedgerRows(t *testing.T) {
 	})
 }
 
+// TestCashSessionID confirms the upsert key is stable across repeated
+// re-parses of the same growing file (same date + first hand ID always
+// produces the same ID) and distinct for anything that actually differs.
+func TestCashSessionID(t *testing.T) {
+	d1, _ := time.Parse(dateFormat, "2026-07-01 20:00")
+	d2, _ := time.Parse(dateFormat, "2026-07-01 20:01")
+
+	id1a := cashSessionID(d1, "200000000001")
+	id1b := cashSessionID(d1, "200000000001")
+	if id1a != id1b {
+		t.Errorf("cashSessionID not stable across identical inputs: %q vs %q", id1a, id1b)
+	}
+
+	diffHandID := cashSessionID(d1, "200000000002")
+	if diffHandID == id1a {
+		t.Error("cashSessionID collided for two different first-hand IDs on the same date")
+	}
+
+	diffDate := cashSessionID(d2, "200000000001")
+	if diffDate == id1a {
+		t.Error("cashSessionID collided for two different dates with the same first-hand ID")
+	}
+}
+
+func TestCascadeLedgerAmounts(t *testing.T) {
+	t.Run("single row, last in ledger — matches simple update", func(t *testing.T) {
+		// amounts = [deposit 100, session -5]; correcting the session row
+		// (index 1) to -8 with base = running total before it (100).
+		got := cascadeLedgerAmounts([]float64{100, -5}, 1, -8, 100)
+		want := [][]interface{}{{-8.0, 92.0}}
+		if !equalUpdates(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("interleaved tables — later row's running total must shift too", func(t *testing.T) {
+		// Two tables open at once, start bankroll 100:
+		//   row0 deposit          +100 -> RT 100 (not part of amounts; base=100)
+		//   row1 table A hand 1     -5 -> RT  95
+		//   row2 table B hand 1     -3 -> RT  92
+		// Table A's 2nd hand arrives: cumulative net now -8, correcting row1.
+		// row2 (table B) must be recomputed too — it comes after row1 in the
+		// ledger even though it belongs to a different, unrelated session.
+		amounts := []float64{-5, -3} // row1, row2 (base 100 is the deposit before them)
+		got := cascadeLedgerAmounts(amounts, 0, -8, 100)
+		want := [][]interface{}{
+			{-8.0, 92.0}, // row1 corrected: 100 - 8
+			{-3.0, 89.0}, // row2 recomputed: 92 - 3, not left at its stale 92
+		}
+		if !equalUpdates(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("changed row is the only row", func(t *testing.T) {
+		got := cascadeLedgerAmounts([]float64{-5}, 0, -8, 0)
+		want := [][]interface{}{{-8.0, -8.0}}
+		if !equalUpdates(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("out of range index returns nil", func(t *testing.T) {
+		if got := cascadeLedgerAmounts([]float64{-5}, 5, -8, 0); got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+		if got := cascadeLedgerAmounts([]float64{-5}, -1, -8, 0); got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
+}
+
+func equalUpdates(got, want [][]interface{}) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if len(got[i]) != 2 || len(want[i]) != 2 {
+			return false
+		}
+		if got[i][0].(float64) != want[i][0].(float64) || got[i][1].(float64) != want[i][1].(float64) {
+			return false
+		}
+	}
+	return true
+}
+
 // TestNewClient_MissingCredentialsFile confirms NewClient fails fast at the
 // os.ReadFile step for a nonexistent service account path — no network
 // access is attempted. This is the only part of Client construction
