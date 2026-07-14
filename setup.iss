@@ -89,6 +89,10 @@ var
   // than derived from ExistingConfigJSON (config.json doesn't record
   // this). See ShouldSkipPage and the guarded FileCopy in PreInstallFiles.
   CredentialsAlreadySet: Boolean;
+  // True only when all five of the above are — i.e. there is genuinely
+  // nothing left to configure either way. Drives skipping PageMethod
+  // itself; see InitializeWizard and ShouldSkipPage.
+  AllFieldsAlreadySet: Boolean;
 
 // ReadFileAsString loads Path into a single raw String, or returns '' if
 // the file doesn't exist (the normal case on a fresh install — not an
@@ -311,17 +315,28 @@ begin
   HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
   TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
   CredentialsAlreadySet := FileExists('C:\poker-tracker\credentials\google_service_account.json');
+  AllFieldsAlreadySet := SheetAlreadySet and ScreenNameAlreadySet and HandHistoryAlreadySet and
+                          TournamentAlreadySet and CredentialsAlreadySet;
 
-  // The only visible sign an upgrade is happening at all, on either path
-  // — before this, a rerun over an existing install silently showed fewer
-  // pages (manual) or silently skipped questions (Telegram, once
-  // bot.RunSetup does the same), with nothing explaining why. This is the
-  // first page in the whole wizard, seen regardless of which method gets
-  // picked next.
-  if ExistingConfigJSON <> '' then
-    MethodDescription := 'An existing installation was found. Whatever''s already configured — sheet, screen name, folders, credentials — will be kept as-is; you''ll only be asked about anything still missing.'
+  // PageMethod (Telegram vs manual) only matters when there's a question
+  // for one of the two paths to actually ask — see ShouldSkipPage, which
+  // skips it entirely when AllFieldsAlreadySet. UsingTelegram is then
+  // never assigned (that only happens in NextButtonClick when the player
+  // actually leaves this page) and keeps Pascal's default False, which is
+  // exactly the branch CurStepChanged should take here: rewrite
+  // config.json (a no-op — every field is already preserved-as-is) and
+  // restart the scheduled task, with no Telegram round trip for a
+  // conversation that would have nothing left to ask either.
+  //
+  // The two cases that DO show this page get their own wording — nothing
+  // (fresh) vs something-but-not-everything (partial) — so it's never the
+  // same generic text regardless of which is true.
+  if ExistingConfigJSON = '' then
+    MethodDescription := 'No existing installation was found — this will set up Poker Tracker from scratch.'
   else
-    MethodDescription := '';
+    MethodDescription := 'An existing installation was found, but some settings are still missing. ' +
+      'Whatever''s already configured — sheet, screen name, folders, credentials — will be kept as-is; ' +
+      'you''ll only be asked about what''s still missing.';
 
   // Anchored at wpSelectDir, not wpWelcome — {app} only becomes valid for
   // ExpandConstant once the wizard's internal position passes wpSelectDir,
@@ -388,6 +403,15 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  // Checked before the UsingTelegram branch below since UsingTelegram
+  // isn't meaningfully set yet when this page itself is what's being
+  // asked about — there's nothing for either path to ask when every
+  // field is already configured, so there's no method choice to make.
+  if (PageID = PageMethod.ID) and AllFieldsAlreadySet then
+  begin
+    Result := True;
+    Exit;
+  end;
   if UsingTelegram then
   begin
     // PageCredentials is skipped for Telegram too — bot.RunSetup's own
