@@ -116,17 +116,13 @@ func (c *Client) ensureTabs() error {
 
 	type tabDef struct {
 		name    string
-		headers []interface{} // nil means formula-only tab, never written by script
+		headers []interface{}
 	}
 
 	tabs := []tabDef{
-		{"Dashboard", nil},
 		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}},
-		{"Spin & Go", []interface{}{"Date", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Net (USD)"}},
 		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR"}},
 		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
-		{"Cash Stats", nil},
-		{"Tournament Stats", nil},
 		{"Time Analysis", []interface{}{"Date", "Hour", "Day of Week", "Net (USD)", "Session ID"}},
 	}
 
@@ -145,10 +141,8 @@ func (c *Client) ensureTabs() error {
 			return fmt.Errorf("creating tab %q: %w", tab.name, err)
 		}
 
-		if tab.headers != nil {
-			if err := c.appendRow(tab.name, tab.headers); err != nil {
-				return fmt.Errorf("writing headers for tab %q: %w", tab.name, err)
-			}
+		if err := c.appendRow(tab.name, tab.headers); err != nil {
+			return fmt.Errorf("writing headers for tab %q: %w", tab.name, err)
 		}
 	}
 
