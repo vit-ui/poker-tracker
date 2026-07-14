@@ -7,6 +7,27 @@ import (
 	"testing"
 )
 
+func TestTournament_BaseType(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  string
+		want string
+	}{
+		{"plain mtt", "mtt", "mtt"},
+		{"plain spingo", "spingo", "spingo"},
+		{"knockout mtt", "mtt" + KnockoutSuffix, "mtt"},
+		{"knockout spingo", "spingo" + KnockoutSuffix, "spingo"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tourn := Tournament{Type: c.typ}
+			if got := tourn.BaseType(); got != c.want {
+				t.Errorf("Tournament{Type: %q}.BaseType() = %q, want %q", c.typ, got, c.want)
+			}
+		})
+	}
+}
+
 func TestParseFinishLine(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -138,6 +159,83 @@ Tournament started 2025/02/01 14:05:00 ET
 	}
 	if tourn.WinnerPrizeDescription != "$10.00 Sunday Special Ticket" {
 		t.Errorf("WinnerPrizeDescription = %q, want %q", tourn.WinnerPrizeDescription, "$10.00 Sunday Special Ticket")
+	}
+}
+
+// TestParseTournamentFile_TicketPrizePool confirms a "Total Prize Pool" line
+// suffixed with ticket text (e.g. "$1.00 Power Path Step 2 Ticket", the real
+// PokerStars format for a Power Path Spin & Go satellite) is never parsed as
+// a real dollar amount — PrizePoolUSD stays 0, the raw text is captured in
+// PrizePoolDescription instead, and Multiplier stays nil since there's no
+// real cash pool to divide by BuyInUSD — confirmed against a real summary
+// file. (TestParseTournamentFile_SpinGoWin covers the real-cash-pool case,
+// where PrizePoolUSD and Multiplier are populated normally.)
+func TestParseTournamentFile_TicketPrizePool(t *testing.T) {
+	contents := `PokerStars Tournament #4016076423, No Limit Hold'em
+Buy-In: $0.46/$0.04 USD
+3 players
+Total Prize Pool: $1.00 Power Path Step 2 Ticket
+Tournament started 2026/07/14 17:04:07 ET
+  1: Villain1 (Brazil), $1.00 Power Path Step 2 Ticket
+  2: AnonHero01 (Canada),
+  3: Villain2 (Austria),
+`
+	path := writeTournamentSummary(t, contents)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+
+	if tourn.PrizePoolUSD != 0 {
+		t.Errorf("PrizePoolUSD = %v, want 0 (a ticket-denominated pool is not real cash)", tourn.PrizePoolUSD)
+	}
+	if tourn.PrizePoolDescription != "$1.00 Power Path Step 2 Ticket" {
+		t.Errorf("PrizePoolDescription = %q, want %q", tourn.PrizePoolDescription, "$1.00 Power Path Step 2 Ticket")
+	}
+	if tourn.Type != "spingo" {
+		t.Fatalf("Type = %q, want spingo", tourn.Type)
+	}
+	if tourn.Multiplier != nil {
+		t.Errorf("Multiplier = %v, want nil — no real cash prize pool to divide by BuyInUSD", *tourn.Multiplier)
+	}
+}
+
+// TestParseTournamentFile_HeroWinsTicket covers a Power Path-style satellite
+// where hero themselves finishes 1st and wins a ticket, not cash — the exact
+// PokerStars text still starts with a dollar sign (the ticket's own
+// face-value name, e.g. "$1.00 Power Path Step 2 Ticket"), which must not be
+// parsed as a real cash payout: NetUSD should reflect only the lost buy-in,
+// the same as winning nothing at all, confirmed against a real hand history.
+func TestParseTournamentFile_HeroWinsTicket(t *testing.T) {
+	contents := `PokerStars Tournament #4016076423, No Limit Hold'em
+Buy-In: $0.46/$0.04 USD
+3 players
+Total Prize Pool: $1.00 Power Path Step 2 Ticket
+Tournament started 2026/07/14 17:04:07 BRT [2026/07/14 16:04:07 ET]
+Tournament finished 2026/07/14 17:09:47 BRT [2026/07/14 16:09:47 ET]
+  1: AnonHero01 (Brazil), $1.00 Power Path Step 2 Ticket
+  2: Villain1 (Canada),
+  3: Villain2 (Austria),
+
+You finished in 1st place (eliminated at hand #261437820632).
+`
+	path := writeTournamentSummary(t, contents)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+
+	if tourn.FinishPos != 1 {
+		t.Errorf("FinishPos = %d, want 1", tourn.FinishPos)
+	}
+	if !approxEqual(tourn.NetUSD, -0.50) {
+		t.Errorf("NetUSD = %v, want -0.50 (only the buy-in lost — the ticket has no cash value)", tourn.NetUSD)
+	}
+	if !tourn.LikelySatellite {
+		t.Error("LikelySatellite = false, want true — hero's own payout says 'Ticket'")
+	}
+	if tourn.WinnerPrizeDescription != "$1.00 Power Path Step 2 Ticket" {
+		t.Errorf("WinnerPrizeDescription = %q, want %q", tourn.WinnerPrizeDescription, "$1.00 Power Path Step 2 Ticket")
 	}
 }
 

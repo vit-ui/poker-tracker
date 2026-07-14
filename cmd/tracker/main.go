@@ -437,8 +437,8 @@ func runWorker(
 					return cashSessionSummaryText(*session, bankroll)
 				})
 			} else if tourneyStats != nil {
-				if err := sc.UpdateTournamentVPIPPFR(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR); err != nil {
-					slog.Error("updating tournament VPIP/PFR", "err", err)
+				if err := sc.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
+					slog.Error("updating tournament hand stats", "err", err)
 				}
 			} else {
 				slog.Error("ParseCashFile returned no session and no tournament stats", "path", event.Path)
@@ -451,6 +451,20 @@ func runWorker(
 			}
 			if err != nil {
 				slog.Error("parsing tournament", "path", event.Path, "err", err)
+				continue
+			}
+
+			// Checked once, here, before either the satellite queue or the
+			// direct-append path below runs — a duplicate file event for a
+			// tournament already handled (a stray re-trigger, or literally
+			// the same file copied) must never send a second Telegram
+			// alert, ask the satellite/ticket question twice, or queue a
+			// second pending entry. See tournamentAlreadyHandled's doc
+			// comment for why this is the only place that needs the check.
+			duplicate, err := tournamentAlreadyHandled(t.TournamentID, configPath, sc)
+			if err != nil {
+				slog.Error("checking for duplicate tournament processing", "err", err)
+			} else if duplicate {
 				continue
 			}
 
@@ -477,7 +491,8 @@ func runWorker(
 				continue
 			}
 
-			if err := sc.AppendTournament(t); err != nil {
+			netUSD, err := sc.AppendTournament(t)
+			if err != nil {
 				slog.Error("appending tournament to sheets", "err", err)
 			}
 			if err := hardstop.EvaluateTournament(t, sc, configPath, lockfilePath, alertChan); err != nil {
@@ -487,14 +502,14 @@ func runWorker(
 				slog.Error("evaluating downswing alert", "err", err)
 			}
 			bankroll, _ := sc.GetCurrentBankroll()
-			sign, absNet := "+", t.NetUSD
+			sign, absNet := "+", netUSD
 			if absNet < 0 {
 				sign, absNet = "-", -absNet
 			}
 			var alert string
-			if t.Type == "spingo" {
-				alert = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: $%.2f (%gx)\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
-					t.BuyInUSD, t.PrizePoolUSD, *t.Multiplier, ordinal(t.FinishPos), sign, absNet, bankroll)
+			if t.BaseType() == "spingo" {
+				alert = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
+					t.BuyInUSD, bot.SpinGoPrizePoolText(t), ordinal(t.FinishPos), sign, absNet, bankroll)
 			} else {
 				alert = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s$%.2f\nBankroll: $%.2f",
 					t.BuyInUSD, ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
@@ -502,6 +517,49 @@ func runWorker(
 			alertChan <- alert
 		}
 	}
+}
+
+// tournamentAlreadyHandled reports whether tournamentID has already been
+// queued for a satellite/ticket answer, or already fully recorded in the
+// Tournaments sheet. This is the single place that guards against a
+// duplicate tournament summary file event (a stray re-trigger, or literally
+// the same file copied) causing a second Telegram alert, a second
+// satellite/ticket question, or a second pending-queue entry for the same
+// TournamentID — every caller checks here first, so this is the only place
+// that ever needs to.
+func tournamentAlreadyHandled(tournamentID, configPath string, sc storage.Store) (bool, error) {
+	pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
+	pending, err := config.LoadPendingTournaments(pendingPath)
+	if err != nil {
+		return false, err
+	}
+	// GetTournamentsSince skips partial rows (no Date — created only by a
+	// hand file arriving before the summary; see sheets.GetTournamentsSince),
+	// so a tournament whose hand stats arrived first but whose summary
+	// hasn't been processed yet is correctly reported as not yet handled.
+	recorded, err := sc.GetTournamentsSince(time.Time{})
+	if err != nil {
+		return false, err
+	}
+	return isDuplicateTournament(tournamentID, pending, recorded), nil
+}
+
+// isDuplicateTournament is the pure decision tournamentAlreadyHandled wraps
+// around its two I/O reads: tournamentID is a duplicate if it's already
+// awaiting an answer in the pending queue, or already fully written to the
+// Tournaments sheet.
+func isDuplicateTournament(tournamentID string, pending []config.PendingTournament, recorded []parsers.Tournament) bool {
+	for _, p := range pending {
+		if p.Tournament.TournamentID == tournamentID {
+			return true
+		}
+	}
+	for _, t := range recorded {
+		if t.TournamentID == tournamentID {
+			return true
+		}
+	}
+	return false
 }
 
 // scheduleCashSessionSummary (re)starts a quietPeriod timer for path, keyed

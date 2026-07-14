@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2/google"
@@ -116,32 +117,85 @@ func (c *Client) ensureTabs() error {
 
 	tabs := []tabDef{
 		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}},
-		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR"}},
+		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)"}},
 		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
 		{"Time Analysis", []interface{}{"Date", "Hour", "Day of Week", "Net (USD)", "Session ID"}},
 	}
 
 	for _, tab := range tabs {
-		if existing[tab.name] {
+		if !existing[tab.name] {
+			_, err := c.svc.Spreadsheets.BatchUpdate(c.spreadsheetID, &sheetsapi.BatchUpdateSpreadsheetRequest{
+				Requests: []*sheetsapi.Request{{
+					AddSheet: &sheetsapi.AddSheetRequest{
+						Properties: &sheetsapi.SheetProperties{Title: tab.name},
+					},
+				}},
+			}).Do()
+			if err != nil {
+				return fmt.Errorf("creating tab %q: %w", tab.name, err)
+			}
+
+			if err := c.appendRow(tab.name, tab.headers); err != nil {
+				return fmt.Errorf("writing headers for tab %q: %w", tab.name, err)
+			}
 			continue
 		}
-		_, err := c.svc.Spreadsheets.BatchUpdate(c.spreadsheetID, &sheetsapi.BatchUpdateSpreadsheetRequest{
-			Requests: []*sheetsapi.Request{{
-				AddSheet: &sheetsapi.AddSheetRequest{
-					Properties: &sheetsapi.SheetProperties{Title: tab.name},
-				},
-			}},
-		}).Do()
-		if err != nil {
-			return fmt.Errorf("creating tab %q: %w", tab.name, err)
-		}
 
-		if err := c.appendRow(tab.name, tab.headers); err != nil {
-			return fmt.Errorf("writing headers for tab %q: %w", tab.name, err)
+		// Tab already exists on this spreadsheet — an older release may
+		// have shipped fewer columns than tab.headers currently has (e.g.
+		// Tournaments' Bounty Won/Prize Won, added after installs already
+		// had the tab). Without backfilling, a newly added trailing column
+		// would silently collect real data under a blank header forever,
+		// since this loop only ever writes headers when creating a brand
+		// new tab.
+		if err := c.backfillTabHeaders(tab.name, tab.headers); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// backfillTabHeaders writes whichever of want's header cells are missing
+// from tab's row 1 — the columns beyond however many the sheet's row 1
+// currently has — without touching any cell that already has a value, in
+// case the player has edited an existing header's text. A no-op if row 1
+// already has at least len(want) cells.
+func (c *Client) backfillTabHeaders(tab string, want []interface{}) error {
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID,
+		fmt.Sprintf("%s!1:1", tab),
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return fmt.Errorf("reading %s header row: %w", tab, err)
+	}
+	have := 0
+	if len(resp.Values) > 0 {
+		have = len(resp.Values[0])
+	}
+	if have >= len(want) {
+		return nil
+	}
+
+	rangeStr := fmt.Sprintf("%s!%s1:%s1", tab, columnLetter(have), columnLetter(len(want)-1))
+	if _, err := c.svc.Spreadsheets.Values.Update(
+		c.spreadsheetID, rangeStr,
+		&sheetsapi.ValueRange{Values: [][]interface{}{want[have:]}},
+	).ValueInputOption("RAW").Do(); err != nil {
+		return fmt.Errorf("backfilling %s headers: %w", tab, err)
+	}
+	return nil
+}
+
+// columnLetter converts a 0-based column index to its spreadsheet column
+// letter: 0 -> "A", 25 -> "Z", 26 -> "AA", and so on.
+func columnLetter(idx int) string {
+	letters := ""
+	for idx >= 0 {
+		letters = string(rune('A'+idx%26)) + letters
+		idx = idx/26 - 1
+	}
+	return letters
 }
 
 func (c *Client) appendRow(tab string, values []interface{}) error {
@@ -411,10 +465,125 @@ func (c *Client) findTournamentRow(tournamentID string) (rowIndex int, found boo
 	return c.findRowByColumnValue("Tournaments", "C", tournamentID)
 }
 
+// tournamentRowSnapshot holds the subset of an existing Tournaments row
+// needed to reconcile NetUSD/Type against knockout-bounty data, which is
+// only ever known from the hand history file (UpdateTournamentHandStats) and
+// never from the summary file AppendTournament parses its other fields from.
+type tournamentRowSnapshot struct {
+	date      time.Time
+	typeVal   string
+	buyInUSD  float64
+	hasNetUSD bool // false while the row is still a hand-file-only partial row
+	netUSD    float64
+	bountyUSD float64
+}
+
+// knockoutPlaceholder marks the Type cell of a partial row (created by
+// UpdateTournamentHandStats before the summary file has arrived) as a
+// knockout tournament, since the base "spingo"/"mtt" classification isn't
+// known yet at that point — AppendTournament combines it into the real
+// "<base>-ko" Type once it does.
+const knockoutPlaceholder = "ko"
+
+// readTournamentRow reads the fields of an existing Tournaments row (by
+// 1-based sheet rowIndex) needed to compute a bounty-reconciled NetUSD/Type
+// from either side of the two-file correlation.
+func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) {
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID,
+		fmt.Sprintf("Tournaments!A%d:M%d", rowIndex, rowIndex),
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return tournamentRowSnapshot{}, fmt.Errorf("reading tournament row %d: %w", rowIndex, err)
+	}
+	if len(resp.Values) == 0 {
+		return tournamentRowSnapshot{}, nil
+	}
+	row := resp.Values[0]
+	var snap tournamentRowSnapshot
+	if len(row) > 0 {
+		if date, err := time.Parse(dateFormat, fmt.Sprint(row[0])); err == nil {
+			snap.date = date
+		}
+	}
+	if len(row) > 1 {
+		snap.typeVal = fmt.Sprint(row[1])
+	}
+	if len(row) > 3 {
+		snap.buyInUSD = parseFloat(row[3])
+	}
+	if len(row) > 8 && fmt.Sprint(row[8]) != "" {
+		snap.hasNetUSD = true
+		snap.netUSD = parseFloat(row[8])
+	}
+	if len(row) > 11 {
+		snap.bountyUSD = parseFloat(row[11])
+	}
+	return snap, nil
+}
+
+// foldBountyIntoNet computes the final NetUSD and Prize Won (USD) once the
+// summary file's baseline net (payout - buyin) is known, folding in whatever
+// bounty winnings the hand history file has already recorded for this row.
+// Pure — the Sheets I/O wrapper is AppendTournament.
+func foldBountyIntoNet(baselineNetUSD, bountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
+	netUSD = baselineNetUSD + bountyUSD
+	return netUSD, netUSD + buyInUSD
+}
+
+// reconcileKnockoutType computes the Type value AppendTournament should
+// write once the base type ("spingo"/"mtt") is known, combining it with
+// whatever knockout signal an existing row (created by
+// UpdateTournamentHandStats before the summary file arrived) already
+// recorded in its Type cell — either knockoutPlaceholder or a Type already
+// carrying parsers.KnockoutSuffix. Pure — the Sheets I/O wrapper is
+// AppendTournament.
+func reconcileKnockoutType(baseType, existingTypeCell string) string {
+	if existingTypeCell == knockoutPlaceholder || strings.HasSuffix(existingTypeCell, parsers.KnockoutSuffix) {
+		return baseType + parsers.KnockoutSuffix
+	}
+	return baseType
+}
+
+// appendKnockoutSuffix computes the Type value UpdateTournamentHandStats
+// should write when a hand history file flags a tournament as knockout,
+// preserving whatever base type (or lack thereof, via knockoutPlaceholder)
+// the row's Type cell already has. Idempotent — a Type that's already
+// suffixed or already the placeholder is returned unchanged. Pure — the
+// Sheets I/O wrapper is UpdateTournamentHandStats.
+func appendKnockoutSuffix(existingTypeCell string) string {
+	if existingTypeCell == knockoutPlaceholder || strings.HasSuffix(existingTypeCell, parsers.KnockoutSuffix) {
+		return existingTypeCell
+	}
+	if existingTypeCell == "" {
+		return knockoutPlaceholder
+	}
+	return existingTypeCell + parsers.KnockoutSuffix
+}
+
+// reconcileTournamentBounty computes the corrected NetUSD and Prize Won
+// (USD) after a freshly reparsed cumulative bounty total replaces whatever
+// this row's previous bounty contribution to storedNetUSD was. Pure — the
+// Sheets I/O wrapper is UpdateTournamentHandStats.
+func reconcileTournamentBounty(storedNetUSD, storedBountyUSD, newBountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
+	netUSD = (storedNetUSD - storedBountyUSD) + newBountyUSD
+	return netUSD, netUSD + buyInUSD
+}
+
 // AppendTournament upserts one row in Tournaments (keyed by TournamentID) and
-// appends one row to Bankroll Ledger. If the row already exists (created by
-// UpdateTournamentVPIPPFR), updates columns A–I and leaves VPIP/PFR untouched.
-func (c *Client) AppendTournament(t parsers.Tournament) error {
+// upserts its Bankroll Ledger row (see upsertLedgerTournamentRow). If the
+// Tournaments row already exists (created by UpdateTournamentHandStats),
+// updates columns A–I, folding in whatever bounty winnings that row already
+// has recorded (column L, Bounty Won) — the summary file this data comes
+// from has no concept of bounties at all, only the hand history file's
+// elimination lines do (why two files: plan §Why Tournaments Need Two
+// Files) — and carries forward the knockoutPlaceholder into a real
+// "<base>-ko" Type if the row was flagged knockout. Writes Prize Won
+// (column M, = NetUSD + BuyInUSD) alongside. Leaves VPIP/PFR/Bounty Won
+// (J:L) untouched. Returns the final NetUSD (baseline net plus any bounty)
+// so callers can report or evaluate against the real total rather than the
+// pre-bounty figure.
+func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
 	var multiplier interface{}
 	if t.Multiplier != nil {
 		multiplier = *t.Multiplier
@@ -422,97 +591,221 @@ func (c *Client) AppendTournament(t parsers.Tournament) error {
 		multiplier = ""
 	}
 
-	rowIndex, found, err := c.findTournamentRow(t.TournamentID)
-	if err != nil {
-		return err
+	// A ticket-denominated prize pool (e.g. "$1.00 Power Path Step 2
+	// Ticket") is never a real dollar amount — writing the raw description
+	// text here instead of PrizePoolUSD (always 0 in that case) keeps the
+	// cell from reading as a misleading cash figure.
+	var prizePool interface{} = t.PrizePoolUSD
+	if t.PrizePoolDescription != "" {
+		prizePool = t.PrizePoolDescription
 	}
 
+	rowIndex, found, err := c.findTournamentRow(t.TournamentID)
+	if err != nil {
+		return 0, err
+	}
+
+	var bounty float64
+	typeOut := t.Type
 	if found {
-		// Row was pre-created by UpdateTournamentVPIPPFR — update main columns
-		// only, leaving VPIP/PFR (J:K) untouched.
+		snap, err := c.readTournamentRow(rowIndex)
+		if err != nil {
+			return 0, err
+		}
+		bounty = snap.bountyUSD
+		typeOut = reconcileKnockoutType(t.Type, snap.typeVal)
+	}
+	netUSD, prizeWon := foldBountyIntoNet(t.NetUSD, bounty, t.BuyInUSD)
+
+	if found {
+		// Row was pre-created by UpdateTournamentHandStats — update main
+		// columns only, leaving VPIP/PFR/Bounty Won (J:L) untouched.
 		rangeStr := fmt.Sprintf("Tournaments!A%d:I%d", rowIndex, rowIndex)
 		_, err := c.svc.Spreadsheets.Values.Update(
 			c.spreadsheetID, rangeStr,
 			&sheetsapi.ValueRange{Values: [][]interface{}{{
 				t.Date.Format(dateFormat),
-				t.Type,
+				typeOut,
 				t.TournamentID,
 				t.BuyInUSD,
-				t.PrizePoolUSD,
+				prizePool,
 				multiplier,
 				t.FinishPos,
 				t.TotalPlayers,
-				t.NetUSD,
+				netUSD,
 			}}},
 		).ValueInputOption("RAW").Do()
 		if err != nil {
-			return fmt.Errorf("updating tournament row: %w", err)
+			return 0, fmt.Errorf("updating tournament row: %w", err)
+		}
+
+		mRange := fmt.Sprintf("Tournaments!M%d", rowIndex)
+		if _, err := c.svc.Spreadsheets.Values.Update(
+			c.spreadsheetID, mRange,
+			&sheetsapi.ValueRange{Values: [][]interface{}{{prizeWon}}},
+		).ValueInputOption("RAW").Do(); err != nil {
+			return 0, fmt.Errorf("updating prize won for tournament %s: %w", t.TournamentID, err)
 		}
 	} else {
 		if err := c.appendRow("Tournaments", []interface{}{
 			t.Date.Format(dateFormat),
-			t.Type,
+			typeOut,
 			t.TournamentID,
 			t.BuyInUSD,
-			t.PrizePoolUSD,
+			prizePool,
 			multiplier,
 			t.FinishPos,
 			t.TotalPlayers,
-			t.NetUSD,
-			"", // VPIP — filled later by UpdateTournamentVPIPPFR
-			"", // PFR  — filled later by UpdateTournamentVPIPPFR
+			netUSD,
+			"", // VPIP — filled later by UpdateTournamentHandStats
+			"", // PFR  — filled later by UpdateTournamentHandStats
+			"", // Bounty Won (USD) — filled later by UpdateTournamentHandStats
+			prizeWon,
 		}); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
-	prev, err := c.getLastRunningTotal()
+	if err := c.upsertLedgerTournamentRow(t.TournamentID, t.Date, netUSD); err != nil {
+		return 0, err
+	}
+	return netUSD, nil
+}
+
+// upsertLedgerTournamentRow corrects the tournament's own Bankroll Ledger row
+// in place, keyed by TournamentID in the Session ID column, rather than
+// appending a new one on every call. AppendTournament can legitimately run
+// more than once for the same TournamentID — the satellite/ticket flow calls
+// it once a queued tournament's cash-vs-ticket answer arrives, and a stray
+// duplicate file event is otherwise indistinguishable from a real one to the
+// watcher — and without this, the Tournaments tab stays deduplicated (see
+// findTournamentRow) while the ledger silently double-counts the same
+// tournament's net result. Mirrors upsertLedgerCashSessionRow.
+func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, netUSD float64) error {
+	rowIndex, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", tournamentID)
 	if err != nil {
 		return err
 	}
-	return c.appendRow("Bankroll Ledger", []interface{}{
-		t.Date.Format(dateFormat),
-		"tournament",
-		t.NetUSD,
-		prev + t.NetUSD,
-	})
+	if !found {
+		prev, err := c.getLastRunningTotal()
+		if err != nil {
+			return err
+		}
+		return c.appendRow("Bankroll Ledger", []interface{}{
+			date.Format(dateFormat),
+			"tournament",
+			netUSD,
+			prev + netUSD,
+			tournamentID,
+		})
+	}
+
+	return c.updateLedgerAmountCascading(rowIndex, netUSD)
 }
 
-// UpdateTournamentVPIPPFR writes VPIP and PFR for a tournament identified by
-// tournamentID. If the row exists (created by AppendTournament), updates J:K.
-// If not, appends a partial row so the stats are available when the summary
-// file arrives later and AppendTournament completes the row.
-func (c *Client) UpdateTournamentVPIPPFR(tournamentID string, vpip, pfr float64) error {
+// UpdateTournamentHandStats writes VPIP, PFR, and knockout-bounty winnings
+// for a tournament identified by tournamentID, extracted from its hand
+// history file (see parsers.TournamentHandStats) — the summary file the rest
+// of the row's fields come from has no concept of bounties at all, only the
+// hand history file's per-elimination lines and per-seat bounty markers do
+// (why two files: plan §Why Tournaments Need Two Files).
+//
+// If no row exists yet, creates a partial one exactly as before, extended
+// with Bounty Won and (if isKnockout) knockoutPlaceholder in place of Type,
+// and stops there — AppendTournament will complete it once the summary file
+// arrives, combining the placeholder into a real "<base>-ko" Type and
+// folding in this bounty (see its doc comment). If a row exists but summary
+// data (NetUSD, column I) hasn't arrived yet either, only J:L (and possibly
+// B, for the same knockoutPlaceholder reason) are written and NetUSD/Prize
+// Won/the ledger are left alone. If a row exists and already has summary
+// data — the common case, since the hand history file grows and is
+// reparsed (recomputing this tournament's cumulative bounty from scratch)
+// throughout the tournament while the summary only ever arrives once at the
+// end — NetUSD is reconciled as (storedNetUSD - storedBounty) + bountyUSD,
+// undoing this row's previous bounty contribution and applying the freshly
+// reparsed total; Prize Won (column M) and the tournament's Bankroll Ledger
+// row are corrected to match via upsertLedgerTournamentRow. If isKnockout
+// and the row's Type doesn't carry KnockoutSuffix yet, it's appended.
+func (c *Client) UpdateTournamentHandStats(tournamentID string, vpip, pfr, bountyUSD float64, isKnockout bool) error {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil {
 		return err
 	}
-	if found {
-		rangeStr := fmt.Sprintf("Tournaments!J%d:K%d", rowIndex, rowIndex)
-		_, err := c.svc.Spreadsheets.Values.Update(
-			c.spreadsheetID, rangeStr,
-			&sheetsapi.ValueRange{Values: [][]interface{}{{vpip, pfr}}},
-		).ValueInputOption("RAW").Do()
-		if err != nil {
-			return fmt.Errorf("updating VPIP/PFR for tournament %s: %w", tournamentID, err)
+	if !found {
+		// Summary not yet processed — create a partial row; AppendTournament
+		// will fill in the remaining columns when the summary file arrives.
+		typeCell := ""
+		if isKnockout {
+			typeCell = knockoutPlaceholder
 		}
+		return c.appendRow("Tournaments", []interface{}{
+			"", // Date
+			typeCell,
+			tournamentID,
+			"", // Buy-In
+			"", // Prize Pool
+			"", // Multiplier
+			"", // Finish Position
+			"", // Total Players
+			"", // Net
+			vpip,
+			pfr,
+			bountyUSD,
+			"", // Prize Won (USD) — filled in once AppendTournament knows BuyInUSD
+		})
+	}
+
+	snap, err := c.readTournamentRow(rowIndex)
+	if err != nil {
+		return err
+	}
+
+	typeOut := snap.typeVal
+	if isKnockout {
+		typeOut = appendKnockoutSuffix(snap.typeVal)
+	}
+	if typeOut != snap.typeVal {
+		bRange := fmt.Sprintf("Tournaments!B%d", rowIndex)
+		if _, err := c.svc.Spreadsheets.Values.Update(
+			c.spreadsheetID, bRange,
+			&sheetsapi.ValueRange{Values: [][]interface{}{{typeOut}}},
+		).ValueInputOption("RAW").Do(); err != nil {
+			return fmt.Errorf("updating type for tournament %s: %w", tournamentID, err)
+		}
+	}
+
+	jlRange := fmt.Sprintf("Tournaments!J%d:L%d", rowIndex, rowIndex)
+	if _, err := c.svc.Spreadsheets.Values.Update(
+		c.spreadsheetID, jlRange,
+		&sheetsapi.ValueRange{Values: [][]interface{}{{vpip, pfr, bountyUSD}}},
+	).ValueInputOption("RAW").Do(); err != nil {
+		return fmt.Errorf("updating hand stats for tournament %s: %w", tournamentID, err)
+	}
+
+	if !snap.hasNetUSD {
+		// Summary still hasn't arrived — nothing to reconcile yet.
 		return nil
 	}
-	// Summary not yet processed — create a partial row; AppendTournament will
-	// fill in the remaining columns when the summary file arrives.
-	return c.appendRow("Tournaments", []interface{}{
-		"", // Date
-		"", // Type
-		tournamentID,
-		"", // Buy-In
-		"", // Prize Pool
-		"", // Multiplier
-		"", // Finish Position
-		"", // Total Players
-		"", // Net
-		vpip,
-		pfr,
-	})
+
+	netUSD, prizeWon := reconcileTournamentBounty(snap.netUSD, snap.bountyUSD, bountyUSD, snap.buyInUSD)
+
+	iRange := fmt.Sprintf("Tournaments!I%d", rowIndex)
+	if _, err := c.svc.Spreadsheets.Values.Update(
+		c.spreadsheetID, iRange,
+		&sheetsapi.ValueRange{Values: [][]interface{}{{netUSD}}},
+	).ValueInputOption("RAW").Do(); err != nil {
+		return fmt.Errorf("reconciling net for tournament %s: %w", tournamentID, err)
+	}
+
+	mRange := fmt.Sprintf("Tournaments!M%d", rowIndex)
+	if _, err := c.svc.Spreadsheets.Values.Update(
+		c.spreadsheetID, mRange,
+		&sheetsapi.ValueRange{Values: [][]interface{}{{prizeWon}}},
+	).ValueInputOption("RAW").Do(); err != nil {
+		return fmt.Errorf("updating prize won for tournament %s: %w", tournamentID, err)
+	}
+
+	return c.upsertLedgerTournamentRow(tournamentID, snap.date, netUSD)
 }
 
 // AppendLedgerEntry appends a deposit or withdrawal row to Bankroll Ledger.
@@ -604,7 +897,7 @@ func (c *Client) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error
 }
 
 // GetTournamentsSince returns all Tournaments rows where Date >= since.
-// Partial rows (no Date) created by UpdateTournamentVPIPPFR are skipped.
+// Partial rows (no Date) created by UpdateTournamentHandStats are skipped.
 func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
 	resp, err := c.svc.Spreadsheets.Values.Get(
 		c.spreadsheetID,
@@ -630,10 +923,17 @@ func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, err
 			Type:         fmt.Sprint(row[1]),
 			TournamentID: fmt.Sprint(row[2]),
 			BuyInUSD:     parseFloat(row[3]),
-			PrizePoolUSD: parseFloat(row[4]),
 			FinishPos:    parseInt(row[6]),
 			TotalPlayers: parseInt(row[7]),
 			NetUSD:       parseFloat(row[8]),
+		}
+		// Prize Pool (col E) holds a number for a real cash pool, or text
+		// for a ticket-denominated one (e.g. "$1.00 Power Path Step 2
+		// Ticket") — see AppendTournament's prizePool write.
+		if desc, ok := row[4].(string); ok && desc != "" {
+			tourn.PrizePoolDescription = desc
+		} else {
+			tourn.PrizePoolUSD = parseFloat(row[4])
 		}
 		// Multiplier (col F) is empty for MTT rows.
 		if mult := fmt.Sprint(row[5]); mult != "" {

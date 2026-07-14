@@ -20,8 +20,8 @@ type LedgerEntry struct {
 // is exactly the operations the worker, bot, and hardstop code call.
 type Store interface {
 	AppendCashSession(session parsers.CashSession) error
-	AppendTournament(t parsers.Tournament) error
-	UpdateTournamentVPIPPFR(tournamentID string, vpip, pfr float64) error
+	AppendTournament(t parsers.Tournament) (float64, error)
+	UpdateTournamentHandStats(tournamentID string, vpip, pfr, bountyUSD float64, isKnockout bool) error
 	AppendLedgerEntry(entryType string, amountUSD float64) error
 	GetCurrentBankroll() (float64, error)
 	GetSheetURL() string

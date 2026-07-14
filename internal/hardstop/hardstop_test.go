@@ -98,6 +98,26 @@ func TestDailyLossExceeds(t *testing.T) {
 	}
 }
 
+// TestSpingoOnly confirms a knockout Spin & Go ("spingo-ko") still counts
+// toward the Spin & Go daily-loss hard stop, the same as a non-knockout one
+// — evaluateDailyLoss filters by BaseType() specifically so a knockout
+// tournament isn't silently excluded from this check.
+func TestSpingoOnly(t *testing.T) {
+	tournaments := []parsers.Tournament{
+		{Type: "spingo", NetUSD: -1},
+		{Type: "spingo" + parsers.KnockoutSuffix, NetUSD: -2},
+		{Type: "mtt", NetUSD: -3},
+		{Type: "mtt" + parsers.KnockoutSuffix, NetUSD: -4},
+	}
+	got := spingoOnly(tournaments)
+	if len(got) != 2 {
+		t.Fatalf("len(spingoOnly(...)) = %d, want 2", len(got))
+	}
+	if got[0].NetUSD != -1 || got[1].NetUSD != -2 {
+		t.Errorf("spingoOnly(...) = %+v, want the two spingo/spingo-ko rows only", got)
+	}
+}
+
 func TestSpingoDailyLossExceeds(t *testing.T) {
 	tournamentsOf := func(nets ...float64) []parsers.Tournament {
 		tourns := make([]parsers.Tournament, len(nets))

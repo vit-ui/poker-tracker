@@ -5,8 +5,54 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
+
+// TestIsDuplicateTournament exercises the single choke point guarding
+// against a duplicate tournament summary file event (a stray re-trigger, or
+// literally the same file copied) — the exact bug that caused a repeated
+// Telegram alert and a repeated satellite/ticket question for the same
+// tournament before this check existed.
+func TestIsDuplicateTournament(t *testing.T) {
+	pendingOf := func(ids ...string) []config.PendingTournament {
+		pending := make([]config.PendingTournament, len(ids))
+		for i, id := range ids {
+			pending[i] = config.PendingTournament{Tournament: parsers.Tournament{TournamentID: id}}
+		}
+		return pending
+	}
+	recordedOf := func(ids ...string) []parsers.Tournament {
+		recorded := make([]parsers.Tournament, len(ids))
+		for i, id := range ids {
+			recorded[i] = parsers.Tournament{TournamentID: id}
+		}
+		return recorded
+	}
+
+	cases := []struct {
+		name     string
+		id       string
+		pending  []config.PendingTournament
+		recorded []parsers.Tournament
+		want     bool
+	}{
+		{"brand new tournament, neither pending nor recorded", "111", nil, nil, false},
+		{"already awaiting a satellite/ticket answer", "111", pendingOf("111"), nil, true},
+		{"already fully recorded in the Tournaments sheet", "111", nil, recordedOf("111"), true},
+		{"a different tournament pending doesn't false-positive", "111", pendingOf("222"), nil, false},
+		{"a different tournament recorded doesn't false-positive", "111", nil, recordedOf("222"), false},
+		{"pending and recorded both present but for other IDs", "111", pendingOf("222"), recordedOf("333"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := isDuplicateTournament(c.id, c.pending, c.recorded)
+			if got != c.want {
+				t.Errorf("isDuplicateTournament(%q, ...) = %v, want %v", c.id, got, c.want)
+			}
+		})
+	}
+}
 
 func TestCashSessionSummaryText(t *testing.T) {
 	cases := []struct {

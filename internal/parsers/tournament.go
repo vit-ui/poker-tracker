@@ -13,21 +13,45 @@ import (
 // The caller should skip freerolls — they have no monetary value.
 var ErrFreeroll = errors.New("freeroll")
 
+// KnockoutSuffix marks a knockout (bounty) tournament on Tournament.Type,
+// e.g. "mtt-ko" or "spingo-ko". Only ever appended by the storage layer once
+// the hand history file reveals it — the tournament summary file, which
+// ParseTournamentFile derives the base "spingo"/"mtt" from, never mentions
+// bounties at all (why two files: plan §Why Tournaments Need Two Files).
+// Code that filters or branches on game type should compare against
+// BaseType(), not Type directly, so a knockout tournament still counts as
+// its base type.
+const KnockoutSuffix = "-ko"
+
 // Tournament holds results for a single tournament (Spin & Go or MTT).
 type Tournament struct {
-	Date                   time.Time
-	Type                   string // "spingo" or "mtt"
-	TournamentID           string
-	BuyInUSD               float64
-	PrizePoolUSD           float64
-	Multiplier             *float64 // non-nil only for spingo
+	Date         time.Time
+	Type         string // "spingo" or "mtt", plus KnockoutSuffix if it's a knockout tournament
+	TournamentID string
+	BuyInUSD     float64
+	PrizePoolUSD float64 // 0 when the pool itself is ticket/pass-denominated — see PrizePoolDescription
+
+	// PrizePoolDescription holds the "Total Prize Pool" line's exact text
+	// when it's a ticket/pass rather than a dollar amount (e.g. "$1.00
+	// Power Path Step 2 Ticket" — the ticket's own face-value name, not a
+	// real cash pool). Empty for a normal cash-denominated prize pool, in
+	// which case PrizePoolUSD holds the real amount instead.
+	PrizePoolDescription   string
+	Multiplier             *float64 // non-nil only for spingo with a real cash prize pool (nil if PrizePoolDescription is set)
 	FinishPos              int
 	TotalPlayers           int
 	NetUSD                 float64
-	VPIP                   *float64 // populated from hand history via UpdateTournamentVPIPPFR
-	PFR                    *float64 // populated from hand history via UpdateTournamentVPIPPFR
+	VPIP                   *float64 // populated from hand history via UpdateTournamentHandStats
+	PFR                    *float64 // populated from hand history via UpdateTournamentHandStats
 	LikelySatellite        bool     // true if finish position 1's payout reads as a ticket/pass, not a cash prize
 	WinnerPrizeDescription string   // finish position 1's exact payout text. Empty if not flagged.
+}
+
+// BaseType returns Type with any KnockoutSuffix stripped, so filtering or
+// branching logic ("spingo" vs "mtt") treats a knockout tournament the same
+// as its non-knockout counterpart.
+func (t Tournament) BaseType() string {
+	return strings.TrimSuffix(t.Type, KnockoutSuffix)
 }
 
 // ParseTournamentFile parses a PokerStars tournament summary (.txt) file.
@@ -80,7 +104,16 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			}
 
 		case strings.HasPrefix(line, "Total Prize Pool: $"):
-			if amt, ok := parseLeadingAmount(line[len("Total Prize Pool: $"):]); ok {
+			// A satellite/qualifier's prize pool can itself be
+			// ticket-denominated (e.g. "Total Prize Pool: $1.00 Power Path
+			// Step 2 Ticket") — that leading dollar amount is the ticket's
+			// own face-value name, not a real cash pool, so it must never
+			// be parsed as PrizePoolUSD (same distinction the player's own
+			// payout and finish-position-1 checks make).
+			rest := strings.TrimRight(line[len("Total Prize Pool: $"):], " \r")
+			if isTicketOrPass(rest) {
+				t.PrizePoolDescription = "$" + rest
+			} else if amt, ok := parseLeadingAmount(rest); ok {
 				t.PrizePoolUSD = amt
 			}
 
@@ -104,22 +137,31 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 					t.FinishPos = pos
 				}
 			}
-			// Payout is after "), $" — absent when player won nothing.
-			const payoutMarker = "), $"
-			if payIdx := strings.Index(line, payoutMarker); payIdx >= 0 {
-				if payout, ok := parseLeadingAmount(line[payIdx+len(payoutMarker):]); ok {
-					t.NetUSD = payout - t.BuyInUSD
+			// Payout text is after "), " — empty when the player won
+			// nothing. A ticket/pass payout (e.g. "$1.00 Power Path Step 2
+			// Ticket") still starts with a dollar sign — that's the ticket's
+			// own face-value name, not a cash credit PokerStars actually
+			// paid out — so it must never be parsed as a NetUSD amount, the
+			// same distinction the finish-position-1 satellite check below
+			// makes. A screenName who wins a ticket themselves has NetUSD
+			// computed the same as a screenName who won nothing at all:
+			// just -BuyInUSD.
+			const payoutTextMarker = "), "
+			t.NetUSD = -t.BuyInUSD
+			if payIdx := strings.Index(line, payoutTextMarker); payIdx >= 0 {
+				payoutText := strings.TrimRight(line[payIdx+len(payoutTextMarker):], " \r")
+				if payoutText != "" && !isTicketOrPass(payoutText) {
+					if payout, ok := parseLeadingAmount(payoutText); ok {
+						t.NetUSD = payout - t.BuyInUSD
+					}
 				}
-			} else {
-				t.NetUSD = -t.BuyInUSD
 			}
 		}
 
 		// Finish position 1 is checked independently of the switch above since
 		// it's often a different player than screenName.
 		if pos, payout, ok := parseFinishLine(line); ok && pos == 1 {
-			lower := strings.ToLower(payout)
-			if strings.Contains(lower, "ticket") || strings.Contains(lower, "pass") {
+			if isTicketOrPass(payout) {
 				t.LikelySatellite = true
 				t.WinnerPrizeDescription = payout
 			}
@@ -134,13 +176,28 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 
 	if playerCount == 3 {
 		t.Type = "spingo"
-		m := t.PrizePoolUSD / t.BuyInUSD
-		t.Multiplier = &m
+		// A ticket-denominated prize pool (PrizePoolDescription set) has no
+		// real dollar amount to divide by BuyInUSD — Multiplier stays nil,
+		// same as it already does for every MTT.
+		if t.PrizePoolDescription == "" {
+			m := t.PrizePoolUSD / t.BuyInUSD
+			t.Multiplier = &m
+		}
 	} else {
 		t.Type = "mtt"
 	}
 
 	return t, nil
+}
+
+// isTicketOrPass reports whether a payout description is a tournament
+// ticket or pass rather than a real cash payout. These can still start with
+// a dollar sign (e.g. "$1.00 Power Path Step 2 Ticket" — the ticket's own
+// face-value name, not a cash credit PokerStars actually paid out), so this
+// is a text match, not a numeric check.
+func isTicketOrPass(payout string) bool {
+	lower := strings.ToLower(payout)
+	return strings.Contains(lower, "ticket") || strings.Contains(lower, "pass")
 }
 
 // parseFinishLine extracts the finish position and exact payout text from a

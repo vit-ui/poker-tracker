@@ -155,6 +155,20 @@ func inRollingWindow(entryDate, cutoff time.Time) bool {
 	return entryDate.After(cutoff)
 }
 
+// spingoOnly filters tournaments to Spin & Go rows only, matching by
+// BaseType so a knockout Spin & Go ("spingo-ko") is still included — a
+// knockout tournament must count toward the Spin & Go daily-loss hard stop
+// the same as a non-knockout one.
+func spingoOnly(tournaments []parsers.Tournament) []parsers.Tournament {
+	var result []parsers.Tournament
+	for _, t := range tournaments {
+		if t.BaseType() == "spingo" {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
 // sessionOnly filters entries to cash_session and tournament rows only,
 // excluding deposit/withdrawal transfers. RunningTotal includes transfers,
 // so mixing them into an equity curve would read a large withdrawal as an
@@ -288,13 +302,7 @@ func evaluateDailyLoss(cfg *config.Config, sheetsClient storage.Store, lockfileP
 		if err != nil {
 			return false, err
 		}
-		var spingoToday []parsers.Tournament
-		for _, t := range tournaments {
-			if t.Type == "spingo" {
-				spingoToday = append(spingoToday, t)
-			}
-		}
-		if spingoDailyLossExceeds(spingoToday, *h.SpingoDailyLossUSD) {
+		if spingoDailyLossExceeds(spingoOnly(tournaments), *h.SpingoDailyLossUSD) {
 			if h.DurationHours == nil {
 				return false, fmt.Errorf("spingo_daily_loss_usd configured without duration_hours")
 			}

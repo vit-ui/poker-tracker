@@ -10,6 +10,41 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
+// TestSpinGoPrizePoolText covers both the real-cash-pool and
+// ticket-denominated-pool cases — the second is the one that used to crash
+// main.go's post-session alert by dereferencing a nil Multiplier.
+func TestSpinGoPrizePoolText(t *testing.T) {
+	mult := 3.0
+	cases := []struct {
+		name  string
+		tourn parsers.Tournament
+		want  string
+	}{
+		{
+			"real cash prize pool",
+			parsers.Tournament{PrizePoolUSD: 3.00, Multiplier: &mult},
+			"$3.00 (3x)",
+		},
+		{
+			"ticket-denominated prize pool — no real dollar amount or multiplier",
+			parsers.Tournament{PrizePoolDescription: "$1.00 Power Path Step 2 Ticket"},
+			"$1.00 Power Path Step 2 Ticket",
+		},
+		{
+			"real cash prize pool but nil Multiplier defensively doesn't panic",
+			parsers.Tournament{PrizePoolUSD: 3.00, Multiplier: nil},
+			"$3.00 (0x)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := SpinGoPrizePoolText(c.tourn); got != c.want {
+				t.Errorf("SpinGoPrizePoolText(%+v) = %q, want %q", c.tourn, got, c.want)
+			}
+		})
+	}
+}
+
 func TestWeightedBB100(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -66,6 +101,15 @@ func TestROI(t *testing.T) {
 			[]parsers.Tournament{{Type: "spingo", NetUSD: 5, BuyInUSD: 0}},
 			"spingo",
 			0,
+		},
+		{
+			"knockout suffix still counts as its base type",
+			[]parsers.Tournament{
+				{Type: "mtt" + parsers.KnockoutSuffix, NetUSD: 5, BuyInUSD: 10},
+				{Type: "spingo", NetUSD: 100, BuyInUSD: 5},
+			},
+			"mtt",
+			50,
 		},
 	}
 	for _, c := range cases {

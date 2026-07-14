@@ -31,12 +31,32 @@ type CashSession struct {
 	FirstHandID string
 }
 
-// TournamentHandStats holds VPIP/PFR stats extracted from a tournament hand
-// history file. Returned by ParseCashFile when the file is a tournament session.
+// TournamentHandStats holds stats extracted from a tournament hand history
+// file. Returned by ParseCashFile when the file is a tournament session.
+// Knockout-bounty winnings only ever appear here — the tournament summary
+// file has no concept of them at all, only the hand history file's
+// elimination lines do (why two files: plan §Why Tournaments Need Two
+// Files) — so BountyUSD and IsKnockout, like VPIP/PFR, are always populated
+// from this struct, never from ParseTournamentFile.
 type TournamentHandStats struct {
 	TournamentID string
 	VPIP         float64
 	PFR          float64
+
+	// BountyUSD is the cumulative knockout-bounty cash won by screenName
+	// across every "<name> wins $X.XX for eliminating ..." line in the file,
+	// recomputed from scratch on every parse — the same file keeps growing
+	// with every hand across the whole tournament (not per table), so this
+	// is always the tournament's true cumulative bounty total, not a
+	// per-call increment. Zero for a non-knockout tournament.
+	BountyUSD float64
+
+	// IsKnockout is true if any seat in the file shows a bounty ("$X.XX
+	// bounty)" in the pre-hand seat listing) — present for every seat in a
+	// knockout tournament regardless of whether screenName ever eliminates
+	// anyone, unlike BountyUSD which can legitimately be zero in a knockout
+	// tournament screenName didn't score a KO in.
+	IsKnockout bool
 }
 
 // ParseCashFile parses a PokerStars hand history file from the hand history
@@ -63,6 +83,8 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 
 		isTournament bool
 		tournamentID string
+		bountyUSD    float64
+		isKnockout   bool
 
 		handActive    bool
 		inPreflop     bool
@@ -81,6 +103,8 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 	collectedPfx := screenName + " collected "
 	uncalledPfx := "Uncalled bet ("
 	uncalledSfx := ") returned to " + screenName
+	bountyWinPfx := screenName + " wins $"
+	const bountySeatMarker = " bounty)"
 
 	finalizeHand := func() {
 		if !handActive {
@@ -189,6 +213,27 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 		case strings.HasPrefix(line, dealtPfx):
 			playerDealt = true
 
+		case strings.HasPrefix(line, "Seat ") && strings.Contains(line, bountySeatMarker):
+			// Every seat in a knockout tournament shows a bounty in its
+			// pre-hand listing ("Seat 2: Name (5000 in chips, $0.36
+			// bounty)"), repeated on every hand — checked regardless of
+			// screenName, since screenName can finish a knockout tournament
+			// without ever scoring a KO themselves (bountyUSD would then
+			// stay 0, but it's still a knockout tournament).
+			isKnockout = true
+
+		case strings.HasPrefix(line, bountyWinPfx):
+			// "<screenName> wins $X.XX for eliminating <Name> and their own
+			// bounty increases by $Y.YY to $Z.ZZ" — the summary file has no
+			// concept of bounties at all, so this is the only source for
+			// knockout winnings (why two files: plan §Why Tournaments Need
+			// Two Files). The amount right after "wins $" is the real cash
+			// credited, which can differ by a cent from the "increases by"
+			// figure due to the 50/50 split-and-round on an odd bounty.
+			if amt, ok := parseLeadingAmount(line[len(bountyWinPfx):]); ok {
+				bountyUSD += amt
+			}
+
 		case strings.HasPrefix(line, "*** FLOP ***"):
 			inPreflop = false
 			streetTotal = 0
@@ -284,6 +329,8 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 			TournamentID: tournamentID,
 			VPIP:         float64(vpipCount) / float64(hands) * 100,
 			PFR:          float64(pfrCount) / float64(hands) * 100,
+			BountyUSD:    bountyUSD,
+			IsKnockout:   isKnockout,
 		}, nil
 	}
 

@@ -870,7 +870,7 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
 		totalHands += s.Hands
 	}
 	for _, t := range tournaments {
-		if t.Type == "spingo" {
+		if t.BaseType() == "spingo" {
 			spinsNet += t.NetUSD
 		} else {
 			mttNet += t.NetUSD
@@ -925,7 +925,7 @@ func weightedBB100(sessions []parsers.CashSession) float64 {
 func roi(tournaments []parsers.Tournament, tType string) float64 {
 	var netSum, buyinSum float64
 	for _, t := range tournaments {
-		if t.Type != tType {
+		if t.BaseType() != tType {
 			continue
 		}
 		netSum += t.NetUSD
@@ -1215,7 +1215,7 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 	t := pending[idx].Tournament
 	var resultText string
 	if paidCash {
-		if err := sc.AppendTournament(t); err != nil {
+		if _, err := sc.AppendTournament(t); err != nil {
 			slog.Error("appending tournament", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
 			return
@@ -1223,7 +1223,7 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 		resultText = "✅ Logged as cash entry."
 	} else {
 		t.BuyInUSD, t.NetUSD = RecoverTicketPayout(t.BuyInUSD, t.NetUSD)
-		if err := sc.AppendTournament(t); err != nil {
+		if _, err := sc.AppendTournament(t); err != nil {
 			slog.Error("appending tournament", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
 			return
@@ -1426,6 +1426,26 @@ func handleStatus(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store, lockfi
 	send(tgBot, chatID, text)
 }
 
+// SpinGoPrizePoolText formats a Spin & Go's prize pool for display: the real
+// dollar amount and multiplier when there's a real cash pool, or the pool's
+// ticket/pass description text when there isn't (e.g. "$1.00 Power Path
+// Step 2 Ticket" — see parsers.Tournament.PrizePoolDescription; a
+// ticket-denominated pool has no real dollar amount to show a multiplier
+// for, so Multiplier is nil in that case). The one place this is computed,
+// so every notification that shows a Spin & Go's prize pool (the
+// post-session alert in main.go, /lastsession here) renders it identically
+// and never risks dereferencing a nil Multiplier.
+func SpinGoPrizePoolText(t parsers.Tournament) string {
+	if t.PrizePoolDescription != "" {
+		return t.PrizePoolDescription
+	}
+	mult := 0.0
+	if t.Multiplier != nil {
+		mult = *t.Multiplier
+	}
+	return fmt.Sprintf("$%.2f (%gx)", t.PrizePoolUSD, mult)
+}
+
 // handleLastSession implements /lastsession. The Bankroll Ledger alone
 // doesn't carry enough detail (stake, hands, buy-in, finish, ...) to
 // reproduce the post-session summary format, so this pulls the most recent
@@ -1472,13 +1492,9 @@ func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store) {
 		return
 	}
 
-	if lastTourn.Type == "spingo" {
-		mult := 0.0
-		if lastTourn.Multiplier != nil {
-			mult = *lastTourn.Multiplier
-		}
-		send(tgBot, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: $%.2f (%gx)\nFinish: %s\nNet: %s\nBankroll: $%.2f",
-			lastTourn.BuyInUSD, lastTourn.PrizePoolUSD, mult, ordinal(lastTourn.FinishPos), formatSignedUSD(lastTourn.NetUSD), bankroll))
+	if lastTourn.BaseType() == "spingo" {
+		send(tgBot, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nBankroll: $%.2f",
+			lastTourn.BuyInUSD, SpinGoPrizePoolText(*lastTourn), ordinal(lastTourn.FinishPos), formatSignedUSD(lastTourn.NetUSD), bankroll))
 		return
 	}
 	send(tgBot, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nBankroll: $%.2f",
@@ -1572,7 +1588,7 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 	}
 	var filtered []parsers.Tournament
 	for _, t := range tournaments {
-		if t.Type == tType {
+		if t.BaseType() == tType {
 			filtered = append(filtered, t)
 		}
 	}
