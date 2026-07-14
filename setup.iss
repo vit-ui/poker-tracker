@@ -72,18 +72,23 @@ var
   TelegramSetupDone: Boolean;
   // Raw text of {app}\config.json, read once at wizard startup — '' means
   // no existing install (fresh install: behave exactly as before). The
-  // four booleans are computed from it once and drive both ShouldSkipPage
-  // (skip a page whose field is already configured) and CurStepChanged
-  // (splice the existing raw value back in for any field whose page was
-  // skipped, instead of rebuilding config.json from scratch — see
-  // BuildConfigJSON). Manual setup path only; the Telegram path already
-  // preserves these correctly on the Go side (bot.RunSetup loads the
-  // existing config and only mutates the fields it collects).
+  // four config-field booleans are computed from it once and drive both
+  // ShouldSkipPage (skip a page whose field is already configured) and
+  // CurStepChanged (splice the existing raw value back in for any field
+  // whose page was skipped, instead of rebuilding config.json from
+  // scratch — see BuildConfigJSON). Manual setup path only; the Telegram
+  // path already preserves these correctly on the Go side (bot.RunSetup
+  // loads the existing config and only mutates the fields it collects).
   ExistingConfigJSON: String;
   SheetAlreadySet: Boolean;
   ScreenNameAlreadySet: Boolean;
   HandHistoryAlreadySet: Boolean;
   TournamentAlreadySet: Boolean;
+  // Same idea but not a config.json field — whether the credentials file
+  // itself already exists at the destination, checked directly rather
+  // than derived from ExistingConfigJSON (config.json doesn't record
+  // this). See ShouldSkipPage and the guarded FileCopy in PreInstallFiles.
+  CredentialsAlreadySet: Boolean;
 
 // ReadFileAsString loads Path into a single raw String, or returns '' if
 // the file doesn't exist (the normal case on a fresh install — not an
@@ -362,6 +367,7 @@ begin
   ScreenNameAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'pokerstars_screen_name');
   HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
   TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
+  CredentialsAlreadySet := FileExists('C:\poker-tracker\credentials\google_service_account.json');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -383,8 +389,11 @@ begin
     // config.json (ExistingConfigJSON, computed in InitializeWizard) — a
     // rerun over a complete install then shows none of them, matching
     // CurStepChanged's decision below to preserve rather than re-collect
-    // the same fields.
+    // the same fields. PageCredentials isn't a config.json field but
+    // follows the same rule: skip it once the file's already in place.
     if PageID = PageWaiting.ID then
+      Result := True
+    else if (PageID = PageCredentials.ID) and CredentialsAlreadySet then
       Result := True
     else if (PageID = PageSheetName.ID) and SheetAlreadySet then
       Result := True
@@ -579,7 +588,11 @@ begin
   // Manual path only — PageCredentials is skipped entirely for Telegram
   // (see ShouldSkipPage), so Values[0] would be empty here; that flow's
   // credentials come from bot.RunSetup's own upload-or-skip step instead.
-  if not UsingTelegram then
+  // On the manual path itself, PageCredentials is also skipped when
+  // CredentialsAlreadySet — Values[0] is empty there too, and correctly
+  // so: the file already exists at the destination, so there's nothing
+  // to copy and no risk of FileCopy overwriting it with an empty source.
+  if not UsingTelegram and (PageCredentials.Values[0] <> '') then
     FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
 
   ExtractTemporaryFile('tracker.exe');
