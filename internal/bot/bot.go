@@ -85,6 +85,15 @@ func Run(botToken string, alertChan <-chan string, sheetsClient storage.Store, c
 // sheets client and no watcher exist yet at this point, so this runs
 // sequentially rather than through the conversationState machinery used by
 // the four config flows in --serve mode.
+//
+// Every step past chat ID detection is skipped if its field is already
+// set in the loaded config — matching setup.iss's manual-path ShouldSkipPage
+// gating exactly (SheetAlreadySet/ScreenNameAlreadySet/HandHistoryAlreadySet/
+// TournamentAlreadySet/CredentialsAlreadySet there). A rerun over a complete
+// install then does nothing but the chat handshake and a "still all set"
+// confirmation. Chat ID detection itself is never skipped — it's not a
+// question being asked, it's how this process learns who to talk to at all
+// for this run, regardless of whether a chat ID was already known.
 func RunSetup(token, configPath, serviceAccountPath string) {
 	tgBot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -103,115 +112,146 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		slog.Error("loading config", "err", err)
 		return
 	}
+	_, credentialsErr := os.Stat(serviceAccountPath)
+	isUpgrade := cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil ||
+		cfg.Setup.PokerStarsScreenName != nil || cfg.Paths.HandHistory != nil ||
+		cfg.Paths.TournamentSummary != nil || credentialsErr == nil
+
 	chatIDStr := strconv.FormatInt(chatID, 10)
 	cfg.Setup.TelegramChatID = &chatIDStr
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
 		return
 	}
-	send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
-
-	// Step 1.5 — Google service account credentials. Optional: the
-	// installer's manual-setup path already places this file at
-	// serviceAccountPath before --setup ever runs, so this is a fallback
-	// for --setup run standalone (or a fresh reinstall reusing an existing
-	// credentials file left on disk). "skip" is only accepted once a file
-	// actually exists there — otherwise every later step needing Sheets
-	// access would fail with an opaque file-not-found error with no way
-	// to back up and upload it, since this is the only step that accepts
-	// a document.
-	send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip if it's already in place.")
-	for {
-		text, fileID := readReplyOrDocument(tgBot, updates, chatID)
-		if fileID != "" {
-			if err := downloadTelegramFile(tgBot, fileID, serviceAccountPath); err != nil {
-				slog.Error("downloading credentials file", "err", err)
-				send(tgBot, chatID, "Couldn't download that file. Try again, or type skip.")
-				continue
-			}
-			send(tgBot, chatID, "✅ Credentials file saved.")
-			break
-		}
-		if strings.EqualFold(strings.TrimSpace(text), "skip") {
-			if _, err := os.Stat(serviceAccountPath); err != nil {
-				send(tgBot, chatID, "No credentials file found at the expected location yet. Send it as an attachment now, or place it correctly before typing skip again.")
-				continue
-			}
-			break
-		}
-		send(tgBot, chatID, "Send the file as an attachment, or type skip.")
+	if isUpgrade {
+		send(tgBot, chatID, "Welcome back! I found your existing configuration — I'll only ask about what's missing.")
+	} else {
+		send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
 	}
 
-	// Step 2 — Google Sheet. Accepts either a pasted Sheets URL (ID is
-	// already known, no Drive lookup needed) or a sheet name (resolved via
-	// the Drive API) — see resolveSheetInput.
-	send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
-	for {
-		reply := readReply(tgBot, updates, chatID)
-		if looksLikeCommand(reply) {
-			send(tgBot, chatID, "Commands aren't available until setup finishes — send your Google Sheet name or paste its URL to continue.")
-			continue
+	// Step 1.5 — Google service account credentials. Skipped entirely if
+	// the file already exists at serviceAccountPath — the installer's
+	// manual-setup path already places this file before --setup ever
+	// runs, and on a rerun there's no reason to ask again for a file
+	// that's already correct on disk. "skip" is still accepted as a
+	// manual fallback for --setup run standalone.
+	if credentialsErr == nil {
+		send(tgBot, chatID, "✅ Keeping existing credentials file.")
+	} else {
+		send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip if it's already in place.")
+		for {
+			text, fileID := readReplyOrDocument(tgBot, updates, chatID)
+			if fileID != "" {
+				if err := downloadTelegramFile(tgBot, fileID, serviceAccountPath); err != nil {
+					slog.Error("downloading credentials file", "err", err)
+					send(tgBot, chatID, "Couldn't download that file. Try again, or type skip.")
+					continue
+				}
+				send(tgBot, chatID, "✅ Credentials file saved.")
+				break
+			}
+			if strings.EqualFold(strings.TrimSpace(text), "skip") {
+				if _, err := os.Stat(serviceAccountPath); err != nil {
+					send(tgBot, chatID, "No credentials file found at the expected location yet. Send it as an attachment now, or place it correctly before typing skip again.")
+					continue
+				}
+				break
+			}
+			send(tgBot, chatID, "Send the file as an attachment, or type skip.")
 		}
-		name, id, err := resolveSheetInput(serviceAccountPath, reply)
-		if err != nil {
-			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
-			continue
-		}
+	}
 
-		if _, err := sheets.NewClient(serviceAccountPath, id); err != nil {
-			send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
-			continue
-		}
+	// Step 2 — Google Sheet. Skipped if either field is already set (only
+	// one of them ever is — see BuildConfigJSON's mirror of this in
+	// setup.iss). Accepts either a pasted Sheets URL (ID is already known,
+	// no Drive lookup needed) or a sheet name (resolved via the Drive API)
+	// — see resolveSheetInput.
+	if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
+		send(tgBot, chatID, "✅ Keeping existing Google Sheet.")
+	} else {
+		send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
+		for {
+			reply := readReply(tgBot, updates, chatID)
+			if looksLikeCommand(reply) {
+				send(tgBot, chatID, "Commands aren't available until setup finishes — send your Google Sheet name or paste its URL to continue.")
+				continue
+			}
+			name, id, err := resolveSheetInput(serviceAccountPath, reply)
+			if err != nil {
+				send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
+				continue
+			}
 
-		cfg.Setup.GoogleSheetName = name
-		cfg.Setup.GoogleSheetID = &id
+			if _, err := sheets.NewClient(serviceAccountPath, id); err != nil {
+				send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
+				continue
+			}
+
+			cfg.Setup.GoogleSheetName = name
+			cfg.Setup.GoogleSheetID = &id
+			if err := config.SaveConfig(configPath, cfg); err != nil {
+				slog.Error("saving config", "err", err)
+				send(tgBot, chatID, "Something went wrong. Check logs.")
+				return
+			}
+			send(tgBot, chatID, "✅ Connected to sheet.")
+			break
+		}
+	}
+
+	// Step 3 — PokerStars screen name. Skipped if already set, but
+	// screenName is still needed below (Steps 4/5 join it onto the hand
+	// history / tournament summary paths) regardless of which branch set it.
+	var screenName string
+	if cfg.Setup.PokerStarsScreenName != nil {
+		screenName = *cfg.Setup.PokerStarsScreenName
+		send(tgBot, chatID, "✅ Keeping existing screen name.")
+	} else {
+		send(tgBot, chatID, "What is your PokerStars screen name? (Exact capitalisation matters)")
+		for {
+			screenName = strings.TrimSpace(readReply(tgBot, updates, chatID))
+			if looksLikeCommand(screenName) {
+				send(tgBot, chatID, "Commands aren't available until setup finishes — send your exact PokerStars screen name to continue.")
+				continue
+			}
+			if screenName != "" {
+				break
+			}
+			send(tgBot, chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
+		}
+		cfg.Setup.PokerStarsScreenName = &screenName
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			slog.Error("saving config", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
 			return
 		}
-		send(tgBot, chatID, "✅ Connected to sheet.")
-		break
+		send(tgBot, chatID, "✅ Screen name saved.")
 	}
 
-	// Step 3 — PokerStars screen name.
-	send(tgBot, chatID, "What is your PokerStars screen name? (Exact capitalisation matters)")
-	var screenName string
-	for {
-		screenName = strings.TrimSpace(readReply(tgBot, updates, chatID))
-		if looksLikeCommand(screenName) {
-			send(tgBot, chatID, "Commands aren't available until setup finishes — send your exact PokerStars screen name to continue.")
-			continue
+	// Step 4 — Hand history path. Skipped if already set.
+	if cfg.Paths.HandHistory != nil {
+		send(tgBot, chatID, "✅ Keeping existing Hand History folder.")
+	} else {
+		handHistory := setupResolvePath(tgBot, updates, chatID, "Hand History", `AppData\Local\PokerStars\HandHistory`, screenName)
+		cfg.Paths.HandHistory = &handHistory
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			slog.Error("saving config", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			return
 		}
-		if screenName != "" {
-			break
+	}
+
+	// Step 5 — Tournament summary path. Skipped if already set.
+	if cfg.Paths.TournamentSummary != nil {
+		send(tgBot, chatID, "✅ Keeping existing Tournament Summary folder.")
+	} else {
+		tournamentSummary := setupResolvePath(tgBot, updates, chatID, "Tournament Summary", `AppData\Local\PokerStars\TournamentSummaries`, screenName)
+		cfg.Paths.TournamentSummary = &tournamentSummary
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			slog.Error("saving config", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			return
 		}
-		send(tgBot, chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
-	}
-	cfg.Setup.PokerStarsScreenName = &screenName
-	if err := config.SaveConfig(configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(tgBot, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	send(tgBot, chatID, "✅ Screen name saved.")
-
-	// Step 4 — Hand history path.
-	handHistory := setupResolvePath(tgBot, updates, chatID, "Hand History", `AppData\Local\PokerStars\HandHistory`, screenName)
-	cfg.Paths.HandHistory = &handHistory
-	if err := config.SaveConfig(configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(tgBot, chatID, "Something went wrong. Check logs.")
-		return
-	}
-
-	// Step 5 — Tournament summary path.
-	tournamentSummary := setupResolvePath(tgBot, updates, chatID, "Tournament Summary", `AppData\Local\PokerStars\TournamentSummaries`, screenName)
-	cfg.Paths.TournamentSummary = &tournamentSummary
-	if err := config.SaveConfig(configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(tgBot, chatID, "Something went wrong. Check logs.")
-		return
 	}
 
 	// Step 6 — Complete.

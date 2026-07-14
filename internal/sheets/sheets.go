@@ -4,6 +4,8 @@ package sheets
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -109,18 +111,14 @@ func (c *Client) ensureTabs() error {
 
 	type tabDef struct {
 		name    string
-		headers []interface{} // nil means formula-only tab, never written by script
+		headers []interface{}
 	}
 
 	tabs := []tabDef{
-		{"Dashboard", nil},
-		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR"}},
-		{"Spin & Go", []interface{}{"Date", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Net (USD)"}},
+		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}},
 		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR"}},
-		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)"}},
-		{"Cash Stats", nil},
-		{"Tournament Stats", nil},
-		{"Time Analysis", []interface{}{"Date", "Hour", "Day of Week", "Net (USD)"}},
+		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
+		{"Time Analysis", []interface{}{"Date", "Hour", "Day of Week", "Net (USD)", "Session ID"}},
 	}
 
 	for _, tab := range tabs {
@@ -138,10 +136,8 @@ func (c *Client) ensureTabs() error {
 			return fmt.Errorf("creating tab %q: %w", tab.name, err)
 		}
 
-		if tab.headers != nil {
-			if err := c.appendRow(tab.name, tab.headers); err != nil {
-				return fmt.Errorf("writing headers for tab %q: %w", tab.name, err)
-			}
+		if err := c.appendRow(tab.name, tab.headers); err != nil {
+			return fmt.Errorf("writing headers for tab %q: %w", tab.name, err)
 		}
 	}
 
@@ -181,10 +177,84 @@ func (c *Client) getLastRunningTotal() (float64, error) {
 	return parseFloat(last[0]), nil
 }
 
-// AppendCashSession appends one row to Cash Sessions, one row to Time Analysis,
-// and one row to Bankroll Ledger.
+// cashSessionID derives a stable identifier for a cash session from its
+// first hand's timestamp and PokerStars Hand ID. Both are fixed the moment
+// the first hand in the file is parsed and never change as PokerStars keeps
+// appending later hands to the same file, so re-parsing the growing file on
+// every hand always yields the same ID — the same role TournamentID plays
+// for tournaments, but cash hand histories carry no single-field session
+// identifier of their own to key off of directly.
+func cashSessionID(date time.Time, firstHandID string) string {
+	sum := sha256.Sum256([]byte(date.Format(dateFormat) + "|" + firstHandID))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// findRowByColumnValue searches column columnLetter of tab for a row whose
+// value equals want, starting after the header row. Returns the 1-based
+// sheet row index, or found=false if not present. Shared by every tab that
+// upserts on a stored ID column (Cash Sessions, Time Analysis, Bankroll
+// Ledger's cash_session rows, and — via findTournamentRow — Tournaments).
+func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex int, found bool, err error) {
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID,
+		fmt.Sprintf("%s!%s:%s", tab, columnLetter, columnLetter),
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return 0, false, fmt.Errorf("reading %s column %s: %w", tab, columnLetter, err)
+	}
+	for i, row := range resp.Values {
+		if i == 0 {
+			continue // header row
+		}
+		if len(row) > 0 && fmt.Sprint(row[0]) == want {
+			return i + 1, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// runningTotalBeforeRow returns the Bankroll Ledger running total as of the
+// row immediately above rowIndex — 0 if rowIndex is the first data row. Used
+// when correcting an existing cash-session ledger row in place, where
+// getLastRunningTotal (the sheet's last row) would double-count that row's
+// own stale amount if it happens to already be the last row.
+func (c *Client) runningTotalBeforeRow(rowIndex int) (float64, error) {
+	if rowIndex <= 2 {
+		return 0, nil
+	}
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID,
+		fmt.Sprintf("Bankroll Ledger!D%d", rowIndex-1),
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return 0, fmt.Errorf("reading running total above row %d: %w", rowIndex, err)
+	}
+	if len(resp.Values) == 0 || len(resp.Values[0]) == 0 {
+		return 0, nil
+	}
+	return parseFloat(resp.Values[0][0]), nil
+}
+
+// AppendCashSession upserts one row in Cash Sessions, one row in Time
+// Analysis, and one row in Bankroll Ledger — all three keyed by the same
+// cashSessionID, so a cash hand history file that's re-parsed after every
+// hand corrects its existing rows in place instead of appending a new set
+// each time. Mirrors AppendTournament's find-or-append pattern, applied to
+// all three tabs a cash session touches rather than just one.
 func (c *Client) AppendCashSession(session parsers.CashSession) error {
-	if err := c.appendRow("Cash Sessions", []interface{}{
+	id := cashSessionID(session.Date, session.FirstHandID)
+
+	if err := c.upsertCashSessionsRow(id, session); err != nil {
+		return err
+	}
+	if err := c.upsertTimeAnalysisRow(id, session); err != nil {
+		return err
+	}
+	return c.upsertLedgerCashSessionRow(id, session.Date, session.NetUSD)
+}
+
+func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession) error {
+	values := []interface{}{
 		session.Date.Format(dateFormat),
 		session.Stake,
 		session.Hands,
@@ -194,50 +264,151 @@ func (c *Client) AppendCashSession(session parsers.CashSession) error {
 		session.BB100,
 		session.VPIP,
 		session.PFR,
-	}); err != nil {
+		id,
+	}
+	rowIndex, found, err := c.findRowByColumnValue("Cash Sessions", "J", id)
+	if err != nil {
 		return err
 	}
+	if !found {
+		return c.appendRow("Cash Sessions", values)
+	}
+	rangeStr := fmt.Sprintf("Cash Sessions!A%d:J%d", rowIndex, rowIndex)
+	if _, err := c.svc.Spreadsheets.Values.Update(
+		c.spreadsheetID, rangeStr,
+		&sheetsapi.ValueRange{Values: [][]interface{}{values}},
+	).ValueInputOption("RAW").Do(); err != nil {
+		return fmt.Errorf("updating cash session row: %w", err)
+	}
+	return nil
+}
 
-	if err := c.appendRow("Time Analysis", []interface{}{
+func (c *Client) upsertTimeAnalysisRow(id string, session parsers.CashSession) error {
+	values := []interface{}{
 		session.Date.Format(dateFormat),
 		session.Date.Hour(),
 		session.Date.Weekday().String(),
 		session.NetUSD,
-	}); err != nil {
-		return err
+		id,
 	}
-
-	prev, err := c.getLastRunningTotal()
+	rowIndex, found, err := c.findRowByColumnValue("Time Analysis", "E", id)
 	if err != nil {
 		return err
 	}
-	return c.appendRow("Bankroll Ledger", []interface{}{
-		session.Date.Format(dateFormat),
-		"cash_session",
-		session.NetUSD,
-		prev + session.NetUSD,
-	})
+	if !found {
+		return c.appendRow("Time Analysis", values)
+	}
+	rangeStr := fmt.Sprintf("Time Analysis!A%d:E%d", rowIndex, rowIndex)
+	if _, err := c.svc.Spreadsheets.Values.Update(
+		c.spreadsheetID, rangeStr,
+		&sheetsapi.ValueRange{Values: [][]interface{}{values}},
+	).ValueInputOption("RAW").Do(); err != nil {
+		return fmt.Errorf("updating time analysis row: %w", err)
+	}
+	return nil
+}
+
+// upsertLedgerCashSessionRow corrects the cash session's own Bankroll Ledger
+// row in place as its net changes hand-to-hand, rather than appending a new
+// transfer for every hand. This isn't a retroactive correction of settled
+// history — deposits, withdrawals, and tournament entries stay pure
+// appends, never touched again — it's the still-in-progress session's one
+// ledger entry catching up to the session's current state, the same way its
+// Cash Sessions and Time Analysis rows do.
+func (c *Client) upsertLedgerCashSessionRow(id string, date time.Time, netUSD float64) error {
+	rowIndex, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		prev, err := c.getLastRunningTotal()
+		if err != nil {
+			return err
+		}
+		return c.appendRow("Bankroll Ledger", []interface{}{
+			date.Format(dateFormat),
+			"cash_session",
+			netUSD,
+			prev + netUSD,
+			id,
+		})
+	}
+
+	return c.updateLedgerAmountCascading(rowIndex, netUSD)
+}
+
+// updateLedgerAmountCascading sets rowIndex's Amount to newAmount and
+// recomputes Running Total for rowIndex and every row after it through the
+// end of the ledger. A plain update of rowIndex alone is only correct when
+// it's the sheet's last data row — with multiple tables open at once, a
+// second table's session row (or a mid-session /deposit) can land after the
+// first table's row while that row is still being corrected hand-to-hand;
+// those later rows' stored Running Total was computed from this row's old
+// Amount and goes stale the moment this row's Amount changes.
+func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) error {
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID, "Bankroll Ledger!C:D",
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return fmt.Errorf("reading bankroll ledger for cascade update: %w", err)
+	}
+
+	base, err := c.runningTotalBeforeRow(rowIndex)
+	if err != nil {
+		return err
+	}
+
+	amounts := make([]float64, len(resp.Values))
+	for i, row := range resp.Values {
+		if len(row) > 0 {
+			amounts[i] = parseFloat(row[0])
+		}
+	}
+
+	updates := cascadeLedgerAmounts(amounts, rowIndex-1, newAmount, base)
+	if len(updates) == 0 {
+		return nil
+	}
+
+	rangeStr := fmt.Sprintf("Bankroll Ledger!C%d:D%d", rowIndex, rowIndex+len(updates)-1)
+	if _, err := c.svc.Spreadsheets.Values.Update(
+		c.spreadsheetID, rangeStr,
+		&sheetsapi.ValueRange{Values: updates},
+	).ValueInputOption("RAW").Do(); err != nil {
+		return fmt.Errorf("cascading bankroll ledger update: %w", err)
+	}
+	return nil
+}
+
+// cascadeLedgerAmounts computes updated (Amount, Running Total) pairs for
+// the ledger's Amount column from changedIdx (0-based, data rows only, no
+// header) through the last row. amounts[changedIdx] becomes newAmount;
+// every other row keeps its existing amount but gets a recomputed running
+// total, since a change earlier in the ledger shifts every total after it.
+// base is the running total of the row immediately before changedIdx (0 if
+// changedIdx is the first data row). Pure — the Sheets I/O wrapper is
+// updateLedgerAmountCascading.
+func cascadeLedgerAmounts(amounts []float64, changedIdx int, newAmount, base float64) [][]interface{} {
+	if changedIdx < 0 || changedIdx >= len(amounts) {
+		return nil
+	}
+	running := base
+	updates := make([][]interface{}, 0, len(amounts)-changedIdx)
+	for i := changedIdx; i < len(amounts); i++ {
+		amount := amounts[i]
+		if i == changedIdx {
+			amount = newAmount
+		}
+		running += amount
+		updates = append(updates, []interface{}{amount, running})
+	}
+	return updates
 }
 
 // findTournamentRow searches column C (Tournament ID) for the given ID.
 // Returns the 1-based sheet row index, or found=false if not present.
 func (c *Client) findTournamentRow(tournamentID string) (rowIndex int, found bool, err error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Tournaments!C:C",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
-	if err != nil {
-		return 0, false, fmt.Errorf("reading tournament IDs: %w", err)
-	}
-	for i, row := range resp.Values {
-		if i == 0 {
-			continue // header row
-		}
-		if len(row) > 0 && fmt.Sprint(row[0]) == tournamentID {
-			return i + 1, true, nil
-		}
-	}
-	return 0, false, nil
+	return c.findRowByColumnValue("Tournaments", "C", tournamentID)
 }
 
 // AppendTournament upserts one row in Tournaments (keyed by TournamentID) and
@@ -368,26 +539,6 @@ func (c *Client) GetCurrentBankroll() (float64, error) {
 // GetSheetURL returns the Google Sheets URL for this spreadsheet.
 func (c *Client) GetSheetURL() string {
 	return "https://docs.google.com/spreadsheets/d/" + c.spreadsheetID
-}
-
-// GetRecentLedgerRows returns the last n rows of Bankroll Ledger in chronological order.
-// Returns fewer than n rows when the ledger has fewer data rows.
-func (c *Client) GetRecentLedgerRows(n int) ([]storage.LedgerEntry, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Bankroll Ledger!A:D",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
-	if err != nil {
-		return nil, fmt.Errorf("reading bankroll ledger: %w", err)
-	}
-	if len(resp.Values) <= 1 {
-		return nil, nil
-	}
-	data := resp.Values[1:]
-	if len(data) > n {
-		data = data[len(data)-n:]
-	}
-	return parseLedgerRows(data)
 }
 
 // GetLedgerEntriesSince returns all Bankroll Ledger rows where Date >= t.

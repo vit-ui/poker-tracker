@@ -1,7 +1,8 @@
 .claude/
-.env
 config.json
 lockfile.json
+pending_tournaments.json
+tracker.db
 credentials/
 /tracker.exe
 testdata/cash/

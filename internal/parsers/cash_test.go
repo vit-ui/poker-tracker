@@ -33,6 +33,9 @@ func TestParseCashFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(files) == 0 {
+		t.Skip("no files found in testdata/cash/ — this directory is gitignored real player data, only present on a dev machine that's played hands; skipping on a checkout without it")
+	}
 	cashParsed := 0
 	tourneyParsed := 0
 	for _, f := range files {

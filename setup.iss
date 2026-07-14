@@ -6,6 +6,7 @@
 #endif
 
 [Setup]
+AppId={{5D7656F7-7CCB-4B00-8694-954DDE2986AE}
 AppName=Poker Tracker
 AppVersion={#AppVersion}
 DefaultDirName=C:\poker-tracker
@@ -14,7 +15,7 @@ DefaultGroupName=Poker Tracker
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
 PrivilegesRequired=admin
-OutputBaseFilename=Setup
+OutputBaseFilename=PokerTracker-v{#AppVersion}
 Compression=lzma
 SolidCompression=yes
 
@@ -33,16 +34,17 @@ Source: "tracker.exe"; DestDir: "{tmp}"; Flags: dontcopy
 
 [UninstallDelete]
 ; tracker.exe itself is removed automatically (tracked via [Files] above).
-; Everything else here was written by [Code] or by the running service at
-; runtime, so Inno doesn't know about it unless listed — including
-; config.json, lockfile.json, and pending_tournaments.json (all three are
-; config.go's responsibility per CLAUDE.md, same directory). This is a full
-; uninstall: nothing is left behind for a reinstall to pick back up. {app}
+; credentials was written by [Code] at install time, so Inno doesn't know
+; about it unless listed. config.json, lockfile.json, and
+; pending_tournaments.json are deliberately NOT listed here — a fixed AppId
+; run of a new Setup.exe installs over the top without ever invoking this
+; uninstaller, so those three survive an upgrade regardless; the guard in
+; CurUninstallStepChanged below only matters for an actual uninstall
+; (Control Panel / manually running unins000.exe), where it distinguishes a
+; real removal from a silent one (e.g. a future chained old-version
+; uninstall before install) and deletes them only for the former. {app}
 ; itself is removed last, once it's empty.
 Type: files; Name: "{app}\credentials\google_service_account.json"
-Type: files; Name: "{app}\config.json"
-Type: files; Name: "{app}\lockfile.json"
-Type: files; Name: "{app}\pending_tournaments.json"
 Type: dirifempty; Name: "{app}\credentials"
 Type: dirifempty; Name: "{app}"
 
@@ -68,9 +70,274 @@ var
   // path both running RunTelegramSetup for the same visit to PageWaiting —
   // see CurPageChanged and the PageWaiting branch of NextButtonClick.
   TelegramSetupDone: Boolean;
+  // Raw text of {app}\config.json, read once at wizard startup — '' means
+  // no existing install (fresh install: behave exactly as before). The
+  // four config-field booleans are computed from it once and drive both
+  // ShouldSkipPage (skip a page whose field is already configured) and
+  // CurStepChanged (splice the existing raw value back in for any field
+  // whose page was skipped, instead of rebuilding config.json from
+  // scratch — see BuildConfigJSON). Manual setup path only; the Telegram
+  // path already preserves these correctly on the Go side (bot.RunSetup
+  // loads the existing config and only mutates the fields it collects).
+  ExistingConfigJSON: String;
+  SheetAlreadySet: Boolean;
+  ScreenNameAlreadySet: Boolean;
+  HandHistoryAlreadySet: Boolean;
+  TournamentAlreadySet: Boolean;
+  // Same idea but not a config.json field — whether the credentials file
+  // itself already exists at the destination, checked directly rather
+  // than derived from ExistingConfigJSON (config.json doesn't record
+  // this). See ShouldSkipPage and the guarded FileCopy in PreInstallFiles.
+  CredentialsAlreadySet: Boolean;
+  // True only when all five of the above are — i.e. there is genuinely
+  // nothing left to configure either way. Drives skipping PageMethod
+  // itself; see InitializeWizard and ShouldSkipPage.
+  AllFieldsAlreadySet: Boolean;
+
+// ReadFileAsString loads Path into a single raw String, or returns '' if
+// the file doesn't exist (the normal case on a fresh install — not an
+// error). Uses LoadStringFromFile rather than the line-splitting
+// LoadStringsFromFile so it doesn't have to reconcile this script's own
+// CRLF output with config.SaveConfig's LF-only json.MarshalIndent output
+// (Go, internal/config/config.go) — the whole-file string is scanned for
+// JSON tokens directly, so line endings never matter.
+function ReadFileAsString(const Path: String): String;
+var
+  Content: AnsiString;
+begin
+  if not LoadStringFromFile(Path, Content) then
+    Result := ''
+  else
+    Result := Content;
+end;
+
+// JSONUnescape reverses JSONEscape (below) — backslash first, then quote,
+// the exact opposite order JSONEscape applies them, so the round trip is
+// lossless.
+function JSONUnescape(const S: String): String;
+var
+  R: String;
+begin
+  R := S;
+  StringChangeEx(R, '\"', '"', True);
+  StringChangeEx(R, '\\', '\', True);
+  Result := R;
+end;
+
+// JSONFieldIsSet reports whether FieldName's value in JSON is anything
+// other than the literal null. Marker includes the closing quote and
+// colon, so it can't false-match a longer key name. Whitespace after the
+// colon is skipped since this script's own JSON and Go's
+// json.MarshalIndent output (verified: both use exactly one space) don't
+// need to match byte-for-byte for this to work either way.
+function JSONFieldIsSet(const JSON, FieldName: String): Boolean;
+var
+  Marker: String;
+  I: Integer;
+begin
+  Result := False;
+  Marker := '"' + FieldName + '":';
+  I := Pos(Marker, JSON);
+  if I = 0 then
+    Exit;
+  I := I + Length(Marker);
+  while (I <= Length(JSON)) and ((JSON[I] = ' ') or (JSON[I] = #13) or (JSON[I] = #10) or (JSON[I] = #9)) do
+    I := I + 1;
+  Result := Copy(JSON, I, 4) <> 'null';
+end;
+
+// JSONExtractRawValue returns FieldName's value in JSON exactly as it
+// appears — quotes and escaping intact — so it can be spliced straight
+// into a newly built document without an unescape/re-escape round trip.
+// The closing quote is found by counting consecutive backslashes
+// immediately before each candidate '"': an odd count means that quote is
+// itself escaped (part of the string), even (including zero) means it's
+// the real close. A naive "quote not preceded by a single backslash" test
+// gets this wrong for a value ending in an escaped backslash, e.g. a
+// Windows path with a trailing separator ("C:\HandHistory\" encodes as
+// "C:\\HandHistory\\" — the real closing quote IS preceded by a
+// backslash there). Returns '' if the field is null, absent, or not a
+// string.
+function JSONExtractRawValue(const JSON, FieldName: String): String;
+var
+  Marker: String;
+  I, EndI, K, BackslashCount: Integer;
+  Closed: Boolean;
+begin
+  Result := '';
+  Marker := '"' + FieldName + '":';
+  I := Pos(Marker, JSON);
+  if I = 0 then
+    Exit;
+  I := I + Length(Marker);
+  while (I <= Length(JSON)) and ((JSON[I] = ' ') or (JSON[I] = #13) or (JSON[I] = #10) or (JSON[I] = #9)) do
+    I := I + 1;
+  if (I > Length(JSON)) or (JSON[I] <> '"') then
+    Exit;
+  EndI := I + 1;
+  Closed := False;
+  while (EndI <= Length(JSON)) and not Closed do
+  begin
+    if JSON[EndI] = '"' then
+    begin
+      BackslashCount := 0;
+      K := EndI - 1;
+      while (K >= I) and (JSON[K] = '\') do
+      begin
+        BackslashCount := BackslashCount + 1;
+        K := K - 1;
+      end;
+      if (BackslashCount mod 2) = 0 then
+        Closed := True
+      else
+        EndI := EndI + 1;
+    end
+    else
+      EndI := EndI + 1;
+  end;
+  if not Closed then
+    Exit;
+  Result := Copy(JSON, I, EndI - I + 1);
+end;
+
+// JSONExtractStringValue is JSONExtractRawValue with the surrounding
+// quotes stripped and escaping reversed — the plain value, for contexts
+// outside JSON (see CurrentScreenName).
+function JSONExtractStringValue(const JSON, FieldName: String): String;
+var
+  Raw: String;
+begin
+  Raw := JSONExtractRawValue(JSON, FieldName);
+  if Length(Raw) >= 2 then
+    Result := JSONUnescape(Copy(Raw, 2, Length(Raw) - 2))
+  else
+    Result := '';
+end;
+
+// JSONFieldRaw returns FieldName's existing value ready to splice into a
+// rebuilt config.json: its raw string literal, or the bare word null,
+// whichever JSON already has.
+function JSONFieldRaw(const JSON, FieldName: String): String;
+begin
+  if JSONFieldIsSet(JSON, FieldName) then
+    Result := JSONExtractRawValue(JSON, FieldName)
+  else
+    Result := 'null';
+end;
+
+// JSONExtractObjectRaw returns FieldName's whole nested object verbatim,
+// braces included. Used to carry alerts/hardstop/schedule through a
+// rewrite untouched: the wizard never asks about any field inside them,
+// so byte-for-byte preservation is simpler and safer than reconstructing
+// them field by field. Brace-depth counting alone is only safe because
+// none of these three objects contain string values that could hide a
+// stray brace — true here (every leaf is a number or null) but not a
+// general-purpose JSON object extractor. Returns '' if FieldName isn't
+// present as an object (in particular: JSON = '', meaning no existing
+// install).
+function JSONExtractObjectRaw(const JSON, FieldName: String): String;
+var
+  Marker: String;
+  StartI, I, Depth: Integer;
+begin
+  Result := '';
+  Marker := '"' + FieldName + '":';
+  I := Pos(Marker, JSON);
+  if I = 0 then
+    Exit;
+  I := I + Length(Marker);
+  while (I <= Length(JSON)) and (JSON[I] <> '{') do
+    I := I + 1;
+  if I > Length(JSON) then
+    Exit;
+  StartI := I;
+  Depth := 0;
+  while I <= Length(JSON) do
+  begin
+    if JSON[I] = '{' then
+      Depth := Depth + 1
+    else if JSON[I] = '}' then
+    begin
+      Depth := Depth - 1;
+      if Depth = 0 then
+      begin
+        Result := Copy(JSON, StartI, I - StartI + 1);
+        Exit;
+      end;
+    end;
+    I := I + 1;
+  end;
+end;
+
+// PreservedObjectOrDefault carries an existing alerts/hardstop/schedule
+// block through unchanged, or falls back to DefaultBlock on a fresh
+// install (ExistingConfigJSON = '', so JSONExtractObjectRaw returns '').
+function PreservedObjectOrDefault(const FieldName, DefaultBlock: String): String;
+var
+  Existing: String;
+begin
+  Existing := JSONExtractObjectRaw(ExistingConfigJSON, FieldName);
+  if Existing <> '' then
+    Result := Existing
+  else
+    Result := DefaultBlock;
+end;
+
+// CurrentScreenName is the screen name to use both for path-join
+// validation (NextButtonClick, PageHandHistoryDir/PageTournamentDir) and
+// for the final config.json: the page's own Values[0] if it was shown
+// this run, or the preserved value if ScreenNameAlreadySet skipped it.
+// Needed because HandHistoryDir/TournamentDir can still be shown (their
+// own field still unset) even when the screen name page itself was
+// skipped (already set) — the two don't skip together.
+function CurrentScreenName(): String;
+begin
+  if ScreenNameAlreadySet then
+    Result := JSONExtractStringValue(ExistingConfigJSON, 'pokerstars_screen_name')
+  else
+    Result := PageScreenName.Values[0];
+end;
 
 procedure InitializeWizard();
+var
+  MethodDescription: String;
 begin
+  // Read before {app} is valid for ExpandConstant (see the comment on the
+  // page-anchoring below) — hardcoded to match DefaultDirName ([Setup]
+  // above) rather than expanded, since this runs before the wizard's
+  // internal position has passed wpSelectDir. Done first, before any page
+  // is created, so ExistingConfigJSON is available to build MethodDescription
+  // below and to ShouldSkipPage/CurStepChanged once the wizard is running.
+  ExistingConfigJSON := ReadFileAsString('C:\poker-tracker\config.json');
+  SheetAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_name') or
+                      JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_id');
+  ScreenNameAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'pokerstars_screen_name');
+  HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
+  TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
+  CredentialsAlreadySet := FileExists('C:\poker-tracker\credentials\google_service_account.json');
+  AllFieldsAlreadySet := SheetAlreadySet and ScreenNameAlreadySet and HandHistoryAlreadySet and
+                          TournamentAlreadySet and CredentialsAlreadySet;
+
+  // PageMethod (Telegram vs manual) only matters when there's a question
+  // for one of the two paths to actually ask — see ShouldSkipPage, which
+  // skips it entirely when AllFieldsAlreadySet. UsingTelegram is then
+  // never assigned (that only happens in NextButtonClick when the player
+  // actually leaves this page) and keeps Pascal's default False, which is
+  // exactly the branch CurStepChanged should take here: rewrite
+  // config.json (a no-op — every field is already preserved-as-is) and
+  // restart the scheduled task, with no Telegram round trip for a
+  // conversation that would have nothing left to ask either.
+  //
+  // The two cases that DO show this page get their own wording — nothing
+  // (fresh) vs something-but-not-everything (partial) — so it's never the
+  // same generic text regardless of which is true.
+  if ExistingConfigJSON = '' then
+    MethodDescription := 'No existing installation was found — this will set up Poker Tracker from scratch.'
+  else
+    MethodDescription := 'An existing installation was found, but some settings are still missing. ' +
+      'Whatever''s already configured — sheet, screen name, folders, credentials — will be kept as-is; ' +
+      'you''ll only be asked about what''s still missing.';
+
   // Anchored at wpSelectDir, not wpWelcome — {app} only becomes valid for
   // ExpandConstant once the wizard's internal position passes wpSelectDir,
   // regardless of DisableDirPage hiding that page from view (it hides the
@@ -87,7 +354,7 @@ begin
   PageMethod := CreateInputOptionPage(wpSelectDir,
     'Setup Method',
     'Would you like to set up via Telegram? (Recommended)',
-    '',
+    MethodDescription,
     True, False);
   PageMethod.Add('Yes, use Telegram');
   PageMethod.Add('No, set up manually');
@@ -136,6 +403,15 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  // Checked before the UsingTelegram branch below since UsingTelegram
+  // isn't meaningfully set yet when this page itself is what's being
+  // asked about — there's nothing for either path to ask when every
+  // field is already configured, so there's no method choice to make.
+  if (PageID = PageMethod.ID) and AllFieldsAlreadySet then
+  begin
+    Result := True;
+    Exit;
+  end;
   if UsingTelegram then
   begin
     // PageCredentials is skipped for Telegram too — bot.RunSetup's own
@@ -148,7 +424,23 @@ begin
   end
   else
   begin
+    // Also skip whichever of these already has a value in an existing
+    // config.json (ExistingConfigJSON, computed in InitializeWizard) — a
+    // rerun over a complete install then shows none of them, matching
+    // CurStepChanged's decision below to preserve rather than re-collect
+    // the same fields. PageCredentials isn't a config.json field but
+    // follows the same rule: skip it once the file's already in place.
     if PageID = PageWaiting.ID then
+      Result := True
+    else if (PageID = PageCredentials.ID) and CredentialsAlreadySet then
+      Result := True
+    else if (PageID = PageSheetName.ID) and SheetAlreadySet then
+      Result := True
+    else if (PageID = PageScreenName.ID) and ScreenNameAlreadySet then
+      Result := True
+    else if (PageID = PageHandHistoryDir.ID) and HandHistoryAlreadySet then
+      Result := True
+    else if (PageID = PageTournamentDir.ID) and TournamentAlreadySet then
       Result := True;
   end;
 end;
@@ -202,45 +494,35 @@ begin
 end;
 
 // BuildConfigJSON mirrors config.Config's JSON shape exactly (see
-// internal/config/config.go). SheetName/SheetID: exactly one is set,
-// matching bot.resolveSheetInput's URL-vs-name branch — see
-// ExtractSheetIDFromURL at the CurStepChanged call site. Everything else
-// (chat ID, alerts, hard stop, schedule) stays null, configured later via
-// the bot; a name-only sheet is resolved later too, by bot.EnsureSheetID
-// on first --serve launch — this installer has no way to call the Drive
-// API itself.
-function BuildConfigJSON(const SheetName, SheetID, ScreenName, HandHistoryPath, TournamentPath: String): String;
+// internal/config/config.go), but — unlike the old version of this
+// function — never invents null for a field this run didn't touch. Every
+// parameter is already a ready-to-splice JSON fragment (a quoted string,
+// the word null, or a whole "{...}" object), resolved by the caller
+// (CurStepChanged) from either this run's freshly collected wizard values
+// or, for anything whose page was skipped as already-set, the matching
+// raw fragment out of ExistingConfigJSON. This is what makes a rerun over
+// a complete install a no-op write: every fragment passed in is just the
+// existing file's own content, copied back unchanged. AlertsBlock/
+// HardstopBlock/ScheduleBlock are always preserved-or-default this way,
+// never collected — no wizard page asks about them.
+function BuildConfigJSON(const TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
+  HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String): String;
 begin
   Result :=
     '{' + #13#10 +
     '  "setup": {' + #13#10 +
-    '    "telegram_chat_id": null,' + #13#10 +
-    '    "google_sheet_id": ' + JSONStringOrNull(SheetID) + ',' + #13#10 +
-    '    "google_sheet_name": ' + JSONStringOrNull(SheetName) + ',' + #13#10 +
-    '    "pokerstars_screen_name": "' + JSONEscape(ScreenName) + '"' + #13#10 +
+    '    "telegram_chat_id": ' + TelegramChatIDRaw + ',' + #13#10 +
+    '    "google_sheet_id": ' + SheetIDRaw + ',' + #13#10 +
+    '    "google_sheet_name": ' + SheetNameRaw + ',' + #13#10 +
+    '    "pokerstars_screen_name": ' + ScreenNameRaw + #13#10 +
     '  },' + #13#10 +
     '  "paths": {' + #13#10 +
-    '    "hand_history": "' + JSONEscape(HandHistoryPath) + '",' + #13#10 +
-    '    "tournament_summary": "' + JSONEscape(TournamentPath) + '"' + #13#10 +
+    '    "hand_history": ' + HandHistoryRaw + ',' + #13#10 +
+    '    "tournament_summary": ' + TournamentRaw + #13#10 +
     '  },' + #13#10 +
-    '  "alerts": {' + #13#10 +
-    '    "downswing_buyins": null,' + #13#10 +
-    '    "losing_streak_count": null,' + #13#10 +
-    '    "daily_loss_usd": null,' + #13#10 +
-    '    "spingo_daily_loss_usd": null,' + #13#10 +
-    '    "session_loss_buyins": null' + #13#10 +
-    '  },' + #13#10 +
-    '  "hardstop": {' + #13#10 +
-    '    "session_loss_buyins": null,' + #13#10 +
-    '    "consecutive_losses": null,' + #13#10 +
-    '    "daily_loss_usd": null,' + #13#10 +
-    '    "spingo_daily_loss_usd": null,' + #13#10 +
-    '    "duration_hours": null,' + #13#10 +
-    '    "downswing_buyins": null' + #13#10 +
-    '  },' + #13#10 +
-    '  "schedule": {' + #13#10 +
-    '    "day_start_hour": null' + #13#10 +
-    '  }' + #13#10 +
+    '  "alerts": ' + AlertsBlock + ',' + #13#10 +
+    '  "hardstop": ' + HardstopBlock + ',' + #13#10 +
+    '  "schedule": ' + ScheduleBlock + #13#10 +
     '}' + #13#10;
 end;
 
@@ -281,13 +563,14 @@ begin
     '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
     '  <Triggers>' + #13#10 +
-    '    <LogonTrigger>' + #13#10 +
+    '    <BootTrigger>' + #13#10 +
     '      <Enabled>true</Enabled>' + #13#10 +
-    '    </LogonTrigger>' + #13#10 +
+    '      <Delay>PT30S</Delay>' + #13#10 +
+    '    </BootTrigger>' + #13#10 +
     '  </Triggers>' + #13#10 +
     '  <Principals>' + #13#10 +
     '    <Principal id="Author">' + #13#10 +
-    '      <GroupId>S-1-5-32-544</GroupId>' + #13#10 +
+    '      <UserId>S-1-5-18</UserId>' + #13#10 +
     '      <RunLevel>HighestAvailable</RunLevel>' + #13#10 +
     '    </Principal>' + #13#10 +
     '  </Principals>' + #13#10 +
@@ -345,7 +628,11 @@ begin
   // Manual path only — PageCredentials is skipped entirely for Telegram
   // (see ShouldSkipPage), so Values[0] would be empty here; that flow's
   // credentials come from bot.RunSetup's own upload-or-skip step instead.
-  if not UsingTelegram then
+  // On the manual path itself, PageCredentials is also skipped when
+  // CredentialsAlreadySet — Values[0] is empty there too, and correctly
+  // so: the file already exists at the destination, so there's nothing
+  // to copy and no risk of FileCopy overwriting it with an empty source.
+  if not UsingTelegram and (PageCredentials.Values[0] <> '') then
     FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
 
   ExtractTemporaryFile('tracker.exe');
@@ -538,7 +825,7 @@ begin
     // check. The base only matters joined with the screen name, since
     // that's the actual folder PokerStars writes into.
     PageHandHistoryDir.Values[0] := Trim(PageHandHistoryDir.Values[0]);
-    JoinedPath := AddBackslash(PageHandHistoryDir.Values[0]) + PageScreenName.Values[0];
+    JoinedPath := AddBackslash(PageHandHistoryDir.Values[0]) + CurrentScreenName();
     if not DirExists(JoinedPath) then
     begin
       MsgBox('That path doesn''t exist: ' + JoinedPath + #13#10 + 'Select the folder again.', mbError, MB_OK);
@@ -549,7 +836,7 @@ begin
   else if CurPageID = PageTournamentDir.ID then
   begin
     PageTournamentDir.Values[0] := Trim(PageTournamentDir.Values[0]);
-    JoinedPath := AddBackslash(PageTournamentDir.Values[0]) + PageScreenName.Values[0];
+    JoinedPath := AddBackslash(PageTournamentDir.Values[0]) + CurrentScreenName();
     if not DirExists(JoinedPath) then
     begin
       MsgBox('That path doesn''t exist: ' + JoinedPath + #13#10 + 'Select the folder again.', mbError, MB_OK);
@@ -561,6 +848,8 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   SheetInput, SheetName, SheetID: String;
+  TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw: String;
+  HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String;
   ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then
@@ -571,16 +860,70 @@ begin
     PreInstallFiles();
     if not UsingTelegram then
     begin
-      SheetInput := PageSheetName.Values[0];
-      SheetID := ExtractSheetIDFromURL(SheetInput);
-      if SheetID <> '' then
-        SheetName := ''
+      // Never asked by this wizard — always carried over from the
+      // existing file if there is one (a fresh chat ID is auto-detected
+      // at runtime by --serve; see CLAUDE.md).
+      TelegramChatIDRaw := JSONFieldRaw(ExistingConfigJSON, 'telegram_chat_id');
+
+      if SheetAlreadySet then
+      begin
+        SheetNameRaw := JSONFieldRaw(ExistingConfigJSON, 'google_sheet_name');
+        SheetIDRaw := JSONFieldRaw(ExistingConfigJSON, 'google_sheet_id');
+      end
       else
-        SheetName := SheetInput;
+      begin
+        SheetInput := PageSheetName.Values[0];
+        SheetID := ExtractSheetIDFromURL(SheetInput);
+        if SheetID <> '' then
+          SheetName := ''
+        else
+          SheetName := SheetInput;
+        SheetNameRaw := JSONStringOrNull(SheetName);
+        SheetIDRaw := JSONStringOrNull(SheetID);
+      end;
+
+      if ScreenNameAlreadySet then
+        ScreenNameRaw := JSONFieldRaw(ExistingConfigJSON, 'pokerstars_screen_name')
+      else
+        ScreenNameRaw := '"' + JSONEscape(PageScreenName.Values[0]) + '"';
+
+      if HandHistoryAlreadySet then
+        HandHistoryRaw := JSONFieldRaw(ExistingConfigJSON, 'hand_history')
+      else
+        HandHistoryRaw := '"' + JSONEscape(PageHandHistoryDir.Values[0]) + '"';
+
+      if TournamentAlreadySet then
+        TournamentRaw := JSONFieldRaw(ExistingConfigJSON, 'tournament_summary')
+      else
+        TournamentRaw := '"' + JSONEscape(PageTournamentDir.Values[0]) + '"';
+
+      // Never asked by this wizard at all — always preserved verbatim if
+      // an existing config has them, else the same null block as before.
+      AlertsBlock := PreservedObjectOrDefault('alerts',
+        '{' + #13#10 +
+        '    "downswing_buyins": null,' + #13#10 +
+        '    "losing_streak_count": null,' + #13#10 +
+        '    "daily_loss_usd": null,' + #13#10 +
+        '    "spingo_daily_loss_usd": null,' + #13#10 +
+        '    "session_loss_buyins": null' + #13#10 +
+        '  }');
+      HardstopBlock := PreservedObjectOrDefault('hardstop',
+        '{' + #13#10 +
+        '    "session_loss_buyins": null,' + #13#10 +
+        '    "consecutive_losses": null,' + #13#10 +
+        '    "daily_loss_usd": null,' + #13#10 +
+        '    "spingo_daily_loss_usd": null,' + #13#10 +
+        '    "duration_hours": null,' + #13#10 +
+        '    "downswing_buyins": null' + #13#10 +
+        '  }');
+      ScheduleBlock := PreservedObjectOrDefault('schedule',
+        '{' + #13#10 +
+        '    "day_start_hour": null' + #13#10 +
+        '  }');
 
       SaveStringToFile(ExpandConstant('{app}\config.json'),
-        BuildConfigJSON(SheetName, SheetID, PageScreenName.Values[0],
-          PageHandHistoryDir.Values[0], PageTournamentDir.Values[0]),
+        BuildConfigJSON(TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
+          HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock),
         False);
       RegisterScheduledTask();
     end
@@ -597,5 +940,23 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
         MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
     end;
+  end;
+end;
+
+// CurUninstallStepChanged deletes the three player-data files not covered
+// by [UninstallDelete] — see the comment there. UninstallSilent() is False
+// for a normal, interactive Control Panel uninstall and True when the
+// uninstaller is invoked with /SILENT or /VERYSILENT, which is how a
+// chained "remove the old version before installing the new one" step
+// would run it were one ever added — this keeps that hypothetical future
+// path from wiping settings too, not just today's plain in-place upgrade
+// (which never runs this uninstaller at all).
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if (CurUninstallStep = usUninstall) and not UninstallSilent() then
+  begin
+    DeleteFile(ExpandConstant('{app}\config.json'));
+    DeleteFile(ExpandConstant('{app}\lockfile.json'));
+    DeleteFile(ExpandConstant('{app}\pending_tournaments.json'));
   end;
 end;

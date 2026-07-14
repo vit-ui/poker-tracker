@@ -25,6 +25,8 @@ jobs:
   installer:
     needs: build
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -41,7 +43,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Setup
-          path: Output/Setup.exe
+          path: Output/PokerTracker-v${{ steps.version.outputs.version }}.exe
 
   release:
     needs: installer
@@ -54,4 +56,4 @@ jobs:
           name: Setup
       - uses: softprops/action-gh-release@v2
         with:
-          files: Setup.exe
+          files: PokerTracker-v${{ needs.installer.outputs.version }}.exe

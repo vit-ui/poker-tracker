@@ -22,6 +22,13 @@ type CashSession struct {
 	BB100       float64
 	VPIP        float64
 	PFR         float64
+
+	// FirstHandID is the PokerStars Hand # of the first hand in the file —
+	// globally unique and assigned once, so it never changes as PokerStars
+	// appends later hands to the same file. Storage backends use it (with
+	// Date) to identify this session across repeated re-parses of the same
+	// growing file, the same role TournamentID plays for tournaments.
+	FirstHandID string
 }
 
 // TournamentHandStats holds VPIP/PFR stats extracted from a tournament hand
@@ -49,6 +56,7 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 		firstTime, lastTime time.Time
 		bigBlind            float64
 		stake               string
+		firstHandID         string
 		hands               int
 		netUSD, rakeUSD     float64
 		vpipCount, pfrCount int
@@ -125,6 +133,8 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 				finalizeHand()
 
 				if bigBlind == 0 {
+					firstHandID = extractHandID(line)
+
 					parenIdx := strings.Index(line, "($")
 					if parenIdx == -1 {
 						return nil, nil, fmt.Errorf("no blinds in header: %s", line)
@@ -295,7 +305,23 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 		BB100:       bb100,
 		VPIP:        float64(vpipCount) / float64(hands) * 100,
 		PFR:         float64(pfrCount) / float64(hands) * 100,
+		FirstHandID: firstHandID,
 	}, nil, nil
+}
+
+// extractHandID returns the digits between "Hand #" and the following ":" in
+// a PokerStars hand header line (cash or Zoom — both contain "Hand #").
+func extractHandID(line string) string {
+	idx := strings.Index(line, "Hand #")
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len("Hand #"):]
+	end := strings.Index(rest, ":")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
 }
 
 // parseLeadingAmount parses a leading decimal number from s, ignoring a leading '$'.

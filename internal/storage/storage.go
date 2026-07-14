@@ -25,7 +25,6 @@ type Store interface {
 	AppendLedgerEntry(entryType string, amountUSD float64) error
 	GetCurrentBankroll() (float64, error)
 	GetSheetURL() string
-	GetRecentLedgerRows(n int) ([]LedgerEntry, error)
 	GetLedgerEntriesSince(t time.Time) ([]LedgerEntry, error)
 	GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error)
 	GetTournamentsSince(since time.Time) ([]parsers.Tournament, error)
