@@ -21,6 +21,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // Run starts the bot in serve mode. Forwards alerts from alertChan to
@@ -34,7 +35,7 @@ import (
 //
 // serviceAccountPath is only used by /sheet when switching to a different
 // spreadsheet — see handleSheetCommand.
-func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
+func Run(botToken string, alertChan <-chan string, sheetsClient storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -500,7 +501,7 @@ func selfRestart(configPath string) error {
 // kills itself and restarts the "Poker Tracker" scheduled task via a
 // detached command, so the fresh process picks up the new sheet ID from
 // config.json on startup.
-func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client, configPath, serviceAccountPath string) {
+func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc storage.Store, configPath, serviceAccountPath string) {
 	args = strings.TrimSpace(args)
 	if args == "" {
 		send(tgBot, chatID, sc.GetSheetURL())
@@ -754,7 +755,7 @@ func sendMessageWithKeyboard(tgBot *tgbotapi.BotAPI, configPath, text string, ma
 }
 
 // buildWeeklySummary formats the past 7 days of activity.
-func buildWeeklySummary(sc *sheets.Client, now time.Time) (string, error) {
+func buildWeeklySummary(sc storage.Store, now time.Time) (string, error) {
 	since := now.AddDate(0, 0, -7)
 	cashSessions, err := sc.GetCashSessionsSince(since)
 	if err != nil {
@@ -796,7 +797,7 @@ func buildWeeklySummary(sc *sheets.Client, now time.Time) (string, error) {
 }
 
 // buildMonthlySummary formats the previous calendar month's activity.
-func buildMonthlySummary(sc *sheets.Client, now time.Time) (string, error) {
+func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
 	firstOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	firstOfPrevMonth := firstOfThisMonth.AddDate(0, -1, 0)
 
@@ -1021,7 +1022,7 @@ func (s *conversationState) reset() {
 
 // pollUpdates polls Telegram for incoming messages and callback queries and
 // dispatches them. Runs in its own goroutine so it never blocks alertChan.
-func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
+func pollUpdates(tgBot *tgbotapi.BotAPI, sc storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
@@ -1043,7 +1044,7 @@ func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfile
 	}
 }
 
-func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
+func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	var senderChatID int64
 	switch {
 	case update.Message != nil:
@@ -1116,7 +1117,7 @@ func (s *conversationState) handleFlowReply(tgBot *tgbotapi.BotAPI, msg *tgbotap
 	}
 }
 
-func (s *conversationState) handleCallback(tgBot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, sc *sheets.Client, configPath, lockfilePath string, restartWatcher func()) {
+func (s *conversationState) handleCallback(tgBot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, sc storage.Store, configPath, lockfilePath string, restartWatcher func()) {
 	if _, err := tgBot.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
 		slog.Error("answering callback query", "err", err)
 	}
@@ -1150,7 +1151,7 @@ func RecoverTicketPayout(buyInUSD, netUSD float64) (newBuyInUSD, newNetUSD float
 }
 
 // resolveSatellite handles a tap on the satellite/ticket confirmation menu.
-func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tournamentID string, paidCash bool, sc *sheets.Client, configPath string) {
+func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tournamentID string, paidCash bool, sc storage.Store, configPath string) {
 	pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
 	pending, err := config.LoadPendingTournaments(pendingPath)
 	if err != nil {
@@ -1206,7 +1207,7 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 }
 
 // handleCommand dispatches a slash command to its handler.
-func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
+func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, sc storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	chatID := msg.Chat.ID
 	// Disarm wizard chaining for every command except the one that (re-)arms
 	// it. Without this, abandoning /start partway (or running /paths, /alerts,
@@ -1295,7 +1296,7 @@ func validateNotAbove[T int | float64](value T, other *T, valueLabel, otherLabel
 
 // handleDepositWithdraw implements /deposit and /withdraw. kind is
 // "deposit" or "withdrawal" — passed directly as the Bankroll Ledger Type.
-func handleDepositWithdraw(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client, kind string) {
+func handleDepositWithdraw(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc storage.Store, kind string) {
 	amount, err := parsePositiveFloat(args)
 	if err != nil {
 		if kind == "deposit" {
@@ -1327,7 +1328,7 @@ func handleDepositWithdraw(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc
 	send(tgBot, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, formatSignedUSD(ledgerAmount), bankroll))
 }
 
-func netSince(sc *sheets.Client, since time.Time) (float64, error) {
+func netSince(sc storage.Store, since time.Time) (float64, error) {
 	entries, err := sc.GetLedgerEntriesSince(since)
 	if err != nil {
 		return 0, err
@@ -1340,7 +1341,7 @@ func netSince(sc *sheets.Client, since time.Time) (float64, error) {
 }
 
 // handleStatus implements /status.
-func handleStatus(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client, lockfilePath string) {
+func handleStatus(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store, lockfilePath string) {
 	bankroll, err := sc.GetCurrentBankroll()
 	if err != nil {
 		slog.Error("getting bankroll", "err", err)
@@ -1390,7 +1391,7 @@ func handleStatus(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client, lockf
 // reproduce the post-session summary format, so this pulls the most recent
 // row from Cash Sessions and Tournaments directly and picks whichever is
 // more recent.
-func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client) {
+func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store) {
 	cashSessions, err := sc.GetCashSessionsSince(time.Time{})
 	if err != nil {
 		slog.Error("getting cash sessions", "err", err)
@@ -1445,7 +1446,7 @@ func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client) 
 }
 
 // handleStats implements /stats.
-func handleStats(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client) {
+func handleStats(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc storage.Store) {
 	gameType, period := ParseStatsArgs(args)
 	since := statsSince(period)
 	periodLabel := period
@@ -1509,7 +1510,7 @@ func statsSince(period string) time.Time {
 	}
 }
 
-func cashStatsMessage(sc *sheets.Client, since time.Time, periodLabel string) (string, error) {
+func cashStatsMessage(sc storage.Store, since time.Time, periodLabel string) (string, error) {
 	sessions, err := sc.GetCashSessionsSince(since)
 	if err != nil {
 		return "", err
@@ -1524,7 +1525,7 @@ func cashStatsMessage(sc *sheets.Client, since time.Time, periodLabel string) (s
 		periodLabel, formatSignedUSD(net), weightedBB100(sessions), hands, len(sessions)), nil
 }
 
-func tournamentStatsMessage(sc *sheets.Client, since time.Time, tType, periodLabel, label, emoji string, includeAvgFinish bool) (string, error) {
+func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabel, label, emoji string, includeAvgFinish bool) (string, error) {
 	tournaments, err := sc.GetTournamentsSince(since)
 	if err != nil {
 		return "", err
@@ -1839,7 +1840,7 @@ func (s *conversationState) handlePathsReply(tgBot *tgbotapi.BotAPI, chatID int6
 // from the worker goroutine right after a cash session is parsed and
 // written to sheets, so it must go through alertChan rather than sending to
 // Telegram directly (only the bot goroutine may do that).
-func EvaluateSessionLossAlert(session parsers.CashSession, sc *sheets.Client, configPath string, alertChan chan<- string) error {
+func EvaluateSessionLossAlert(session parsers.CashSession, sc storage.Store, configPath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -1870,7 +1871,7 @@ func EvaluateSessionLossAlert(session parsers.CashSession, sc *sheets.Client, co
 // since cross-validation enforces alert ≤ hardstop for this field, the
 // alert always fires at or before the hard stop's own threshold, never
 // after.
-func EvaluateDownswingAlert(buyInUSD float64, sc *sheets.Client, configPath string, alertChan chan<- string) error {
+func EvaluateDownswingAlert(buyInUSD float64, sc storage.Store, configPath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err

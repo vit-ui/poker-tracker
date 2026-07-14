@@ -15,23 +15,18 @@ import (
 	sheetsapi "google.golang.org/api/sheets/v4"
 
 	"github.com/vit-ui/self-tracker/internal/parsers"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 const dateFormat = "2006-01-02 15:04"
-
-// LedgerEntry represents a row in the Bankroll Ledger tab.
-type LedgerEntry struct {
-	Date         time.Time
-	Type         string // "deposit" | "withdrawal" | "cash_session" | "tournament"
-	AmountUSD    float64
-	RunningTotal float64
-}
 
 // Client holds the authenticated Sheets service and spreadsheet ID.
 type Client struct {
 	svc           *sheetsapi.Service
 	spreadsheetID string
 }
+
+var _ storage.Store = (*Client)(nil)
 
 // NewClient authenticates with the service account JSON and connects to the
 // spreadsheet identified by spreadsheetID. Calls ensureTabs on startup.
@@ -377,7 +372,7 @@ func (c *Client) GetSheetURL() string {
 
 // GetRecentLedgerRows returns the last n rows of Bankroll Ledger in chronological order.
 // Returns fewer than n rows when the ledger has fewer data rows.
-func (c *Client) GetRecentLedgerRows(n int) ([]LedgerEntry, error) {
+func (c *Client) GetRecentLedgerRows(n int) ([]storage.LedgerEntry, error) {
 	resp, err := c.svc.Spreadsheets.Values.Get(
 		c.spreadsheetID,
 		"Bankroll Ledger!A:D",
@@ -396,7 +391,7 @@ func (c *Client) GetRecentLedgerRows(n int) ([]LedgerEntry, error) {
 }
 
 // GetLedgerEntriesSince returns all Bankroll Ledger rows where Date >= t.
-func (c *Client) GetLedgerEntriesSince(t time.Time) ([]LedgerEntry, error) {
+func (c *Client) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error) {
 	resp, err := c.svc.Spreadsheets.Values.Get(
 		c.spreadsheetID,
 		"Bankroll Ledger!A:D",
@@ -411,7 +406,7 @@ func (c *Client) GetLedgerEntriesSince(t time.Time) ([]LedgerEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	var result []LedgerEntry
+	var result []storage.LedgerEntry
 	for _, e := range entries {
 		if !e.Date.Before(t) {
 			result = append(result, e)
@@ -499,8 +494,8 @@ func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, err
 	return result, nil
 }
 
-func parseLedgerRows(rows [][]interface{}) ([]LedgerEntry, error) {
-	entries := make([]LedgerEntry, 0, len(rows))
+func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {
+	entries := make([]storage.LedgerEntry, 0, len(rows))
 	for _, row := range rows {
 		if len(row) < 4 {
 			continue
@@ -509,7 +504,7 @@ func parseLedgerRows(rows [][]interface{}) ([]LedgerEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing ledger date %q: %w", row[0], err)
 		}
-		entries = append(entries, LedgerEntry{
+		entries = append(entries, storage.LedgerEntry{
 			Date:         date,
 			Type:         fmt.Sprint(row[1]),
 			AmountUSD:    parseFloat(row[2]),

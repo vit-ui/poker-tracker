@@ -19,6 +19,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/storage"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
@@ -360,7 +361,7 @@ func resolvePaths(cfg *config.Config) (string, string) {
 func runWorker(
 	sessionChan <-chan watcher.FileEvent,
 	alertChan chan<- string,
-	sc *sheets.Client,
+	sc storage.Store,
 	configPath, lockfilePath string,
 ) {
 	for event := range sessionChan {

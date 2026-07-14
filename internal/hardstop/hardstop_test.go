@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/parsers"
-	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 func TestSessionLossExceeds(t *testing.T) {
@@ -36,10 +36,10 @@ func TestSessionLossExceeds(t *testing.T) {
 }
 
 func TestConsecutiveLossStreak(t *testing.T) {
-	entriesOf := func(amounts ...float64) []sheets.LedgerEntry {
-		entries := make([]sheets.LedgerEntry, len(amounts))
+	entriesOf := func(amounts ...float64) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(amounts))
 		for i, a := range amounts {
-			entries[i] = sheets.LedgerEntry{Type: "cash_session", AmountUSD: a}
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: a}
 		}
 		return entries
 	}
@@ -66,10 +66,10 @@ func TestConsecutiveLossStreak(t *testing.T) {
 }
 
 func TestDailyLossExceeds(t *testing.T) {
-	entriesOf := func(nets ...float64) []sheets.LedgerEntry {
-		entries := make([]sheets.LedgerEntry, len(nets))
+	entriesOf := func(nets ...float64) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(nets))
 		for i, n := range nets {
-			entries[i] = sheets.LedgerEntry{Type: "cash_session", AmountUSD: n}
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: n}
 		}
 		return entries
 	}
@@ -155,7 +155,7 @@ func TestDailyLossIndependence(t *testing.T) {
 					c.spingoNet, c.spingoThresh, got, c.wantSpingoFire)
 			}
 
-			dailyEntries := []sheets.LedgerEntry{
+			dailyEntries := []storage.LedgerEntry{
 				{Type: "cash_session", AmountUSD: c.cashNet},
 				{Type: "tournament", AmountUSD: c.spingoNet},
 			}
@@ -173,10 +173,10 @@ func TestDailyLossIndependence(t *testing.T) {
 // a large withdrawal as an equally large downswing (see
 // TestDownswingExcludesTransfers for that specific case).
 func TestRollingPeak(t *testing.T) {
-	entriesOf := func(amounts ...float64) []sheets.LedgerEntry {
-		entries := make([]sheets.LedgerEntry, len(amounts))
+	entriesOf := func(amounts ...float64) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(amounts))
 		for i, a := range amounts {
-			entries[i] = sheets.LedgerEntry{Type: "cash_session", AmountUSD: a}
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: a}
 		}
 		return entries
 	}
@@ -212,14 +212,14 @@ func TestRollingPeak(t *testing.T) {
 func TestDownswingExcludesTransfers(t *testing.T) {
 	cases := []struct {
 		name          string
-		entries       []sheets.LedgerEntry
+		entries       []storage.LedgerEntry
 		wantPeak      float64
 		wantCurrent   float64
 		wantDownswing float64
 	}{
 		{
 			"deposit in window is ignored",
-			[]sheets.LedgerEntry{
+			[]storage.LedgerEntry{
 				{Type: "cash_session", AmountUSD: 10},
 				{Type: "deposit", AmountUSD: 100},
 				{Type: "cash_session", AmountUSD: -3},
@@ -228,7 +228,7 @@ func TestDownswingExcludesTransfers(t *testing.T) {
 		},
 		{
 			"withdrawal in window is ignored",
-			[]sheets.LedgerEntry{
+			[]storage.LedgerEntry{
 				{Type: "cash_session", AmountUSD: -5},
 				{Type: "withdrawal", AmountUSD: -50},
 				{Type: "cash_session", AmountUSD: -5},
@@ -252,10 +252,10 @@ func TestDownswingExcludesTransfers(t *testing.T) {
 // TestComputeEquityCurve exercises the peak/current equity-curve math in
 // isolation, independent of any type filtering or windowing.
 func TestComputeEquityCurve(t *testing.T) {
-	entriesOf := func(amounts ...float64) []sheets.LedgerEntry {
-		entries := make([]sheets.LedgerEntry, len(amounts))
+	entriesOf := func(amounts ...float64) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(amounts))
 		for i, a := range amounts {
-			entries[i] = sheets.LedgerEntry{Type: "cash_session", AmountUSD: a}
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: a}
 		}
 		return entries
 	}
