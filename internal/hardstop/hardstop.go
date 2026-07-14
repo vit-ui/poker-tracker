@@ -37,17 +37,16 @@ func Evaluate(session parsers.CashSession, sheetsClient *sheets.Client, configPa
 	}
 
 	if h.ConsecutiveLosses != nil {
-		rows, err := sheetsClient.GetRecentLedgerRows(*h.ConsecutiveLosses)
+		// GetLedgerEntriesSince with the zero time returns the whole ledger —
+		// every row ever written, of any type — mirroring how
+		// DownswingEquityCurve fetches its own window. consecutiveLossesTriggered
+		// does the session-only filtering and windowing locally so a deposit
+		// or withdrawal never occupies one of the ConsecutiveLosses slots.
+		allEntries, err := sheetsClient.GetLedgerEntriesSince(time.Time{})
 		if err != nil {
 			return err
 		}
-		var sessionRows []sheets.LedgerEntry
-		for _, row := range rows {
-			if row.Type == "cash_session" || row.Type == "tournament" {
-				sessionRows = append(sessionRows, row)
-			}
-		}
-		if len(rows) == *h.ConsecutiveLosses && consecutiveLossStreak(sessionRows) == len(rows) {
+		if consecutiveLossesTriggered(allEntries, *h.ConsecutiveLosses) {
 			if h.DurationHours == nil {
 				return fmt.Errorf("consecutive_losses configured without duration_hours")
 			}
@@ -84,6 +83,35 @@ func consecutiveLossStreak(entries []sheets.LedgerEntry) int {
 		count++
 	}
 	return count
+}
+
+// recentSessionRows filters entries to session type (cash_session or
+// tournament — see sessionOnly) and returns the last n of them in
+// chronological order. Deposits and withdrawals are dropped before the
+// n-row window is taken, so a transfer anywhere in entries never occupies
+// one of the n slots and never breaks up an otherwise-contiguous run of
+// session rows. Returns fewer than n rows when entries has fewer than n
+// session rows in total.
+func recentSessionRows(entries []sheets.LedgerEntry, n int) []sheets.LedgerEntry {
+	rows := sessionOnly(entries)
+	if len(rows) > n {
+		rows = rows[len(rows)-n:]
+	}
+	return rows
+}
+
+// consecutiveLossesTriggered reports whether entries — the full Bankroll
+// Ledger, any type, in chronological order — show n consecutive losing
+// session rows (cash_session or tournament) among the account's most recent
+// session history. Deposits and withdrawals are filtered out before the
+// n-row window is taken (see recentSessionRows), so a transfer never
+// occupies one of the n slots and never breaks up an otherwise-contiguous
+// losing streak. False when the account doesn't yet have n session rows in
+// its history at all — an early streak of fewer than n rows, even if every
+// one of them is a loss, must not fire.
+func consecutiveLossesTriggered(entries []sheets.LedgerEntry, n int) bool {
+	sessionRows := recentSessionRows(entries, n)
+	return len(sessionRows) == n && consecutiveLossStreak(sessionRows) == len(sessionRows)
 }
 
 // pokerDayStart computes the start of the poker day containing now, using
