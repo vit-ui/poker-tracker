@@ -239,6 +239,110 @@ You finished in 1st place (eliminated at hand #261437820632).
 	}
 }
 
+// TestParseTournamentFile_HeroWinsTicket_Position1StillPlaying covers a
+// Power Path-style satellite where the summary is captured before finish
+// position 1 is decided (their row reads "still playing" — PokerStars can
+// write the summary once hero busts, while the tournament continues for
+// other players) and hero themselves, not in 1st, wins a ticket. Relying on
+// finish position 1's payout alone misses this entirely — LikelySatellite
+// must also trigger from hero's own row, confirmed against a real summary
+// file (Tournament #4016109507).
+func TestParseTournamentFile_HeroWinsTicket_Position1StillPlaying(t *testing.T) {
+	contents := `PokerStars Tournament #4016109507, No Limit Hold'em
+Buy-In: $0.96/$0.04 USD
+16 players
+Total Prize Pool: $15.36 USD
+
+  1: Villain1 (Canada), still playing
+  2: Villain2 (Brazil), still playing
+  3: AnonHero01 (Brazil), Tournament Ticket ($1.50 Step 2 - Power Path)
+  4: Villain3 (United Kingdom), $1.36 (8.854%)
+
+You finished in 3rd place (eliminated at hand #261439247515).
+`
+	path := writeTournamentSummary(t, contents)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+
+	if tourn.FinishPos != 3 {
+		t.Errorf("FinishPos = %d, want 3", tourn.FinishPos)
+	}
+	if !approxEqual(tourn.NetUSD, -1.00) {
+		t.Errorf("NetUSD = %v, want -1.00 (only the buy-in lost — the ticket has no cash value)", tourn.NetUSD)
+	}
+	if !tourn.LikelySatellite {
+		t.Error("LikelySatellite = false, want true — hero's own payout says 'Tournament Ticket', even though position 1 hasn't finished yet")
+	}
+	if tourn.WinnerPrizeDescription != "Tournament Ticket ($1.50 Step 2 - Power Path)" {
+		t.Errorf("WinnerPrizeDescription = %q, want %q", tourn.WinnerPrizeDescription, "Tournament Ticket ($1.50 Step 2 - Power Path)")
+	}
+}
+
+// TestParseTournamentFile_Position1TicketTakesPriorityOverHero confirms that
+// when BOTH finish position 1 and hero have ticket payouts, the description
+// shown is position 1's — the more universally meaningful one for a player
+// recognizing which tournament this is about — not silently overwritten by
+// hero's own text processed later in the file.
+func TestParseTournamentFile_Position1TicketTakesPriorityOverHero(t *testing.T) {
+	contents := `PokerStars Tournament #555555555, $2.00+$0.20 USD
+Hold'em No Limit
+Buy-In: $2.00/$0.20
+9 players
+Total Prize Pool: $18.00
+  1: Villain1 (Brazil), $10.00 Sunday Special Ticket
+  2: AnonHero01 (Cyprus), $5.00 Sunday Special Ticket
+  3: Villain2 (USA), $3.00
+`
+	path := writeTournamentSummary(t, contents)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+	if tourn.WinnerPrizeDescription != "$10.00 Sunday Special Ticket" {
+		t.Errorf("WinnerPrizeDescription = %q, want %q (position 1's, not hero's)", tourn.WinnerPrizeDescription, "$10.00 Sunday Special Ticket")
+	}
+}
+
+// TestParseTournamentFile_TicketAtOtherDecidedPosition covers the case
+// neither position-1-only nor hero-own-row-only detection could catch:
+// position 1 hasn't been decided yet ("still playing"), hero busted with no
+// payout at all, but a worse (already-decided, since worse positions bust
+// first) position's ticket is still visible in the file. Scanning every row
+// is what catches this — position 1 and hero's own row alone would both
+// report LikelySatellite = false here.
+func TestParseTournamentFile_TicketAtOtherDecidedPosition(t *testing.T) {
+	contents := `PokerStars Tournament #4016109507, No Limit Hold'em
+Buy-In: $0.96/$0.04 USD
+16 players
+Total Prize Pool: $15.36 USD
+  1: Villain1 (Canada), still playing
+  2: Villain2 (Brazil), still playing
+  3: Villain3 (Brazil), Tournament Ticket ($1.50 Step 2 - Power Path)
+  4: Villain4 (United Kingdom), $1.36 (8.854%)
+  5: AnonHero01 (Venezuela),
+  6: Villain5 (Brazil),
+`
+	path := writeTournamentSummary(t, contents)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+	if tourn.FinishPos != 5 {
+		t.Errorf("FinishPos = %d, want 5", tourn.FinishPos)
+	}
+	if !approxEqual(tourn.NetUSD, -1.00) {
+		t.Errorf("NetUSD = %v, want -1.00 (hero won nothing at all)", tourn.NetUSD)
+	}
+	if !tourn.LikelySatellite {
+		t.Error("LikelySatellite = false, want true — position 3's already-decided ticket is a valid satellite signal even though it's neither position 1 nor hero")
+	}
+	if tourn.WinnerPrizeDescription != "Tournament Ticket ($1.50 Step 2 - Power Path)" {
+		t.Errorf("WinnerPrizeDescription = %q, want %q", tourn.WinnerPrizeDescription, "Tournament Ticket ($1.50 Step 2 - Power Path)")
+	}
+}
+
 // TestParseTournamentFile_HeroBusted covers a tournament where hero's results
 // line has no payout marker at all (busted out of the money), which the code
 // treats as a loss of the full buy-in.

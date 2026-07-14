@@ -1020,9 +1020,22 @@ func checkPendingTournaments(tgBot *tgbotapi.BotAPI, configPath string, now time
 	}
 }
 
+// sendSatelliteMenu asks the cash-vs-ticket entry question. The prize shown
+// isn't always finish position 1's — WinnerPrizeDescription is set from
+// whichever row's payout first read as a ticket/pass, scanning every result
+// row rather than just position 1 (which can still read "still playing" if
+// the summary was captured while other players were still in) — so it's
+// labeled generically rather than claiming it's always what 1st place won.
+// Includes buy-in, date, and finish position/field size — enough for the
+// player to tell tournaments apart when more than one is pending at once,
+// since the identifying detail here is otherwise just a TournamentID.
 func sendSatelliteMenu(tgBot *tgbotapi.BotAPI, configPath string, t parsers.Tournament) {
-	text := fmt.Sprintf("🎫 Satellite/qualifier detected\nTournament #%s\n1st place won: %s\nDid you pay cash for your entry, or use a ticket?",
-		t.TournamentID, t.WinnerPrizeDescription)
+	gameType := "MTT"
+	if t.BaseType() == "spingo" {
+		gameType = "Spin & Go"
+	}
+	text := fmt.Sprintf("🎫 Satellite/qualifier detected\n%s #%s\nDate: %s\nBuy-in: $%.2f\nFinish: %s / %d\nPrize: %s\nDid you pay cash for your entry, or use a ticket?",
+		gameType, t.TournamentID, t.Date.Local().Format("2006-01-02 15:04"), t.BuyInUSD, ordinal(t.FinishPos), t.TotalPlayers, t.WinnerPrizeDescription)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("💵 Paid cash", "satellite_cash:"+t.TournamentID),

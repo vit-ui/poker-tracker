@@ -36,15 +36,26 @@ type Tournament struct {
 	// Power Path Step 2 Ticket" — the ticket's own face-value name, not a
 	// real cash pool). Empty for a normal cash-denominated prize pool, in
 	// which case PrizePoolUSD holds the real amount instead.
-	PrizePoolDescription   string
-	Multiplier             *float64 // non-nil only for spingo with a real cash prize pool (nil if PrizePoolDescription is set)
-	FinishPos              int
-	TotalPlayers           int
-	NetUSD                 float64
-	VPIP                   *float64 // populated from hand history via UpdateTournamentHandStats
-	PFR                    *float64 // populated from hand history via UpdateTournamentHandStats
-	LikelySatellite        bool     // true if finish position 1's payout reads as a ticket/pass, not a cash prize
-	WinnerPrizeDescription string   // finish position 1's exact payout text. Empty if not flagged.
+	PrizePoolDescription string
+	Multiplier           *float64 // non-nil only for spingo with a real cash prize pool (nil if PrizePoolDescription is set)
+	FinishPos            int
+	TotalPlayers         int
+	NetUSD               float64
+	VPIP                 *float64 // populated from hand history via UpdateTournamentHandStats
+	PFR                  *float64 // populated from hand history via UpdateTournamentHandStats
+	// LikelySatellite is true if finish position 1's payout reads as a
+	// ticket/pass, or if screenName's own payout does. The second trigger
+	// exists because the summary file can be written while other players
+	// are still in the tournament — position 1's row reads "still playing"
+	// until they're decided, which is not the same as position 1 not being
+	// a ticket, so relying on position 1 alone misses a screenName who
+	// themselves won a ticket in a still-in-progress tournament.
+	LikelySatellite bool
+
+	// WinnerPrizeDescription is finish position 1's exact payout text if
+	// that triggered LikelySatellite, else screenName's own payout text if
+	// that did instead. Empty if not flagged.
+	WinnerPrizeDescription string
 }
 
 // BaseType returns Type with any KnockoutSuffix stripped, so filtering or
@@ -141,11 +152,10 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			// nothing. A ticket/pass payout (e.g. "$1.00 Power Path Step 2
 			// Ticket") still starts with a dollar sign — that's the ticket's
 			// own face-value name, not a cash credit PokerStars actually
-			// paid out — so it must never be parsed as a NetUSD amount, the
-			// same distinction the finish-position-1 satellite check below
-			// makes. A screenName who wins a ticket themselves has NetUSD
-			// computed the same as a screenName who won nothing at all:
-			// just -BuyInUSD.
+			// paid out — so it must never be parsed as a NetUSD amount (the
+			// satellite-detection loop below decides whether it's a ticket).
+			// A screenName who wins a ticket has NetUSD computed the same as
+			// a screenName who won nothing at all: just -BuyInUSD.
 			const payoutTextMarker = "), "
 			t.NetUSD = -t.BuyInUSD
 			if payIdx := strings.Index(line, payoutTextMarker); payIdx >= 0 {
@@ -158,10 +168,33 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			}
 		}
 
-		// Finish position 1 is checked independently of the switch above since
-		// it's often a different player than screenName.
-		if pos, payout, ok := parseFinishLine(line); ok && pos == 1 {
-			if isTicketOrPass(payout) {
+		// Satellite/qualifier detection: scan every result row, not just
+		// finish position 1 — the file lists rows in ascending position
+		// order, so the first ticket/pass payout found here is always the
+		// best (numerically lowest) already-decided one, matching the
+		// original position-1-only intent whenever position 1 is decided.
+		// Checking every row (not stopping at position 1) is what catches
+		// two cases position-1-only missed entirely: a screenName who wins
+		// a ticket at a position other than 1st, and a still-in-progress
+		// tournament — the summary can be written the moment screenName
+		// busts, while the tournament continues for players still in, so
+		// position 1's row reads "still playing" rather than showing a
+		// payout at all. Position 1 not yet being decided is not the same
+		// as position 1 not being a ticket, and if any other row worse than
+		// screenName is already decided as a ticket (e.g. a multi-tier
+		// payout structure with more than one ticket awarded), that's still
+		// as reliable a satellite signal as position 1's would be.
+		//
+		// This does not close every gap: if screenName busts before any
+		// ticket-awarding position has been decided at all (busted early,
+		// won nothing, and nobody else has cashed a ticket yet either),
+		// there is genuinely no signal left in this file to detect it from
+		// — PokerStars' own export format doesn't expose a tournament's
+		// satellite/qualifier structure independent of an actual decided
+		// payout. This is a known hard problem for third-party trackers
+		// generally, not unique to this parser.
+		if !t.LikelySatellite {
+			if _, payout, ok := parseFinishLine(line); ok && isTicketOrPass(payout) {
 				t.LikelySatellite = true
 				t.WinnerPrizeDescription = payout
 			}
