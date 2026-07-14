@@ -12,7 +12,7 @@ func TestParseTournamentFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(files) == 0 {
-		t.Fatal("no files found in testdata/tournaments/")
+		t.Skip("no files found in testdata/tournaments/ — this directory is gitignored real player data, only present on a dev machine that's played tournaments; skipping on a checkout without it")
 	}
 	for _, f := range files {
 		tournament, err := ParseTournamentFile(f, testScreenName)
