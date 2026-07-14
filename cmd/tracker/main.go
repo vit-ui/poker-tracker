@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 
@@ -357,12 +358,24 @@ func resolvePaths(cfg *config.Config) (string, string) {
 		filepath.Join(*cfg.Paths.TournamentSummary, *cfg.Setup.PokerStarsScreenName)
 }
 
+// cashSessionSummaryQuietPeriod is how long a cash table must go without a
+// new hand before its post-session summary is sent. A hand history file
+// gets a fresh event on every hand played at that table, so sending
+// immediately would fire the summary once per hand with a growing,
+// still-incomplete snapshot each time — this waits for the table to go
+// quiet and sends the final numbers once, the same time-gap technique
+// poker trackers use to detect a session boundary.
+const cashSessionSummaryQuietPeriod = 10 * time.Minute
+
 func runWorker(
 	sessionChan <-chan watcher.FileEvent,
 	alertChan chan<- string,
 	sc *sheets.Client,
 	configPath, lockfilePath string,
 ) {
+	var summaryMu sync.Mutex
+	summaryTimers := make(map[string]*time.Timer)
+
 	for event := range sessionChan {
 		// Re-read on every event rather than capturing once at startup —
 		// the startup guard no longer requires pokerstars_screen_name to be
@@ -399,13 +412,10 @@ func runWorker(
 				if err := bot.EvaluateDownswingAlert(session.BuyInUSD, sc, configPath, alertChan); err != nil {
 					slog.Error("evaluating downswing alert", "err", err)
 				}
-				bankroll, _ := sc.GetCurrentBankroll()
-				sign, absNet := "+", session.NetUSD
-				if absNet < 0 {
-					sign, absNet = "-", -absNet
-				}
-				alertChan <- fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s$%.2f\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
-					session.Stake, sign, absNet, session.Hands, session.DurationMin, bankroll)
+				scheduleCashSessionSummary(&summaryMu, summaryTimers, event.Path, cashSessionSummaryQuietPeriod, alertChan, func() string {
+					bankroll, _ := sc.GetCurrentBankroll()
+					return cashSessionSummaryText(*session, bankroll)
+				})
 			} else if tourneyStats != nil {
 				if err := sc.UpdateTournamentVPIPPFR(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR); err != nil {
 					slog.Error("updating tournament VPIP/PFR", "err", err)
@@ -472,6 +482,39 @@ func runWorker(
 			alertChan <- alert
 		}
 	}
+}
+
+// scheduleCashSessionSummary (re)starts a quietPeriod timer for path, keyed
+// the same way watcher.go's own write-debounce is — one growing hand
+// history file per table sitting. A new hand for the same table stops the
+// pending timer and starts a fresh one, so an actively-played table never
+// fires early; the summary only goes out once quietPeriod has passed with
+// no new hand, built from whatever buildMessage returns at that moment
+// (the latest snapshot, captured by the caller's closure). Mirrors
+// watcher.go's mutex-protected timer map exactly, since the timer callback
+// runs on its own goroutine, not the caller's.
+func scheduleCashSessionSummary(mu *sync.Mutex, timers map[string]*time.Timer, path string, quietPeriod time.Duration, alertChan chan<- string, buildMessage func() string) {
+	mu.Lock()
+	defer mu.Unlock()
+	if t, ok := timers[path]; ok {
+		t.Stop()
+	}
+	timers[path] = time.AfterFunc(quietPeriod, func() {
+		mu.Lock()
+		delete(timers, path)
+		mu.Unlock()
+		alertChan <- buildMessage()
+	})
+}
+
+// cashSessionSummaryText formats the post-session summary alert.
+func cashSessionSummaryText(session parsers.CashSession, bankroll float64) string {
+	sign, absNet := "+", session.NetUSD
+	if absNet < 0 {
+		sign, absNet = "-", -absNet
+	}
+	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s$%.2f\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
+		session.Stake, sign, absNet, session.Hands, session.DurationMin, bankroll)
 }
 
 // ordinal formats n as "1st", "2nd", "3rd", "4th", etc.
