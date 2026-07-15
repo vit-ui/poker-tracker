@@ -994,4 +994,163 @@ func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GetAll* — /export's full-fidelity readers
+// ---------------------------------------------------------------------------
+
+func TestGetAllCashSessions_IncludesSessionID(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-10T20:00:00Z")
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 50, -5.25)); err != nil {
+		t.Fatalf("AppendCashSession: %v", err)
+	}
+
+	records, err := s.GetAllCashSessions()
+	if err != nil {
+		t.Fatalf("GetAllCashSessions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+	want := cashSessionID(date, "200000000001")
+	if records[0].SessionID != want {
+		t.Errorf("SessionID = %q, want %q", records[0].SessionID, want)
+	}
+	if records[0].Hands != 50 || !closeEnough(records[0].NetUSD, -5.25) {
+		t.Errorf("record = %+v, unexpected", records[0])
+	}
+}
+
+func TestGetAllCashSessions_ReparseStillReturnsOneRow(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-10T20:00:00Z")
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 10, -1.00)); err != nil {
+		t.Fatalf("first AppendCashSession: %v", err)
+	}
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 25, 3.50)); err != nil {
+		t.Fatalf("second AppendCashSession: %v", err)
+	}
+
+	records, err := s.GetAllCashSessions()
+	if err != nil {
+		t.Fatalf("GetAllCashSessions: %v", err)
+	}
+	if len(records) != 1 || records[0].Hands != 25 {
+		t.Errorf("records = %+v, want a single row reflecting the latest reparse", records)
+	}
+}
+
+func TestGetAllTournaments_IncludesHandStatsAndBounty(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-10T20:00:00Z")
+	tourn := parsers.Tournament{
+		Date: date, Type: "mtt", TournamentID: "8000000001",
+		BuyInUSD: 5.00, PrizePoolUSD: 100, FinishPos: 3, TotalPlayers: 50, NetUSD: -5.00,
+	}
+	if _, err := s.AppendTournament(tourn); err != nil {
+		t.Fatalf("AppendTournament: %v", err)
+	}
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 0.90, true); err != nil {
+		t.Fatalf("UpdateTournamentHandStats: %v", err)
+	}
+
+	records, err := s.GetAllTournaments()
+	if err != nil {
+		t.Fatalf("GetAllTournaments: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+	got := records[0]
+	if got.Type != "mtt-ko" {
+		t.Errorf("Type = %q, want %q", got.Type, "mtt-ko")
+	}
+	if got.VPIP == nil || !closeEnough(*got.VPIP, 22.0) {
+		t.Errorf("VPIP = %v, want 22.0", got.VPIP)
+	}
+	if got.PFR == nil || !closeEnough(*got.PFR, 10.0) {
+		t.Errorf("PFR = %v, want 10.0", got.PFR)
+	}
+	if !closeEnough(got.BountyWonUSD, 0.90) {
+		t.Errorf("BountyWonUSD = %v, want 0.90", got.BountyWonUSD)
+	}
+	// -5.00 baseline + 0.90 bounty = -4.10; prize won = -4.10 + 5.00 = 0.90
+	if !closeEnough(got.NetUSD, -4.10) {
+		t.Errorf("NetUSD = %v, want -4.10", got.NetUSD)
+	}
+	if !closeEnough(got.PrizeWonUSD, 0.90) {
+		t.Errorf("PrizeWonUSD = %v, want 0.90", got.PrizeWonUSD)
+	}
+}
+
+func TestGetAllTournaments_SkipsPartialRows(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpdateTournamentHandStats("8000000002", 30.0, 15.0, 0, false); err != nil {
+		t.Fatalf("UpdateTournamentHandStats (partial): %v", err)
+	}
+	records, err := s.GetAllTournaments()
+	if err != nil {
+		t.Fatalf("GetAllTournaments: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("len(records) = %d, want 0 (partial row must be hidden until the summary arrives)", len(records))
+	}
+}
+
+func TestGetAllTournaments_VPIPPFRNilBeforeHandFile(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-10T20:00:00Z")
+	tourn := parsers.Tournament{
+		Date: date, Type: "mtt", TournamentID: "8000000003",
+		BuyInUSD: 5.00, PrizePoolUSD: 100, FinishPos: 3, TotalPlayers: 50, NetUSD: 5.00,
+	}
+	if _, err := s.AppendTournament(tourn); err != nil {
+		t.Fatalf("AppendTournament: %v", err)
+	}
+	records, err := s.GetAllTournaments()
+	if err != nil {
+		t.Fatalf("GetAllTournaments: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+	if records[0].VPIP != nil || records[0].PFR != nil {
+		t.Errorf("VPIP/PFR = %v/%v, want nil (no hand file parsed yet)", records[0].VPIP, records[0].PFR)
+	}
+}
+
+func TestGetAllTimeAnalysis_IncludesSessionID(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-10T20:00:00Z")
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 50, -5.25)); err != nil {
+		t.Fatalf("AppendCashSession: %v", err)
+	}
+
+	records, err := s.GetAllTimeAnalysis()
+	if err != nil {
+		t.Fatalf("GetAllTimeAnalysis: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+	want := cashSessionID(date, "200000000001")
+	if records[0].SessionID != want {
+		t.Errorf("SessionID = %q, want %q", records[0].SessionID, want)
+	}
+	if records[0].Hour != date.Hour() || records[0].DayOfWeek != date.Weekday().String() {
+		t.Errorf("record = %+v, unexpected", records[0])
+	}
+}
+
+func TestGetAllCashSessions_EmptyReturnsNoRowsNoError(t *testing.T) {
+	s := newTestStore(t)
+	records, err := s.GetAllCashSessions()
+	if err != nil {
+		t.Fatalf("GetAllCashSessions: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("len(records) = %d, want 0", len(records))
+	}
+}
+
 func floatPtr(f float64) *float64 { return &f }

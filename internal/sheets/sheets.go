@@ -816,7 +816,7 @@ func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64) error {
 		return err
 	}
 	return c.appendRow("Bankroll Ledger", []interface{}{
-		time.Now().Format(dateFormat),
+		time.Now().UTC().Format(dateFormat),
 		entryType,
 		amountUSD,
 		prev + amountUSD,
@@ -838,7 +838,7 @@ func (c *Client) GetSheetURL() string {
 func (c *Client) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error) {
 	resp, err := c.svc.Spreadsheets.Values.Get(
 		c.spreadsheetID,
-		"Bankroll Ledger!A:D",
+		"Bankroll Ledger!A:E",
 	).ValueRenderOption("UNFORMATTED_VALUE").Do()
 	if err != nil {
 		return nil, fmt.Errorf("reading bankroll ledger: %w", err)
@@ -859,12 +859,16 @@ func (c *Client) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, erro
 	return result, nil
 }
 
-// GetCashSessionsSince returns all Cash Sessions rows where Date >= t.
-// BuyInUSD is not stored in the sheet and will be zero in returned structs.
-func (c *Client) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error) {
+// queryCashSessions reads every Cash Sessions row with Date >= since,
+// including Session ID — the one column GetCashSessionsSince's existing
+// callers (stats, summaries) don't need but /export does. GetCashSessionsSince
+// and GetAllCashSessions are both thin wrappers over this single read,
+// differing only in the date cutoff and whether the caller wants the
+// Session ID kept or discarded.
+func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord, error) {
 	resp, err := c.svc.Spreadsheets.Values.Get(
 		c.spreadsheetID,
-		"Cash Sessions!A:I",
+		"Cash Sessions!A:J",
 	).ValueRenderOption("UNFORMATTED_VALUE").Do()
 	if err != nil {
 		return nil, fmt.Errorf("reading cash sessions: %w", err)
@@ -872,44 +876,7 @@ func (c *Client) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error
 	if len(resp.Values) <= 1 {
 		return nil, nil
 	}
-	var result []parsers.CashSession
-	for _, row := range resp.Values[1:] {
-		if len(row) < 9 {
-			continue
-		}
-		date, err := time.Parse(dateFormat, fmt.Sprint(row[0]))
-		if err != nil || date.Before(t) {
-			continue
-		}
-		result = append(result, parsers.CashSession{
-			Date:        date,
-			Stake:       fmt.Sprint(row[1]),
-			Hands:       parseInt(row[2]),
-			DurationMin: parseInt(row[3]),
-			NetUSD:      parseFloat(row[4]),
-			RakeUSD:     parseFloat(row[5]),
-			BB100:       parseFloat(row[6]),
-			VPIP:        parseFloat(row[7]),
-			PFR:         parseFloat(row[8]),
-		})
-	}
-	return result, nil
-}
-
-// GetTournamentsSince returns all Tournaments rows where Date >= since.
-// Partial rows (no Date) created by UpdateTournamentHandStats are skipped.
-func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Tournaments!A:K",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
-	if err != nil {
-		return nil, fmt.Errorf("reading tournaments: %w", err)
-	}
-	if len(resp.Values) <= 1 {
-		return nil, nil
-	}
-	var result []parsers.Tournament
+	var result []storage.CashSessionRecord
 	for _, row := range resp.Values[1:] {
 		if len(row) < 9 {
 			continue
@@ -918,29 +885,168 @@ func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, err
 		if err != nil || date.Before(since) {
 			continue
 		}
-		tourn := parsers.Tournament{
-			Date:         date,
-			Type:         fmt.Sprint(row[1]),
-			TournamentID: fmt.Sprint(row[2]),
-			BuyInUSD:     parseFloat(row[3]),
-			FinishPos:    parseInt(row[6]),
-			TotalPlayers: parseInt(row[7]),
-			NetUSD:       parseFloat(row[8]),
+		rec := storage.CashSessionRecord{
+			CashSession: parsers.CashSession{
+				Date:        date,
+				Stake:       fmt.Sprint(row[1]),
+				Hands:       parseInt(row[2]),
+				DurationMin: parseInt(row[3]),
+				NetUSD:      parseFloat(row[4]),
+				RakeUSD:     parseFloat(row[5]),
+				BB100:       parseFloat(row[6]),
+				VPIP:        parseFloat(row[7]),
+				PFR:         parseFloat(row[8]),
+			},
+		}
+		if len(row) > 9 {
+			rec.SessionID = fmt.Sprint(row[9])
+		}
+		result = append(result, rec)
+	}
+	return result, nil
+}
+
+// GetCashSessionsSince returns all Cash Sessions rows where Date >= t.
+// BuyInUSD is not stored in the sheet and will be zero in returned structs.
+func (c *Client) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error) {
+	records, err := c.queryCashSessions(t)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]parsers.CashSession, len(records))
+	for i, r := range records {
+		result[i] = r.CashSession
+	}
+	return result, nil
+}
+
+// GetAllCashSessions returns every Cash Sessions row, including Session ID.
+// Used only by /export.
+func (c *Client) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
+	return c.queryCashSessions(time.Time{})
+}
+
+// queryTournaments reads every Tournaments row with Date >= since, including
+// VPIP, PFR, Bounty Won, and Prize Won — columns GetTournamentsSince's
+// existing callers don't need but /export does. Partial rows (no Date)
+// created by UpdateTournamentHandStats before the summary file arrives are
+// skipped. GetTournamentsSince and GetAllTournaments are both thin wrappers
+// over this single read, differing only in the date cutoff and whether the
+// caller wants those extra columns kept or discarded.
+func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID,
+		"Tournaments!A:M",
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return nil, fmt.Errorf("reading tournaments: %w", err)
+	}
+	if len(resp.Values) <= 1 {
+		return nil, nil
+	}
+	var result []storage.TournamentRecord
+	for _, row := range resp.Values[1:] {
+		if len(row) < 9 {
+			continue
+		}
+		date, err := time.Parse(dateFormat, fmt.Sprint(row[0]))
+		if err != nil || date.Before(since) {
+			continue
+		}
+		rec := storage.TournamentRecord{
+			Tournament: parsers.Tournament{
+				Date:         date,
+				Type:         fmt.Sprint(row[1]),
+				TournamentID: fmt.Sprint(row[2]),
+				BuyInUSD:     parseFloat(row[3]),
+				FinishPos:    parseInt(row[6]),
+				TotalPlayers: parseInt(row[7]),
+				NetUSD:       parseFloat(row[8]),
+			},
 		}
 		// Prize Pool (col E) holds a number for a real cash pool, or text
 		// for a ticket-denominated one (e.g. "$1.00 Power Path Step 2
 		// Ticket") — see AppendTournament's prizePool write.
 		if desc, ok := row[4].(string); ok && desc != "" {
-			tourn.PrizePoolDescription = desc
+			rec.PrizePoolDescription = desc
 		} else {
-			tourn.PrizePoolUSD = parseFloat(row[4])
+			rec.PrizePoolUSD = parseFloat(row[4])
 		}
 		// Multiplier (col F) is empty for MTT rows.
 		if mult := fmt.Sprint(row[5]); mult != "" {
 			m := parseFloat(row[5])
-			tourn.Multiplier = &m
+			rec.Multiplier = &m
 		}
-		result = append(result, tourn)
+		if len(row) > 9 && fmt.Sprint(row[9]) != "" {
+			v := parseFloat(row[9])
+			rec.VPIP = &v
+		}
+		if len(row) > 10 && fmt.Sprint(row[10]) != "" {
+			p := parseFloat(row[10])
+			rec.PFR = &p
+		}
+		if len(row) > 11 {
+			rec.BountyWonUSD = parseFloat(row[11])
+		}
+		if len(row) > 12 {
+			rec.PrizeWonUSD = parseFloat(row[12])
+		}
+		result = append(result, rec)
+	}
+	return result, nil
+}
+
+// GetTournamentsSince returns all Tournaments rows where Date >= since.
+// Partial rows (no Date) created by UpdateTournamentHandStats are skipped.
+func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
+	records, err := c.queryTournaments(since)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]parsers.Tournament, len(records))
+	for i, r := range records {
+		result[i] = r.Tournament
+	}
+	return result, nil
+}
+
+// GetAllTournaments returns every Tournaments row, including VPIP, PFR,
+// Bounty Won, and Prize Won. Used only by /export.
+func (c *Client) GetAllTournaments() ([]storage.TournamentRecord, error) {
+	return c.queryTournaments(time.Time{})
+}
+
+// GetAllTimeAnalysis returns every Time Analysis row. Used only by /export.
+func (c *Client) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID,
+		"Time Analysis!A:E",
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return nil, fmt.Errorf("reading time analysis: %w", err)
+	}
+	if len(resp.Values) <= 1 {
+		return nil, nil
+	}
+	var result []storage.TimeAnalysisRecord
+	for _, row := range resp.Values[1:] {
+		if len(row) < 4 {
+			continue
+		}
+		date, err := time.Parse(dateFormat, fmt.Sprint(row[0]))
+		if err != nil {
+			continue
+		}
+		rec := storage.TimeAnalysisRecord{
+			Date:      date,
+			Hour:      parseInt(row[1]),
+			DayOfWeek: fmt.Sprint(row[2]),
+			NetUSD:    parseFloat(row[3]),
+		}
+		if len(row) > 4 {
+			rec.SessionID = fmt.Sprint(row[4])
+		}
+		result = append(result, rec)
 	}
 	return result, nil
 }
@@ -955,12 +1061,16 @@ func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing ledger date %q: %w", row[0], err)
 		}
-		entries = append(entries, storage.LedgerEntry{
+		entry := storage.LedgerEntry{
 			Date:         date,
 			Type:         fmt.Sprint(row[1]),
 			AmountUSD:    parseFloat(row[2]),
 			RunningTotal: parseFloat(row[3]),
-		})
+		}
+		if len(row) > 4 {
+			entry.SessionID = fmt.Sprint(row[4])
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }

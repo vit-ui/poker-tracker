@@ -552,7 +552,7 @@ func (s *Store) GetSheetURL() string {
 // GetLedgerEntriesSince returns all bankroll_ledger rows where Date >= t.
 func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT date, type, amount_usd, running_total FROM bankroll_ledger WHERE date >= ? ORDER BY id ASC
+		SELECT date, type, amount_usd, running_total, session_id FROM bankroll_ledger WHERE date >= ? ORDER BY id ASC
 	`, t.UTC().Format(dateFormat))
 	if err != nil {
 		return nil, fmt.Errorf("reading bankroll ledger: %w", err)
@@ -563,18 +563,69 @@ func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error
 	for rows.Next() {
 		var dateStr, entryType string
 		var amount, running float64
-		if err := rows.Scan(&dateStr, &entryType, &amount, &running); err != nil {
+		var sessionID sql.NullString
+		if err := rows.Scan(&dateStr, &entryType, &amount, &running, &sessionID); err != nil {
 			return nil, fmt.Errorf("scanning ledger row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
 		if err != nil {
 			return nil, fmt.Errorf("parsing ledger date %q: %w", dateStr, err)
 		}
-		result = append(result, storage.LedgerEntry{
+		entry := storage.LedgerEntry{
 			Date:         date,
 			Type:         entryType,
 			AmountUSD:    amount,
 			RunningTotal: running,
+		}
+		if sessionID.Valid {
+			entry.SessionID = sessionID.String
+		}
+		result = append(result, entry)
+	}
+	return result, rows.Err()
+}
+
+// queryCashSessions reads every cash_sessions row with Date >= since,
+// including Session ID — the one column GetCashSessionsSince's existing
+// callers (stats, summaries) don't need but /export does. GetCashSessionsSince
+// and GetAllCashSessions are both thin wrappers over this single query,
+// differing only in the date cutoff and whether the caller wants the
+// Session ID kept or discarded.
+func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT date, stake, hands, duration_min, net_usd, rake_usd, bb100, vpip, pfr, session_id
+		FROM cash_sessions WHERE date >= ? ORDER BY id ASC
+	`, since.UTC().Format(dateFormat))
+	if err != nil {
+		return nil, fmt.Errorf("reading cash sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var result []storage.CashSessionRecord
+	for rows.Next() {
+		var dateStr, stake, sessionID string
+		var hands, durationMin int
+		var netUSD, rakeUSD, bb100, vpip, pfr float64
+		if err := rows.Scan(&dateStr, &stake, &hands, &durationMin, &netUSD, &rakeUSD, &bb100, &vpip, &pfr, &sessionID); err != nil {
+			return nil, fmt.Errorf("scanning cash session row: %w", err)
+		}
+		date, err := time.Parse(dateFormat, dateStr)
+		if err != nil {
+			return nil, fmt.Errorf("parsing cash session date %q: %w", dateStr, err)
+		}
+		result = append(result, storage.CashSessionRecord{
+			CashSession: parsers.CashSession{
+				Date:        date,
+				Stake:       stake,
+				Hands:       hands,
+				DurationMin: durationMin,
+				NetUSD:      netUSD,
+				RakeUSD:     rakeUSD,
+				BB100:       bb100,
+				VPIP:        vpip,
+				PFR:         pfr,
+			},
+			SessionID: sessionID,
 		})
 	}
 	return result, rows.Err()
@@ -584,50 +635,34 @@ func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error
 // BuyInUSD is not stored and will be zero in returned structs, matching the
 // sheets backend.
 func (s *Store) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error) {
-	rows, err := s.db.Query(`
-		SELECT date, stake, hands, duration_min, net_usd, rake_usd, bb100, vpip, pfr
-		FROM cash_sessions WHERE date >= ? ORDER BY id ASC
-	`, t.UTC().Format(dateFormat))
+	records, err := s.queryCashSessions(t)
 	if err != nil {
-		return nil, fmt.Errorf("reading cash sessions: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	var result []parsers.CashSession
-	for rows.Next() {
-		var dateStr, stake string
-		var hands, durationMin int
-		var netUSD, rakeUSD, bb100, vpip, pfr float64
-		if err := rows.Scan(&dateStr, &stake, &hands, &durationMin, &netUSD, &rakeUSD, &bb100, &vpip, &pfr); err != nil {
-			return nil, fmt.Errorf("scanning cash session row: %w", err)
-		}
-		date, err := time.Parse(dateFormat, dateStr)
-		if err != nil {
-			return nil, fmt.Errorf("parsing cash session date %q: %w", dateStr, err)
-		}
-		result = append(result, parsers.CashSession{
-			Date:        date,
-			Stake:       stake,
-			Hands:       hands,
-			DurationMin: durationMin,
-			NetUSD:      netUSD,
-			RakeUSD:     rakeUSD,
-			BB100:       bb100,
-			VPIP:        vpip,
-			PFR:         pfr,
-		})
+	result := make([]parsers.CashSession, len(records))
+	for i, r := range records {
+		result[i] = r.CashSession
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
-// GetTournamentsSince returns all tournaments rows where Date >= since.
-// Partial rows (no Date — created only by a hand file arriving before the
-// summary) are skipped, matching the sheets backend. VPIP/PFR are not
-// populated in returned structs, matching sheets.Client.GetTournamentsSince.
-func (s *Store) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
+// GetAllCashSessions returns every cash_sessions row, including Session ID.
+// Used only by /export.
+func (s *Store) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
+	return s.queryCashSessions(time.Time{})
+}
+
+// queryTournaments reads every tournaments row with Date >= since, including
+// VPIP, PFR, Bounty Won, and Prize Won — columns GetTournamentsSince's
+// existing callers don't need but /export does. Partial rows (no Date —
+// created only by a hand file arriving before the summary) are skipped.
+// GetTournamentsSince and GetAllTournaments are both thin wrappers over this
+// single query, differing only in the date cutoff and whether the caller
+// wants those extra columns kept or discarded.
+func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
-			multiplier, finish_pos, total_players, net_usd
+			multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd
 		FROM tournaments
 		WHERE date IS NOT NULL AND date >= ?
 		ORDER BY id ASC
@@ -637,41 +672,110 @@ func (s *Store) GetTournamentsSince(since time.Time) ([]parsers.Tournament, erro
 	}
 	defer rows.Close()
 
-	var result []parsers.Tournament
+	var result []storage.TournamentRecord
 	for rows.Next() {
 		var dateStr, typeVal, tournamentID string
 		var buyIn, netUSD float64
-		var prizePoolUSD sql.NullFloat64
+		var prizePoolUSD, vpip, pfr, bountyUSD, prizeWonUSD sql.NullFloat64
 		var prizePoolDesc sql.NullString
 		var multiplier sql.NullFloat64
 		var finishPos, totalPlayers int
 		if err := rows.Scan(&dateStr, &typeVal, &tournamentID, &buyIn, &prizePoolUSD, &prizePoolDesc,
-			&multiplier, &finishPos, &totalPlayers, &netUSD); err != nil {
+			&multiplier, &finishPos, &totalPlayers, &netUSD, &vpip, &pfr, &bountyUSD, &prizeWonUSD); err != nil {
 			return nil, fmt.Errorf("scanning tournament row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
 		if err != nil {
 			return nil, fmt.Errorf("parsing tournament date %q: %w", dateStr, err)
 		}
-		tourn := parsers.Tournament{
-			Date:         date,
-			Type:         typeVal,
-			TournamentID: tournamentID,
-			BuyInUSD:     buyIn,
-			FinishPos:    finishPos,
-			TotalPlayers: totalPlayers,
-			NetUSD:       netUSD,
+		rec := storage.TournamentRecord{
+			Tournament: parsers.Tournament{
+				Date:         date,
+				Type:         typeVal,
+				TournamentID: tournamentID,
+				BuyInUSD:     buyIn,
+				FinishPos:    finishPos,
+				TotalPlayers: totalPlayers,
+				NetUSD:       netUSD,
+			},
 		}
 		if prizePoolDesc.Valid && prizePoolDesc.String != "" {
-			tourn.PrizePoolDescription = prizePoolDesc.String
+			rec.PrizePoolDescription = prizePoolDesc.String
 		} else if prizePoolUSD.Valid {
-			tourn.PrizePoolUSD = prizePoolUSD.Float64
+			rec.PrizePoolUSD = prizePoolUSD.Float64
 		}
 		if multiplier.Valid {
 			m := multiplier.Float64
-			tourn.Multiplier = &m
+			rec.Multiplier = &m
 		}
-		result = append(result, tourn)
+		if vpip.Valid {
+			v := vpip.Float64
+			rec.VPIP = &v
+		}
+		if pfr.Valid {
+			p := pfr.Float64
+			rec.PFR = &p
+		}
+		if bountyUSD.Valid {
+			rec.BountyWonUSD = bountyUSD.Float64
+		}
+		if prizeWonUSD.Valid {
+			rec.PrizeWonUSD = prizeWonUSD.Float64
+		}
+		result = append(result, rec)
+	}
+	return result, rows.Err()
+}
+
+// GetTournamentsSince returns all tournaments rows where Date >= since.
+// Partial rows (no Date) are skipped.
+func (s *Store) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
+	records, err := s.queryTournaments(since)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]parsers.Tournament, len(records))
+	for i, r := range records {
+		result[i] = r.Tournament
+	}
+	return result, nil
+}
+
+// GetAllTournaments returns every tournaments row, including VPIP, PFR,
+// Bounty Won, and Prize Won. Used only by /export.
+func (s *Store) GetAllTournaments() ([]storage.TournamentRecord, error) {
+	return s.queryTournaments(time.Time{})
+}
+
+// GetAllTimeAnalysis returns every time_analysis row. Used only by /export.
+func (s *Store) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT date, hour, day_of_week, net_usd, session_id FROM time_analysis ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("reading time analysis: %w", err)
+	}
+	defer rows.Close()
+
+	var result []storage.TimeAnalysisRecord
+	for rows.Next() {
+		var dateStr, dayOfWeek, sessionID string
+		var hour int
+		var netUSD float64
+		if err := rows.Scan(&dateStr, &hour, &dayOfWeek, &netUSD, &sessionID); err != nil {
+			return nil, fmt.Errorf("scanning time analysis row: %w", err)
+		}
+		date, err := time.Parse(dateFormat, dateStr)
+		if err != nil {
+			return nil, fmt.Errorf("parsing time analysis date %q: %w", dateStr, err)
+		}
+		result = append(result, storage.TimeAnalysisRecord{
+			Date:      date,
+			Hour:      hour,
+			DayOfWeek: dayOfWeek,
+			NetUSD:    netUSD,
+			SessionID: sessionID,
+		})
 	}
 	return result, rows.Err()
 }
