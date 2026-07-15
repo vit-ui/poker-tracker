@@ -751,11 +751,13 @@ func TestCashSessionsCSVRows(t *testing.T) {
 	records := []storage.CashSessionRecord{
 		{
 			CashSession: parsers.CashSession{
-				// VPIP/PFR are raw division results (88/347*100, 60/347*100),
-				// same shape as a real session — proves rounding, not just
-				// formatting a number that was already round.
+				// NetUSD/RakeUSD/BB100/VPIP/PFR are all chained-arithmetic
+				// results with float64 noise past their meaningful precision
+				// (e.g. 0.1+0.2 = 0.30000000000000004) — same shape as real
+				// running-total/bounty-folding output, to prove rounding,
+				// not just formatting a number that was already round.
 				Date: date, Stake: "NL10", Hands: 50, DurationMin: 60,
-				NetUSD: -5.25, RakeUSD: 2.5, BB100: -10.5,
+				NetUSD: -(0.1 + 0.2), RakeUSD: 1.0 / 3.0, BB100: 10.0 / 3.0,
 				VPIP: 88.0 / 347.0 * 100, PFR: 60.0 / 347.0 * 100,
 			},
 			SessionID: "abc123",
@@ -765,8 +767,8 @@ func TestCashSessionsCSVRows(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}
-	// BB/100 stays full precision (-10.5) — only VPIP/PFR are rounded to 2dp.
-	want := []string{"2026-07-10T20:00:00Z", "NL10", "50", "60", "-5.25", "2.5", "-10.5", "25.36", "17.29", "abc123"}
+	// Net/Rake round to 2dp (money), BB/100 to 1dp, VPIP/PFR to 2dp.
+	want := []string{"2026-07-10T20:00:00Z", "NL10", "50", "60", "-0.30", "0.33", "3.3", "25.36", "17.29", "abc123"}
 	for i, w := range want {
 		if rows[0][i] != w {
 			t.Errorf("rows[0][%d] = %q, want %q (row: %v)", i, rows[0][i], w, rows[0])
@@ -793,7 +795,7 @@ func TestTournamentsCSVRows(t *testing.T) {
 			},
 		}
 		rows := tournamentsCSVRows(records)
-		want := []string{"2026-07-10T21:00:00Z", "spingo-ko", "1000000001", "0.55", "1.65", "3", "1", "3", "2", "40.00", "20.00", "0.9", "2.55", "55"}
+		want := []string{"2026-07-10T21:00:00Z", "spingo-ko", "1000000001", "0.55", "1.65", "3", "1", "3", "2.00", "40.00", "20.00", "0.90", "2.55", "55"}
 		if len(rows) != 1 {
 			t.Fatalf("len(rows) = %d, want 1", len(rows))
 		}
@@ -824,8 +826,8 @@ func TestTournamentsCSVRows(t *testing.T) {
 		if rows[0][9] != "" || rows[0][10] != "" {
 			t.Errorf("VPIP/PFR cells = %q/%q, want empty (hand file hasn't arrived)", rows[0][9], rows[0][10])
 		}
-		if rows[0][11] != "0" || rows[0][12] != "0" {
-			t.Errorf("Bounty Won/Prize Won cells = %q/%q, want 0 (real zero values, not absence)", rows[0][11], rows[0][12])
+		if rows[0][11] != "0.00" || rows[0][12] != "0.00" {
+			t.Errorf("Bounty Won/Prize Won cells = %q/%q, want 0.00 (real zero values, not absence)", rows[0][11], rows[0][12])
 		}
 		if rows[0][13] != "" {
 			t.Errorf("Hands cell = %q, want empty (hand file hasn't arrived)", rows[0][13])
@@ -836,12 +838,19 @@ func TestTournamentsCSVRows(t *testing.T) {
 func TestBankrollLedgerCSVRows(t *testing.T) {
 	date := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	entries := []storage.LedgerEntry{
-		{Date: date, Type: "cash_session", AmountUSD: -5.25, RunningTotal: 94.75, SessionID: "abc123"},
+		// RunningTotal is a chained-arithmetic result carrying float64 noise
+		// past 2 decimal places — the exact shape cascadeLedgerAmounts/
+		// cascadeRunningTotals produce in real use — to prove rounding, not
+		// just formatting a number that was already clean.
+		{Date: date, Type: "cash_session", AmountUSD: -(0.1 + 0.42), RunningTotal: -0.32000000000000006, SessionID: "abc123"},
 		{Date: date, Type: "deposit", AmountUSD: 100, RunningTotal: 100, SessionID: ""},
 	}
 	rows := bankrollLedgerCSVRows(entries)
 	if len(rows) != 2 {
 		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	if rows[0][2] != "-0.52" || rows[0][3] != "-0.32" {
+		t.Errorf("session row Amount/Running Total = %q/%q, want -0.52/-0.32 (rounded to 2dp)", rows[0][2], rows[0][3])
 	}
 	if rows[0][4] != "abc123" {
 		t.Errorf("session row Session ID = %q, want %q", rows[0][4], "abc123")
@@ -854,10 +863,13 @@ func TestBankrollLedgerCSVRows(t *testing.T) {
 func TestTimeAnalysisCSVRows(t *testing.T) {
 	date := time.Date(2026, 7, 10, 22, 30, 0, 0, time.UTC)
 	entries := []storage.TimeAnalysisRecord{
-		{Date: date, Hour: 22, DayOfWeek: "Friday", NetUSD: -5.25, SessionID: "abc123"},
+		// NetUSD carries float64 noise past 2 decimal places, same shape as
+		// a real chained-arithmetic result — proves rounding, not just
+		// formatting a number that was already clean.
+		{Date: date, Hour: 22, DayOfWeek: "Friday", NetUSD: -(0.1 + 0.42), SessionID: "abc123"},
 	}
 	rows := timeAnalysisCSVRows(entries)
-	want := []string{"2026-07-10T22:30:00Z", "22", "Friday", "-5.25", "abc123"}
+	want := []string{"2026-07-10T22:30:00Z", "22", "Friday", "-0.52", "abc123"}
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}

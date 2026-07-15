@@ -664,6 +664,18 @@ const fullPrecision = -1
 // column, which keeps full precision.
 const vpipPfrPrecision = 2
 
+// moneyPrecision is the fixed decimal count every USD-denominated CSV
+// column is rounded to, matching how Telegram already displays USD amounts
+// (formatSignedUSD's "$%.2f") — chained float64 arithmetic (running totals,
+// bounty folding, ...) otherwise leaves values like -0.32000000000000006
+// with no observable meaning beyond a cent.
+const moneyPrecision = 2
+
+// bb100Precision is the fixed decimal count BB/100 is rounded to in CSV
+// output, matching how Telegram already displays it ("%.1f" in
+// cashStatsMessage, buildWeeklySummary, buildMonthlySummary).
+const bb100Precision = 1
+
 // formatFloat renders v to prec decimal places (fullPrecision for the
 // shortest exact round-trip, a fixed count to round off meaningless
 // precision).
@@ -700,7 +712,7 @@ func prizePoolCSVCell(t parsers.Tournament) string {
 	if t.PrizePoolDescription != "" {
 		return t.PrizePoolDescription
 	}
-	return formatFloat(t.PrizePoolUSD, fullPrecision)
+	return formatFloat(t.PrizePoolUSD, moneyPrecision)
 }
 
 func cashSessionsCSVRows(sessions []storage.CashSessionRecord) [][]string {
@@ -711,9 +723,9 @@ func cashSessionsCSVRows(sessions []storage.CashSessionRecord) [][]string {
 			s.Stake,
 			strconv.Itoa(s.Hands),
 			strconv.Itoa(s.DurationMin),
-			formatFloat(s.NetUSD, fullPrecision),
-			formatFloat(s.RakeUSD, fullPrecision),
-			formatFloat(s.BB100, fullPrecision),
+			formatFloat(s.NetUSD, moneyPrecision),
+			formatFloat(s.RakeUSD, moneyPrecision),
+			formatFloat(s.BB100, bb100Precision),
 			formatFloat(s.VPIP, vpipPfrPrecision),
 			formatFloat(s.PFR, vpipPfrPrecision),
 			s.SessionID,
@@ -729,16 +741,16 @@ func tournamentsCSVRows(tournaments []storage.TournamentRecord) [][]string {
 			t.Date.UTC().Format(time.RFC3339),
 			t.Type,
 			t.TournamentID,
-			formatFloat(t.BuyInUSD, fullPrecision),
+			formatFloat(t.BuyInUSD, moneyPrecision),
 			prizePoolCSVCell(t.Tournament),
 			formatFloatPtr(t.Multiplier, fullPrecision),
 			strconv.Itoa(t.FinishPos),
 			strconv.Itoa(t.TotalPlayers),
-			formatFloat(t.NetUSD, fullPrecision),
+			formatFloat(t.NetUSD, moneyPrecision),
 			formatFloatPtr(t.VPIP, vpipPfrPrecision),
 			formatFloatPtr(t.PFR, vpipPfrPrecision),
-			formatFloat(t.BountyWonUSD, fullPrecision),
-			formatFloat(t.PrizeWonUSD, fullPrecision),
+			formatFloat(t.BountyWonUSD, moneyPrecision),
+			formatFloat(t.PrizeWonUSD, moneyPrecision),
 			formatIntPtr(t.Hands),
 		})
 	}
@@ -751,8 +763,8 @@ func bankrollLedgerCSVRows(entries []storage.LedgerEntry) [][]string {
 		rows = append(rows, []string{
 			e.Date.UTC().Format(time.RFC3339),
 			e.Type,
-			formatFloat(e.AmountUSD, fullPrecision),
-			formatFloat(e.RunningTotal, fullPrecision),
+			formatFloat(e.AmountUSD, moneyPrecision),
+			formatFloat(e.RunningTotal, moneyPrecision),
 			e.SessionID,
 		})
 	}
@@ -766,7 +778,7 @@ func timeAnalysisCSVRows(entries []storage.TimeAnalysisRecord) [][]string {
 			e.Date.UTC().Format(time.RFC3339),
 			strconv.Itoa(e.Hour),
 			e.DayOfWeek,
-			formatFloat(e.NetUSD, fullPrecision),
+			formatFloat(e.NetUSD, moneyPrecision),
 			e.SessionID,
 		})
 	}
