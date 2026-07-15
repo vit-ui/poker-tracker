@@ -20,6 +20,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
@@ -44,6 +45,7 @@ var (
 	serviceAccountPath string
 	configPath         string
 	lockfilePath       string
+	dbPath             string
 )
 
 func init() {
@@ -55,6 +57,7 @@ func init() {
 	serviceAccountPath = filepath.Join(dir, "credentials", "google_service_account.json")
 	configPath = filepath.Join(dir, "config.json")
 	lockfilePath = filepath.Join(dir, "lockfile.json")
+	dbPath = filepath.Join(dir, "tracker.db")
 }
 
 func main() {
@@ -284,23 +287,47 @@ func runServe() {
 	// comment for why the build flag alone wasn't enough in practice.
 	hideConsole()
 
-	// Blocks and asks via Telegram if google_sheet_id isn't set yet, rather
-	// than refusing to start — nothing else here can run without a sheets
-	// client, so this has to resolve before the watcher/worker/bot
-	// goroutines exist.
-	sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
-	if err != nil {
-		panic("resolving google sheet: " + err.Error())
-	}
-
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		panic("loading config: " + err.Error())
 	}
 
-	sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
+	backend, err := resolveStorageBackend(cfg, configPath)
 	if err != nil {
-		panic("initializing sheets client: " + err.Error())
+		panic(err.Error())
+	}
+
+	var sc storage.Store
+	switch backend {
+	case "sheets":
+		// Blocks and asks via Telegram if google_sheet_id isn't set yet,
+		// rather than refusing to start — nothing else here can run without
+		// a sheets client, so this has to resolve before the
+		// watcher/worker/bot goroutines exist. Only called on the sheets
+		// path — a sqlite install must never need Google credentials on
+		// disk.
+		sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
+		if err != nil {
+			panic("resolving google sheet: " + err.Error())
+		}
+		sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
+		if err != nil {
+			panic("initializing sheets client: " + err.Error())
+		}
+		sc = sheetsClient
+	case "sqlite":
+		store, err := sqlitestore.NewStore(dbPath)
+		if err != nil {
+			panic("initializing sqlite store: " + err.Error())
+		}
+		sc = store
+	}
+
+	// Reload — EnsureSheetID above may have written telegram_chat_id and/or
+	// google_sheet_id back to config.json.
+	cfg, err = config.LoadConfig(configPath)
+	if err != nil {
+		panic("loading config: " + err.Error())
 	}
 
 	sessionChan := make(chan watcher.FileEvent, 10)
@@ -348,7 +375,7 @@ func runServe() {
 		}()
 	}
 
-	go runWorker(sessionChan, alertChan, sheetsClient, configPath, lockfilePath)
+	go runWorker(sessionChan, alertChan, sc, configPath, lockfilePath)
 
 	// Runs for the life of this process — the done channel is never closed,
 	// since RunEnforcementLoop is only meant to stop when --serve itself
@@ -356,7 +383,7 @@ func runServe() {
 	go hardstop.RunEnforcementLoop(lockfilePath, make(chan struct{}))
 
 	go func() {
-		err := bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit
@@ -369,6 +396,27 @@ func runServe() {
 	}()
 
 	select {}
+}
+
+// resolveStorageBackend returns which storage backend runServe should
+// construct: "sheets" or "sqlite". storage_backend already set is the normal
+// case and is returned as-is. storage_backend unset but google_sheet_id
+// already set is a v1.0 install predating this field — it's silently
+// migrated to "sheets" and written back so this check only ever runs once
+// per install. Both unset means --setup has never run.
+func resolveStorageBackend(cfg *config.Config, configPath string) (string, error) {
+	if cfg.Setup.StorageBackend != nil {
+		return *cfg.Setup.StorageBackend, nil
+	}
+	if cfg.Setup.GoogleSheetID != nil {
+		backend := "sheets"
+		cfg.Setup.StorageBackend = &backend
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return "", fmt.Errorf("saving config: %w", err)
+		}
+		return backend, nil
+	}
+	return "", errors.New("Run setup first: use the installer or tracker.exe --setup")
 }
 
 // resolvePaths joins the base hand history and tournament summary paths with

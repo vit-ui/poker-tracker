@@ -113,7 +113,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		return
 	}
 	_, credentialsErr := os.Stat(serviceAccountPath)
-	isUpgrade := cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil ||
+	isUpgrade := cfg.Setup.StorageBackend != nil || cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil ||
 		cfg.Setup.PokerStarsScreenName != nil || cfg.Paths.HandHistory != nil ||
 		cfg.Paths.TournamentSummary != nil || credentialsErr == nil
 
@@ -129,13 +129,42 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
 	}
 
-	// Step 1.5 — Google service account credentials. Skipped entirely if
-	// the file already exists at serviceAccountPath — the installer's
-	// manual-setup path already places this file before --setup ever
-	// runs, and on a rerun there's no reason to ask again for a file
-	// that's already correct on disk. "skip" is still accepted as a
-	// manual fallback for --setup run standalone.
-	if credentialsErr == nil {
+	// Step 1.5 — storage backend. Skipped if already set. Gates every Google
+	// step below (credentials, sheet) — a sqlite install must never need
+	// Google credentials on disk, so this has to be decided before either
+	// of those runs.
+	var backend string
+	if cfg.Setup.StorageBackend != nil {
+		backend = *cfg.Setup.StorageBackend
+		send(tgBot, chatID, "✅ Keeping existing storage backend.")
+	} else {
+		markup := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Google Sheets", "storage:sheets"),
+				tgbotapi.NewInlineKeyboardButtonData("Local file", "storage:sqlite"),
+			),
+		)
+		sendWithKeyboard(tgBot, chatID, "How do you want to store your data?", markup)
+		backend = strings.TrimPrefix(waitForCallbackChoice(tgBot, updates, chatID, "storage:sheets", "storage:sqlite"), "storage:")
+		cfg.Setup.StorageBackend = &backend
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			slog.Error("saving config", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			return
+		}
+		send(tgBot, chatID, "✅ Storage backend saved.")
+	}
+
+	// Step 1.6 — Google service account credentials. Sheets-only — a sqlite
+	// install has nothing to authenticate to. Skipped entirely if the file
+	// already exists at serviceAccountPath — the installer's manual-setup
+	// path already places this file before --setup ever runs, and on a
+	// rerun there's no reason to ask again for a file that's already
+	// correct on disk. "skip" is still accepted as a manual fallback for
+	// --setup run standalone.
+	if backend == "sqlite" {
+		// no-op: sqlite installs skip every Google step below
+	} else if credentialsErr == nil {
 		send(tgBot, chatID, "✅ Keeping existing credentials file.")
 	} else {
 		send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip if it's already in place.")
@@ -161,12 +190,14 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		}
 	}
 
-	// Step 2 — Google Sheet. Skipped if either field is already set (only
-	// one of them ever is — see BuildConfigJSON's mirror of this in
-	// setup.iss). Accepts either a pasted Sheets URL (ID is already known,
-	// no Drive lookup needed) or a sheet name (resolved via the Drive API)
-	// — see resolveSheetInput.
-	if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
+	// Step 2 — Google Sheet. Sheets-only. Skipped if either field is already
+	// set (only one of them ever is — see BuildConfigJSON's mirror of this
+	// in setup.iss). Accepts either a pasted Sheets URL (ID is already
+	// known, no Drive lookup needed) or a sheet name (resolved via the
+	// Drive API) — see resolveSheetInput.
+	if backend == "sqlite" {
+		// no-op: sqlite installs have no Google Sheet
+	} else if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
 		send(tgBot, chatID, "✅ Keeping existing Google Sheet.")
 	} else {
 		send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
@@ -381,6 +412,29 @@ func readReply(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID i
 	return ""
 }
 
+// waitForCallbackChoice blocks until a callback query from chatID arrives
+// with Data matching one of accepted, answers it, and returns the matched
+// value. Used by RunSetup's storage backend prompt, the only inline keyboard
+// RunSetup shows — RunSetup runs sequentially before the bot.Run/pollUpdates
+// callback machinery exists, so it needs its own blocking wait here rather
+// than conversationState.handleCallback.
+func waitForCallbackChoice(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64, accepted ...string) string {
+	for update := range updates {
+		if update.CallbackQuery == nil || update.CallbackQuery.Message == nil || update.CallbackQuery.Message.Chat.ID != chatID {
+			continue
+		}
+		for _, a := range accepted {
+			if update.CallbackQuery.Data == a {
+				if _, err := tgBot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "")); err != nil {
+					slog.Error("answering callback query", "err", err)
+				}
+				return a
+			}
+		}
+	}
+	return ""
+}
+
 // readReplyOrDocument blocks until the next message from chatID that is
 // either a document (returns its file ID, text empty) or non-empty text
 // (returns the text, fileID empty). Used only where a reply may
@@ -542,6 +596,17 @@ func selfRestart(configPath string) error {
 // detached command, so the fresh process picks up the new sheet ID from
 // config.json on startup.
 func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc storage.Store, configPath, serviceAccountPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
+		send(tgBot, chatID, "This install uses local storage — there is no Google Sheet. Use /export to get your data as CSV.")
+		return
+	}
+
 	args = strings.TrimSpace(args)
 	if args == "" {
 		send(tgBot, chatID, sc.GetSheetURL())
@@ -558,12 +623,6 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc st
 		return
 	}
 
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(tgBot, chatID, "Something went wrong. Check logs.")
-		return
-	}
 	cfg.Setup.GoogleSheetName = name
 	cfg.Setup.GoogleSheetID = &id
 	if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -633,7 +692,20 @@ func handleScreenNameCommand(tgBot *tgbotapi.BotAPI, chatID int64, args, configP
 // account JSON used to authenticate to Sheets/Drive. Unlike the four
 // config flows (paths/alerts/hardstop/schedule), this one expects a file
 // upload rather than a plain-text reply — see handleCredentialsDocument.
-func (s *conversationState) startCredentialsFlow(tgBot *tgbotapi.BotAPI, chatID int64) {
+// Sheets-only, same gating as /sheet — a sqlite install has no Google
+// credentials to swap.
+func (s *conversationState) startCredentialsFlow(tgBot *tgbotapi.BotAPI, chatID int64, configPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
+		send(tgBot, chatID, "This install uses local storage — there is no Google Sheet. Use /export to get your data as CSV.")
+		return
+	}
+
 	s.flow = "credentials"
 	s.field = "file"
 	send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")
@@ -1286,7 +1358,7 @@ func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.
 	case "sheet":
 		handleSheetCommand(tgBot, chatID, msg.CommandArguments(), sc, configPath, serviceAccountPath)
 	case "credentials":
-		s.startCredentialsFlow(tgBot, chatID)
+		s.startCredentialsFlow(tgBot, chatID, configPath)
 	case "screenname":
 		handleScreenNameCommand(tgBot, chatID, msg.CommandArguments(), configPath, restartWatcher)
 	case "paths":
