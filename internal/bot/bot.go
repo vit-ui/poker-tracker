@@ -114,7 +114,12 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		return
 	}
 	_, credentialsErr := os.Stat(serviceAccountPath)
-	isUpgrade := cfg.Setup.StorageBackend != nil || cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil ||
+	// StorageBackend deliberately excluded: setup.iss's WritePreSeedConfig
+	// writes it into a brand-new config.json before ever launching --setup,
+	// so it's non-nil on every fresh Telegram install too, not just a real
+	// upgrade. The other fields are only ever set by a completed prior run
+	// of this same wizard.
+	isUpgrade := cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil ||
 		cfg.Setup.PokerStarsScreenName != nil || cfg.Paths.HandHistory != nil ||
 		cfg.Paths.TournamentSummary != nil || credentialsErr == nil
 
