@@ -1123,10 +1123,28 @@ end;
 // only — DeleteFile on a nonexistent path is a silent no-op on the sheets
 // backend) follows the exact same rule as the three JSON files: deleted on
 // a real manual uninstall, preserved across an in-place upgrade.
+//
+// The explicit taskkill below is required, not redundant with
+// [UninstallRun]'s own taskkill entry: CurUninstallStepChanged(usUninstall)
+// fires before [UninstallRun] executes, not after — a real gap found live
+// (tracker.db survived a manual uninstall while the three JSON files
+// didn't). config.json/lockfile.json/pending_tournaments.json only ever
+// hold a file handle open for the length of one config.go read or write
+// (SaveConfig does an atomic tmp-then-rename), so they're never actually
+// locked when this runs regardless of process state. tracker.db is
+// different: a live --serve process keeps its sqlite connection — and the
+// file handle under it — open for the process's entire lifetime, so
+// DeleteFile silently fails against it if tracker.exe hasn't been killed
+// yet. Same pattern as PreInstallFiles' and NextButtonClick(wpReady)'s own
+// inline taskkill calls elsewhere in this file — this installer process is
+// never itself named tracker.exe, so it's safe to run unconditionally.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
 begin
   if (CurUninstallStep = usUninstall) and not UninstallSilent() then
   begin
+    Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     DeleteFile(ExpandConstant('{app}\config.json'));
     DeleteFile(ExpandConstant('{app}\lockfile.json'));
     DeleteFile(ExpandConstant('{app}\pending_tournaments.json'));
