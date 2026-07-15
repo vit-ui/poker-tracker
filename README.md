@@ -1,18 +1,18 @@
 # Poker Tracker
 
-A Windows background service that automatically tracks your PokerStars sessions, keeps your bankroll accounting straight, and puts everything behind a Telegram bot — alerts, stats, and a hard-stop lock that can close PokerStars when you go on tilt.
+A Windows background service that automatically tracks your PokerStars sessions, maintains your bankroll accounting, and exposes it all through a Telegram bot: session alerts, stats, and a hard-stop lock that closes PokerStars when you go on tilt.
 
-It starts on boot via Task Scheduler and runs with zero manual interaction: PokerStars writes hand histories and tournament summaries to disk, the tracker parses them as they land, and you talk to it entirely through Telegram. Your data lives in **either a Google Sheet or a local SQLite file — your choice at install**.
+It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand histories and tournament summaries to disk; the tracker parses them as they land, and you talk to it entirely through Telegram. Your data lives in **either a Google Sheet or a local SQLite file**, whichever you pick at install.
 
 ## Highlights
 
-- **Automatic parsing** of cash games, Spin & Go, and MTT sessions straight from PokerStars' hand history and tournament summary folders — nothing is entered by hand.
-- **Pick your storage:** a live **Google Sheet** you can open in a browser, or a single local **SQLite file** with zero external setup — no Google account, nothing to configure.
+- **Automatic parsing** of cash games, Spin & Go, and MTT sessions, read straight from PokerStars' hand-history and tournament-summary folders. Nothing is entered by hand.
+- **Your choice of storage:** a live **Google Sheet** you can open in a browser, or a single local **SQLite file** that needs no Google account and no configuration.
 - **Telegram summaries** after every session, plus configurable alerts for downswings, session losses, losing streaks, and daily-loss limits.
-- **Automatic hard stop:** when a limit you set is breached — a session loss, a rolling 30-day drawdown, a losing streak, or a daily-loss cap — it closes the PokerStars client and keeps it locked for a set duration.
-- **Satellite / ticket detection:** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never shows up as a cash buy-in against your bankroll.
-- **Bankroll accounting that can't drift:** deposits, withdrawals, and every session net roll into one running ledger, so your true P&L is always right regardless of reloads.
-- **CSV export** on both backends, byte-for-byte identical — your data is portable no matter which storage you picked.
+- **Automatic hard stop.** When a limit you set is breached (a session loss, a rolling 30-day drawdown, a losing streak, or a daily-loss cap), it closes the PokerStars client and keeps it locked for a set duration.
+- **Satellite / ticket detection** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never counts as a cash buy-in against your bankroll.
+- **One running ledger** for deposits, withdrawals, and every session net, so your true P&L stays correct through reloads.
+- **CSV export** on both backends, in identical format, so your data stays portable whichever storage you chose.
 
 ## Installing
 
@@ -121,4 +121,8 @@ With no argument, lists every command. With a command name, explains it in detai
 
 ## Notes
 
-This is a single-user tool built for one specific personal setup, and it's intentionally lean — no web UI, no REST API, no dashboard. Telegram and the installer are the only interfaces. It's provided as-is, with no warranty, and is not affiliated with or endorsed by PokerStars.
+This is a single-user tool built for one specific personal setup, and it's intentionally lean: no web UI, no REST API, no dashboard. Telegram and the installer are the only interfaces. It's provided as-is, with no warranty, and is not affiliated with or endorsed by PokerStars.
+
+## License
+
+© 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE): free for personal, noncommercial use, but you may not redistribute, modify, or use it commercially. See [`LICENSE`](LICENSE) for the full terms.
