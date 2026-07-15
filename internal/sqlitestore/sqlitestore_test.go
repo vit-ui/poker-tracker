@@ -1,6 +1,7 @@
 package sqlitestore
 
 import (
+	"database/sql"
 	"math"
 	"path/filepath"
 	"testing"
@@ -246,6 +247,124 @@ func TestNewStore_InvalidDirectory(t *testing.T) {
 	_, err := NewStore(filepath.Join(t.TempDir(), "does-not-exist", "tracker.db"))
 	if err == nil {
 		t.Fatal("expected error opening a db file in a nonexistent directory")
+	}
+}
+
+// TestNewStore_MigratesSchemaAddingHandsColumn simulates a tracker.db
+// created by an older binary, before tournaments.hands existed: the
+// tournaments table is recreated by hand without that column and seeded
+// with a real row, bypassing NewStore/the current schema entirely. Reopening
+// through NewStore must then migrate the missing column in — CREATE TABLE
+// IF NOT EXISTS alone is a no-op on a table that already exists, so without
+// migrateSchema this row's hand-file data would be unreadable/unwritable
+// forever after a binary update, with no signal beyond a runtime scan error.
+func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tracker.db")
+
+	oldDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("opening pre-migration db: %v", err)
+	}
+	if _, err := oldDB.Exec(`
+		CREATE TABLE tournaments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			date TEXT,
+			type TEXT NOT NULL,
+			tournament_id TEXT NOT NULL UNIQUE,
+			buy_in_usd REAL,
+			prize_pool_usd REAL,
+			prize_pool_description TEXT,
+			multiplier REAL,
+			finish_pos INTEGER,
+			total_players INTEGER,
+			net_usd REAL,
+			vpip REAL,
+			pfr REAL,
+			bounty_usd REAL,
+			prize_won_usd REAL
+		)
+	`); err != nil {
+		t.Fatalf("creating pre-migration tournaments table: %v", err)
+	}
+	if _, err := oldDB.Exec(`
+		INSERT INTO tournaments (date, type, tournament_id, buy_in_usd, prize_pool_usd, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "2026-07-10T20:00:00Z", "mtt", "9000000001", 5.00, 100.0, 3, 50, -5.00, 22.0, 10.0, 0.0, 0.0); err != nil {
+		t.Fatalf("seeding pre-migration row: %v", err)
+	}
+	if err := oldDB.Close(); err != nil {
+		t.Fatalf("closing pre-migration db: %v", err)
+	}
+
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore (should migrate): %v", err)
+	}
+	defer s.Close()
+
+	cols, err := s.existingColumns("tournaments")
+	if err != nil {
+		t.Fatalf("existingColumns: %v", err)
+	}
+	if !cols["hands"] {
+		t.Fatal("hands column missing after migration")
+	}
+
+	// The pre-existing row's data must survive untouched, with hands NULL —
+	// no hand file was ever parsed under the old schema, so there's nothing
+	// to backfill it with.
+	var typeVal, tournamentID string
+	var buyIn, netUSD, vpip, pfr float64
+	var hands sql.NullInt64
+	err = s.db.QueryRow(`
+		SELECT type, tournament_id, buy_in_usd, net_usd, vpip, pfr, hands FROM tournaments WHERE tournament_id = ?
+	`, "9000000001").Scan(&typeVal, &tournamentID, &buyIn, &netUSD, &vpip, &pfr, &hands)
+	if err != nil {
+		t.Fatalf("reading migrated row: %v", err)
+	}
+	if typeVal != "mtt" || tournamentID != "9000000001" || !closeEnough(buyIn, 5.00) || !closeEnough(netUSD, -5.00) {
+		t.Errorf("existing row data changed by migration: type=%q id=%q buyIn=%v netUSD=%v", typeVal, tournamentID, buyIn, netUSD)
+	}
+	if !closeEnough(vpip, 22.0) || !closeEnough(pfr, 10.0) {
+		t.Errorf("existing VPIP/PFR changed by migration: vpip=%v pfr=%v", vpip, pfr)
+	}
+	if hands.Valid {
+		t.Errorf("hands = %v, want NULL for a pre-migration row", hands.Int64)
+	}
+
+	// The migrated table must be immediately usable for new writes too.
+	if err := s.UpdateTournamentHandStats("9000000001", 22.0, 10.0, 88, 0, false); err != nil {
+		t.Fatalf("UpdateTournamentHandStats after migration: %v", err)
+	}
+	tournaments, err := s.GetAllTournaments()
+	if err != nil {
+		t.Fatalf("GetAllTournaments: %v", err)
+	}
+	if len(tournaments) != 1 || tournaments[0].Hands == nil || *tournaments[0].Hands != 88 {
+		t.Errorf("tournaments = %+v, want a single row with Hands=88 after the post-migration write", tournaments)
+	}
+}
+
+// TestMigrateSchema_Idempotent confirms running migrateSchema against an
+// already-current database (the normal case for every install after the
+// first) is a no-op — no duplicate-column error, no data change.
+func TestMigrateSchema_Idempotent(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-10T20:00:00Z")
+	if err := s.AppendCashSession(buildCashSession(date, "M0001", 10, -1)); err != nil {
+		t.Fatalf("AppendCashSession: %v", err)
+	}
+
+	if err := s.migrateSchema(); err != nil {
+		t.Fatalf("migrateSchema on an up-to-date database: %v", err)
+	}
+
+	sessions, err := s.GetCashSessionsSince(time.Time{})
+	if err != nil {
+		t.Fatalf("GetCashSessionsSince: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Hands != 10 {
+		t.Errorf("sessions = %+v, want unchanged after a no-op migration", sessions)
 	}
 }
 

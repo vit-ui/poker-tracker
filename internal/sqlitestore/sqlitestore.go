@@ -81,6 +81,56 @@ CREATE TABLE IF NOT EXISTS time_analysis (
 );
 `
 
+// columnDef is one column's name and bare SQLite type, used by
+// expectedColumns/migrateSchema below.
+type columnDef struct {
+	name string
+	typ  string
+}
+
+// tableDef pairs a table with the columns it's expected to have.
+type tableDef struct {
+	table   string
+	columns []columnDef
+}
+
+// expectedColumns is the single source of truth migrateSchema diffs against
+// PRAGMA table_info to find columns missing from a database created by an
+// older binary — e.g. tournaments.hands, added after this backend's initial
+// release, which CREATE TABLE IF NOT EXISTS alone never retrofits onto a
+// table that already exists. Adding a new column to any table: add it to
+// that table's CREATE TABLE statement in schema above AND add its
+// (name, type) pair here — migrateSchema then ALTERs it into every existing
+// database automatically, no other code changes needed.
+//
+// Types here are always bare (no NOT NULL, no DEFAULT) — SQLite refuses
+// ALTER TABLE ADD COLUMN with NOT NULL and no non-NULL default on a table
+// that already has rows, so a retrofitted column must always be optional.
+// Existing rows get NULL for it, same as tournaments.hands does for any
+// tournament recorded before this column existed.
+var expectedColumns = []tableDef{
+	{"cash_sessions", []columnDef{
+		{"date", "TEXT"}, {"stake", "TEXT"}, {"hands", "INTEGER"},
+		{"duration_min", "INTEGER"}, {"net_usd", "REAL"}, {"rake_usd", "REAL"},
+		{"bb100", "REAL"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"session_id", "TEXT"},
+	}},
+	{"tournaments", []columnDef{
+		{"date", "TEXT"}, {"type", "TEXT"}, {"tournament_id", "TEXT"},
+		{"buy_in_usd", "REAL"}, {"prize_pool_usd", "REAL"}, {"prize_pool_description", "TEXT"},
+		{"multiplier", "REAL"}, {"finish_pos", "INTEGER"}, {"total_players", "INTEGER"},
+		{"net_usd", "REAL"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"bounty_usd", "REAL"},
+		{"prize_won_usd", "REAL"}, {"hands", "INTEGER"},
+	}},
+	{"bankroll_ledger", []columnDef{
+		{"date", "TEXT"}, {"type", "TEXT"}, {"amount_usd", "REAL"},
+		{"running_total", "REAL"}, {"session_id", "TEXT"},
+	}},
+	{"time_analysis", []columnDef{
+		{"date", "TEXT"}, {"hour", "INTEGER"}, {"day_of_week", "TEXT"},
+		{"net_usd", "REAL"}, {"session_id", "TEXT"},
+	}},
+}
+
 // Store persists poker session data to a local SQLite database file.
 type Store struct {
 	db *sql.DB
@@ -88,8 +138,9 @@ type Store struct {
 
 var _ storage.Store = (*Store)(nil)
 
-// NewStore opens (creating if necessary) the SQLite database at dbPath and
-// applies the schema if the tables don't already exist.
+// NewStore opens (creating if necessary) the SQLite database at dbPath,
+// applies the schema if the tables don't already exist, and migrates any
+// existing tables that are missing columns a newer binary expects.
 func NewStore(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -108,7 +159,57 @@ func NewStore(dbPath string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	if err := s.migrateSchema(); err != nil {
+		return nil, fmt.Errorf("migrating schema: %w", err)
+	}
+	return s, nil
+}
+
+// migrateSchema adds any column listed in expectedColumns but missing from
+// the database on disk — the gap CREATE TABLE IF NOT EXISTS leaves behind
+// when a binary update adds a new column to a table an older version of
+// tracker.db already created. Idempotent: a column already present is left
+// untouched, so running this against an up-to-date database is a no-op.
+func (s *Store) migrateSchema() error {
+	for _, td := range expectedColumns {
+		existing, err := s.existingColumns(td.table)
+		if err != nil {
+			return fmt.Errorf("reading columns for %s: %w", td.table, err)
+		}
+		for _, col := range td.columns {
+			if existing[col.name] {
+				continue
+			}
+			if _, err := s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", td.table, col.name, col.typ)); err != nil {
+				return fmt.Errorf("adding column %s.%s: %w", td.table, col.name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// existingColumns returns the set of column names table currently has, via
+// PRAGMA table_info — SQLite has no information_schema, so this is the only
+// reliable way to introspect a table's columns at runtime.
+func (s *Store) existingColumns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, colType string
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		existing[name] = true
+	}
+	return existing, rows.Err()
 }
 
 // Close closes the underlying database handle.
