@@ -58,6 +58,7 @@ Filename: "schtasks.exe"; Parameters: "/Delete /TN ""Poker Tracker"" /F"; Flags:
 
 [Code]
 var
+  PageBackend: TInputOptionWizardPage;
   PageMethod: TInputOptionWizardPage;
   PageCredentials: TInputFileWizardPage;
   PageWaiting: TOutputMsgWizardPage;
@@ -66,6 +67,15 @@ var
   PageHandHistoryDir: TInputDirWizardPage;
   PageTournamentDir: TInputDirWizardPage;
   UsingTelegram: Boolean;
+  // Storage backend choice (PageBackend, first page of the wizard, shown
+  // regardless of Telegram vs manual). False = Google Sheets (default,
+  // matches PageBackend.SelectedValueIndex = 0), True = local sqlite file.
+  // Initialized from ExistingConfigJSON in InitializeWizard when
+  // BackendAlreadySet, so every downstream read of this var (ShouldSkipPage,
+  // PreInstallFiles, CurStepChanged) is correct whether the value came from
+  // this run's page or a prior install, without needing a separate
+  // "which source" branch at each call site.
+  UsingSQLite: Boolean;
   // Guards against CurPageChanged's auto-start and NextButtonClick's manual
   // path both running RunTelegramSetup for the same visit to PageWaiting —
   // see CurPageChanged and the PageWaiting branch of NextButtonClick.
@@ -80,6 +90,7 @@ var
   // path already preserves these correctly on the Go side (bot.RunSetup
   // loads the existing config and only mutates the fields it collects).
   ExistingConfigJSON: String;
+  BackendAlreadySet: Boolean;
   SheetAlreadySet: Boolean;
   ScreenNameAlreadySet: Boolean;
   HandHistoryAlreadySet: Boolean;
@@ -270,13 +281,18 @@ begin
 end;
 
 // PreservedObjectOrDefault carries an existing alerts/hardstop/schedule
-// block through unchanged, or falls back to DefaultBlock on a fresh
-// install (ExistingConfigJSON = '', so JSONExtractObjectRaw returns '').
-function PreservedObjectOrDefault(const FieldName, DefaultBlock: String): String;
+// block through unchanged, or falls back to DefaultBlock when JSON has none
+// (JSONExtractObjectRaw returns '' — either JSON = '', a fresh install, or
+// FieldName genuinely isn't present as an object). JSON is a parameter
+// rather than reading the global ExistingConfigJSON directly so this can
+// also serve WritePreSeedConfig, which rebuilds from a live re-read of
+// config.json rather than the wizard-startup snapshot — see its own doc
+// comment for why that distinction matters there.
+function PreservedObjectOrDefault(const JSON, FieldName, DefaultBlock: String): String;
 var
   Existing: String;
 begin
-  Existing := JSONExtractObjectRaw(ExistingConfigJSON, FieldName);
+  Existing := JSONExtractObjectRaw(JSON, FieldName);
   if Existing <> '' then
     Result := Existing
   else
@@ -300,7 +316,7 @@ end;
 
 procedure InitializeWizard();
 var
-  MethodDescription: String;
+  MethodDescription, BackendDescription: String;
 begin
   // Read before {app} is valid for ExpandConstant (see the comment on the
   // page-anchoring below) — hardcoded to match DefaultDirName ([Setup]
@@ -309,34 +325,48 @@ begin
   // is created, so ExistingConfigJSON is available to build MethodDescription
   // below and to ShouldSkipPage/CurStepChanged once the wizard is running.
   ExistingConfigJSON := ReadFileAsString('C:\poker-tracker\config.json');
+  BackendAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'storage_backend');
+  // Seeds UsingSQLite from the existing value when the page that would
+  // normally set it (PageBackend, below) is about to be skipped — see the
+  // doc comment on the UsingSQLite var declaration.
+  if BackendAlreadySet then
+    UsingSQLite := JSONExtractStringValue(ExistingConfigJSON, 'storage_backend') = 'sqlite';
   SheetAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_name') or
                       JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_id');
   ScreenNameAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'pokerstars_screen_name');
   HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
   TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
   CredentialsAlreadySet := FileExists('C:\poker-tracker\credentials\google_service_account.json');
-  AllFieldsAlreadySet := SheetAlreadySet and ScreenNameAlreadySet and HandHistoryAlreadySet and
-                          TournamentAlreadySet and CredentialsAlreadySet;
+  // On sqlite, Sheet/Credentials never get set by this wizard (there's no
+  // Google step for that backend at all — ShouldSkipPage), so requiring
+  // them here would keep AllFieldsAlreadySet permanently False for a fully
+  // configured sqlite install, showing PageMethod pointlessly on every
+  // rerun. UsingSQLite is already correct at this point (set above from
+  // BackendAlreadySet, or PageBackend's own default False otherwise).
+  AllFieldsAlreadySet := BackendAlreadySet and ScreenNameAlreadySet and HandHistoryAlreadySet and
+                          TournamentAlreadySet and (UsingSQLite or (SheetAlreadySet and CredentialsAlreadySet));
 
-  // PageMethod (Telegram vs manual) only matters when there's a question
-  // for one of the two paths to actually ask — see ShouldSkipPage, which
-  // skips it entirely when AllFieldsAlreadySet. UsingTelegram is then
-  // never assigned (that only happens in NextButtonClick when the player
-  // actually leaves this page) and keeps Pascal's default False, which is
-  // exactly the branch CurStepChanged should take here: rewrite
-  // config.json (a no-op — every field is already preserved-as-is) and
-  // restart the scheduled task, with no Telegram round trip for a
-  // conversation that would have nothing left to ask either.
-  //
   // The two cases that DO show this page get their own wording — nothing
   // (fresh) vs something-but-not-everything (partial) — so it's never the
   // same generic text regardless of which is true.
   if ExistingConfigJSON = '' then
-    MethodDescription := 'No existing installation was found — this will set up Poker Tracker from scratch.'
+  begin
+    MethodDescription := 'No existing installation was found — this will set up Poker Tracker from scratch.';
+    BackendDescription := 'Google Sheets keeps a live spreadsheet you can open in a browser, but needs a ' +
+      'one-time Google Cloud service account setup. Local file stores everything in a single file on this ' +
+      'PC — no Google account, nothing to share, nothing to configure.';
+  end
   else
+  begin
     MethodDescription := 'An existing installation was found, but some settings are still missing. ' +
       'Whatever''s already configured — sheet, screen name, folders, credentials — will be kept as-is; ' +
       'you''ll only be asked about what''s still missing.';
+    // Skipped entirely when BackendAlreadySet (see ShouldSkipPage), so this
+    // text is only ever shown to a player upgrading an install that
+    // predates the backend field.
+    BackendDescription := 'An existing installation was found without a storage backend recorded. Choose ' +
+      'how Poker Tracker should store your tracked sessions going forward.';
+  end;
 
   // Anchored at wpSelectDir, not wpWelcome — {app} only becomes valid for
   // ExpandConstant once the wizard's internal position passes wpSelectDir,
@@ -351,7 +381,24 @@ begin
   // actually started, which is why nothing ever responded. Visually
   // nothing changes: wpSelectDir is still never shown, so Welcome is still
   // immediately followed by this page either way.
-  PageMethod := CreateInputOptionPage(wpSelectDir,
+  //
+  // PageBackend goes first — before PageMethod (Telegram vs manual) — since
+  // the choice applies identically to both paths: it decides whether the
+  // Telegram conversation's own backend question (bot.RunSetup) is
+  // pre-answered via WritePreSeedConfig, and whether the manual path's
+  // PageCredentials/PageSheetName pages are shown at all (ShouldSkipPage).
+  // PageMethod anchors off PageBackend.ID rather than wpSelectDir directly,
+  // so it inherits the same {app}-validity position one page later.
+  PageBackend := CreateInputOptionPage(wpSelectDir,
+    'Storage Backend',
+    'How do you want to store your tracked poker sessions?',
+    BackendDescription,
+    True, False);
+  PageBackend.Add('Google Sheets');
+  PageBackend.Add('Local file (no Google account needed)');
+  PageBackend.SelectedValueIndex := 0;
+
+  PageMethod := CreateInputOptionPage(PageBackend.ID,
     'Setup Method',
     'Would you like to set up via Telegram? (Recommended)',
     MethodDescription,
@@ -403,6 +450,14 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  // Checked first and unconditionally — the backend choice doesn't depend
+  // on Telegram vs manual (UsingTelegram isn't set yet at this point
+  // anyway), only on whether a prior install already recorded one.
+  if (PageID = PageBackend.ID) and BackendAlreadySet then
+  begin
+    Result := True;
+    Exit;
+  end;
   // Checked before the UsingTelegram branch below since UsingTelegram
   // isn't meaningfully set yet when this page itself is what's being
   // asked about — there's nothing for either path to ask when every
@@ -417,7 +472,10 @@ begin
     // PageCredentials is skipped for Telegram too — bot.RunSetup's own
     // Step 1.5 (send the file as a Telegram attachment, or skip if
     // already in place) covers it; asking again here via a native
-    // browse dialog would just be redundant.
+    // browse dialog would just be redundant. Also unconditionally correct
+    // on sqlite — bot.RunSetup skips its own Step 1.5/Step 2 for that
+    // backend already, so there's nothing for this native page to redo
+    // either way.
     if (PageID = PageCredentials.ID) or (PageID = PageSheetName.ID) or (PageID = PageScreenName.ID) or
        (PageID = PageHandHistoryDir.ID) or (PageID = PageTournamentDir.ID) then
       Result := True;
@@ -430,11 +488,16 @@ begin
     // CurStepChanged's decision below to preserve rather than re-collect
     // the same fields. PageCredentials isn't a config.json field but
     // follows the same rule: skip it once the file's already in place.
+    //
+    // PageCredentials and PageSheetName are additionally skipped whenever
+    // UsingSQLite — a local-file install has no Google Sheet and nothing
+    // to authenticate to, so neither question applies regardless of
+    // whether either field happens to be set in an existing config.
     if PageID = PageWaiting.ID then
       Result := True
-    else if (PageID = PageCredentials.ID) and CredentialsAlreadySet then
+    else if (PageID = PageCredentials.ID) and (CredentialsAlreadySet or UsingSQLite) then
       Result := True
-    else if (PageID = PageSheetName.ID) and SheetAlreadySet then
+    else if (PageID = PageSheetName.ID) and (SheetAlreadySet or UsingSQLite) then
       Result := True
     else if (PageID = PageScreenName.ID) and ScreenNameAlreadySet then
       Result := True
@@ -498,20 +561,24 @@ end;
 // function — never invents null for a field this run didn't touch. Every
 // parameter is already a ready-to-splice JSON fragment (a quoted string,
 // the word null, or a whole "{...}" object), resolved by the caller
-// (CurStepChanged) from either this run's freshly collected wizard values
-// or, for anything whose page was skipped as already-set, the matching
-// raw fragment out of ExistingConfigJSON. This is what makes a rerun over
-// a complete install a no-op write: every fragment passed in is just the
-// existing file's own content, copied back unchanged. AlertsBlock/
-// HardstopBlock/ScheduleBlock are always preserved-or-default this way,
-// never collected — no wizard page asks about them.
-function BuildConfigJSON(const TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
+// (CurStepChanged, WritePreSeedConfig) from either this run's freshly
+// collected wizard values or, for anything whose page was skipped as
+// already-set, the matching raw fragment out of ExistingConfigJSON. This is
+// what makes a rerun over a complete install a no-op write: every fragment
+// passed in is just the existing file's own content, copied back unchanged.
+// AlertsBlock/HardstopBlock/ScheduleBlock are always preserved-or-default
+// this way, never collected — no wizard page asks about them.
+// StorageBackendRaw sits second, matching config.Config's field order
+// (internal/config/config.go: telegram_chat_id, storage_backend,
+// google_sheet_id, google_sheet_name, pokerstars_screen_name).
+function BuildConfigJSON(const TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
   HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String): String;
 begin
   Result :=
     '{' + #13#10 +
     '  "setup": {' + #13#10 +
     '    "telegram_chat_id": ' + TelegramChatIDRaw + ',' + #13#10 +
+    '    "storage_backend": ' + StorageBackendRaw + ',' + #13#10 +
     '    "google_sheet_id": ' + SheetIDRaw + ',' + #13#10 +
     '    "google_sheet_name": ' + SheetNameRaw + ',' + #13#10 +
     '    "pokerstars_screen_name": ' + ScreenNameRaw + #13#10 +
@@ -524,6 +591,45 @@ begin
     '  "hardstop": ' + HardstopBlock + ',' + #13#10 +
     '  "schedule": ' + ScheduleBlock + #13#10 +
     '}' + #13#10;
+end;
+
+// DefaultAlertsBlock/DefaultHardstopBlock/DefaultScheduleBlock are the
+// all-null fallback fragments for a wizard page that never asks about
+// these three objects — used both by PreservedObjectOrDefault (manual
+// path, CurStepChanged) and by WritePreSeedConfig (Telegram path's partial
+// pre-seed), so there's exactly one literal copy of each block rather than
+// two that could drift apart.
+function DefaultAlertsBlock(): String;
+begin
+  Result :=
+    '{' + #13#10 +
+    '    "downswing_buyins": null,' + #13#10 +
+    '    "losing_streak_count": null,' + #13#10 +
+    '    "daily_loss_usd": null,' + #13#10 +
+    '    "spingo_daily_loss_usd": null,' + #13#10 +
+    '    "session_loss_buyins": null' + #13#10 +
+    '  }';
+end;
+
+function DefaultHardstopBlock(): String;
+begin
+  Result :=
+    '{' + #13#10 +
+    '    "session_loss_buyins": null,' + #13#10 +
+    '    "consecutive_losses": null,' + #13#10 +
+    '    "daily_loss_usd": null,' + #13#10 +
+    '    "spingo_daily_loss_usd": null,' + #13#10 +
+    '    "duration_hours": null,' + #13#10 +
+    '    "downswing_buyins": null' + #13#10 +
+    '  }';
+end;
+
+function DefaultScheduleBlock(): String;
+begin
+  Result :=
+    '{' + #13#10 +
+    '    "day_start_hour": null' + #13#10 +
+    '  }';
 end;
 
 // UTF16Bytes converts S to raw UTF-16LE bytes with a leading byte-order
@@ -624,16 +730,23 @@ var
   ResultCode: Integer;
 begin
   ForceDirectories(ExpandConstant('{app}'));
-  ForceDirectories(ExpandConstant('{app}\credentials'));
-  // Manual path only — PageCredentials is skipped entirely for Telegram
-  // (see ShouldSkipPage), so Values[0] would be empty here; that flow's
-  // credentials come from bot.RunSetup's own upload-or-skip step instead.
-  // On the manual path itself, PageCredentials is also skipped when
-  // CredentialsAlreadySet — Values[0] is empty there too, and correctly
-  // so: the file already exists at the destination, so there's nothing
-  // to copy and no risk of FileCopy overwriting it with an empty source.
-  if not UsingTelegram and (PageCredentials.Values[0] <> '') then
-    FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
+  // Sqlite installs never read or write a credentials file — no directory
+  // for it either (CLAUDE.md: "the credentials file may not exist on a
+  // sqlite-backend install"). UsingSQLite is already correct here whether
+  // this run's PageBackend set it or it was seeded from an existing config.
+  if not UsingSQLite then
+  begin
+    ForceDirectories(ExpandConstant('{app}\credentials'));
+    // Manual path only — PageCredentials is skipped entirely for Telegram
+    // (see ShouldSkipPage), so Values[0] would be empty here; that flow's
+    // credentials come from bot.RunSetup's own upload-or-skip step instead.
+    // On the manual path itself, PageCredentials is also skipped when
+    // CredentialsAlreadySet — Values[0] is empty there too, and correctly
+    // so: the file already exists at the destination, so there's nothing
+    // to copy and no risk of FileCopy overwriting it with an empty source.
+    if not UsingTelegram and (PageCredentials.Values[0] <> '') then
+      FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
+  end;
 
   ExtractTemporaryFile('tracker.exe');
   FileCopy(ExpandConstant('{tmp}\tracker.exe'), ExpandConstant('{app}\tracker.exe'), True);
@@ -676,6 +789,66 @@ begin
     MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
 end;
 
+// WritePreSeedConfig ensures {app}\config.json has setup.storage_backend
+// set to PageBackend's choice before --setup ever runs. This is what lets
+// bot.RunSetup's own backend question (internal/bot/bot.go, "Step 1.5") see
+// the field already set and skip its inline keyboard entirely — the player
+// answers the storage-backend question once, on this native page, not a
+// second time inside the Telegram conversation. Two cases:
+//
+// - config.json doesn't exist yet (fresh install): write the same
+//   all-null-except-backend stub as before.
+// - config.json already exists: rebuild it field by field via the same
+//   JSONFieldRaw/PreservedObjectOrDefault/BuildConfigJSON combination
+//   CurStepChanged's manual path uses, splicing every field back byte-for-
+//   byte except storage_backend, which is always set to Backend. Covers a
+//   real upgrade (a working v1.x sheet/screen-name/paths setup, or a v2.0
+//   config missing only the backend field) without touching anything the
+//   player already configured, and also a retried RunTelegramSetup
+//   (CurPageChanged's automatic attempt failed, the player clicks Next on
+//   PageWaiting again) — by then --setup's first, failed run may already
+//   have written real progress (chat ID, sheet, screen name).
+//
+// Reads config.json fresh off disk (Existing) rather than the global
+// ExistingConfigJSON, which is a one-time snapshot taken before the wizard
+// even started and would miss exactly the retried-setup case above.
+procedure WritePreSeedConfig();
+var
+  Backend, Existing: String;
+  TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw: String;
+  HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String;
+begin
+  if UsingSQLite then
+    Backend := '"sqlite"'
+  else
+    Backend := '"sheets"';
+
+  Existing := ReadFileAsString(ExpandConstant('{app}\config.json'));
+  if Existing = '' then
+  begin
+    SaveStringToFile(ExpandConstant('{app}\config.json'),
+      BuildConfigJSON('null', Backend, 'null', 'null', 'null', 'null', 'null',
+        DefaultAlertsBlock(), DefaultHardstopBlock(), DefaultScheduleBlock()),
+      False);
+    Exit;
+  end;
+
+  TelegramChatIDRaw := JSONFieldRaw(Existing, 'telegram_chat_id');
+  SheetNameRaw := JSONFieldRaw(Existing, 'google_sheet_name');
+  SheetIDRaw := JSONFieldRaw(Existing, 'google_sheet_id');
+  ScreenNameRaw := JSONFieldRaw(Existing, 'pokerstars_screen_name');
+  HandHistoryRaw := JSONFieldRaw(Existing, 'hand_history');
+  TournamentRaw := JSONFieldRaw(Existing, 'tournament_summary');
+  AlertsBlock := PreservedObjectOrDefault(Existing, 'alerts', DefaultAlertsBlock());
+  HardstopBlock := PreservedObjectOrDefault(Existing, 'hardstop', DefaultHardstopBlock());
+  ScheduleBlock := PreservedObjectOrDefault(Existing, 'schedule', DefaultScheduleBlock());
+
+  SaveStringToFile(ExpandConstant('{app}\config.json'),
+    BuildConfigJSON(TelegramChatIDRaw, Backend, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
+      HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock),
+    False);
+end;
+
 // RunTelegramSetup runs tracker.exe --setup from {app} — PreInstallFiles
 // has already copied it there, precisely so it resolves its own
 // deployment paths against the real install directory rather than {tmp}
@@ -690,6 +863,7 @@ var
   ResultCode: Integer;
 begin
   PreInstallFiles();
+  WritePreSeedConfig();
   if not Exec(ExpandConstant('{app}\tracker.exe'), '--setup', ExpandConstant('{app}'),
      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
@@ -748,7 +922,10 @@ var
 begin
   Result := True;
 
-  if CurPageID = PageMethod.ID then
+  if CurPageID = PageBackend.ID then
+    UsingSQLite := (PageBackend.SelectedValueIndex = 1)
+
+  else if CurPageID = PageMethod.ID then
     UsingTelegram := (PageMethod.SelectedValueIndex = 0)
 
   else if CurPageID = wpReady then
@@ -848,7 +1025,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   SheetInput, SheetName, SheetID: String;
-  TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw: String;
+  TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw: String;
   HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String;
   ResultCode: Integer;
 begin
@@ -864,6 +1041,16 @@ begin
       // existing file if there is one (a fresh chat ID is auto-detected
       // at runtime by --serve; see CLAUDE.md).
       TelegramChatIDRaw := JSONFieldRaw(ExistingConfigJSON, 'telegram_chat_id');
+
+      // BackendAlreadySet preserves the existing value verbatim; otherwise
+      // UsingSQLite (set by NextButtonClick(PageBackend.ID) above) is
+      // this run's own answer.
+      if BackendAlreadySet then
+        StorageBackendRaw := JSONFieldRaw(ExistingConfigJSON, 'storage_backend')
+      else if UsingSQLite then
+        StorageBackendRaw := '"sqlite"'
+      else
+        StorageBackendRaw := '"sheets"';
 
       if SheetAlreadySet then
       begin
@@ -899,30 +1086,12 @@ begin
 
       // Never asked by this wizard at all — always preserved verbatim if
       // an existing config has them, else the same null block as before.
-      AlertsBlock := PreservedObjectOrDefault('alerts',
-        '{' + #13#10 +
-        '    "downswing_buyins": null,' + #13#10 +
-        '    "losing_streak_count": null,' + #13#10 +
-        '    "daily_loss_usd": null,' + #13#10 +
-        '    "spingo_daily_loss_usd": null,' + #13#10 +
-        '    "session_loss_buyins": null' + #13#10 +
-        '  }');
-      HardstopBlock := PreservedObjectOrDefault('hardstop',
-        '{' + #13#10 +
-        '    "session_loss_buyins": null,' + #13#10 +
-        '    "consecutive_losses": null,' + #13#10 +
-        '    "daily_loss_usd": null,' + #13#10 +
-        '    "spingo_daily_loss_usd": null,' + #13#10 +
-        '    "duration_hours": null,' + #13#10 +
-        '    "downswing_buyins": null' + #13#10 +
-        '  }');
-      ScheduleBlock := PreservedObjectOrDefault('schedule',
-        '{' + #13#10 +
-        '    "day_start_hour": null' + #13#10 +
-        '  }');
+      AlertsBlock := PreservedObjectOrDefault(ExistingConfigJSON, 'alerts', DefaultAlertsBlock());
+      HardstopBlock := PreservedObjectOrDefault(ExistingConfigJSON, 'hardstop', DefaultHardstopBlock());
+      ScheduleBlock := PreservedObjectOrDefault(ExistingConfigJSON, 'schedule', DefaultScheduleBlock());
 
       SaveStringToFile(ExpandConstant('{app}\config.json'),
-        BuildConfigJSON(TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
+        BuildConfigJSON(TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
           HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock),
         False);
       RegisterScheduledTask();
@@ -943,20 +1112,42 @@ begin
   end;
 end;
 
-// CurUninstallStepChanged deletes the three player-data files not covered
-// by [UninstallDelete] — see the comment there. UninstallSilent() is False
+// CurUninstallStepChanged deletes the player-data files not covered by
+// [UninstallDelete] — see the comment there. UninstallSilent() is False
 // for a normal, interactive Control Panel uninstall and True when the
 // uninstaller is invoked with /SILENT or /VERYSILENT, which is how a
 // chained "remove the old version before installing the new one" step
 // would run it were one ever added — this keeps that hypothetical future
 // path from wiping settings too, not just today's plain in-place upgrade
-// (which never runs this uninstaller at all).
+// (which never runs this uninstaller at all). tracker.db (sqlite backend
+// only — DeleteFile on a nonexistent path is a silent no-op on the sheets
+// backend) follows the exact same rule as the three JSON files: deleted on
+// a real manual uninstall, preserved across an in-place upgrade.
+//
+// The explicit taskkill below is required, not redundant with
+// [UninstallRun]'s own taskkill entry: CurUninstallStepChanged(usUninstall)
+// fires before [UninstallRun] executes, not after — a real gap found live
+// (tracker.db survived a manual uninstall while the three JSON files
+// didn't). config.json/lockfile.json/pending_tournaments.json only ever
+// hold a file handle open for the length of one config.go read or write
+// (SaveConfig does an atomic tmp-then-rename), so they're never actually
+// locked when this runs regardless of process state. tracker.db is
+// different: a live --serve process keeps its sqlite connection — and the
+// file handle under it — open for the process's entire lifetime, so
+// DeleteFile silently fails against it if tracker.exe hasn't been killed
+// yet. Same pattern as PreInstallFiles' and NextButtonClick(wpReady)'s own
+// inline taskkill calls elsewhere in this file — this installer process is
+// never itself named tracker.exe, so it's safe to run unconditionally.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
 begin
   if (CurUninstallStep = usUninstall) and not UninstallSilent() then
   begin
+    Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     DeleteFile(ExpandConstant('{app}\config.json'));
     DeleteFile(ExpandConstant('{app}\lockfile.json'));
     DeleteFile(ExpandConstant('{app}\pending_tournaments.json'));
+    DeleteFile(ExpandConstant('{app}\tracker.db'));
   end;
 end;

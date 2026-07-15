@@ -13,21 +13,57 @@ import (
 // The caller should skip freerolls — they have no monetary value.
 var ErrFreeroll = errors.New("freeroll")
 
+// KnockoutSuffix marks a knockout (bounty) tournament on Tournament.Type,
+// e.g. "mtt-ko" or "spingo-ko". Only ever appended by the storage layer once
+// the hand history file reveals it — the tournament summary file, which
+// ParseTournamentFile derives the base "spingo"/"mtt" from, never mentions
+// bounties at all (why two files: plan §Why Tournaments Need Two Files).
+// Code that filters or branches on game type should compare against
+// BaseType(), not Type directly, so a knockout tournament still counts as
+// its base type.
+const KnockoutSuffix = "-ko"
+
 // Tournament holds results for a single tournament (Spin & Go or MTT).
 type Tournament struct {
-	Date                   time.Time
-	Type                   string // "spingo" or "mtt"
-	TournamentID           string
-	BuyInUSD               float64
-	PrizePoolUSD           float64
-	Multiplier             *float64 // non-nil only for spingo
-	FinishPos              int
-	TotalPlayers           int
-	NetUSD                 float64
-	VPIP                   *float64 // populated from hand history via UpdateTournamentVPIPPFR
-	PFR                    *float64 // populated from hand history via UpdateTournamentVPIPPFR
-	LikelySatellite        bool     // true if finish position 1's payout reads as a ticket/pass, not a cash prize
-	WinnerPrizeDescription string   // finish position 1's exact payout text. Empty if not flagged.
+	Date         time.Time
+	Type         string // "spingo" or "mtt", plus KnockoutSuffix if it's a knockout tournament
+	TournamentID string
+	BuyInUSD     float64
+	PrizePoolUSD float64 // 0 when the pool itself is non-cash-denominated — see PrizePoolDescription
+
+	// PrizePoolDescription holds the "Total Prize Pool" line's exact text
+	// when it's non-cash rather than a dollar amount (e.g. "$1.00 Power
+	// Path Step 2 Ticket" — the prize's own face-value name, not a real
+	// cash pool). Empty for a normal cash-denominated prize pool, in which
+	// case PrizePoolUSD holds the real amount instead.
+	PrizePoolDescription string
+	Multiplier           *float64 // non-nil only for spingo with a real cash prize pool (nil if PrizePoolDescription is set)
+	FinishPos            int
+	TotalPlayers         int
+	NetUSD               float64
+	VPIP                 *float64 // populated from hand history via UpdateTournamentHandStats
+	PFR                  *float64 // populated from hand history via UpdateTournamentHandStats
+	Hands                *int     // populated from hand history via UpdateTournamentHandStats; the weight /stats uses for VPIP/PFR
+
+	// LikelySatellite is true if any result row's payout is non-cash
+	// (ticket, seat/package, or T$ — see isNonCashPrize), scanning every
+	// row in ascending finish-position order rather than just position 1 —
+	// the summary file can be written the moment screenName busts, while
+	// the tournament continues for players still in, so position 1's row
+	// can still read "still playing" rather than showing a payout at all.
+	LikelySatellite bool
+
+	// WinnerPrizeDescription is the first non-cash payout text found
+	// scanning result rows in ascending finish-position order (so position
+	// 1's, whenever it's decided). Empty if not flagged.
+	WinnerPrizeDescription string
+}
+
+// BaseType returns Type with any KnockoutSuffix stripped, so filtering or
+// branching logic ("spingo" vs "mtt") treats a knockout tournament the same
+// as its non-knockout counterpart.
+func (t Tournament) BaseType() string {
+	return strings.TrimSuffix(t.Type, KnockoutSuffix)
 }
 
 // ParseTournamentFile parses a PokerStars tournament summary (.txt) file.
@@ -80,7 +116,16 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			}
 
 		case strings.HasPrefix(line, "Total Prize Pool: $"):
-			if amt, ok := parseLeadingAmount(line[len("Total Prize Pool: $"):]); ok {
+			// A satellite/qualifier's prize pool can itself be
+			// ticket-denominated (e.g. "Total Prize Pool: $1.00 Power Path
+			// Step 2 Ticket") — that leading dollar amount is the ticket's
+			// own face-value name, not a real cash pool, so it must never
+			// be parsed as PrizePoolUSD (same distinction the player's own
+			// payout and finish-position-1 checks make).
+			rest := strings.TrimRight(line[len("Total Prize Pool: $"):], " \r")
+			if isNonCashPrize(rest) {
+				t.PrizePoolDescription = "$" + rest
+			} else if amt, ok := parseLeadingAmount(rest); ok {
 				t.PrizePoolUSD = amt
 			}
 
@@ -104,22 +149,55 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 					t.FinishPos = pos
 				}
 			}
-			// Payout is after "), $" — absent when player won nothing.
-			const payoutMarker = "), $"
-			if payIdx := strings.Index(line, payoutMarker); payIdx >= 0 {
-				if payout, ok := parseLeadingAmount(line[payIdx+len(payoutMarker):]); ok {
-					t.NetUSD = payout - t.BuyInUSD
+			// Payout text is after "), " — empty when the player won
+			// nothing. A non-cash payout (e.g. "$1.00 Power Path Step 2
+			// Ticket") can still start with a dollar sign — that's the
+			// prize's own face-value name, not a cash credit PokerStars
+			// actually paid out — so it must never be parsed as a NetUSD
+			// amount (the satellite-detection loop below decides whether
+			// it's non-cash). A screenName who wins a non-cash prize has
+			// NetUSD computed the same as a screenName who won nothing at
+			// all: just -BuyInUSD.
+			const payoutTextMarker = "), "
+			t.NetUSD = -t.BuyInUSD
+			if payIdx := strings.Index(line, payoutTextMarker); payIdx >= 0 {
+				payoutText := strings.TrimRight(line[payIdx+len(payoutTextMarker):], " \r")
+				if payoutText != "" && !isNonCashPrize(payoutText) {
+					if payout, ok := parseLeadingAmount(payoutText); ok {
+						t.NetUSD = payout - t.BuyInUSD
+					}
 				}
-			} else {
-				t.NetUSD = -t.BuyInUSD
 			}
 		}
 
-		// Finish position 1 is checked independently of the switch above since
-		// it's often a different player than screenName.
-		if pos, payout, ok := parseFinishLine(line); ok && pos == 1 {
-			lower := strings.ToLower(payout)
-			if strings.Contains(lower, "ticket") || strings.Contains(lower, "pass") {
+		// Satellite/qualifier detection: scan every result row, not just
+		// finish position 1 — the file lists rows in ascending position
+		// order, so the first non-cash payout found here is always the
+		// best (numerically lowest) already-decided one, matching the
+		// original position-1-only intent whenever position 1 is decided.
+		// Checking every row (not stopping at position 1) is what catches
+		// two cases position-1-only missed entirely: a screenName who wins
+		// a non-cash prize at a position other than 1st, and a
+		// still-in-progress tournament — the summary can be written the
+		// moment screenName busts, while the tournament continues for
+		// players still in, so position 1's row reads "still playing"
+		// rather than showing a payout at all. Position 1 not yet being
+		// decided is not the same as position 1 not being non-cash, and if
+		// any other row worse than screenName is already decided as
+		// non-cash (e.g. a multi-tier payout structure with more than one
+		// ticket awarded), that's still as reliable a satellite signal as
+		// position 1's would be.
+		//
+		// This does not close every gap: if screenName busts before any
+		// non-cash-awarding position has been decided at all (busted early,
+		// won nothing, and nobody else has cashed a non-cash prize yet
+		// either), there is genuinely no signal left in this file to detect
+		// it from — PokerStars' own export format doesn't expose a
+		// tournament's satellite/qualifier structure independent of an
+		// actual decided payout. This is a known hard problem for
+		// third-party trackers generally, not unique to this parser.
+		if !t.LikelySatellite {
+			if _, payout, ok := parseFinishLine(line); ok && isNonCashPrize(payout) {
 				t.LikelySatellite = true
 				t.WinnerPrizeDescription = payout
 			}
@@ -134,13 +212,46 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 
 	if playerCount == 3 {
 		t.Type = "spingo"
-		m := t.PrizePoolUSD / t.BuyInUSD
-		t.Multiplier = &m
+		// A ticket-denominated prize pool (PrizePoolDescription set) has no
+		// real dollar amount to divide by BuyInUSD — Multiplier stays nil,
+		// same as it already does for every MTT.
+		if t.PrizePoolDescription == "" {
+			m := t.PrizePoolUSD / t.BuyInUSD
+			t.Multiplier = &m
+		}
 	} else {
 		t.Type = "mtt"
 	}
 
 	return t, nil
+}
+
+// isNonCashPrize reports whether a payout description is a non-cash prize
+// (ticket, seat/package, satellite/sat, or T$ tournament dollars) rather
+// than a real cash payout. These can still start with a dollar sign (e.g.
+// "$1.00 Power Path Step 2 Ticket" — the ticket's own face-value name, not a
+// cash credit PokerStars actually paid out, or "T$11.00" — Tournament
+// Dollars, usable only for buy-ins, not real cash), so this is a text
+// match, not a numeric check.
+//
+// The word list is deliberately generous, "sat" included despite being a
+// short substring that can also match inside an ordinary word (e.g.
+// "Saturday") — a false positive here only costs one extra tap on the
+// cash/ticket confirmation (see sendSatelliteMenu), the player answers
+// "paid cash" and nothing changes. A false negative costs silently wrong
+// bankroll data with no way to notice or recover it. That asymmetry means
+// new candidate words from PokerStars' own terminology are worth adding
+// speculatively here, unlike NetUSD/BuyInUSD parsing elsewhere in this
+// file, where a wrong guess corrupts real numbers with no user-facing
+// signal that anything went wrong at all.
+func isNonCashPrize(payout string) bool {
+	lower := strings.ToLower(payout)
+	for _, word := range []string{"ticket", "pass", "seat", "package", "t$", "satellite", "sat"} {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseFinishLine extracts the finish position and exact payout text from a

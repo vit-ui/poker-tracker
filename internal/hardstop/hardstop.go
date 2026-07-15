@@ -11,12 +11,12 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
-	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // Evaluate checks hard stop conditions after a cash session and triggers a
 // hard stop if any condition is met.
-func Evaluate(session parsers.CashSession, sheetsClient *sheets.Client, configPath, lockfilePath string, alertChan chan<- string) error {
+func Evaluate(session parsers.CashSession, sheetsClient storage.Store, configPath, lockfilePath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -74,7 +74,7 @@ func sessionLossExceeds(sessionLoss, buyInUSD, thresholdBuyins float64) bool {
 // consecutiveLossStreak returns how many of the most recent contiguous
 // entries at the end of entries (in chronological order) have a negative
 // AmountUSD. Counting stops at the first non-negative entry.
-func consecutiveLossStreak(entries []sheets.LedgerEntry) int {
+func consecutiveLossStreak(entries []storage.LedgerEntry) int {
 	count := 0
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].AmountUSD >= 0 {
@@ -92,7 +92,7 @@ func consecutiveLossStreak(entries []sheets.LedgerEntry) int {
 // one of the n slots and never breaks up an otherwise-contiguous run of
 // session rows. Returns fewer than n rows when entries has fewer than n
 // session rows in total.
-func recentSessionRows(entries []sheets.LedgerEntry, n int) []sheets.LedgerEntry {
+func recentSessionRows(entries []storage.LedgerEntry, n int) []storage.LedgerEntry {
 	rows := sessionOnly(entries)
 	if len(rows) > n {
 		rows = rows[len(rows)-n:]
@@ -109,7 +109,7 @@ func recentSessionRows(entries []sheets.LedgerEntry, n int) []sheets.LedgerEntry
 // losing streak. False when the account doesn't yet have n session rows in
 // its history at all — an early streak of fewer than n rows, even if every
 // one of them is a loss, must not fire.
-func consecutiveLossesTriggered(entries []sheets.LedgerEntry, n int) bool {
+func consecutiveLossesTriggered(entries []storage.LedgerEntry, n int) bool {
 	sessionRows := recentSessionRows(entries, n)
 	return len(sessionRows) == n && consecutiveLossStreak(sessionRows) == len(sessionRows)
 }
@@ -155,12 +155,26 @@ func inRollingWindow(entryDate, cutoff time.Time) bool {
 	return entryDate.After(cutoff)
 }
 
+// spingoOnly filters tournaments to Spin & Go rows only, matching by
+// BaseType so a knockout Spin & Go ("spingo-ko") is still included — a
+// knockout tournament must count toward the Spin & Go daily-loss hard stop
+// the same as a non-knockout one.
+func spingoOnly(tournaments []parsers.Tournament) []parsers.Tournament {
+	var result []parsers.Tournament
+	for _, t := range tournaments {
+		if t.BaseType() == "spingo" {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
 // sessionOnly filters entries to cash_session and tournament rows only,
 // excluding deposit/withdrawal transfers. RunningTotal includes transfers,
 // so mixing them into an equity curve would read a large withdrawal as an
 // equally large poker downswing.
-func sessionOnly(entries []sheets.LedgerEntry) []sheets.LedgerEntry {
-	var result []sheets.LedgerEntry
+func sessionOnly(entries []storage.LedgerEntry) []storage.LedgerEntry {
+	var result []storage.LedgerEntry
 	for _, e := range entries {
 		if e.Type == "cash_session" || e.Type == "tournament" {
 			result = append(result, e)
@@ -176,7 +190,7 @@ func sessionOnly(entries []sheets.LedgerEntry) []sheets.LedgerEntry {
 // is the final point. Exported so the hard stop check (hardstop.go) and the
 // downswing alert (bot.go) compute the exact same curve rather than each
 // deriving their own.
-func ComputeEquityCurve(rows []sheets.LedgerEntry) (peak, current float64) {
+func ComputeEquityCurve(rows []storage.LedgerEntry) (peak, current float64) {
 	var sum float64
 	for _, r := range rows {
 		sum += r.AmountUSD
@@ -191,7 +205,7 @@ func ComputeEquityCurve(rows []sheets.LedgerEntry) (peak, current float64) {
 // 30-day window (see rollingWindowStart/inRollingWindow), filters them to
 // poker results only (see sessionOnly), and returns the resulting equity
 // curve. Shared by the hard stop check and the downswing alert.
-func DownswingEquityCurve(sheetsClient *sheets.Client) (peak, current float64, err error) {
+func DownswingEquityCurve(sheetsClient storage.Store) (peak, current float64, err error) {
 	cutoff := rollingWindowStart(time.Now(), 30*24*time.Hour)
 	// GetLedgerEntriesSince is inclusive of cutoff, so this is a superset;
 	// inRollingWindow below applies the precise exclusive boundary.
@@ -199,7 +213,7 @@ func DownswingEquityCurve(sheetsClient *sheets.Client) (peak, current float64, e
 	if err != nil {
 		return 0, 0, err
 	}
-	var windowed []sheets.LedgerEntry
+	var windowed []storage.LedgerEntry
 	for _, e := range candidates {
 		if inRollingWindow(e.Date, cutoff) {
 			windowed = append(windowed, e)
@@ -223,7 +237,7 @@ func DownswingExceeds(peak, current, buyInUSD, thresholdBuyins float64) bool {
 // satellite entry corrected to a ticket — see RecoverTicketPayout in
 // bot.go) skips the check entirely: a 0 buy-in would make the threshold 0,
 // so any downswing at all would trigger it.
-func evaluateDownswing(cfg *config.Config, sheetsClient *sheets.Client, buyInUSD float64, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
+func evaluateDownswing(cfg *config.Config, sheetsClient storage.Store, buyInUSD float64, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.DownswingBuyins == nil || buyInUSD == 0 {
 		return false, nil
@@ -249,7 +263,7 @@ func evaluateDownswing(cfg *config.Config, sheetsClient *sheets.Client, buyInUSD
 // "tournament") and reports whether that net P&L falls below -thresholdUSD.
 // This is net P&L, not gross loss — a win elsewhere in the same day offsets
 // losses.
-func dailyLossExceeds(entries []sheets.LedgerEntry, thresholdUSD float64) bool {
+func dailyLossExceeds(entries []storage.LedgerEntry, thresholdUSD float64) bool {
 	var net float64
 	for _, e := range entries {
 		net += e.AmountUSD
@@ -275,7 +289,7 @@ func spingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdUSD float
 // configured threshold. Either check firing is sufficient; they are not
 // mutually exclusive, but only the first one to fire actually triggers —
 // triggered reports whether one did.
-func evaluateDailyLoss(cfg *config.Config, sheetsClient *sheets.Client, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
+func evaluateDailyLoss(cfg *config.Config, sheetsClient storage.Store, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.SpingoDailyLossUSD == nil && h.DailyLossUSD == nil {
 		return false, nil
@@ -288,13 +302,7 @@ func evaluateDailyLoss(cfg *config.Config, sheetsClient *sheets.Client, lockfile
 		if err != nil {
 			return false, err
 		}
-		var spingoToday []parsers.Tournament
-		for _, t := range tournaments {
-			if t.Type == "spingo" {
-				spingoToday = append(spingoToday, t)
-			}
-		}
-		if spingoDailyLossExceeds(spingoToday, *h.SpingoDailyLossUSD) {
+		if spingoDailyLossExceeds(spingoOnly(tournaments), *h.SpingoDailyLossUSD) {
 			if h.DurationHours == nil {
 				return false, fmt.Errorf("spingo_daily_loss_usd configured without duration_hours")
 			}
@@ -308,7 +316,7 @@ func evaluateDailyLoss(cfg *config.Config, sheetsClient *sheets.Client, lockfile
 		if err != nil {
 			return false, err
 		}
-		var sessionEntries []sheets.LedgerEntry
+		var sessionEntries []storage.LedgerEntry
 		for _, e := range entries {
 			if e.Type == "cash_session" || e.Type == "tournament" {
 				sessionEntries = append(sessionEntries, e)
@@ -329,7 +337,7 @@ func evaluateDailyLoss(cfg *config.Config, sheetsClient *sheets.Client, lockfile
 // EvaluateTournament checks hard stop conditions after a tournament (cash or
 // Spin & Go). The downswing and daily loss checks re-evaluate against the
 // whole account rather than filtering by t's type.
-func EvaluateTournament(t parsers.Tournament, sheetsClient *sheets.Client, configPath, lockfilePath string, alertChan chan<- string) error {
+func EvaluateTournament(t parsers.Tournament, sheetsClient storage.Store, configPath, lockfilePath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err

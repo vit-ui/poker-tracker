@@ -11,3 +11,4 @@ testdata/tournaments/
 /self-tracker
 *.md
 !README.md
+data/

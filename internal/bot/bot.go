@@ -3,6 +3,7 @@
 package bot
 
 import (
+	"encoding/csv"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // Run starts the bot in serve mode. Forwards alerts from alertChan to
@@ -34,7 +36,7 @@ import (
 //
 // serviceAccountPath is only used by /sheet when switching to a different
 // spreadsheet — see handleSheetCommand.
-func Run(botToken string, alertChan <-chan string, sheetsClient *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
+func Run(botToken string, alertChan <-chan string, sheetsClient storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -112,6 +114,11 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		return
 	}
 	_, credentialsErr := os.Stat(serviceAccountPath)
+	// StorageBackend deliberately excluded: setup.iss's WritePreSeedConfig
+	// writes it into a brand-new config.json before ever launching --setup,
+	// so it's non-nil on every fresh Telegram install too, not just a real
+	// upgrade. The other fields are only ever set by a completed prior run
+	// of this same wizard.
 	isUpgrade := cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil ||
 		cfg.Setup.PokerStarsScreenName != nil || cfg.Paths.HandHistory != nil ||
 		cfg.Paths.TournamentSummary != nil || credentialsErr == nil
@@ -128,13 +135,42 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
 	}
 
-	// Step 1.5 — Google service account credentials. Skipped entirely if
-	// the file already exists at serviceAccountPath — the installer's
-	// manual-setup path already places this file before --setup ever
-	// runs, and on a rerun there's no reason to ask again for a file
-	// that's already correct on disk. "skip" is still accepted as a
-	// manual fallback for --setup run standalone.
-	if credentialsErr == nil {
+	// Step 1.5 — storage backend. Skipped if already set. Gates every Google
+	// step below (credentials, sheet) — a sqlite install must never need
+	// Google credentials on disk, so this has to be decided before either
+	// of those runs.
+	var backend string
+	if cfg.Setup.StorageBackend != nil {
+		backend = *cfg.Setup.StorageBackend
+		send(tgBot, chatID, "✅ Keeping existing storage backend.")
+	} else {
+		markup := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Google Sheets", "storage:sheets"),
+				tgbotapi.NewInlineKeyboardButtonData("Local file", "storage:sqlite"),
+			),
+		)
+		sendWithKeyboard(tgBot, chatID, "How do you want to store your data?", markup)
+		backend = strings.TrimPrefix(waitForCallbackChoice(tgBot, updates, chatID, "storage:sheets", "storage:sqlite"), "storage:")
+		cfg.Setup.StorageBackend = &backend
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			slog.Error("saving config", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			return
+		}
+		send(tgBot, chatID, "✅ Storage backend saved.")
+	}
+
+	// Step 1.6 — Google service account credentials. Sheets-only — a sqlite
+	// install has nothing to authenticate to. Skipped entirely if the file
+	// already exists at serviceAccountPath — the installer's manual-setup
+	// path already places this file before --setup ever runs, and on a
+	// rerun there's no reason to ask again for a file that's already
+	// correct on disk. "skip" is still accepted as a manual fallback for
+	// --setup run standalone.
+	if backend == "sqlite" {
+		// no-op: sqlite installs skip every Google step below
+	} else if credentialsErr == nil {
 		send(tgBot, chatID, "✅ Keeping existing credentials file.")
 	} else {
 		send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip if it's already in place.")
@@ -160,12 +196,14 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		}
 	}
 
-	// Step 2 — Google Sheet. Skipped if either field is already set (only
-	// one of them ever is — see BuildConfigJSON's mirror of this in
-	// setup.iss). Accepts either a pasted Sheets URL (ID is already known,
-	// no Drive lookup needed) or a sheet name (resolved via the Drive API)
-	// — see resolveSheetInput.
-	if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
+	// Step 2 — Google Sheet. Sheets-only. Skipped if either field is already
+	// set (only one of them ever is — see BuildConfigJSON's mirror of this
+	// in setup.iss). Accepts either a pasted Sheets URL (ID is already
+	// known, no Drive lookup needed) or a sheet name (resolved via the
+	// Drive API) — see resolveSheetInput.
+	if backend == "sqlite" {
+		// no-op: sqlite installs have no Google Sheet
+	} else if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
 		send(tgBot, chatID, "✅ Keeping existing Google Sheet.")
 	} else {
 		send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
@@ -380,6 +418,29 @@ func readReply(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID i
 	return ""
 }
 
+// waitForCallbackChoice blocks until a callback query from chatID arrives
+// with Data matching one of accepted, answers it, and returns the matched
+// value. Used by RunSetup's storage backend prompt, the only inline keyboard
+// RunSetup shows — RunSetup runs sequentially before the bot.Run/pollUpdates
+// callback machinery exists, so it needs its own blocking wait here rather
+// than conversationState.handleCallback.
+func waitForCallbackChoice(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64, accepted ...string) string {
+	for update := range updates {
+		if update.CallbackQuery == nil || update.CallbackQuery.Message == nil || update.CallbackQuery.Message.Chat.ID != chatID {
+			continue
+		}
+		for _, a := range accepted {
+			if update.CallbackQuery.Data == a {
+				if _, err := tgBot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "")); err != nil {
+					slog.Error("answering callback query", "err", err)
+				}
+				return a
+			}
+		}
+	}
+	return ""
+}
+
 // readReplyOrDocument blocks until the next message from chatID that is
 // either a document (returns its file ID, text empty) or non-empty text
 // (returns the text, fileID empty). Used only where a reply may
@@ -540,7 +601,18 @@ func selfRestart(configPath string) error {
 // kills itself and restarts the "Poker Tracker" scheduled task via a
 // detached command, so the fresh process picks up the new sheet ID from
 // config.json on startup.
-func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client, configPath, serviceAccountPath string) {
+func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc storage.Store, configPath, serviceAccountPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
+		send(tgBot, chatID, "This install uses local storage — there is no Google Sheet. Use /export to get your data as CSV.")
+		return
+	}
+
 	args = strings.TrimSpace(args)
 	if args == "" {
 		send(tgBot, chatID, sc.GetSheetURL())
@@ -557,12 +629,6 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *s
 		return
 	}
 
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(tgBot, chatID, "Something went wrong. Check logs.")
-		return
-	}
 	cfg.Setup.GoogleSheetName = name
 	cfg.Setup.GoogleSheetID = &id
 	if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -581,6 +647,244 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *s
 		return
 	}
 	os.Exit(0)
+}
+
+// --- /export ---
+
+var (
+	cashSessionsCSVHeader   = []string{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}
+	tournamentsCSVHeader    = []string{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}
+	bankrollLedgerCSVHeader = []string{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}
+	timeAnalysisCSVHeader   = []string{"Date", "Hour", "Day of Week", "Net (USD)", "Session ID"}
+)
+
+// fullPrecision tells formatFloat/formatFloatPtr to render the shortest
+// string that round-trips the value exactly, rather than a fixed decimal
+// count — pass this for every numeric CSV column except VPIP/PFR.
+const fullPrecision = -1
+
+// vpipPfrPrecision is the fixed decimal count VPIP/PFR are rounded to.
+// Both are raw-division results (e.g. 25.36231884057971) with no observable
+// meaning beyond a couple of decimal places, unlike every other numeric CSV
+// column, which keeps full precision.
+const vpipPfrPrecision = 2
+
+// moneyPrecision is the fixed decimal count every USD-denominated CSV
+// column is rounded to, matching how Telegram already displays USD amounts
+// (formatSignedUSD's "$%.2f") — chained float64 arithmetic (running totals,
+// bounty folding, ...) otherwise leaves values like -0.32000000000000006
+// with no observable meaning beyond a cent.
+const moneyPrecision = 2
+
+// bb100Precision is the fixed decimal count BB/100 is rounded to in CSV
+// output, matching how Telegram already displays it ("%.1f" in
+// cashStatsMessage, buildWeeklySummary, buildMonthlySummary).
+const bb100Precision = 1
+
+// formatFloat renders v to prec decimal places (fullPrecision for the
+// shortest exact round-trip, a fixed count to round off meaningless
+// precision).
+func formatFloat(v float64, prec int) string {
+	return strconv.FormatFloat(v, 'f', prec, 64)
+}
+
+// formatFloatPtr is formatFloat for a possibly-nil pointer (e.g. an MTT's
+// Multiplier, or a tournament's VPIP/PFR before its hand file has arrived),
+// rendering an empty cell for nil rather than a misleading "0".
+func formatFloatPtr(v *float64, prec int) string {
+	if v == nil {
+		return ""
+	}
+	return formatFloat(*v, prec)
+}
+
+// formatIntPtr renders an empty cell for nil (a tournament's Hands, before
+// its hand file has arrived) rather than a misleading "0".
+func formatIntPtr(v *int) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.Itoa(*v)
+}
+
+// prizePoolCSVCell coalesces Tournament's two mutually exclusive prize pool
+// fields into the single cell the sheet itself stores — description text for
+// a non-cash-denominated pool, otherwise the numeric amount. Without this,
+// /export would either emit two columns or silently drop one, breaking the
+// byte-identical output CLAUDE.md requires between backends (SQLite splits
+// this into two nullable columns internally; the sheet never did).
+func prizePoolCSVCell(t parsers.Tournament) string {
+	if t.PrizePoolDescription != "" {
+		return t.PrizePoolDescription
+	}
+	return formatFloat(t.PrizePoolUSD, moneyPrecision)
+}
+
+func cashSessionsCSVRows(sessions []storage.CashSessionRecord) [][]string {
+	rows := make([][]string, 0, len(sessions))
+	for _, s := range sessions {
+		rows = append(rows, []string{
+			s.Date.UTC().Format(time.RFC3339),
+			s.Stake,
+			strconv.Itoa(s.Hands),
+			strconv.Itoa(s.DurationMin),
+			formatFloat(s.NetUSD, moneyPrecision),
+			formatFloat(s.RakeUSD, moneyPrecision),
+			formatFloat(s.BB100, bb100Precision),
+			formatFloat(s.VPIP, vpipPfrPrecision),
+			formatFloat(s.PFR, vpipPfrPrecision),
+			s.SessionID,
+		})
+	}
+	return rows
+}
+
+func tournamentsCSVRows(tournaments []storage.TournamentRecord) [][]string {
+	rows := make([][]string, 0, len(tournaments))
+	for _, t := range tournaments {
+		rows = append(rows, []string{
+			t.Date.UTC().Format(time.RFC3339),
+			t.Type,
+			t.TournamentID,
+			formatFloat(t.BuyInUSD, moneyPrecision),
+			prizePoolCSVCell(t.Tournament),
+			formatFloatPtr(t.Multiplier, fullPrecision),
+			strconv.Itoa(t.FinishPos),
+			strconv.Itoa(t.TotalPlayers),
+			formatFloat(t.NetUSD, moneyPrecision),
+			formatFloatPtr(t.VPIP, vpipPfrPrecision),
+			formatFloatPtr(t.PFR, vpipPfrPrecision),
+			formatFloat(t.BountyWonUSD, moneyPrecision),
+			formatFloat(t.PrizeWonUSD, moneyPrecision),
+			formatIntPtr(t.Hands),
+		})
+	}
+	return rows
+}
+
+func bankrollLedgerCSVRows(entries []storage.LedgerEntry) [][]string {
+	rows := make([][]string, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, []string{
+			e.Date.UTC().Format(time.RFC3339),
+			e.Type,
+			formatFloat(e.AmountUSD, moneyPrecision),
+			formatFloat(e.RunningTotal, moneyPrecision),
+			e.SessionID,
+		})
+	}
+	return rows
+}
+
+func timeAnalysisCSVRows(entries []storage.TimeAnalysisRecord) [][]string {
+	rows := make([][]string, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, []string{
+			e.Date.UTC().Format(time.RFC3339),
+			strconv.Itoa(e.Hour),
+			e.DayOfWeek,
+			formatFloat(e.NetUSD, moneyPrecision),
+			e.SessionID,
+		})
+	}
+	return rows
+}
+
+// writeCSVFile writes header followed by rows to path, using encoding/csv.
+func writeCSVFile(path string, header []string, rows [][]string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	if err := w.Write(header); err != nil {
+		return fmt.Errorf("writing header to %s: %w", path, err)
+	}
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("writing row to %s: %w", path, err)
+		}
+	}
+	w.Flush()
+	return w.Error()
+}
+
+// handleExportCommand implements /export: queries every row of all four data
+// sets via storage.Store — never a backend-specific type, so the command is
+// identical on both backends — writes each to a CSV file in os.TempDir(),
+// sends each as a Telegram document, then deletes the temp files. An empty
+// data set still sends a header-only CSV. Dates are RFC3339 UTC on both
+// backends: the sqlite backend already stores them that way, and the sheets
+// backend's Date field is parsed back from its internal
+// "2006-01-02 15:04" format by GetAllCashSessions/GetAllTournaments/
+// GetAllTimeAnalysis before ever reaching here, so formatting with
+// time.RFC3339 here is enough to keep output byte-identical between
+// backends.
+func handleExportCommand(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store) {
+	cashSessions, err := sc.GetAllCashSessions()
+	if err != nil {
+		slog.Error("getting cash sessions for export", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	tournaments, err := sc.GetAllTournaments()
+	if err != nil {
+		slog.Error("getting tournaments for export", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	ledger, err := sc.GetLedgerEntriesSince(time.Time{})
+	if err != nil {
+		slog.Error("getting ledger entries for export", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	timeAnalysis, err := sc.GetAllTimeAnalysis()
+	if err != nil {
+		slog.Error("getting time analysis for export", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+
+	exports := []struct {
+		filename string
+		header   []string
+		rows     [][]string
+	}{
+		{"cash_sessions.csv", cashSessionsCSVHeader, cashSessionsCSVRows(cashSessions)},
+		{"tournaments.csv", tournamentsCSVHeader, tournamentsCSVRows(tournaments)},
+		{"bankroll_ledger.csv", bankrollLedgerCSVHeader, bankrollLedgerCSVRows(ledger)},
+		{"time_analysis.csv", timeAnalysisCSVHeader, timeAnalysisCSVRows(timeAnalysis)},
+	}
+
+	var paths []string
+	for _, e := range exports {
+		path := filepath.Join(os.TempDir(), e.filename)
+		if err := writeCSVFile(path, e.header, e.rows); err != nil {
+			slog.Error("writing export csv", "file", e.filename, "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+			for _, p := range paths {
+				os.Remove(p)
+			}
+			return
+		}
+		paths = append(paths, path)
+	}
+
+	for _, p := range paths {
+		if _, err := tgBot.Send(tgbotapi.NewDocument(chatID, tgbotapi.FilePath(p))); err != nil {
+			slog.Error("sending export file", "file", p, "err", err)
+		}
+	}
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil {
+			slog.Error("removing export temp file", "file", p, "err", err)
+		}
+	}
+
+	send(tgBot, chatID, "✅ Export complete — 4 files.")
 }
 
 // handleScreenNameCommand implements /screenname. With no argument, replies
@@ -632,7 +936,20 @@ func handleScreenNameCommand(tgBot *tgbotapi.BotAPI, chatID int64, args, configP
 // account JSON used to authenticate to Sheets/Drive. Unlike the four
 // config flows (paths/alerts/hardstop/schedule), this one expects a file
 // upload rather than a plain-text reply — see handleCredentialsDocument.
-func (s *conversationState) startCredentialsFlow(tgBot *tgbotapi.BotAPI, chatID int64) {
+// Sheets-only, same gating as /sheet — a sqlite install has no Google
+// credentials to swap.
+func (s *conversationState) startCredentialsFlow(tgBot *tgbotapi.BotAPI, chatID int64, configPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(tgBot, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
+		send(tgBot, chatID, "This install uses local storage — there is no Google Sheet. Use /export to get your data as CSV.")
+		return
+	}
+
 	s.flow = "credentials"
 	s.field = "file"
 	send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")
@@ -794,7 +1111,7 @@ func sendMessageWithKeyboard(tgBot *tgbotapi.BotAPI, configPath, text string, ma
 }
 
 // buildWeeklySummary formats the past 7 days of activity.
-func buildWeeklySummary(sc *sheets.Client, now time.Time) (string, error) {
+func buildWeeklySummary(sc storage.Store, now time.Time) (string, error) {
 	since := now.AddDate(0, 0, -7)
 	cashSessions, err := sc.GetCashSessionsSince(since)
 	if err != nil {
@@ -823,12 +1140,13 @@ func buildWeeklySummary(sc *sheets.Client, now time.Time) (string, error) {
 		totalHands += s.Hands
 	}
 	sessionCount := len(cashSessions) + len(tournaments)
+	bb100, _, _ := weightedCashAverages(cashSessions)
 
 	return fmt.Sprintf(
 		"📊 Weekly Summary\nSessions: %d\nNet: %s\nBB/100: %.1f\nSpin & Go ROI: %s\nMTT ROI: %s\nHands: %s",
 		sessionCount,
 		formatSignedUSD(netUSD),
-		weightedBB100(cashSessions),
+		bb100,
 		formatSignedPercent(roi(tournaments, "spingo")),
 		formatSignedPercent(roi(tournaments, "mtt")),
 		commas(totalHands),
@@ -836,7 +1154,7 @@ func buildWeeklySummary(sc *sheets.Client, now time.Time) (string, error) {
 }
 
 // buildMonthlySummary formats the previous calendar month's activity.
-func buildMonthlySummary(sc *sheets.Client, now time.Time) (string, error) {
+func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
 	firstOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	firstOfPrevMonth := firstOfThisMonth.AddDate(0, -1, 0)
 
@@ -869,7 +1187,7 @@ func buildMonthlySummary(sc *sheets.Client, now time.Time) (string, error) {
 		totalHands += s.Hands
 	}
 	for _, t := range tournaments {
-		if t.Type == "spingo" {
+		if t.BaseType() == "spingo" {
 			spinsNet += t.NetUSD
 		} else {
 			mttNet += t.NetUSD
@@ -890,6 +1208,7 @@ func buildMonthlySummary(sc *sheets.Client, now time.Time) (string, error) {
 			totalNet += e.AmountUSD
 		}
 	}
+	bb100, _, _ := weightedCashAverages(cashSessions)
 
 	return fmt.Sprintf(
 		"📅 Monthly Summary — %s\nCash Net: %s\nSpins Net: %s\nMTT Net: %s\nTotal: %s\nBB/100: %.1f\nSpins ROI: %s\nMTT ROI: %s\nHands: %s\nVolume: %d sessions",
@@ -898,7 +1217,7 @@ func buildMonthlySummary(sc *sheets.Client, now time.Time) (string, error) {
 		formatSignedUSD(spinsNet),
 		formatSignedUSD(mttNet),
 		formatSignedUSD(totalNet),
-		weightedBB100(cashSessions),
+		bb100,
 		formatSignedPercent(roi(tournaments, "spingo")),
 		formatSignedPercent(roi(tournaments, "mtt")),
 		commas(totalHands),
@@ -906,25 +1225,67 @@ func buildMonthlySummary(sc *sheets.Client, now time.Time) (string, error) {
 	), nil
 }
 
-// weightedBB100 returns the hands-weighted average BB/100 across sessions.
-func weightedBB100(sessions []parsers.CashSession) float64 {
-	var totalHands int
-	var weightedSum float64
-	for _, s := range sessions {
-		totalHands += s.Hands
-		weightedSum += s.BB100 * float64(s.Hands)
+// weightedAverages computes the hands-weighted average of each of an item's
+// values — a low-hand-count item (a 10-hand cash session, or a tournament
+// whose hand file hasn't arrived yet) must not count the same as a
+// high-hand-count one. extract returns an item's hand count and its n
+// values (aligned across every item), or ok=false to exclude that item
+// entirely. One shared weighting loop, reused for both cash sessions
+// (hands, BB/100, VPIP, PFR — always known) and tournaments (hands, VPIP,
+// PFR — nil, and so excluded, until the hand file arrives).
+func weightedAverages[T any](items []T, n int, extract func(T) (hands float64, values []float64, ok bool)) []float64 {
+	sums := make([]float64, n)
+	var totalHands float64
+	for _, item := range items {
+		hands, values, ok := extract(item)
+		if !ok {
+			continue
+		}
+		totalHands += hands
+		for i := 0; i < n; i++ {
+			sums[i] += values[i] * hands
+		}
 	}
+	result := make([]float64, n)
 	if totalHands == 0 {
-		return 0
+		return result
 	}
-	return weightedSum / float64(totalHands)
+	for i, sum := range sums {
+		result[i] = sum / totalHands
+	}
+	return result
+}
+
+// weightedCashAverages returns the hands-weighted average BB/100, VPIP, and
+// PFR across cash sessions. Thin wrapper over weightedAverages, kept named
+// since it's called from three places (buildWeeklySummary,
+// buildMonthlySummary, cashStatsMessage).
+func weightedCashAverages(sessions []parsers.CashSession) (bb100, vpip, pfr float64) {
+	res := weightedAverages(sessions, 3, func(s parsers.CashSession) (float64, []float64, bool) {
+		return float64(s.Hands), []float64{s.BB100, s.VPIP, s.PFR}, true
+	})
+	return res[0], res[1], res[2]
+}
+
+// weightedTournamentAverages returns the hands-weighted average VPIP and PFR
+// across tournaments. Thin wrapper over weightedAverages, mirroring
+// weightedCashAverages — a tournament whose hand file hasn't arrived yet
+// (Hands/VPIP/PFR all nil) is excluded entirely rather than counted as 0.
+func weightedTournamentAverages(tournaments []parsers.Tournament) (vpip, pfr float64) {
+	res := weightedAverages(tournaments, 2, func(t parsers.Tournament) (float64, []float64, bool) {
+		if t.Hands == nil || t.VPIP == nil || t.PFR == nil {
+			return 0, nil, false
+		}
+		return float64(*t.Hands), []float64{*t.VPIP, *t.PFR}, true
+	})
+	return res[0], res[1]
 }
 
 // roi returns net / buy-in as a percentage across tournaments of the given type.
 func roi(tournaments []parsers.Tournament, tType string) float64 {
 	var netSum, buyinSum float64
 	for _, t := range tournaments {
-		if t.Type != tType {
+		if t.BaseType() != tType {
 			continue
 		}
 		netSum += t.NetUSD
@@ -952,6 +1313,23 @@ func formatSignedPercent(v float64) string {
 		v = -v
 	}
 	return fmt.Sprintf("%s%.0f%%", sign, v)
+}
+
+// formatPercent renders v as a plain (unsigned) percentage with 1 decimal
+// place, e.g. "24.3%" — used for VPIP/PFR, which are always non-negative,
+// unlike formatSignedPercent's ROI use (signed, whole number).
+func formatPercent(v float64) string {
+	return fmt.Sprintf("%.1f%%", v)
+}
+
+// formatPercentPtr is formatPercent for a possibly-nil VPIP/PFR pointer (a
+// tournament's, before its hand file has arrived) — renders "N/A" for nil
+// rather than a misleading "0.0%".
+func formatPercentPtr(v *float64) string {
+	if v == nil {
+		return "N/A"
+	}
+	return formatPercent(*v)
 }
 
 // commas formats n with thousands separators, e.g. 4201 -> "4,201".
@@ -1019,9 +1397,22 @@ func checkPendingTournaments(tgBot *tgbotapi.BotAPI, configPath string, now time
 	}
 }
 
+// sendSatelliteMenu asks the cash-vs-ticket entry question. The prize shown
+// isn't always finish position 1's — WinnerPrizeDescription is set from
+// whichever row's payout first read as a ticket/pass, scanning every result
+// row rather than just position 1 (which can still read "still playing" if
+// the summary was captured while other players were still in) — so it's
+// labeled generically rather than claiming it's always what 1st place won.
+// Includes buy-in, date, and finish position/field size — enough for the
+// player to tell tournaments apart when more than one is pending at once,
+// since the identifying detail here is otherwise just a TournamentID.
 func sendSatelliteMenu(tgBot *tgbotapi.BotAPI, configPath string, t parsers.Tournament) {
-	text := fmt.Sprintf("🎫 Satellite/qualifier detected\nTournament #%s\n1st place won: %s\nDid you pay cash for your entry, or use a ticket?",
-		t.TournamentID, t.WinnerPrizeDescription)
+	gameType := "MTT"
+	if t.BaseType() == "spingo" {
+		gameType = "Spin & Go"
+	}
+	text := fmt.Sprintf("🎫 Satellite/qualifier detected\n%s #%s\nDate: %s\nBuy-in: $%.2f\nFinish: %s / %d\nPrize: %s\nDid you pay cash for your entry, or use a ticket?",
+		gameType, t.TournamentID, t.Date.Local().Format("2006-01-02 15:04"), t.BuyInUSD, ordinal(t.FinishPos), t.TotalPlayers, t.WinnerPrizeDescription)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("💵 Paid cash", "satellite_cash:"+t.TournamentID),
@@ -1061,7 +1452,7 @@ func (s *conversationState) reset() {
 
 // pollUpdates polls Telegram for incoming messages and callback queries and
 // dispatches them. Runs in its own goroutine so it never blocks alertChan.
-func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
+func pollUpdates(tgBot *tgbotapi.BotAPI, sc storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
@@ -1083,7 +1474,7 @@ func pollUpdates(tgBot *tgbotapi.BotAPI, sc *sheets.Client, configPath, lockfile
 	}
 }
 
-func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
+func (s *conversationState) handleUpdate(tgBot *tgbotapi.BotAPI, update tgbotapi.Update, sc storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	var senderChatID int64
 	switch {
 	case update.Message != nil:
@@ -1156,7 +1547,7 @@ func (s *conversationState) handleFlowReply(tgBot *tgbotapi.BotAPI, msg *tgbotap
 	}
 }
 
-func (s *conversationState) handleCallback(tgBot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, sc *sheets.Client, configPath, lockfilePath string, restartWatcher func()) {
+func (s *conversationState) handleCallback(tgBot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, sc storage.Store, configPath, lockfilePath string, restartWatcher func()) {
 	if _, err := tgBot.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
 		slog.Error("answering callback query", "err", err)
 	}
@@ -1190,7 +1581,7 @@ func RecoverTicketPayout(buyInUSD, netUSD float64) (newBuyInUSD, newNetUSD float
 }
 
 // resolveSatellite handles a tap on the satellite/ticket confirmation menu.
-func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tournamentID string, paidCash bool, sc *sheets.Client, configPath string) {
+func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tournamentID string, paidCash bool, sc storage.Store, configPath string) {
 	pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
 	pending, err := config.LoadPendingTournaments(pendingPath)
 	if err != nil {
@@ -1214,7 +1605,7 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 	t := pending[idx].Tournament
 	var resultText string
 	if paidCash {
-		if err := sc.AppendTournament(t); err != nil {
+		if _, err := sc.AppendTournament(t); err != nil {
 			slog.Error("appending tournament", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
 			return
@@ -1222,7 +1613,7 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 		resultText = "✅ Logged as cash entry."
 	} else {
 		t.BuyInUSD, t.NetUSD = RecoverTicketPayout(t.BuyInUSD, t.NetUSD)
-		if err := sc.AppendTournament(t); err != nil {
+		if _, err := sc.AppendTournament(t); err != nil {
 			slog.Error("appending tournament", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
 			return
@@ -1246,7 +1637,7 @@ func resolveSatellite(tgBot *tgbotapi.BotAPI, chatID int64, messageID int, tourn
 }
 
 // handleCommand dispatches a slash command to its handler.
-func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, sc *sheets.Client, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
+func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.Message, sc storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) {
 	chatID := msg.Chat.ID
 	// Disarm wizard chaining for every command except the one that (re-)arms
 	// it. Without this, abandoning /start partway (or running /paths, /alerts,
@@ -1271,8 +1662,10 @@ func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.
 		handleStats(tgBot, chatID, msg.CommandArguments(), sc)
 	case "sheet":
 		handleSheetCommand(tgBot, chatID, msg.CommandArguments(), sc, configPath, serviceAccountPath)
+	case "export":
+		handleExportCommand(tgBot, chatID, sc)
 	case "credentials":
-		s.startCredentialsFlow(tgBot, chatID)
+		s.startCredentialsFlow(tgBot, chatID, configPath)
 	case "screenname":
 		handleScreenNameCommand(tgBot, chatID, msg.CommandArguments(), configPath, restartWatcher)
 	case "paths":
@@ -1335,7 +1728,7 @@ func validateNotAbove[T int | float64](value T, other *T, valueLabel, otherLabel
 
 // handleDepositWithdraw implements /deposit and /withdraw. kind is
 // "deposit" or "withdrawal" — passed directly as the Bankroll Ledger Type.
-func handleDepositWithdraw(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client, kind string) {
+func handleDepositWithdraw(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc storage.Store, kind string) {
 	amount, err := parsePositiveFloat(args)
 	if err != nil {
 		if kind == "deposit" {
@@ -1367,7 +1760,7 @@ func handleDepositWithdraw(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc
 	send(tgBot, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, formatSignedUSD(ledgerAmount), bankroll))
 }
 
-func netSince(sc *sheets.Client, since time.Time) (float64, error) {
+func netSince(sc storage.Store, since time.Time) (float64, error) {
 	entries, err := sc.GetLedgerEntriesSince(since)
 	if err != nil {
 		return 0, err
@@ -1380,7 +1773,7 @@ func netSince(sc *sheets.Client, since time.Time) (float64, error) {
 }
 
 // handleStatus implements /status.
-func handleStatus(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client, lockfilePath string) {
+func handleStatus(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store, lockfilePath string) {
 	bankroll, err := sc.GetCurrentBankroll()
 	if err != nil {
 		slog.Error("getting bankroll", "err", err)
@@ -1425,12 +1818,32 @@ func handleStatus(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client, lockf
 	send(tgBot, chatID, text)
 }
 
+// SpinGoPrizePoolText formats a Spin & Go's prize pool for display: the real
+// dollar amount and multiplier when there's a real cash pool, or the pool's
+// ticket/pass description text when there isn't (e.g. "$1.00 Power Path
+// Step 2 Ticket" — see parsers.Tournament.PrizePoolDescription; a
+// ticket-denominated pool has no real dollar amount to show a multiplier
+// for, so Multiplier is nil in that case). The one place this is computed,
+// so every notification that shows a Spin & Go's prize pool (the
+// post-session alert in main.go, /lastsession here) renders it identically
+// and never risks dereferencing a nil Multiplier.
+func SpinGoPrizePoolText(t parsers.Tournament) string {
+	if t.PrizePoolDescription != "" {
+		return t.PrizePoolDescription
+	}
+	mult := 0.0
+	if t.Multiplier != nil {
+		mult = *t.Multiplier
+	}
+	return fmt.Sprintf("$%.2f (%gx)", t.PrizePoolUSD, mult)
+}
+
 // handleLastSession implements /lastsession. The Bankroll Ledger alone
 // doesn't carry enough detail (stake, hands, buy-in, finish, ...) to
 // reproduce the post-session summary format, so this pulls the most recent
 // row from Cash Sessions and Tournaments directly and picks whichever is
 // more recent.
-func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client) {
+func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store) {
 	cashSessions, err := sc.GetCashSessionsSince(time.Time{})
 	if err != nil {
 		slog.Error("getting cash sessions", "err", err)
@@ -1466,26 +1879,25 @@ func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc *sheets.Client) 
 	}
 
 	if lastTourn == nil || (lastCash != nil && lastCash.Date.After(lastTourn.Date)) {
-		send(tgBot, chatID, fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
-			lastCash.Stake, formatSignedUSD(lastCash.NetUSD), lastCash.Hands, lastCash.DurationMin, bankroll))
+		send(tgBot, chatID, fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+			lastCash.Stake, formatSignedUSD(lastCash.NetUSD), lastCash.Hands, lastCash.DurationMin,
+			formatPercent(lastCash.VPIP), formatPercent(lastCash.PFR), bankroll))
 		return
 	}
 
-	if lastTourn.Type == "spingo" {
-		mult := 0.0
-		if lastTourn.Multiplier != nil {
-			mult = *lastTourn.Multiplier
-		}
-		send(tgBot, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: $%.2f (%gx)\nFinish: %s\nNet: %s\nBankroll: $%.2f",
-			lastTourn.BuyInUSD, lastTourn.PrizePoolUSD, mult, ordinal(lastTourn.FinishPos), formatSignedUSD(lastTourn.NetUSD), bankroll))
+	if lastTourn.BaseType() == "spingo" {
+		send(tgBot, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+			lastTourn.BuyInUSD, SpinGoPrizePoolText(*lastTourn), ordinal(lastTourn.FinishPos), formatSignedUSD(lastTourn.NetUSD),
+			formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 		return
 	}
-	send(tgBot, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nBankroll: $%.2f",
-		lastTourn.BuyInUSD, ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, formatSignedUSD(lastTourn.NetUSD), bankroll))
+	send(tgBot, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+		lastTourn.BuyInUSD, ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, formatSignedUSD(lastTourn.NetUSD),
+		formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 }
 
 // handleStats implements /stats.
-func handleStats(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc *sheets.Client) {
+func handleStats(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc storage.Store) {
 	gameType, period := ParseStatsArgs(args)
 	since := statsSince(period)
 	periodLabel := period
@@ -1549,7 +1961,7 @@ func statsSince(period string) time.Time {
 	}
 }
 
-func cashStatsMessage(sc *sheets.Client, since time.Time, periodLabel string) (string, error) {
+func cashStatsMessage(sc storage.Store, since time.Time, periodLabel string) (string, error) {
 	sessions, err := sc.GetCashSessionsSince(since)
 	if err != nil {
 		return "", err
@@ -1560,18 +1972,19 @@ func cashStatsMessage(sc *sheets.Client, since time.Time, periodLabel string) (s
 		net += s.NetUSD
 		hands += s.Hands
 	}
-	return fmt.Sprintf("📈 Cash Stats (%s)\nNet: %s\nBB/100: %.1f\nHands: %d\nSessions: %d",
-		periodLabel, formatSignedUSD(net), weightedBB100(sessions), hands, len(sessions)), nil
+	bb100, vpip, pfr := weightedCashAverages(sessions)
+	return fmt.Sprintf("📈 Cash Stats (%s)\nNet: %s\nBB/100: %.1f\nVPIP: %s\nPFR: %s\nHands: %d\nSessions: %d",
+		periodLabel, formatSignedUSD(net), bb100, formatPercent(vpip), formatPercent(pfr), hands, len(sessions)), nil
 }
 
-func tournamentStatsMessage(sc *sheets.Client, since time.Time, tType, periodLabel, label, emoji string, includeAvgFinish bool) (string, error) {
+func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabel, label, emoji string, includeAvgFinish bool) (string, error) {
 	tournaments, err := sc.GetTournamentsSince(since)
 	if err != nil {
 		return "", err
 	}
 	var filtered []parsers.Tournament
 	for _, t := range tournaments {
-		if t.Type == tType {
+		if t.BaseType() == tType {
 			filtered = append(filtered, t)
 		}
 	}
@@ -1580,10 +1993,11 @@ func tournamentStatsMessage(sc *sheets.Client, since time.Time, tType, periodLab
 		net += t.NetUSD
 	}
 	r := roi(filtered, tType)
+	vpip, pfr := weightedTournamentAverages(filtered)
 
 	if !includeAvgFinish {
-		return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nGames: %d",
-			emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), len(filtered)), nil
+		return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d",
+			emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered)), nil
 	}
 
 	var avgFinishSum float64
@@ -1598,8 +2012,8 @@ func tournamentStatsMessage(sc *sheets.Client, since time.Time, tType, periodLab
 	if cnt > 0 {
 		avgFinish = avgFinishSum / float64(cnt)
 	}
-	return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nGames: %d\nAvg finish: %.0f%%",
-		emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), len(filtered), avgFinish), nil
+	return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d\nAvg finish: %.0f%%",
+		emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered), avgFinish), nil
 }
 
 // ensureScreenName checks Setup.PokerStarsScreenName before any of the four
@@ -1879,7 +2293,7 @@ func (s *conversationState) handlePathsReply(tgBot *tgbotapi.BotAPI, chatID int6
 // from the worker goroutine right after a cash session is parsed and
 // written to sheets, so it must go through alertChan rather than sending to
 // Telegram directly (only the bot goroutine may do that).
-func EvaluateSessionLossAlert(session parsers.CashSession, sc *sheets.Client, configPath string, alertChan chan<- string) error {
+func EvaluateSessionLossAlert(session parsers.CashSession, sc storage.Store, configPath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -1910,7 +2324,7 @@ func EvaluateSessionLossAlert(session parsers.CashSession, sc *sheets.Client, co
 // since cross-validation enforces alert ≤ hardstop for this field, the
 // alert always fires at or before the hard stop's own threshold, never
 // after.
-func EvaluateDownswingAlert(buyInUSD float64, sc *sheets.Client, configPath string, alertChan chan<- string) error {
+func EvaluateDownswingAlert(buyInUSD float64, sc storage.Store, configPath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -2388,6 +2802,7 @@ var commandList = []struct {
 	{"lastsession", "Show the summary of the last recorded session."},
 	{"stats", "Show filtered performance stats."},
 	{"sheet", "Get the Google Sheets URL, or switch to a different sheet."},
+	{"export", "Export all your data as CSV files."},
 	{"credentials", "Swap the Google service account credentials file."},
 	{"screenname", "Get or change your PokerStars screen name."},
 	{"paths", "Configure PokerStars folder locations."},
@@ -2444,6 +2859,9 @@ var commandHelp = map[string]string{
 		"  /sheet — show the current sheet URL\n" +
 		"  /sheet My Other Bankroll — switch by name\n" +
 		"  /sheet https://docs.google.com/spreadsheets/d/... — switch by URL",
+	"export": "Exports all your data as CSV files: cash sessions, tournaments, bankroll ledger, time analysis.\n" +
+		"Usage: /export\n" +
+		"No arguments. Works on both storage backends and produces identical output either way. Sends four files, one per data set — an empty data set still sends a header-only file.",
 	"credentials": "Swaps the Google service account credentials file used to access Sheets/Drive.\n" +
 		"Usage: /credentials — then send the google_service_account.json file as an attachment, or type skip to cancel.\n" +
 		"If a sheet is already configured, it's re-checked against the new credentials — if it's no longer reachable (not shared with the new service account, or a different Google Cloud project entirely), the sheet is cleared from config and you'll need to run /sheet again.\n" +

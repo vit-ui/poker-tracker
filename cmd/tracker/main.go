@@ -20,6 +20,8 @@ import (
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/sqlitestore"
+	"github.com/vit-ui/self-tracker/internal/storage"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
@@ -43,6 +45,7 @@ var (
 	serviceAccountPath string
 	configPath         string
 	lockfilePath       string
+	dbPath             string
 )
 
 func init() {
@@ -54,6 +57,7 @@ func init() {
 	serviceAccountPath = filepath.Join(dir, "credentials", "google_service_account.json")
 	configPath = filepath.Join(dir, "config.json")
 	lockfilePath = filepath.Join(dir, "lockfile.json")
+	dbPath = filepath.Join(dir, "tracker.db")
 }
 
 func main() {
@@ -283,23 +287,47 @@ func runServe() {
 	// comment for why the build flag alone wasn't enough in practice.
 	hideConsole()
 
-	// Blocks and asks via Telegram if google_sheet_id isn't set yet, rather
-	// than refusing to start — nothing else here can run without a sheets
-	// client, so this has to resolve before the watcher/worker/bot
-	// goroutines exist.
-	sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
-	if err != nil {
-		panic("resolving google sheet: " + err.Error())
-	}
-
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		panic("loading config: " + err.Error())
 	}
 
-	sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
+	backend, err := resolveStorageBackend(cfg, configPath)
 	if err != nil {
-		panic("initializing sheets client: " + err.Error())
+		panic(err.Error())
+	}
+
+	var sc storage.Store
+	switch backend {
+	case "sheets":
+		// Blocks and asks via Telegram if google_sheet_id isn't set yet,
+		// rather than refusing to start — nothing else here can run without
+		// a sheets client, so this has to resolve before the
+		// watcher/worker/bot goroutines exist. Only called on the sheets
+		// path — a sqlite install must never need Google credentials on
+		// disk.
+		sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
+		if err != nil {
+			panic("resolving google sheet: " + err.Error())
+		}
+		sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
+		if err != nil {
+			panic("initializing sheets client: " + err.Error())
+		}
+		sc = sheetsClient
+	case "sqlite":
+		store, err := sqlitestore.NewStore(dbPath)
+		if err != nil {
+			panic("initializing sqlite store: " + err.Error())
+		}
+		sc = store
+	}
+
+	// Reload — EnsureSheetID above may have written telegram_chat_id and/or
+	// google_sheet_id back to config.json.
+	cfg, err = config.LoadConfig(configPath)
+	if err != nil {
+		panic("loading config: " + err.Error())
 	}
 
 	sessionChan := make(chan watcher.FileEvent, 10)
@@ -347,7 +375,7 @@ func runServe() {
 		}()
 	}
 
-	go runWorker(sessionChan, alertChan, sheetsClient, configPath, lockfilePath)
+	go runWorker(sessionChan, alertChan, sc, configPath, lockfilePath)
 
 	// Runs for the life of this process — the done channel is never closed,
 	// since RunEnforcementLoop is only meant to stop when --serve itself
@@ -355,7 +383,7 @@ func runServe() {
 	go hardstop.RunEnforcementLoop(lockfilePath, make(chan struct{}))
 
 	go func() {
-		err := bot.Run(BotToken, alertChan, sheetsClient, configPath, lockfilePath, serviceAccountPath, restartWatcher)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, restartWatcher)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit
@@ -368,6 +396,27 @@ func runServe() {
 	}()
 
 	select {}
+}
+
+// resolveStorageBackend returns which storage backend runServe should
+// construct: "sheets" or "sqlite". storage_backend already set is the normal
+// case and is returned as-is. storage_backend unset but google_sheet_id
+// already set is a v1.0 install predating this field — it's silently
+// migrated to "sheets" and written back so this check only ever runs once
+// per install. Both unset means --setup has never run.
+func resolveStorageBackend(cfg *config.Config, configPath string) (string, error) {
+	if cfg.Setup.StorageBackend != nil {
+		return *cfg.Setup.StorageBackend, nil
+	}
+	if cfg.Setup.GoogleSheetID != nil {
+		backend := "sheets"
+		cfg.Setup.StorageBackend = &backend
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return "", fmt.Errorf("saving config: %w", err)
+		}
+		return backend, nil
+	}
+	return "", errors.New("Run setup first: use the installer or tracker.exe --setup")
 }
 
 // resolvePaths joins the base hand history and tournament summary paths with
@@ -389,7 +438,7 @@ const cashSessionSummaryQuietPeriod = 10 * time.Minute
 func runWorker(
 	sessionChan <-chan watcher.FileEvent,
 	alertChan chan<- string,
-	sc *sheets.Client,
+	sc storage.Store,
 	configPath, lockfilePath string,
 ) {
 	var summaryMu sync.Mutex
@@ -436,8 +485,8 @@ func runWorker(
 					return cashSessionSummaryText(*session, bankroll)
 				})
 			} else if tourneyStats != nil {
-				if err := sc.UpdateTournamentVPIPPFR(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR); err != nil {
-					slog.Error("updating tournament VPIP/PFR", "err", err)
+				if err := sc.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
+					slog.Error("updating tournament hand stats", "err", err)
 				}
 			} else {
 				slog.Error("ParseCashFile returned no session and no tournament stats", "path", event.Path)
@@ -450,6 +499,20 @@ func runWorker(
 			}
 			if err != nil {
 				slog.Error("parsing tournament", "path", event.Path, "err", err)
+				continue
+			}
+
+			// Checked once, here, before either the satellite queue or the
+			// direct-append path below runs — a duplicate file event for a
+			// tournament already handled (a stray re-trigger, or literally
+			// the same file copied) must never send a second Telegram
+			// alert, ask the satellite/ticket question twice, or queue a
+			// second pending entry. See tournamentAlreadyHandled's doc
+			// comment for why this is the only place that needs the check.
+			duplicate, err := tournamentAlreadyHandled(t.TournamentID, configPath, sc)
+			if err != nil {
+				slog.Error("checking for duplicate tournament processing", "err", err)
+			} else if duplicate {
 				continue
 			}
 
@@ -476,7 +539,8 @@ func runWorker(
 				continue
 			}
 
-			if err := sc.AppendTournament(t); err != nil {
+			netUSD, err := sc.AppendTournament(t)
+			if err != nil {
 				slog.Error("appending tournament to sheets", "err", err)
 			}
 			if err := hardstop.EvaluateTournament(t, sc, configPath, lockfilePath, alertChan); err != nil {
@@ -486,14 +550,14 @@ func runWorker(
 				slog.Error("evaluating downswing alert", "err", err)
 			}
 			bankroll, _ := sc.GetCurrentBankroll()
-			sign, absNet := "+", t.NetUSD
+			sign, absNet := "+", netUSD
 			if absNet < 0 {
 				sign, absNet = "-", -absNet
 			}
 			var alert string
-			if t.Type == "spingo" {
-				alert = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: $%.2f (%gx)\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
-					t.BuyInUSD, t.PrizePoolUSD, *t.Multiplier, ordinal(t.FinishPos), sign, absNet, bankroll)
+			if t.BaseType() == "spingo" {
+				alert = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
+					t.BuyInUSD, bot.SpinGoPrizePoolText(t), ordinal(t.FinishPos), sign, absNet, bankroll)
 			} else {
 				alert = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s$%.2f\nBankroll: $%.2f",
 					t.BuyInUSD, ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
@@ -501,6 +565,49 @@ func runWorker(
 			alertChan <- alert
 		}
 	}
+}
+
+// tournamentAlreadyHandled reports whether tournamentID has already been
+// queued for a satellite/ticket answer, or already fully recorded in the
+// Tournaments sheet. This is the single place that guards against a
+// duplicate tournament summary file event (a stray re-trigger, or literally
+// the same file copied) causing a second Telegram alert, a second
+// satellite/ticket question, or a second pending-queue entry for the same
+// TournamentID — every caller checks here first, so this is the only place
+// that ever needs to.
+func tournamentAlreadyHandled(tournamentID, configPath string, sc storage.Store) (bool, error) {
+	pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
+	pending, err := config.LoadPendingTournaments(pendingPath)
+	if err != nil {
+		return false, err
+	}
+	// GetTournamentsSince skips partial rows (no Date — created only by a
+	// hand file arriving before the summary; see sheets.GetTournamentsSince),
+	// so a tournament whose hand stats arrived first but whose summary
+	// hasn't been processed yet is correctly reported as not yet handled.
+	recorded, err := sc.GetTournamentsSince(time.Time{})
+	if err != nil {
+		return false, err
+	}
+	return isDuplicateTournament(tournamentID, pending, recorded), nil
+}
+
+// isDuplicateTournament is the pure decision tournamentAlreadyHandled wraps
+// around its two I/O reads: tournamentID is a duplicate if it's already
+// awaiting an answer in the pending queue, or already fully written to the
+// Tournaments sheet.
+func isDuplicateTournament(tournamentID string, pending []config.PendingTournament, recorded []parsers.Tournament) bool {
+	for _, p := range pending {
+		if p.Tournament.TournamentID == tournamentID {
+			return true
+		}
+	}
+	for _, t := range recorded {
+		if t.TournamentID == tournamentID {
+			return true
+		}
+	}
+	return false
 }
 
 // scheduleCashSessionSummary (re)starts a quietPeriod timer for path, keyed

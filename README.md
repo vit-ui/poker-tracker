@@ -1,64 +1,128 @@
 # Poker Tracker
 
-A Windows background service that automatically tracks a poker player's sessions on PokerStars, maintains bankroll accounting in Google Sheets, and provides a Telegram bot for alerts and controls. It starts on boot and runs with zero manual interaction.
+A Windows background service that automatically tracks your PokerStars sessions, maintains your bankroll accounting, and exposes it all through a Telegram bot: session alerts, stats, and a hard-stop lock that closes PokerStars when you go on tilt.
 
-## What it does
+It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand histories and tournament summaries to disk; the tracker parses them as they land, and you talk to it entirely through Telegram. Your data lives in **either a Google Sheet or a local SQLite file**, whichever you pick at install.
 
-- Watches PokerStars' Hand History and Tournament Summary folders and parses every cash session and tournament (Spin & Go and MTT) as it's written.
-- Logs everything to a Google Sheet: cash sessions, tournaments, a running bankroll ledger, and time-of-day/day-of-week breakdowns.
-- Sends a Telegram summary after every session, plus configurable alerts for downswings, losing streaks, and daily loss thresholds.
-- Can automatically lock PokerStars (kill the client for a configured duration) when a hard-stop condition is triggered — a session loss, a rolling drawdown, a losing streak, or a daily loss limit.
-- Everything is configured through the Telegram bot — no config files to hand-edit, no dashboard to log into.
+## Highlights
+
+- **Automatic parsing** of cash games, Spin & Go, and MTT sessions, read straight from PokerStars' hand-history and tournament-summary folders. Nothing is entered by hand.
+- **Your choice of storage:** a live **Google Sheet** you can open in a browser, or a single local **SQLite file** that needs no Google account and no configuration.
+- **Telegram summaries** after every session, plus configurable alerts for downswings, session losses, losing streaks, and daily-loss limits.
+- **Automatic hard stop.** When a limit you set is breached (a session loss, a rolling 30-day drawdown, a losing streak, or a daily-loss cap), it closes the PokerStars client and keeps it locked for a set duration.
+- **Satellite / ticket detection** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never counts as a cash buy-in against your bankroll.
+- **One running ledger** for deposits, withdrawals, and every session net, so your true P&L stays correct through reloads.
+- **CSV export** on both backends, in identical format, so your data stays portable whichever storage you chose.
 
 ## Installing
 
-Download the latest `Setup.exe` from [Releases](../../releases) and run it. The installer offers two setup paths:
+Download the latest `PokerTracker-v<version>.exe` from [Releases](../../releases) and run it. The installer walks you through two choices:
 
-- **Telegram (recommended)** — the installer launches the bot, and you complete setup entirely by chatting with it: service account credentials, Google Sheet, PokerStars screen name, and hand history / tournament summary folders.
-- **Manual** — enter the same information directly in the installer if you'd rather not use Telegram for initial setup.
+- **Storage backend**
+  - **Google Sheets** — a live spreadsheet you can open and eyeball in a browser. Requires a one-time Google Cloud service account.
+  - **Local file** — everything lives in a single `tracker.db` next to the program. No Google account, nothing to share, nothing to configure.
+- **Setup method**
+  - **Telegram (recommended)** — the installer launches the bot and you finish setup by chatting with it.
+  - **Manual** — enter the same details directly in the installer if you'd rather not use Telegram for the initial setup.
 
-Either way, the service registers itself in Task Scheduler and starts automatically, including on every subsequent login.
+Either way, the service registers itself in Task Scheduler and starts automatically, including on every subsequent boot.
 
 ### Requirements
 
 - Windows, with PokerStars already installed.
-- A Google Cloud service account with access to the Sheets and Drive APIs, and a blank Google Sheet shared with it (Editor access).
-- A Telegram bot token (create one via [@BotFather](https://t.me/BotFather)) — only needed if you're building from source; the official release has one built in.
+- **Only if you choose the Google Sheets backend:** a Google Cloud service account with access to the Sheets and Drive APIs, and a blank Google Sheet shared with it (Editor access). The local-file backend needs none of this.
+- A Telegram bot token (create one via [@BotFather](https://t.me/BotFather)) — only if you're building from source; the official release has one built in.
 
 ## Using it
 
-Once installed, talk to your bot on Telegram. A few starting points:
+Once installed, talk to your bot on Telegram. Every command also has detailed help via `/help <command>`. Expand any entry below for the details:
 
-| Command | What it does |
-|---|---|
-| `/start` | Runs the full setup wizard (paths, alerts, hard stop rules). Re-runnable any time. |
-| `/status` | Current bankroll, today/week/month P&L, and any active lock. |
-| `/lastsession` | Summary of the most recent session. |
-| `/stats` | Filtered stats — by game type and time range. |
-| `/deposit`, `/withdraw` | Log a bankroll transfer. |
-| `/config` | Lists all configuration commands (`/paths`, `/alerts`, `/hardstop`, `/schedule`). |
-| `/help` | Full command reference. |
+<details>
+<summary><code>/start</code> — run the full setup wizard</summary>
 
-Every command has detailed help via `/help <command>`.
+Chains the four configuration flows in order — paths → alerts → hard stop → schedule — pressing Done on each to advance. Re-runnable any time to reconfigure.
+</details>
 
-## Building from source
+<details>
+<summary><code>/status</code> — current bankroll and P&L</summary>
 
-```bash
-go build ./...          # build
-go test ./...            # run tests
+Shows your current bankroll, today / this week / this month P&L, and details of any active hard-stop lock.
+</details>
 
-# release build, with the bot token injected at compile time
-GOOS=windows GOARCH=amd64 go build \
-  -ldflags "-H=windowsgui -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
-  -o tracker.exe ./cmd/tracker
-```
+<details>
+<summary><code>/lastsession</code> — summary of your most recent session</summary>
 
-Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `tracker.exe`, packages it with `setup.iss` (Inno Setup) into `Setup.exe`, and publishes both to a GitHub Release.
+Full breakdown of the last session parsed: game type, stake or buy-in, net result, hands or finish position, duration, and updated bankroll.
+</details>
 
-Run `tracker.exe --setup` to walk through setup manually, or `tracker.exe --serve` to run the service directly, from an existing terminal.
+<details>
+<summary><code>/stats [cash|spins|mtt] [today|week|month|all]</code> — filtered statistics</summary>
 
-## Project layout and internals
+Volume, P&L, and win rates, filtered by game type and time range. `spins` covers Spin & Go, `mtt` covers multi-table tournaments. With no arguments it reports all game types, all-time.
 
-See [`CLAUDE.md`](CLAUDE.md) for the full technical reference — architecture, data models, config schema, coding conventions, and the complete build order. [`poker-tracker-plan.md`](poker-tracker-plan.md) has the original design plan.
+Example: `/stats cash week` — cash-game stats for the past week.
+</details>
 
-This is a single-user tool built for one specific setup. It's intentionally lean — no database, no web interface, no retry logic beyond what the underlying libraries provide. Google Sheets is the data store; Telegram is the only interface besides the installer.
+<details>
+<summary><code>/deposit &lt;amount&gt;</code> / <code>/withdraw &lt;amount&gt;</code> — log a bankroll transfer</summary>
+
+Records money moving into or out of PokerStars, using the USD value shown on PokerStars. Replies with your new bankroll. Reloads are tracked as negative events, so your P&L never resets.
+
+Example: `/deposit 100`
+</details>
+
+<details>
+<summary><code>/export</code> — download all your data as CSV</summary>
+
+Exports the four data sets — cash sessions, tournaments, the bankroll ledger, and time analysis — as four CSV files sent to you as Telegram documents. Output is identical on both the Google Sheets and SQLite backends.
+</details>
+
+<details>
+<summary><code>/sheet</code> — link to your data</summary>
+
+On the Google Sheets backend, replies with the spreadsheet URL. On the local-file backend, there is no sheet — it points you to `/export` instead.
+</details>
+
+<details>
+<summary><code>/paths</code> — set your PokerStars folders</summary>
+
+Configures the base Hand History and Tournament Summary folders (the parent folders — not the screen-name subfolder underneath, which is added automatically). Required before any session can be tracked; saving restarts the file watcher.
+</details>
+
+<details>
+<summary><code>/alerts</code> — configure warning thresholds</summary>
+
+Set the warning-only thresholds: downswing, session loss, losing streak, daily loss, and Spin & Go daily loss. These warn you before the hard stop steps in.
+</details>
+
+<details>
+<summary><code>/hardstop</code> — configure the automatic lock</summary>
+
+Set the rules that close PokerStars and lock it for a fixed duration: session loss, rolling drawdown, consecutive losses, daily loss, Spin & Go daily loss, and how long the lock lasts. Send `/hardstop trigger` to lock immediately, by hand.
+</details>
+
+<details>
+<summary><code>/schedule</code> — set your poker-day boundary</summary>
+
+Sets the hour (0–23) your poker day starts, used as the reset point for the daily-loss checks. Defaults to 6am.
+</details>
+
+<details>
+<summary><code>/config</code> — list the configuration commands</summary>
+
+Lists `/paths`, `/alerts`, `/hardstop`, and `/schedule` with a one-line description of each.
+</details>
+
+<details>
+<summary><code>/help [command]</code> — command reference</summary>
+
+With no argument, lists every command. With a command name, explains it in detail with parameters and an example.
+</details>
+
+## Notes
+
+This is a single-user tool built for one specific personal setup, and it's intentionally lean: no web UI, no REST API, no dashboard. Telegram and the installer are the only interfaces. It's provided as-is, with no warranty, and is not affiliated with or endorsed by PokerStars.
+
+## License
+
+© 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE): free for personal, noncommercial use, but you may not redistribute, modify, or use it commercially. See [`LICENSE`](LICENSE) for the full terms.

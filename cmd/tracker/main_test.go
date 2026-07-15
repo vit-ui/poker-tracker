@@ -1,12 +1,113 @@
 package main
 
 import (
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
+
+// TestResolveStorageBackend covers the three startup-guard outcomes from
+// CLAUDE.md's v2.0 backend-aware guard: an already-set backend is returned
+// as-is, a v1.0 install (storage_backend unset, google_sheet_id already set)
+// is silently migrated to "sheets" and the migration is persisted to disk,
+// and an install where neither field is set errors instead of guessing.
+func TestResolveStorageBackend(t *testing.T) {
+	t.Run("already set is returned as-is", func(t *testing.T) {
+		backend := "sqlite"
+		cfg := &config.Config{Setup: config.Setup{StorageBackend: &backend}}
+
+		got, err := resolveStorageBackend(cfg, filepath.Join(t.TempDir(), "config.json"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "sqlite" {
+			t.Errorf("got %q, want %q", got, "sqlite")
+		}
+	})
+
+	t.Run("v1.0 install migrates to sheets and persists it", func(t *testing.T) {
+		sheetID := "abc123"
+		cfg := &config.Config{Setup: config.Setup{GoogleSheetID: &sheetID}}
+		path := filepath.Join(t.TempDir(), "config.json")
+
+		got, err := resolveStorageBackend(cfg, path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "sheets" {
+			t.Errorf("got %q, want %q", got, "sheets")
+		}
+		if cfg.Setup.StorageBackend == nil || *cfg.Setup.StorageBackend != "sheets" {
+			t.Errorf("cfg.Setup.StorageBackend not migrated in memory: %v", cfg.Setup.StorageBackend)
+		}
+
+		reloaded, err := config.LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if reloaded.Setup.StorageBackend == nil || *reloaded.Setup.StorageBackend != "sheets" {
+			t.Errorf("migration not persisted to disk: %v", reloaded.Setup.StorageBackend)
+		}
+	})
+
+	t.Run("neither field set errors", func(t *testing.T) {
+		cfg := &config.Config{}
+
+		_, err := resolveStorageBackend(cfg, filepath.Join(t.TempDir(), "config.json"))
+		if err == nil {
+			t.Fatal("expected an error when setup has never run")
+		}
+	})
+}
+
+// TestIsDuplicateTournament exercises the single choke point guarding
+// against a duplicate tournament summary file event (a stray re-trigger, or
+// literally the same file copied) — the exact bug that caused a repeated
+// Telegram alert and a repeated satellite/ticket question for the same
+// tournament before this check existed.
+func TestIsDuplicateTournament(t *testing.T) {
+	pendingOf := func(ids ...string) []config.PendingTournament {
+		pending := make([]config.PendingTournament, len(ids))
+		for i, id := range ids {
+			pending[i] = config.PendingTournament{Tournament: parsers.Tournament{TournamentID: id}}
+		}
+		return pending
+	}
+	recordedOf := func(ids ...string) []parsers.Tournament {
+		recorded := make([]parsers.Tournament, len(ids))
+		for i, id := range ids {
+			recorded[i] = parsers.Tournament{TournamentID: id}
+		}
+		return recorded
+	}
+
+	cases := []struct {
+		name     string
+		id       string
+		pending  []config.PendingTournament
+		recorded []parsers.Tournament
+		want     bool
+	}{
+		{"brand new tournament, neither pending nor recorded", "111", nil, nil, false},
+		{"already awaiting a satellite/ticket answer", "111", pendingOf("111"), nil, true},
+		{"already fully recorded in the Tournaments sheet", "111", nil, recordedOf("111"), true},
+		{"a different tournament pending doesn't false-positive", "111", pendingOf("222"), nil, false},
+		{"a different tournament recorded doesn't false-positive", "111", nil, recordedOf("222"), false},
+		{"pending and recorded both present but for other IDs", "111", pendingOf("222"), recordedOf("333"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := isDuplicateTournament(c.id, c.pending, c.recorded)
+			if got != c.want {
+				t.Errorf("isDuplicateTournament(%q, ...) = %v, want %v", c.id, got, c.want)
+			}
+		})
+	}
+}
 
 func TestCashSessionSummaryText(t *testing.T) {
 	cases := []struct {

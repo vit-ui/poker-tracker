@@ -1,11 +1,19 @@
 package sheets
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+// closeEnough reports whether a and b differ by less than half a cent —
+// USD amounts derived from chained float64 arithmetic (e.g. -0.12 + 0.55)
+// can land a few ULPs off an exact decimal value.
+func closeEnough(a, b float64) bool {
+	return math.Abs(a-b) < 0.005
+}
 
 func TestParseInt(t *testing.T) {
 	cases := []struct {
@@ -201,6 +209,127 @@ func equalUpdates(got, want [][]interface{}) bool {
 		}
 	}
 	return true
+}
+
+// TestFoldBountyIntoNet exercises the summary-file side of knockout-bounty
+// reconciliation: folding whatever bounty a hand history file has already
+// recorded into the freshly parsed baseline net (payout - buyin).
+func TestFoldBountyIntoNet(t *testing.T) {
+	cases := []struct {
+		name                             string
+		baselineNetUSD, bountyUSD, buyIn float64
+		wantNet, wantPrizeWon            float64
+	}{
+		{"no bounty yet — hand file hasn't arrived", -0.12, 0, 0.55, -0.12, 0.43},
+		{"real KO tournament — a loss on paper becomes a win", -0.12, 0.90, 0.55, 0.78, 1.33},
+		{"non-knockout tournament, bounty always zero", 2.00, 0, 5.00, 2.00, 7.00},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotNet, gotPrizeWon := foldBountyIntoNet(c.baselineNetUSD, c.bountyUSD, c.buyIn)
+			if !closeEnough(gotNet, c.wantNet) || !closeEnough(gotPrizeWon, c.wantPrizeWon) {
+				t.Errorf("foldBountyIntoNet(%v, %v, %v) = (%v, %v), want (%v, %v)",
+					c.baselineNetUSD, c.bountyUSD, c.buyIn, gotNet, gotPrizeWon, c.wantNet, c.wantPrizeWon)
+			}
+		})
+	}
+}
+
+// TestReconcileTournamentBounty exercises the hand-file side of knockout-
+// bounty reconciliation: replacing this row's previous bounty contribution
+// to an already-summary-completed row with a freshly reparsed total, without
+// double-counting the invariant payout portion.
+func TestReconcileTournamentBounty(t *testing.T) {
+	cases := []struct {
+		name                                               string
+		storedNetUSD, storedBountyUSD, newBountyUSD, buyIn float64
+		wantNet, wantPrizeWon                              float64
+	}{
+		{"bounty grows — more KOs since the last hand-file parse", 0.78, 0.90, 1.26, 0.55, 1.14, 1.69},
+		{"unchanged re-parse is a no-op", 0.78, 0.90, 0.90, 0.55, 0.78, 1.33},
+		{"first bounty applied after summary already landed", -0.12, 0, 0.90, 0.55, 0.78, 1.33},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotNet, gotPrizeWon := reconcileTournamentBounty(c.storedNetUSD, c.storedBountyUSD, c.newBountyUSD, c.buyIn)
+			if !closeEnough(gotNet, c.wantNet) || !closeEnough(gotPrizeWon, c.wantPrizeWon) {
+				t.Errorf("reconcileTournamentBounty(%v, %v, %v, %v) = (%v, %v), want (%v, %v)",
+					c.storedNetUSD, c.storedBountyUSD, c.newBountyUSD, c.buyIn, gotNet, gotPrizeWon, c.wantNet, c.wantPrizeWon)
+			}
+		})
+	}
+}
+
+// TestReconcileKnockoutType exercises the summary-file side of Type
+// reconciliation: combining the freshly parsed base type with whatever
+// knockout signal a hand-file-created partial row already left behind.
+func TestReconcileKnockoutType(t *testing.T) {
+	cases := []struct {
+		name             string
+		baseType         string
+		existingTypeCell string
+		want             string
+	}{
+		{"placeholder from a knockout-flagged partial row", "mtt", knockoutPlaceholder, "mtt-ko"},
+		{"spingo variant", "spingo", knockoutPlaceholder, "spingo-ko"},
+		{"no prior knockout signal at all", "mtt", "", "mtt"},
+		{"already-suffixed row from an earlier reconcile — idempotent", "mtt", "mtt-ko", "mtt-ko"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := reconcileKnockoutType(c.baseType, c.existingTypeCell); got != c.want {
+				t.Errorf("reconcileKnockoutType(%q, %q) = %q, want %q", c.baseType, c.existingTypeCell, got, c.want)
+			}
+		})
+	}
+}
+
+// TestAppendKnockoutSuffix exercises the hand-file side of Type
+// reconciliation: flagging a row as knockout whether or not the base type is
+// known yet, without ever double-suffixing on a repeat call.
+func TestAppendKnockoutSuffix(t *testing.T) {
+	cases := []struct {
+		name             string
+		existingTypeCell string
+		want             string
+	}{
+		{"base type not known yet — summary hasn't arrived", "", knockoutPlaceholder},
+		{"base type already known", "mtt", "mtt-ko"},
+		{"spingo variant", "spingo", "spingo-ko"},
+		{"already the placeholder — idempotent", knockoutPlaceholder, knockoutPlaceholder},
+		{"already suffixed — idempotent", "mtt-ko", "mtt-ko"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := appendKnockoutSuffix(c.existingTypeCell); got != c.want {
+				t.Errorf("appendKnockoutSuffix(%q) = %q, want %q", c.existingTypeCell, got, c.want)
+			}
+		})
+	}
+}
+
+// TestColumnLetter confirms the 0-based-index-to-spreadsheet-column
+// conversion backfillTabHeaders relies on to know which range to write.
+func TestColumnLetter(t *testing.T) {
+	cases := []struct {
+		idx  int
+		want string
+	}{
+		{0, "A"},
+		{1, "B"},
+		{11, "L"}, // Bounty Won (USD), the first backfilled column in the real Tournaments migration
+		{12, "M"}, // Prize Won (USD)
+		{25, "Z"},
+		{26, "AA"},
+		{27, "AB"},
+		{51, "AZ"},
+		{52, "BA"},
+	}
+	for _, c := range cases {
+		if got := columnLetter(c.idx); got != c.want {
+			t.Errorf("columnLetter(%d) = %q, want %q", c.idx, got, c.want)
+		}
+	}
 }
 
 // TestNewClient_MissingCredentialsFile confirms NewClient fails fast at the
