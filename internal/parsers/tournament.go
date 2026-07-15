@@ -43,6 +43,7 @@ type Tournament struct {
 	NetUSD               float64
 	VPIP                 *float64 // populated from hand history via UpdateTournamentHandStats
 	PFR                  *float64 // populated from hand history via UpdateTournamentHandStats
+	Hands                *int     // populated from hand history via UpdateTournamentHandStats; the weight /stats uses for VPIP/PFR
 
 	// LikelySatellite is true if any result row's payout is non-cash
 	// (ticket, seat/package, or T$ — see isNonCashPrize), scanning every

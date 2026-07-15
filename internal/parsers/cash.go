@@ -43,6 +43,14 @@ type TournamentHandStats struct {
 	VPIP         float64
 	PFR          float64
 
+	// Hands is the number of hands dealt to screenName in this tournament so
+	// far — the same weight CashSession.Hands provides for cash sessions,
+	// letting /stats weight a tournament's VPIP/PFR by how much of a sample
+	// they actually represent. Recomputed from scratch on every parse, same
+	// as VPIP/PFR/BountyUSD, since the file keeps growing across the whole
+	// tournament.
+	Hands int
+
 	// BountyUSD is the cumulative knockout-bounty cash won by screenName
 	// across every "<name> wins $X.XX for eliminating ..." line in the file,
 	// recomputed from scratch on every parse — the same file keeps growing
@@ -329,6 +337,7 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 			TournamentID: tournamentID,
 			VPIP:         float64(vpipCount) / float64(hands) * 100,
 			PFR:          float64(pfrCount) / float64(hands) * 100,
+			Hands:        hands,
 			BountyUSD:    bountyUSD,
 			IsKnockout:   isKnockout,
 		}, nil

@@ -648,7 +648,7 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc st
 
 var (
 	cashSessionsCSVHeader   = []string{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}
-	tournamentsCSVHeader    = []string{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)"}
+	tournamentsCSVHeader    = []string{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}
 	bankrollLedgerCSVHeader = []string{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}
 	timeAnalysisCSVHeader   = []string{"Date", "Hour", "Day of Week", "Net (USD)", "Session ID"}
 )
@@ -679,6 +679,15 @@ func formatFloatPtr(v *float64, prec int) string {
 		return ""
 	}
 	return formatFloat(*v, prec)
+}
+
+// formatIntPtr renders an empty cell for nil (a tournament's Hands, before
+// its hand file has arrived) rather than a misleading "0".
+func formatIntPtr(v *int) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.Itoa(*v)
 }
 
 // prizePoolCSVCell coalesces Tournament's two mutually exclusive prize pool
@@ -730,6 +739,7 @@ func tournamentsCSVRows(tournaments []storage.TournamentRecord) [][]string {
 			formatFloatPtr(t.PFR, vpipPfrPrecision),
 			formatFloat(t.BountyWonUSD, fullPrecision),
 			formatFloat(t.PrizeWonUSD, fullPrecision),
+			formatIntPtr(t.Hands),
 		})
 	}
 	return rows
@@ -1198,23 +1208,60 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
 	), nil
 }
 
-// weightedCashAverages returns the hands-weighted average BB/100, VPIP, and
-// PFR across sessions — a 10-hand session must not count the same as a
-// 200-hand one. One shared weighting loop for all three per-session metrics,
-// since every caller runs it over the same sessions slice.
-func weightedCashAverages(sessions []parsers.CashSession) (bb100, vpip, pfr float64) {
-	var totalHands int
-	var weightedBB100Sum, weightedVPIPSum, weightedPFRSum float64
-	for _, s := range sessions {
-		totalHands += s.Hands
-		weightedBB100Sum += s.BB100 * float64(s.Hands)
-		weightedVPIPSum += s.VPIP * float64(s.Hands)
-		weightedPFRSum += s.PFR * float64(s.Hands)
+// weightedAverages computes the hands-weighted average of each of an item's
+// values — a low-hand-count item (a 10-hand cash session, or a tournament
+// whose hand file hasn't arrived yet) must not count the same as a
+// high-hand-count one. extract returns an item's hand count and its n
+// values (aligned across every item), or ok=false to exclude that item
+// entirely. One shared weighting loop, reused for both cash sessions
+// (hands, BB/100, VPIP, PFR — always known) and tournaments (hands, VPIP,
+// PFR — nil, and so excluded, until the hand file arrives).
+func weightedAverages[T any](items []T, n int, extract func(T) (hands float64, values []float64, ok bool)) []float64 {
+	sums := make([]float64, n)
+	var totalHands float64
+	for _, item := range items {
+		hands, values, ok := extract(item)
+		if !ok {
+			continue
+		}
+		totalHands += hands
+		for i := 0; i < n; i++ {
+			sums[i] += values[i] * hands
+		}
 	}
+	result := make([]float64, n)
 	if totalHands == 0 {
-		return 0, 0, 0
+		return result
 	}
-	return weightedBB100Sum / float64(totalHands), weightedVPIPSum / float64(totalHands), weightedPFRSum / float64(totalHands)
+	for i, sum := range sums {
+		result[i] = sum / totalHands
+	}
+	return result
+}
+
+// weightedCashAverages returns the hands-weighted average BB/100, VPIP, and
+// PFR across cash sessions. Thin wrapper over weightedAverages, kept named
+// since it's called from three places (buildWeeklySummary,
+// buildMonthlySummary, cashStatsMessage).
+func weightedCashAverages(sessions []parsers.CashSession) (bb100, vpip, pfr float64) {
+	res := weightedAverages(sessions, 3, func(s parsers.CashSession) (float64, []float64, bool) {
+		return float64(s.Hands), []float64{s.BB100, s.VPIP, s.PFR}, true
+	})
+	return res[0], res[1], res[2]
+}
+
+// weightedTournamentAverages returns the hands-weighted average VPIP and PFR
+// across tournaments. Thin wrapper over weightedAverages, mirroring
+// weightedCashAverages — a tournament whose hand file hasn't arrived yet
+// (Hands/VPIP/PFR all nil) is excluded entirely rather than counted as 0.
+func weightedTournamentAverages(tournaments []parsers.Tournament) (vpip, pfr float64) {
+	res := weightedAverages(tournaments, 2, func(t parsers.Tournament) (float64, []float64, bool) {
+		if t.Hands == nil || t.VPIP == nil || t.PFR == nil {
+			return 0, nil, false
+		}
+		return float64(*t.Hands), []float64{*t.VPIP, *t.PFR}, true
+	})
+	return res[0], res[1]
 }
 
 // roi returns net / buy-in as a percentage across tournaments of the given type.
@@ -1256,6 +1303,16 @@ func formatSignedPercent(v float64) string {
 // unlike formatSignedPercent's ROI use (signed, whole number).
 func formatPercent(v float64) string {
 	return fmt.Sprintf("%.1f%%", v)
+}
+
+// formatPercentPtr is formatPercent for a possibly-nil VPIP/PFR pointer (a
+// tournament's, before its hand file has arrived) — renders "N/A" for nil
+// rather than a misleading "0.0%".
+func formatPercentPtr(v *float64) string {
+	if v == nil {
+		return "N/A"
+	}
+	return formatPercent(*v)
 }
 
 // commas formats n with thousands separators, e.g. 4201 -> "4,201".
@@ -1812,12 +1869,14 @@ func handleLastSession(tgBot *tgbotapi.BotAPI, chatID int64, sc storage.Store) {
 	}
 
 	if lastTourn.BaseType() == "spingo" {
-		send(tgBot, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nBankroll: $%.2f",
-			lastTourn.BuyInUSD, SpinGoPrizePoolText(*lastTourn), ordinal(lastTourn.FinishPos), formatSignedUSD(lastTourn.NetUSD), bankroll))
+		send(tgBot, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+			lastTourn.BuyInUSD, SpinGoPrizePoolText(*lastTourn), ordinal(lastTourn.FinishPos), formatSignedUSD(lastTourn.NetUSD),
+			formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 		return
 	}
-	send(tgBot, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nBankroll: $%.2f",
-		lastTourn.BuyInUSD, ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, formatSignedUSD(lastTourn.NetUSD), bankroll))
+	send(tgBot, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+		lastTourn.BuyInUSD, ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, formatSignedUSD(lastTourn.NetUSD),
+		formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 }
 
 // handleStats implements /stats.
@@ -1917,10 +1976,11 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 		net += t.NetUSD
 	}
 	r := roi(filtered, tType)
+	vpip, pfr := weightedTournamentAverages(filtered)
 
 	if !includeAvgFinish {
-		return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nGames: %d",
-			emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), len(filtered)), nil
+		return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d",
+			emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered)), nil
 	}
 
 	var avgFinishSum float64
@@ -1935,8 +1995,8 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 	if cnt > 0 {
 		avgFinish = avgFinishSum / float64(cnt)
 	}
-	return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nGames: %d\nAvg finish: %.0f%%",
-		emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), len(filtered), avgFinish), nil
+	return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d\nAvg finish: %.0f%%",
+		emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered), avgFinish), nil
 }
 
 // ensureScreenName checks Setup.PokerStarsScreenName before any of the four

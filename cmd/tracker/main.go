@@ -485,7 +485,7 @@ func runWorker(
 					return cashSessionSummaryText(*session, bankroll)
 				})
 			} else if tourneyStats != nil {
-				if err := sc.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
+				if err := sc.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
 					slog.Error("updating tournament hand stats", "err", err)
 				}
 			} else {

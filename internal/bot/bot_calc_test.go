@@ -99,6 +99,102 @@ func TestWeightedCashAverages(t *testing.T) {
 	})
 }
 
+// TestWeightedAverages covers the generic core both weightedCashAverages and
+// weightedTournamentAverages are built on — the ok=false exclusion path
+// neither of those two exercises by itself is what makes a tournament
+// without a hand file parsed yet correctly drop out of the average instead
+// of counting as a 0-hand (and therefore zero-weight, but present) item.
+func TestWeightedAverages(t *testing.T) {
+	t.Run("no items returns zero values, not a panic", func(t *testing.T) {
+		got := weightedAverages([]int{}, 2, func(int) (float64, []float64, bool) { return 0, nil, false })
+		if len(got) != 2 || got[0] != 0 || got[1] != 0 {
+			t.Errorf("weightedAverages(empty) = %v, want [0 0]", got)
+		}
+	})
+
+	t.Run("excluded items (ok=false) are dropped, not counted as zero-weight", func(t *testing.T) {
+		type item struct {
+			hands      float64
+			val        float64
+			handFileIn bool
+		}
+		items := []item{
+			{hands: 100, val: 50, handFileIn: true},
+			{hands: 999, val: 0, handFileIn: false}, // excluded — would swamp the average as a 0 if counted
+		}
+		got := weightedAverages(items, 1, func(it item) (float64, []float64, bool) {
+			if !it.handFileIn {
+				return 0, nil, false
+			}
+			return it.hands, []float64{it.val}, true
+		})
+		if got[0] != 50 {
+			t.Errorf("weightedAverages = %v, want [50] (the excluded item must not pull the average toward 0)", got[0])
+		}
+	})
+
+	t.Run("all items excluded returns zero values", func(t *testing.T) {
+		got := weightedAverages([]int{1, 2, 3}, 2, func(int) (float64, []float64, bool) { return 0, nil, false })
+		if len(got) != 2 || got[0] != 0 || got[1] != 0 {
+			t.Errorf("weightedAverages(all excluded) = %v, want [0 0]", got)
+		}
+	})
+}
+
+// TestWeightedTournamentAverages mirrors TestWeightedCashAverages for
+// tournaments — a tournament whose hand file hasn't arrived yet (Hands/
+// VPIP/PFR all nil) must be excluded entirely, not counted as a 0-hand
+// (zero-weight) tournament.
+func TestWeightedTournamentAverages(t *testing.T) {
+	handsFor := func(n int) *int { return &n }
+	pctFor := func(v float64) *float64 { return &v }
+
+	cases := []struct {
+		name        string
+		tournaments []parsers.Tournament
+		wantVPIP    float64
+		wantPFR     float64
+	}{
+		{"no tournaments returns 0, 0", nil, 0, 0},
+		{
+			"hand file not yet parsed is excluded, not zero",
+			[]parsers.Tournament{{Hands: nil, VPIP: nil, PFR: nil}},
+			0, 0,
+		},
+		{
+			"single tournament returns its own values",
+			[]parsers.Tournament{{Hands: handsFor(50), VPIP: pctFor(24), PFR: pctFor(18)}},
+			24, 18,
+		},
+		{
+			"weighted average across tournaments of different hand counts",
+			[]parsers.Tournament{
+				{Hands: handsFor(10), VPIP: pctFor(80), PFR: pctFor(70)},
+				{Hands: handsFor(200), VPIP: pctFor(20), PFR: pctFor(15)},
+			},
+			(10*80 + 200*20) / 210.0,
+			(10*70 + 200*15) / 210.0,
+		},
+		{
+			"a tournament missing its hand file is excluded from an otherwise-weighted set",
+			[]parsers.Tournament{
+				{Hands: handsFor(100), VPIP: pctFor(30), PFR: pctFor(20)},
+				{Hands: nil, VPIP: nil, PFR: nil}, // summary arrived, hand file hasn't — excluded
+			},
+			30, 20,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotVPIP, gotPFR := weightedTournamentAverages(c.tournaments)
+			if gotVPIP != c.wantVPIP || gotPFR != c.wantPFR {
+				t.Errorf("weightedTournamentAverages(%+v) = (%v, %v), want (%v, %v)",
+					c.tournaments, gotVPIP, gotPFR, c.wantVPIP, c.wantPFR)
+			}
+		})
+	}
+}
+
 func TestFormatPercent(t *testing.T) {
 	cases := []struct {
 		v    float64
@@ -113,6 +209,34 @@ func TestFormatPercent(t *testing.T) {
 			t.Errorf("formatPercent(%v) = %q, want %q", c.v, got, c.want)
 		}
 	}
+}
+
+func TestFormatPercentPtr(t *testing.T) {
+	t.Run("nil renders N/A, not a misleading 0.0%", func(t *testing.T) {
+		if got := formatPercentPtr(nil); got != "N/A" {
+			t.Errorf("formatPercentPtr(nil) = %q, want %q", got, "N/A")
+		}
+	})
+	t.Run("non-nil renders the value, including zero", func(t *testing.T) {
+		v := 0.0
+		if got := formatPercentPtr(&v); got != "0.0%" {
+			t.Errorf("formatPercentPtr(&0) = %q, want %q", got, "0.0%")
+		}
+	})
+}
+
+func TestFormatIntPtr(t *testing.T) {
+	t.Run("nil renders as empty cell", func(t *testing.T) {
+		if got := formatIntPtr(nil); got != "" {
+			t.Errorf("formatIntPtr(nil) = %q, want empty", got)
+		}
+	})
+	t.Run("non-nil renders the value, including zero", func(t *testing.T) {
+		v := 0
+		if got := formatIntPtr(&v); got != "0" {
+			t.Errorf("formatIntPtr(&0) = %q, want %q", got, "0")
+		}
+	})
 }
 
 func TestROI(t *testing.T) {
@@ -653,6 +777,7 @@ func TestCashSessionsCSVRows(t *testing.T) {
 func TestTournamentsCSVRows(t *testing.T) {
 	date := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
 	vpip, pfr := 40.0, 20.0
+	hands := 55
 
 	t.Run("cash pool with hand stats and bounty", func(t *testing.T) {
 		mult := 3.0
@@ -661,14 +786,14 @@ func TestTournamentsCSVRows(t *testing.T) {
 				Tournament: parsers.Tournament{
 					Date: date, Type: "spingo-ko", TournamentID: "1000000001", BuyInUSD: 0.55,
 					PrizePoolUSD: 1.65, Multiplier: &mult, FinishPos: 1, TotalPlayers: 3,
-					NetUSD: 2.00, VPIP: &vpip, PFR: &pfr,
+					NetUSD: 2.00, VPIP: &vpip, PFR: &pfr, Hands: &hands,
 				},
 				BountyWonUSD: 0.90,
 				PrizeWonUSD:  2.55,
 			},
 		}
 		rows := tournamentsCSVRows(records)
-		want := []string{"2026-07-10T21:00:00Z", "spingo-ko", "1000000001", "0.55", "1.65", "3", "1", "3", "2", "40.00", "20.00", "0.9", "2.55"}
+		want := []string{"2026-07-10T21:00:00Z", "spingo-ko", "1000000001", "0.55", "1.65", "3", "1", "3", "2", "40.00", "20.00", "0.9", "2.55", "55"}
 		if len(rows) != 1 {
 			t.Fatalf("len(rows) = %d, want 1", len(rows))
 		}
@@ -701,6 +826,9 @@ func TestTournamentsCSVRows(t *testing.T) {
 		}
 		if rows[0][11] != "0" || rows[0][12] != "0" {
 			t.Errorf("Bounty Won/Prize Won cells = %q/%q, want 0 (real zero values, not absence)", rows[0][11], rows[0][12])
+		}
+		if rows[0][13] != "" {
+			t.Errorf("Hands cell = %q, want empty (hand file hasn't arrived)", rows[0][13])
 		}
 	})
 }

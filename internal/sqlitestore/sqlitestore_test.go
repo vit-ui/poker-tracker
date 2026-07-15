@@ -506,7 +506,7 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 		t.Errorf("netUSD = %v, want 1.10 (no hand stats yet, no bounty to fold in)", netUSD)
 	}
 
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 45.0, 20.0, 0, false); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 45.0, 20.0, 100, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
 
@@ -524,6 +524,15 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 	if got.Multiplier == nil || !closeEnough(*got.Multiplier, 3) {
 		t.Errorf("Multiplier = %v, want 3", got.Multiplier)
 	}
+	if got.VPIP == nil || !closeEnough(*got.VPIP, 45.0) {
+		t.Errorf("VPIP = %v, want 45.0 (GetTournamentsSince must return hand-file stats too)", got.VPIP)
+	}
+	if got.PFR == nil || !closeEnough(*got.PFR, 20.0) {
+		t.Errorf("PFR = %v, want 20.0", got.PFR)
+	}
+	if got.Hands == nil || *got.Hands != 100 {
+		t.Errorf("Hands = %v, want 100", got.Hands)
+	}
 
 	bankroll, err := s.GetCurrentBankroll()
 	if err != nil {
@@ -540,7 +549,7 @@ func TestAppendTournament_HandStatsFirstThenSummary(t *testing.T) {
 
 	// Hand history file arrives before the summary — a partial row must be
 	// created, and it must not show up in GetTournamentsSince yet (no Date).
-	if err := s.UpdateTournamentHandStats(tournamentID, 30.0, 15.0, 0, false); err != nil {
+	if err := s.UpdateTournamentHandStats(tournamentID, 30.0, 15.0, 80, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats (partial): %v", err)
 	}
 
@@ -594,7 +603,7 @@ func TestKnockout_SummaryFirstThenHandStats(t *testing.T) {
 		t.Fatalf("AppendTournament: %v", err)
 	}
 	// Hand file reveals it's a knockout tournament, screenName won a bounty.
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 120, 0.90, true); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
 
@@ -629,7 +638,7 @@ func TestKnockout_HandStatsFirstThenSummary(t *testing.T) {
 	s := newTestStore(t)
 	tournamentID := "2000000002"
 
-	if err := s.UpdateTournamentHandStats(tournamentID, 22.0, 10.0, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tournamentID, 22.0, 10.0, 120, 0.90, true); err != nil {
 		t.Fatalf("UpdateTournamentHandStats (partial, knockout): %v", err)
 	}
 
@@ -679,7 +688,7 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 	}
 
 	// First KO.
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 50, 0.90, true); err != nil {
 		t.Fatalf("first reparse: %v", err)
 	}
 	bankroll, _ := s.GetCurrentBankroll()
@@ -688,7 +697,7 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 	}
 
 	// Second KO — cumulative bounty grows to 1.80 (not incremented, recomputed).
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 1.80, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 1.80, true); err != nil {
 		t.Fatalf("second reparse: %v", err)
 	}
 	bankroll, _ = s.GetCurrentBankroll()
@@ -697,7 +706,7 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 	}
 
 	// Unchanged reparse (no new KO since last hand) must be a no-op.
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 1.80, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 1.80, true); err != nil {
 		t.Fatalf("third (unchanged) reparse: %v", err)
 	}
 	bankroll, _ = s.GetCurrentBankroll()
@@ -1050,7 +1059,7 @@ func TestGetAllTournaments_IncludesHandStatsAndBounty(t *testing.T) {
 	if _, err := s.AppendTournament(tourn); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 120, 0.90, true); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
 
@@ -1071,6 +1080,9 @@ func TestGetAllTournaments_IncludesHandStatsAndBounty(t *testing.T) {
 	if got.PFR == nil || !closeEnough(*got.PFR, 10.0) {
 		t.Errorf("PFR = %v, want 10.0", got.PFR)
 	}
+	if got.Hands == nil || *got.Hands != 120 {
+		t.Errorf("Hands = %v, want 120", got.Hands)
+	}
 	if !closeEnough(got.BountyWonUSD, 0.90) {
 		t.Errorf("BountyWonUSD = %v, want 0.90", got.BountyWonUSD)
 	}
@@ -1085,7 +1097,7 @@ func TestGetAllTournaments_IncludesHandStatsAndBounty(t *testing.T) {
 
 func TestGetAllTournaments_SkipsPartialRows(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.UpdateTournamentHandStats("8000000002", 30.0, 15.0, 0, false); err != nil {
+	if err := s.UpdateTournamentHandStats("8000000002", 30.0, 15.0, 80, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats (partial): %v", err)
 	}
 	records, err := s.GetAllTournaments()
@@ -1097,7 +1109,7 @@ func TestGetAllTournaments_SkipsPartialRows(t *testing.T) {
 	}
 }
 
-func TestGetAllTournaments_VPIPPFRNilBeforeHandFile(t *testing.T) {
+func TestGetAllTournaments_VPIPPFRHandsNilBeforeHandFile(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	tourn := parsers.Tournament{
@@ -1114,8 +1126,8 @@ func TestGetAllTournaments_VPIPPFRNilBeforeHandFile(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1", len(records))
 	}
-	if records[0].VPIP != nil || records[0].PFR != nil {
-		t.Errorf("VPIP/PFR = %v/%v, want nil (no hand file parsed yet)", records[0].VPIP, records[0].PFR)
+	if records[0].VPIP != nil || records[0].PFR != nil || records[0].Hands != nil {
+		t.Errorf("VPIP/PFR/Hands = %v/%v/%v, want nil (no hand file parsed yet)", records[0].VPIP, records[0].PFR, records[0].Hands)
 	}
 }
 

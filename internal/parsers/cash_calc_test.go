@@ -297,6 +297,9 @@ Total pot 75 | Rake 0
 	if tourneyStats.PFR != 100 {
 		t.Errorf("PFR = %v, want 100", tourneyStats.PFR)
 	}
+	if tourneyStats.Hands != 1 {
+		t.Errorf("Hands = %v, want 1", tourneyStats.Hands)
+	}
 }
 
 // TestParseCashFile_TournamentHand_MixedActions covers a 2-hand tournament
@@ -339,6 +342,9 @@ Total pot 75 | Rake 0
 	}
 	if tourneyStats.PFR != 0 {
 		t.Errorf("PFR = %v, want 0", tourneyStats.PFR)
+	}
+	if tourneyStats.Hands != 2 {
+		t.Errorf("Hands = %v, want 2", tourneyStats.Hands)
 	}
 }
 

@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS tournaments (
 	vpip REAL,
 	pfr REAL,
 	bounty_usd REAL,
-	prize_won_usd REAL
+	prize_won_usd REAL,
+	hands INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS bankroll_ledger (
@@ -460,15 +461,18 @@ func (s *Store) AppendTournament(t parsers.Tournament) (float64, error) {
 	return netUSD, nil
 }
 
-// UpdateTournamentHandStats writes VPIP, PFR, and knockout-bounty winnings for
-// a tournament identified by tournamentID, extracted from its hand history
-// file. If no row exists yet, creates a partial one and stops there —
-// AppendTournament completes it once the summary file arrives. If a row
-// exists but the summary hasn't landed yet either, only type/vpip/pfr/bounty
-// are written. If a row exists and already has summary data, NetUSD and
-// Prize Won are reconciled and the tournament's bankroll_ledger row is
-// corrected to match. Mirrors sheets.Client.UpdateTournamentHandStats.
-func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr, bountyUSD float64, isKnockout bool) error {
+// UpdateTournamentHandStats writes VPIP, PFR, hand count, and knockout-bounty
+// winnings for a tournament identified by tournamentID, extracted from its
+// hand history file. hands is the number of hands dealt to screenName so
+// far — the weight /stats uses to combine a tournament's VPIP/PFR into a
+// hands-weighted average, the same role Hands plays for cash sessions. If no
+// row exists yet, creates a partial one and stops there — AppendTournament
+// completes it once the summary file arrives. If a row exists but the
+// summary hasn't landed yet either, only type/vpip/pfr/hands/bounty are
+// written. If a row exists and already has summary data, NetUSD and Prize
+// Won are reconciled and the tournament's bankroll_ledger row is corrected
+// to match. Mirrors sheets.Client.UpdateTournamentHandStats.
+func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
 	snap, found, err := s.readTournamentSnapshot(tournamentID)
 	if err != nil {
 		return err
@@ -480,9 +484,9 @@ func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr, bounty
 			typeCell = knockoutPlaceholder
 		}
 		_, err := s.db.Exec(`
-			INSERT INTO tournaments (type, tournament_id, vpip, pfr, bounty_usd)
-			VALUES (?, ?, ?, ?, ?)
-		`, typeCell, tournamentID, vpip, pfr, bountyUSD)
+			INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_usd)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, typeCell, tournamentID, vpip, pfr, hands, bountyUSD)
 		if err != nil {
 			return fmt.Errorf("creating partial tournament row for %s: %w", tournamentID, err)
 		}
@@ -495,8 +499,8 @@ func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr, bounty
 	}
 
 	if _, err := s.db.Exec(`
-		UPDATE tournaments SET type = ?, vpip = ?, pfr = ?, bounty_usd = ? WHERE tournament_id = ?
-	`, typeOut, vpip, pfr, bountyUSD, tournamentID); err != nil {
+		UPDATE tournaments SET type = ?, vpip = ?, pfr = ?, hands = ?, bounty_usd = ? WHERE tournament_id = ?
+	`, typeOut, vpip, pfr, hands, bountyUSD, tournamentID); err != nil {
 		return fmt.Errorf("updating hand stats for tournament %s: %w", tournamentID, err)
 	}
 
@@ -662,7 +666,7 @@ func (s *Store) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
 func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
-			multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd
+			multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd, hands
 		FROM tournaments
 		WHERE date IS NOT NULL AND date >= ?
 		ORDER BY id ASC
@@ -679,9 +683,10 @@ func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, e
 		var prizePoolUSD, vpip, pfr, bountyUSD, prizeWonUSD sql.NullFloat64
 		var prizePoolDesc sql.NullString
 		var multiplier sql.NullFloat64
+		var hands sql.NullInt64
 		var finishPos, totalPlayers int
 		if err := rows.Scan(&dateStr, &typeVal, &tournamentID, &buyIn, &prizePoolUSD, &prizePoolDesc,
-			&multiplier, &finishPos, &totalPlayers, &netUSD, &vpip, &pfr, &bountyUSD, &prizeWonUSD); err != nil {
+			&multiplier, &finishPos, &totalPlayers, &netUSD, &vpip, &pfr, &bountyUSD, &prizeWonUSD, &hands); err != nil {
 			return nil, fmt.Errorf("scanning tournament row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
@@ -721,6 +726,10 @@ func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, e
 		}
 		if prizeWonUSD.Valid {
 			rec.PrizeWonUSD = prizeWonUSD.Float64
+		}
+		if hands.Valid {
+			h := int(hands.Int64)
+			rec.Hands = &h
 		}
 		result = append(result, rec)
 	}

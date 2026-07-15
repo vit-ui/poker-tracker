@@ -51,7 +51,7 @@ type TimeAnalysisRecord struct {
 type Store interface {
 	AppendCashSession(session parsers.CashSession) error
 	AppendTournament(t parsers.Tournament) (float64, error)
-	UpdateTournamentHandStats(tournamentID string, vpip, pfr, bountyUSD float64, isKnockout bool) error
+	UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error
 	AppendLedgerEntry(entryType string, amountUSD float64) error
 	GetCurrentBankroll() (float64, error)
 	GetSheetURL() string
