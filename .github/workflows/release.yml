@@ -13,14 +13,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
-      - name: Build binary
+      - name: Build binaries (amd64 + arm64)
         run: |
-          go build -ldflags "-H=windowsgui -X main.BotToken=${{ secrets.TELEGRAM_BOT_TOKEN }}" -o tracker.exe ./cmd/tracker
+          GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -H=windowsgui -X main.BotToken=${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            -o tracker-amd64.exe ./cmd/tracker
+          GOOS=windows GOARCH=arm64 go build -trimpath \
+            -ldflags "-s -w -H=windowsgui -X main.BotToken=${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            -o tracker-arm64.exe ./cmd/tracker
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
           name: tracker-exe
-          path: tracker.exe
+          path: |
+            tracker-amd64.exe
+            tracker-arm64.exe
 
   installer:
     needs: build
@@ -36,14 +43,22 @@ jobs:
         id: version
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+      - name: Build amd64 installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
         with:
           path: setup.iss
-          options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}"
+          options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}" "/DArch=amd64" "/DPublishArch=x64"
+      - name: Build arm64 installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+        with:
+          path: setup.iss
+          options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}" "/DArch=arm64" "/DPublishArch=arm"
       - uses: actions/upload-artifact@v4
         with:
           name: Setup
-          path: Output/PokerTracker-v${{ steps.version.outputs.version }}.exe
+          path: |
+            Output/PokerTracker-v${{ steps.version.outputs.version }}-x64.exe
+            Output/PokerTracker-v${{ steps.version.outputs.version }}-arm.exe
 
   release:
     needs: installer
@@ -56,4 +71,6 @@ jobs:
           name: Setup
       - uses: softprops/action-gh-release@v2
         with:
-          files: PokerTracker-v${{ needs.installer.outputs.version }}.exe
+          files: |
+            PokerTracker-v${{ needs.installer.outputs.version }}-x64.exe
+            PokerTracker-v${{ needs.installer.outputs.version }}-arm.exe

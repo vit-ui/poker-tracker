@@ -1,8 +1,29 @@
 ; Poker Tracker installer. Compiled by .github/workflows/release.yml, which
-; runs iscc with /DAppVersion=<tag, "v" stripped> — see the #ifndef fallback
-; below for local/manual compiles that don't pass that define.
+; runs iscc twice per release — once with /DArch=amd64 /DPublishArch=x64,
+; once with /DArch=arm64 /DPublishArch=arm — producing two separate
+; installer files rather than one installer that auto-detects the
+; machine's architecture. This is a single-user tool (CLAUDE.md's own
+; "Code Must Be Lean" section), so the player already knows which
+; architecture their own machine is; a build-time #define is far simpler
+; than embedding both binaries and adding runtime Check:/DestName:
+; architecture-detection logic for one machine that only ever needs one of
+; them. Two separate defines, not one, because they name different things:
+; Arch matches the Go GOARCH value the release workflow actually built
+; (tracker-amd64.exe/tracker-arm64.exe — must stay GOARCH-spelled since
+; that's the real build artifact filename), while PublishArch is only the
+; consumer-facing label in the published installer's own filename ("amd64"
+; reads as Intel/AMD-only to a Windows user; "x64" is Microsoft's own term
+; for the same architecture). Also runs with /DAppVersion=<tag, "v"
+; stripped> — see the #ifndef fallbacks below for local/manual compiles
+; that don't pass these defines.
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
+#endif
+#ifndef Arch
+  #define Arch "amd64"
+#endif
+#ifndef PublishArch
+  #define PublishArch "x64"
 #endif
 
 [Setup]
@@ -15,7 +36,7 @@ DefaultGroupName=Poker Tracker
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
 PrivilegesRequired=admin
-OutputBaseFilename=PokerTracker-v{#AppVersion}
+OutputBaseFilename=PokerTracker-v{#AppVersion}-{#PublishArch}
 Compression=lzma
 SolidCompression=yes
 
@@ -23,14 +44,20 @@ SolidCompression=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "tracker.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Source filename is the {#Arch}-specific binary this compile was invoked
+; with; DestName is always the fixed "tracker.exe" regardless of arch — an
+; external .bat launcher (documented in poker-tracker-plan.md, not part of
+; this repo) hardcodes C:\poker-tracker\tracker.exe, and main.go's
+; self-taskkill, the Task Scheduler XML, and CurUninstallStepChanged's
+; taskkill all also assume that fixed name.
+Source: "tracker-{#Arch}.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion
 ; Second copy, flagged dontcopy, exists only so ExtractTemporaryFile can pull
 ; tracker.exe's bytes out during the wizard (Telegram setup), before the
-; real install step below has copied anything to {app} yet. PreInstallFiles
+; real install step above has copied anything to {app} yet. PreInstallFiles
 ; then copies this {tmp} extraction onward to {app} and runs it from there
 ; — not from {tmp} directly — since tracker.exe resolves its own config/
 ; credentials paths from its own executable location.
-Source: "tracker.exe"; DestDir: "{tmp}"; Flags: dontcopy
+Source: "tracker-{#Arch}.exe"; DestDir: "{tmp}"; Flags: dontcopy
 
 [UninstallDelete]
 ; tracker.exe itself is removed automatically (tracked via [Files] above).
@@ -748,8 +775,8 @@ begin
       FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
   end;
 
-  ExtractTemporaryFile('tracker.exe');
-  FileCopy(ExpandConstant('{tmp}\tracker.exe'), ExpandConstant('{app}\tracker.exe'), True);
+  ExtractTemporaryFile('tracker-{#Arch}.exe');
+  FileCopy(ExpandConstant('{tmp}\tracker-{#Arch}.exe'), ExpandConstant('{app}\tracker.exe'), True);
 
   // Kill any previously-running tracker.exe before this install's task
   // gets (re)started below — MultipleInstancesPolicy=IgnoreNew
