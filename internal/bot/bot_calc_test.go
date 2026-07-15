@@ -352,6 +352,28 @@ func TestCommas(t *testing.T) {
 	}
 }
 
+func TestCommaAsDecimal(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"comma decimal", "2,54", "2.54"},
+		{"dot decimal unchanged", "2.54", "2.54"},
+		{"leading/trailing space trimmed", "  2,54  ", "2.54"},
+		{"integer, no separator", "50", "50"},
+		{"dot present, comma left alone", "1,234.56", "1,234.56"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := commaAsDecimal(c.input)
+			if got != c.want {
+				t.Errorf("commaAsDecimal(%q) = %q, want %q", c.input, got, c.want)
+			}
+		})
+	}
+}
+
 func TestOrdinal(t *testing.T) {
 	cases := []struct {
 		input int

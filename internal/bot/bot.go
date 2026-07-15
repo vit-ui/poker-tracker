@@ -1683,8 +1683,23 @@ func (s *conversationState) handleCommand(tgBot *tgbotapi.BotAPI, msg *tgbotapi.
 	}
 }
 
+// commaAsDecimal lets every plain-text amount typed into the bot — /deposit,
+// /withdraw, and the /alerts and /hardstop threshold flows (downswing,
+// session loss, daily loss, Spin & Go daily loss) — accept a comma as the
+// decimal separator ("2,54") alongside a dot ("2.54"): the player is
+// Brazilian, where comma is the standard decimal separator, but
+// strconv.ParseFloat only accepts a dot. Only swaps when no dot is already
+// present, so it can't corrupt an already-dotted input.
+func commaAsDecimal(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.Contains(s, ".") {
+		s = strings.Replace(s, ",", ".", 1)
+	}
+	return s
+}
+
 func parsePositiveFloat(s string) (float64, error) {
-	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	v, err := strconv.ParseFloat(commaAsDecimal(s), 64)
 	if err != nil {
 		return 0, err
 	}
