@@ -46,6 +46,7 @@ var (
 	configPath         string
 	lockfilePath       string
 	dbPath             string
+	fallbackPath       string
 )
 
 func init() {
@@ -58,6 +59,7 @@ func init() {
 	configPath = filepath.Join(dir, "config.json")
 	lockfilePath = filepath.Join(dir, "lockfile.json")
 	dbPath = filepath.Join(dir, "tracker.db")
+	fallbackPath = filepath.Join(dir, "sheets_fallback.json")
 }
 
 func main() {
@@ -310,7 +312,7 @@ func runServe() {
 		if err != nil {
 			panic("resolving google sheet: " + err.Error())
 		}
-		sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID)
+		sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID, fallbackPath)
 		if err != nil {
 			panic("initializing sheets client: " + err.Error())
 		}
@@ -432,8 +434,11 @@ func resolvePaths(cfg *config.Config) (string, string) {
 // immediately would fire the summary once per hand with a growing,
 // still-incomplete snapshot each time — this waits for the table to go
 // quiet and sends the final numbers once, the same time-gap technique
-// poker trackers use to detect a session boundary.
-const cashSessionSummaryQuietPeriod = 10 * time.Minute
+// poker trackers use to detect a session boundary. 5 minutes trades a
+// faster summary after quitting against a higher chance of a mid-session
+// break tripping it early (a resumed table then sends an updated summary on
+// the next quiet period).
+const cashSessionSummaryQuietPeriod = 5 * time.Minute
 
 func runWorker(
 	sessionChan <-chan watcher.FileEvent,

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
 // closeEnough reports whether a and b differ by less than half a cent —
@@ -338,7 +340,7 @@ func TestColumnLetter(t *testing.T) {
 // testable without a live Google Sheets API call.
 func TestNewClient_MissingCredentialsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
-	_, err := NewClient(path, "some-spreadsheet-id")
+	_, err := NewClient(path, "some-spreadsheet-id", "")
 	if err == nil {
 		t.Fatal("expected error for missing credentials file")
 	}
@@ -364,8 +366,101 @@ func TestNewClient_InvalidCredentialsJSON(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not valid json"), 0644); err != nil {
 		t.Fatalf("writing fake credentials: %v", err)
 	}
-	_, err := NewClient(path, "some-spreadsheet-id")
+	_, err := NewClient(path, "some-spreadsheet-id", "")
 	if err == nil {
 		t.Fatal("expected error for invalid credentials JSON")
+	}
+}
+
+func TestFlushDecision(t *testing.T) {
+	cases := []struct {
+		name          string
+		cached, sheet int
+		exists        bool
+		want          flushChoice
+	}{
+		{"row absent replays", 50, 0, false, flushReplay},
+		{"sheet behind replays", 51, 50, true, flushReplay},
+		{"sheet equal replays", 50, 50, true, flushReplay},
+		{"sheet ahead discards as superseded", 50, 51, true, flushDiscard},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := flushDecision(tc.cached, tc.sheet, tc.exists); got != tc.want {
+				t.Errorf("flushDecision(%d, %d, %v) = %v, want %v", tc.cached, tc.sheet, tc.exists, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadFallback_MissingFileIsEmpty confirms an absent fallback file is the
+// normal empty state, not an error that would brick startup.
+func TestLoadFallback_MissingFileIsEmpty(t *testing.T) {
+	c := &Client{fallbackPath: filepath.Join(t.TempDir(), "nope.json")}
+	if err := c.loadFallback(); err != nil {
+		t.Fatalf("loadFallback on missing file: %v", err)
+	}
+	if len(c.fallback) != 0 {
+		t.Errorf("want empty map, got %d entries", len(c.fallback))
+	}
+}
+
+// TestFallbackRoundTrip caches all three entry kinds — including a tournament
+// summary and its hand-stats sharing one TournamentID, which must coexist
+// under distinct composite keys — persists them via cacheFailed, and confirms
+// a fresh client reloads them intact and that a deletion survives a reload.
+func TestFallbackRoundTrip(t *testing.T) {
+	fbPath := filepath.Join(t.TempDir(), "sheets_fallback.json")
+	c := &Client{fallbackPath: fbPath, fallback: make(map[string]fallbackEntry)}
+
+	date := time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
+	cash := parsers.CashSession{Date: date, Stake: "NL10", Hands: 42, NetUSD: -3.5, FirstHandID: "H1"}
+	cashKey := fallbackKindCash + ":" + cashSessionID(cash.Date, cash.FirstHandID)
+	c.cacheFailed(cashKey, fallbackEntry{Kind: fallbackKindCash, Cash: &cash})
+
+	tid := "T999"
+	tourney := parsers.Tournament{Date: date, Type: "spingo", TournamentID: tid, BuyInUSD: 5, NetUSD: -5}
+	summaryKey := fallbackKindSummary + ":" + tid
+	statsKey := fallbackKindStats + ":" + tid
+	c.cacheFailed(summaryKey, fallbackEntry{Kind: fallbackKindSummary, Summary: &tourney})
+	c.cacheFailed(statsKey, fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{
+		TournamentID: tid, VPIP: 25, PFR: 20, Hands: 18, BountyUSD: 2, IsKnockout: true,
+	}})
+
+	c2 := &Client{fallbackPath: fbPath, fallback: make(map[string]fallbackEntry)}
+	if err := c2.loadFallback(); err != nil {
+		t.Fatalf("loadFallback: %v", err)
+	}
+	if len(c2.fallback) != 3 {
+		t.Fatalf("got %d entries, want 3 (summary + stats coexist under one TID)", len(c2.fallback))
+	}
+
+	if got := c2.fallback[cashKey].Cash; got == nil || got.Hands != 42 || got.Stake != "NL10" {
+		t.Errorf("cash entry round-trip wrong: %+v", c2.fallback[cashKey])
+	}
+	if got := c2.fallback[statsKey].HandStats; got == nil || got.Hands != 18 || !got.IsKnockout {
+		t.Errorf("stats entry round-trip wrong: %+v", c2.fallback[statsKey])
+	}
+	if got := c2.fallback[summaryKey].Summary; got == nil || got.TournamentID != tid {
+		t.Errorf("summary entry round-trip wrong: %+v", c2.fallback[summaryKey])
+	}
+
+	c2.fallbackMu.Lock()
+	delete(c2.fallback, cashKey)
+	if err := c2.persistFallbackLocked(); err != nil {
+		c2.fallbackMu.Unlock()
+		t.Fatalf("persistFallbackLocked: %v", err)
+	}
+	c2.fallbackMu.Unlock()
+
+	c3 := &Client{fallbackPath: fbPath, fallback: make(map[string]fallbackEntry)}
+	if err := c3.loadFallback(); err != nil {
+		t.Fatalf("loadFallback after delete: %v", err)
+	}
+	if len(c3.fallback) != 2 {
+		t.Fatalf("after delete got %d entries, want 2", len(c3.fallback))
+	}
+	if _, ok := c3.fallback[cashKey]; ok {
+		t.Error("deleted cash entry still present after reload")
 	}
 }

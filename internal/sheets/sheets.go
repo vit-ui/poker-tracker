@@ -6,10 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2/google"
@@ -23,17 +27,34 @@ import (
 
 const dateFormat = "2006-01-02 15:04"
 
-// Client holds the authenticated Sheets service and spreadsheet ID.
+// Client holds the authenticated Sheets service and spreadsheet ID. It also
+// owns the write-ahead fallback (see fallback.go concepts inlined below): when
+// a mutating write fails against the Sheets API — the transient 500/503s
+// Google occasionally returns — the write's replayable state is cached to
+// fallbackPath keyed by session/tournament ID, then flushed back to the sheet
+// the moment the sheet is proven reachable again (on startup and after any
+// successful write). fallbackPath == "" disables it entirely, used for the
+// short-lived validation clients bot.go constructs during setup/sheet changes,
+// which never persist a session and so must never touch the fallback file.
 type Client struct {
 	svc           *sheetsapi.Service
 	spreadsheetID string
+
+	fallbackPath string // "" disables the write-ahead fallback
+	fallbackMu   sync.Mutex
+	fallback     map[string]fallbackEntry
 }
 
 var _ storage.Store = (*Client)(nil)
 
 // NewClient authenticates with the service account JSON and connects to the
 // spreadsheet identified by spreadsheetID. Calls ensureTabs on startup.
-func NewClient(serviceAccountPath, spreadsheetID string) (*Client, error) {
+// fallbackPath, if non-empty, is where the write-ahead fallback file lives;
+// its queued entries (left by a previous crashed or offline run) are loaded and
+// flushed once here, since ensureTabs succeeding just proved the sheet is
+// reachable. Pass "" for a throwaway validation client that must not own the
+// fallback.
+func NewClient(serviceAccountPath, spreadsheetID, fallbackPath string) (*Client, error) {
 	data, err := os.ReadFile(serviceAccountPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading service account: %w", err)
@@ -54,10 +75,24 @@ func NewClient(serviceAccountPath, spreadsheetID string) (*Client, error) {
 	c := &Client{
 		svc:           svc,
 		spreadsheetID: spreadsheetID,
+		fallbackPath:  fallbackPath,
+		fallback:      make(map[string]fallbackEntry),
 	}
 
 	if err := c.ensureTabs(); err != nil {
 		return nil, err
+	}
+
+	if fallbackPath != "" {
+		// A corrupt fallback file must not brick startup — the whole tracker
+		// (sheet writes, bot, hard stop) would be dead over one unreplayable
+		// recovery file. Log and continue empty; the next failed write
+		// overwrites it with valid JSON.
+		if err := c.loadFallback(); err != nil {
+			slog.Error("loading sheets fallback, starting empty", "err", err)
+			c.fallback = make(map[string]fallbackEntry)
+		}
+		c.flush()
 	}
 
 	return c, nil
@@ -295,7 +330,7 @@ func (c *Client) runningTotalBeforeRow(rowIndex int) (float64, error) {
 // hand corrects its existing rows in place instead of appending a new set
 // each time. Mirrors AppendTournament's find-or-append pattern, applied to
 // all three tabs a cash session touches rather than just one.
-func (c *Client) AppendCashSession(session parsers.CashSession) error {
+func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
 	id := cashSessionID(session.Date, session.FirstHandID)
 
 	if err := c.upsertCashSessionsRow(id, session); err != nil {
@@ -583,7 +618,7 @@ func reconcileTournamentBounty(storedNetUSD, storedBountyUSD, newBountyUSD, buyI
 // (J:L) untouched. Returns the final NetUSD (baseline net plus any bounty)
 // so callers can report or evaluate against the real total rather than the
 // pre-bounty figure.
-func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
+func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
 	var multiplier interface{}
 	if t.Multiplier != nil {
 		multiplier = *t.Multiplier
@@ -732,7 +767,7 @@ func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, 
 // far (column N, added alongside VPIP/PFR) — the weight /stats uses to
 // combine a tournament's VPIP/PFR into a hands-weighted average, the same
 // role Hands plays for cash sessions.
-func (c *Client) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
+func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil {
 		return err
@@ -821,6 +856,274 @@ func (c *Client) UpdateTournamentHandStats(tournamentID string, vpip, pfr float6
 	}
 
 	return c.upsertLedgerTournamentRow(tournamentID, snap.date, netUSD)
+}
+
+// ── Write-ahead fallback ────────────────────────────────────────────────
+//
+// Two protections that must stay conceptually distinct: the raw* upserts
+// already dedup by ID (find-or-append), so replaying a write that actually
+// landed re-upserts the same *row* in place — no duplicate rows. Separately,
+// the hand-count guard below stops a stale cached snapshot from *overwriting*
+// newer data a later direct write already put on the sheet.
+
+const (
+	fallbackKindCash    = "cash"
+	fallbackKindStats   = "tourney_stats"
+	fallbackKindSummary = "tourney_summary"
+)
+
+// fallbackEntry is one queued write awaiting replay, holding exactly the
+// arguments its raw* method needs. Kind selects which of the three payloads is
+// populated; the map key is "<kind>:<id>" so a tournament's summary write and
+// its hand-stats write (both keyed by TournamentID) never collide.
+type fallbackEntry struct {
+	Kind      string               `json:"kind"`
+	Cash      *parsers.CashSession `json:"cash,omitempty"`
+	Summary   *parsers.Tournament  `json:"summary,omitempty"`
+	HandStats *handStatsArgs       `json:"hand_stats,omitempty"`
+}
+
+// handStatsArgs mirrors rawUpdateTournamentHandStats's parameter list so a
+// failed hand-stats write can be replayed verbatim.
+type handStatsArgs struct {
+	TournamentID string  `json:"tournament_id"`
+	VPIP         float64 `json:"vpip"`
+	PFR          float64 `json:"pfr"`
+	Hands        int     `json:"hands"`
+	BountyUSD    float64 `json:"bounty_usd"`
+	IsKnockout   bool    `json:"is_knockout"`
+}
+
+// AppendCashSession writes the session and, only if that fails, caches it for
+// later replay; a success proves the sheet is reachable and flushes anything
+// queued. The fallback wrappers below all follow this shape — the raw* method
+// does the Sheets I/O and knows nothing about the fallback, so flush (which
+// calls raw* directly) can never recurse back through here.
+func (c *Client) AppendCashSession(session parsers.CashSession) error {
+	if err := c.rawAppendCashSession(session); err != nil {
+		key := fallbackKindCash + ":" + cashSessionID(session.Date, session.FirstHandID)
+		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindCash, Cash: &session})
+		return err
+	}
+	c.flush()
+	return nil
+}
+
+// AppendTournament wraps rawAppendTournament, preserving its (netUSD, error)
+// return on both paths. Its fallback entry needs no hand-count guard —
+// rawAppendTournament reads the row's bounty fresh every call and reconciles
+// NetUSD from it, so a re-flush self-corrects regardless of ordering.
+func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
+	netUSD, err := c.rawAppendTournament(t)
+	if err != nil {
+		key := fallbackKindSummary + ":" + t.TournamentID
+		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindSummary, Summary: &t})
+		return netUSD, err
+	}
+	c.flush()
+	return netUSD, nil
+}
+
+// UpdateTournamentHandStats wraps rawUpdateTournamentHandStats with the same
+// cache-on-failure / flush-on-success shape.
+func (c *Client) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
+	if err := c.rawUpdateTournamentHandStats(tournamentID, vpip, pfr, hands, bountyUSD, isKnockout); err != nil {
+		key := fallbackKindStats + ":" + tournamentID
+		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{
+			TournamentID: tournamentID, VPIP: vpip, PFR: pfr, Hands: hands, BountyUSD: bountyUSD, IsKnockout: isKnockout,
+		}})
+		return err
+	}
+	c.flush()
+	return nil
+}
+
+// loadFallback reads the queued entries from fallbackPath into memory. An
+// absent file is the normal empty state, not an error.
+func (c *Client) loadFallback() error {
+	data, err := os.ReadFile(c.fallbackPath)
+	if errors.Is(err, os.ErrNotExist) {
+		c.fallback = make(map[string]fallbackEntry)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading sheets fallback: %w", err)
+	}
+	var m map[string]fallbackEntry
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("parsing sheets fallback: %w", err)
+	}
+	if m == nil {
+		m = make(map[string]fallbackEntry)
+	}
+	c.fallback = m
+	return nil
+}
+
+// persistFallbackLocked writes the map to disk atomically (tmp then rename,
+// mirroring config.SaveConfig). The caller must hold fallbackMu.
+func (c *Client) persistFallbackLocked() error {
+	data, err := json.MarshalIndent(c.fallback, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling sheets fallback: %w", err)
+	}
+	tmp := c.fallbackPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("writing sheets fallback: %w", err)
+	}
+	if err := os.Rename(tmp, c.fallbackPath); err != nil {
+		return fmt.Errorf("renaming sheets fallback: %w", err)
+	}
+	return nil
+}
+
+// cacheFailed queues a failed write for later replay and persists immediately
+// so a crash never loses it. A no-op when the fallback is disabled.
+func (c *Client) cacheFailed(key string, entry fallbackEntry) {
+	if c.fallbackPath == "" {
+		return
+	}
+	c.fallbackMu.Lock()
+	c.fallback[key] = entry
+	err := c.persistFallbackLocked()
+	c.fallbackMu.Unlock()
+	// Log after releasing the lock: slog.Error routes to alertChan
+	// (telegramErrorHandler), and blocking on a full alertChan while holding
+	// fallbackMu would deadlock the bot goroutine that drains it if it's
+	// parked waiting for this same lock.
+	if err != nil {
+		slog.Error("persisting sheets fallback", "err", err)
+	}
+}
+
+// flush replays every queued entry against the sheet, deleting each that
+// resolves (replayed successfully, or discarded as superseded). Holds
+// fallbackMu across the whole loop — for a single-user tool, serializing the
+// two writer goroutines through one flush is simpler than any finer scheme and
+// costs nothing. A no-op when disabled or empty.
+func (c *Client) flush() {
+	if c.fallbackPath == "" {
+		return
+	}
+	c.fallbackMu.Lock()
+	if len(c.fallback) == 0 {
+		c.fallbackMu.Unlock()
+		return
+	}
+	changed := false
+	for key, entry := range c.fallback {
+		if c.resolveFallbackEntry(entry) {
+			delete(c.fallback, key)
+			changed = true
+		}
+	}
+	var persistErr error
+	if changed {
+		persistErr = c.persistFallbackLocked()
+	}
+	c.fallbackMu.Unlock()
+	// Log after unlock — see cacheFailed for why holding fallbackMu across an
+	// alertChan-routed slog call risks deadlocking the bot goroutine.
+	if persistErr != nil {
+		slog.Error("persisting sheets fallback after flush", "err", persistErr)
+	}
+}
+
+// resolveFallbackEntry attempts one entry and reports whether it's resolved
+// (should be deleted). false means keep it queued — a sheet read failed, or the
+// replay itself failed transiently — to retry after the next successful write.
+func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
+	switch entry.Kind {
+	case fallbackKindCash:
+		sheetHands, exists, err := c.cashSheetHandCount(cashSessionID(entry.Cash.Date, entry.Cash.FirstHandID))
+		if err != nil {
+			return false
+		}
+		if flushDecision(entry.Cash.Hands, sheetHands, exists) == flushDiscard {
+			return true
+		}
+		return c.rawAppendCashSession(*entry.Cash) == nil
+	case fallbackKindStats:
+		sheetHands, exists, err := c.tournamentSheetHandCount(entry.HandStats.TournamentID)
+		if err != nil {
+			return false
+		}
+		if flushDecision(entry.HandStats.Hands, sheetHands, exists) == flushDiscard {
+			return true
+		}
+		return c.rawUpdateTournamentHandStats(
+			entry.HandStats.TournamentID, entry.HandStats.VPIP, entry.HandStats.PFR,
+			entry.HandStats.Hands, entry.HandStats.BountyUSD, entry.HandStats.IsKnockout,
+		) == nil
+	case fallbackKindSummary:
+		_, err := c.rawAppendTournament(*entry.Summary)
+		return err == nil
+	}
+	return true // unknown kind — drop rather than retry forever
+}
+
+type flushChoice int
+
+const (
+	flushReplay flushChoice = iota
+	flushDiscard
+)
+
+// flushDecision is the pure hand-count guard: discard a queued entry only when
+// the sheet already holds a strictly higher hand count for the same key (a
+// later direct write superseded this snapshot — replaying it would regress the
+// sheet backward). Otherwise replay. A row that doesn't exist yet has nothing
+// to supersede, so it always replays.
+func flushDecision(cachedHands, sheetHands int, rowExists bool) flushChoice {
+	if rowExists && sheetHands > cachedHands {
+		return flushDiscard
+	}
+	return flushReplay
+}
+
+// cashSheetHandCount reads the Hands value (column C) of the Cash Sessions row
+// with the given session ID. exists is false when no such row is on the sheet
+// yet, in which case there's nothing to supersede.
+func (c *Client) cashSheetHandCount(sessionID string) (hands int, exists bool, err error) {
+	rowIndex, found, err := c.findRowByColumnValue("Cash Sessions", "J", sessionID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found {
+		return 0, false, nil
+	}
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID, fmt.Sprintf("Cash Sessions!C%d", rowIndex),
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return 0, false, fmt.Errorf("reading cash session hand count: %w", err)
+	}
+	if len(resp.Values) == 0 || len(resp.Values[0]) == 0 {
+		return 0, true, nil
+	}
+	return parseInt(resp.Values[0][0]), true, nil
+}
+
+// tournamentSheetHandCount reads the Hands value (column N) of the Tournaments
+// row with the given ID. exists is false when no such row is on the sheet yet.
+func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exists bool, err error) {
+	rowIndex, found, err := c.findTournamentRow(tournamentID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found {
+		return 0, false, nil
+	}
+	resp, err := c.svc.Spreadsheets.Values.Get(
+		c.spreadsheetID, fmt.Sprintf("Tournaments!N%d", rowIndex),
+	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	if err != nil {
+		return 0, false, fmt.Errorf("reading tournament hand count: %w", err)
+	}
+	if len(resp.Values) == 0 || len(resp.Values[0]) == 0 {
+		return 0, true, nil
+	}
+	return parseInt(resp.Values[0][0]), true, nil
 }
 
 // AppendLedgerEntry appends a deposit or withdrawal row to Bankroll Ledger.

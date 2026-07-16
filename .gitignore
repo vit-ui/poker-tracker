@@ -2,6 +2,7 @@
 config.json
 lockfile.json
 pending_tournaments.json
+sheets_fallback.json
 tracker.db
 credentials/
 /tracker.exe

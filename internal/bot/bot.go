@@ -219,7 +219,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 				continue
 			}
 
-			if _, err := sheets.NewClient(serviceAccountPath, id); err != nil {
+			if _, err := sheets.NewClient(serviceAccountPath, id, ""); err != nil {
 				send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
 				continue
 			}
@@ -329,7 +329,7 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 	if cfg.Setup.GoogleSheetName != nil {
 		name, id, err := resolveSheetInput(serviceAccountPath, *cfg.Setup.GoogleSheetName)
 		if err == nil {
-			_, clientErr := sheets.NewClient(serviceAccountPath, id)
+			_, clientErr := sheets.NewClient(serviceAccountPath, id, "")
 			if clientErr == nil {
 				cfg.Setup.GoogleSheetName = name
 				cfg.Setup.GoogleSheetID = &id
@@ -378,7 +378,7 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
 			continue
 		}
-		_, clientErr := sheets.NewClient(serviceAccountPath, id)
+		_, clientErr := sheets.NewClient(serviceAccountPath, id, "")
 		if clientErr != nil {
 			send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", clientErr))
 			continue
@@ -624,7 +624,7 @@ func handleSheetCommand(tgBot *tgbotapi.BotAPI, chatID int64, args string, sc st
 		send(tgBot, chatID, fmt.Sprintf("Couldn't find that sheet: %v", err))
 		return
 	}
-	if _, err := sheets.NewClient(serviceAccountPath, id); err != nil {
+	if _, err := sheets.NewClient(serviceAccountPath, id, ""); err != nil {
 		send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
 		return
 	}
@@ -1000,7 +1000,7 @@ func (s *conversationState) handleCredentialsDocument(tgBot *tgbotapi.BotAPI, ch
 		return
 	}
 
-	if _, err := sheets.NewClient(serviceAccountPath, *cfg.Setup.GoogleSheetID); err != nil {
+	if _, err := sheets.NewClient(serviceAccountPath, *cfg.Setup.GoogleSheetID, ""); err != nil {
 		cfg.Setup.GoogleSheetID = nil
 		cfg.Setup.GoogleSheetName = nil
 		if saveErr := config.SaveConfig(configPath, cfg); saveErr != nil {

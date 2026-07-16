@@ -1148,8 +1148,10 @@ end;
 // path from wiping settings too, not just today's plain in-place upgrade
 // (which never runs this uninstaller at all). tracker.db (sqlite backend
 // only — DeleteFile on a nonexistent path is a silent no-op on the sheets
-// backend) follows the exact same rule as the three JSON files: deleted on
-// a real manual uninstall, preserved across an in-place upgrade.
+// backend) and sheets_fallback.json (the mirror case: sheets backend only,
+// holding writes that failed against the Sheets API for later replay)
+// follow the exact same rule as the three JSON files: deleted on a real
+// manual uninstall, preserved across an in-place upgrade.
 //
 // The explicit taskkill below is required, not redundant with
 // [UninstallRun]'s own taskkill entry: CurUninstallStepChanged(usUninstall)
@@ -1175,6 +1177,7 @@ begin
     DeleteFile(ExpandConstant('{app}\config.json'));
     DeleteFile(ExpandConstant('{app}\lockfile.json'));
     DeleteFile(ExpandConstant('{app}\pending_tournaments.json'));
+    DeleteFile(ExpandConstant('{app}\sheets_fallback.json'));
     DeleteFile(ExpandConstant('{app}\tracker.db'));
   end;
 end;
