@@ -3,7 +3,6 @@
 package sheets
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,14 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/oauth2/google"
-	"google.golang.org/api/drive/v3"
-	"google.golang.org/api/option"
-	sheetsapi "google.golang.org/api/sheets/v4"
 
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -37,7 +30,7 @@ const dateFormat = "2006-01-02 15:04"
 // short-lived validation clients bot.go constructs during setup/sheet changes,
 // which never persist a session and so must never touch the fallback file.
 type Client struct {
-	svc           *sheetsapi.Service
+	svc           *restService
 	spreadsheetID string
 
 	fallbackPath string // "" disables the write-ahead fallback
@@ -60,16 +53,9 @@ func NewClient(serviceAccountPath, spreadsheetID, fallbackPath string) (*Client,
 		return nil, fmt.Errorf("reading service account: %w", err)
 	}
 
-	creds, err := google.CredentialsFromJSON(context.Background(), data,
-		sheetsapi.SpreadsheetsScope,
-	)
+	svc, err := newRESTService(data, spreadsheetsScope)
 	if err != nil {
-		return nil, fmt.Errorf("parsing credentials: %w", err)
-	}
-
-	svc, err := sheetsapi.NewService(context.Background(), option.WithCredentials(creds))
-	if err != nil {
-		return nil, fmt.Errorf("creating sheets service: %w", err)
+		return nil, err
 	}
 
 	c := &Client{
@@ -107,42 +93,34 @@ func ResolveSheetID(serviceAccountPath, sheetName string) (string, error) {
 		return "", fmt.Errorf("reading service account: %w", err)
 	}
 
-	creds, err := google.CredentialsFromJSON(context.Background(), data,
-		drive.DriveMetadataReadonlyScope,
-	)
+	driveSvc, err := newRESTService(data, driveMetadataReadonlyScope)
 	if err != nil {
-		return "", fmt.Errorf("parsing credentials: %w", err)
+		return "", err
 	}
 
-	driveSvc, err := drive.NewService(context.Background(), option.WithCredentials(creds))
-	if err != nil {
-		return "", fmt.Errorf("creating drive service: %w", err)
-	}
-
-	q := fmt.Sprintf("name = '%s' and mimeType = 'application/vnd.google-apps.spreadsheet'", sheetName)
-	list, err := driveSvc.Files.List().Q(q).Fields("files(id)").Do()
+	ids, err := driveSvc.driveFindSpreadsheets(sheetName)
 	if err != nil {
 		return "", fmt.Errorf("searching for spreadsheet: %w", err)
 	}
-	if len(list.Files) == 0 {
+	if len(ids) == 0 {
 		return "", fmt.Errorf("spreadsheet %q not found", sheetName)
 	}
-	if len(list.Files) > 1 {
-		return "", fmt.Errorf("spreadsheet name %q is ambiguous: %d matches found", sheetName, len(list.Files))
+	if len(ids) > 1 {
+		return "", fmt.Errorf("spreadsheet name %q is ambiguous: %d matches found", sheetName, len(ids))
 	}
 
-	return list.Files[0].Id, nil
+	return ids[0], nil
 }
 
 func (c *Client) ensureTabs() error {
-	sp, err := c.svc.Spreadsheets.Get(c.spreadsheetID).Do()
+	titles, err := c.svc.spreadsheetTabTitles(c.spreadsheetID)
 	if err != nil {
 		return fmt.Errorf("getting spreadsheet: %w", err)
 	}
 
-	existing := make(map[string]bool, len(sp.Sheets))
-	for _, sheet := range sp.Sheets {
-		existing[sheet.Properties.Title] = true
+	existing := make(map[string]bool, len(titles))
+	for _, title := range titles {
+		existing[title] = true
 	}
 
 	type tabDef struct {
@@ -159,14 +137,7 @@ func (c *Client) ensureTabs() error {
 
 	for _, tab := range tabs {
 		if !existing[tab.name] {
-			_, err := c.svc.Spreadsheets.BatchUpdate(c.spreadsheetID, &sheetsapi.BatchUpdateSpreadsheetRequest{
-				Requests: []*sheetsapi.Request{{
-					AddSheet: &sheetsapi.AddSheetRequest{
-						Properties: &sheetsapi.SheetProperties{Title: tab.name},
-					},
-				}},
-			}).Do()
-			if err != nil {
+			if err := c.svc.addSheet(c.spreadsheetID, tab.name); err != nil {
 				return fmt.Errorf("creating tab %q: %w", tab.name, err)
 			}
 
@@ -197,10 +168,7 @@ func (c *Client) ensureTabs() error {
 // case the player has edited an existing header's text. A no-op if row 1
 // already has at least len(want) cells.
 func (c *Client) backfillTabHeaders(tab string, want []interface{}) error {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		fmt.Sprintf("%s!1:1", tab),
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("%s!1:1", tab))
 	if err != nil {
 		return fmt.Errorf("reading %s header row: %w", tab, err)
 	}
@@ -213,10 +181,7 @@ func (c *Client) backfillTabHeaders(tab string, want []interface{}) error {
 	}
 
 	rangeStr := fmt.Sprintf("%s!%s1:%s1", tab, columnLetter(have), columnLetter(len(want)-1))
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, rangeStr,
-		&sheetsapi.ValueRange{Values: [][]interface{}{want[have:]}},
-	).ValueInputOption("RAW").Do(); err != nil {
+	if err := c.svc.valuesUpdate(c.spreadsheetID, rangeStr, [][]interface{}{want[have:]}); err != nil {
 		return fmt.Errorf("backfilling %s headers: %w", tab, err)
 	}
 	return nil
@@ -234,12 +199,7 @@ func columnLetter(idx int) string {
 }
 
 func (c *Client) appendRow(tab string, values []interface{}) error {
-	_, err := c.svc.Spreadsheets.Values.Append(
-		c.spreadsheetID,
-		tab+"!A1",
-		&sheetsapi.ValueRange{Values: [][]interface{}{values}},
-	).ValueInputOption("RAW").Do()
-	if err != nil {
+	if err := c.svc.valuesAppend(c.spreadsheetID, tab+"!A1", [][]interface{}{values}); err != nil {
 		return fmt.Errorf("appending to %q: %w", tab, err)
 	}
 	return nil
@@ -248,10 +208,7 @@ func (c *Client) appendRow(tab string, values []interface{}) error {
 // getLastRunningTotal reads the last value from the Running Total column of
 // Bankroll Ledger. Returns 0 when the ledger has no data rows.
 func (c *Client) getLastRunningTotal() (float64, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Bankroll Ledger!D:D",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!D:D")
 	if err != nil {
 		return 0, fmt.Errorf("reading bankroll ledger: %w", err)
 	}
@@ -284,10 +241,7 @@ func cashSessionID(date time.Time, firstHandID string) string {
 // upserts on a stored ID column (Cash Sessions, Time Analysis, Bankroll
 // Ledger's cash_session rows, and — via findTournamentRow — Tournaments).
 func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex int, found bool, err error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		fmt.Sprintf("%s!%s:%s", tab, columnLetter, columnLetter),
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("%s!%s:%s", tab, columnLetter, columnLetter))
 	if err != nil {
 		return 0, false, fmt.Errorf("reading %s column %s: %w", tab, columnLetter, err)
 	}
@@ -311,10 +265,7 @@ func (c *Client) runningTotalBeforeRow(rowIndex int) (float64, error) {
 	if rowIndex <= 2 {
 		return 0, nil
 	}
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		fmt.Sprintf("Bankroll Ledger!D%d", rowIndex-1),
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Bankroll Ledger!D%d", rowIndex-1))
 	if err != nil {
 		return 0, fmt.Errorf("reading running total above row %d: %w", rowIndex, err)
 	}
@@ -363,10 +314,7 @@ func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession) e
 		return c.appendRow("Cash Sessions", values)
 	}
 	rangeStr := fmt.Sprintf("Cash Sessions!A%d:J%d", rowIndex, rowIndex)
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, rangeStr,
-		&sheetsapi.ValueRange{Values: [][]interface{}{values}},
-	).ValueInputOption("RAW").Do(); err != nil {
+	if err := c.svc.valuesUpdate(c.spreadsheetID, rangeStr, [][]interface{}{values}); err != nil {
 		return fmt.Errorf("updating cash session row: %w", err)
 	}
 	return nil
@@ -388,10 +336,7 @@ func (c *Client) upsertTimeAnalysisRow(id string, session parsers.CashSession) e
 		return c.appendRow("Time Analysis", values)
 	}
 	rangeStr := fmt.Sprintf("Time Analysis!A%d:E%d", rowIndex, rowIndex)
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, rangeStr,
-		&sheetsapi.ValueRange{Values: [][]interface{}{values}},
-	).ValueInputOption("RAW").Do(); err != nil {
+	if err := c.svc.valuesUpdate(c.spreadsheetID, rangeStr, [][]interface{}{values}); err != nil {
 		return fmt.Errorf("updating time analysis row: %w", err)
 	}
 	return nil
@@ -435,9 +380,7 @@ func (c *Client) upsertLedgerCashSessionRow(id string, date time.Time, netUSD fl
 // those later rows' stored Running Total was computed from this row's old
 // Amount and goes stale the moment this row's Amount changes.
 func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) error {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID, "Bankroll Ledger!C:D",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!C:D")
 	if err != nil {
 		return fmt.Errorf("reading bankroll ledger for cascade update: %w", err)
 	}
@@ -460,10 +403,7 @@ func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) er
 	}
 
 	rangeStr := fmt.Sprintf("Bankroll Ledger!C%d:D%d", rowIndex, rowIndex+len(updates)-1)
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, rangeStr,
-		&sheetsapi.ValueRange{Values: updates},
-	).ValueInputOption("RAW").Do(); err != nil {
+	if err := c.svc.valuesUpdate(c.spreadsheetID, rangeStr, updates); err != nil {
 		return fmt.Errorf("cascading bankroll ledger update: %w", err)
 	}
 	return nil
@@ -471,25 +411,24 @@ func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) er
 
 // cascadeLedgerAmounts computes updated (Amount, Running Total) pairs for
 // the ledger's Amount column from changedIdx (0-based, data rows only, no
-// header) through the last row. amounts[changedIdx] becomes newAmount;
-// every other row keeps its existing amount but gets a recomputed running
-// total, since a change earlier in the ledger shifts every total after it.
-// base is the running total of the row immediately before changedIdx (0 if
-// changedIdx is the first data row). Pure — the Sheets I/O wrapper is
+// header) through the last row — the running-total math itself is
+// storage.CascadeRunningTotals, shared with the sqlite backend; this only
+// bounds-checks changedIdx and zips the results into the two-column cell
+// shape the Sheets update range wants. Pure — the Sheets I/O wrapper is
 // updateLedgerAmountCascading.
 func cascadeLedgerAmounts(amounts []float64, changedIdx int, newAmount, base float64) [][]interface{} {
 	if changedIdx < 0 || changedIdx >= len(amounts) {
 		return nil
 	}
-	running := base
-	updates := make([][]interface{}, 0, len(amounts)-changedIdx)
-	for i := changedIdx; i < len(amounts); i++ {
-		amount := amounts[i]
-		if i == changedIdx {
+	tail := amounts[changedIdx:]
+	totals := storage.CascadeRunningTotals(tail, newAmount, base)
+	updates := make([][]interface{}, len(tail))
+	for i := range tail {
+		amount := tail[i]
+		if i == 0 {
 			amount = newAmount
 		}
-		running += amount
-		updates = append(updates, []interface{}{amount, running})
+		updates[i] = []interface{}{amount, totals[i]}
 	}
 	return updates
 }
@@ -513,21 +452,11 @@ type tournamentRowSnapshot struct {
 	bountyUSD float64
 }
 
-// knockoutPlaceholder marks the Type cell of a partial row (created by
-// UpdateTournamentHandStats before the summary file has arrived) as a
-// knockout tournament, since the base "spingo"/"mtt" classification isn't
-// known yet at that point — AppendTournament combines it into the real
-// "<base>-ko" Type once it does.
-const knockoutPlaceholder = "ko"
-
 // readTournamentRow reads the fields of an existing Tournaments row (by
 // 1-based sheet rowIndex) needed to compute a bounty-reconciled NetUSD/Type
 // from either side of the two-file correlation.
 func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		fmt.Sprintf("Tournaments!A%d:M%d", rowIndex, rowIndex),
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:M%d", rowIndex, rowIndex))
 	if err != nil {
 		return tournamentRowSnapshot{}, fmt.Errorf("reading tournament row %d: %w", rowIndex, err)
 	}
@@ -557,54 +486,6 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 	return snap, nil
 }
 
-// foldBountyIntoNet computes the final NetUSD and Prize Won (USD) once the
-// summary file's baseline net (payout - buyin) is known, folding in whatever
-// bounty winnings the hand history file has already recorded for this row.
-// Pure — the Sheets I/O wrapper is AppendTournament.
-func foldBountyIntoNet(baselineNetUSD, bountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
-	netUSD = baselineNetUSD + bountyUSD
-	return netUSD, netUSD + buyInUSD
-}
-
-// reconcileKnockoutType computes the Type value AppendTournament should
-// write once the base type ("spingo"/"mtt") is known, combining it with
-// whatever knockout signal an existing row (created by
-// UpdateTournamentHandStats before the summary file arrived) already
-// recorded in its Type cell — either knockoutPlaceholder or a Type already
-// carrying parsers.KnockoutSuffix. Pure — the Sheets I/O wrapper is
-// AppendTournament.
-func reconcileKnockoutType(baseType, existingTypeCell string) string {
-	if existingTypeCell == knockoutPlaceholder || strings.HasSuffix(existingTypeCell, parsers.KnockoutSuffix) {
-		return baseType + parsers.KnockoutSuffix
-	}
-	return baseType
-}
-
-// appendKnockoutSuffix computes the Type value UpdateTournamentHandStats
-// should write when a hand history file flags a tournament as knockout,
-// preserving whatever base type (or lack thereof, via knockoutPlaceholder)
-// the row's Type cell already has. Idempotent — a Type that's already
-// suffixed or already the placeholder is returned unchanged. Pure — the
-// Sheets I/O wrapper is UpdateTournamentHandStats.
-func appendKnockoutSuffix(existingTypeCell string) string {
-	if existingTypeCell == knockoutPlaceholder || strings.HasSuffix(existingTypeCell, parsers.KnockoutSuffix) {
-		return existingTypeCell
-	}
-	if existingTypeCell == "" {
-		return knockoutPlaceholder
-	}
-	return existingTypeCell + parsers.KnockoutSuffix
-}
-
-// reconcileTournamentBounty computes the corrected NetUSD and Prize Won
-// (USD) after a freshly reparsed cumulative bounty total replaces whatever
-// this row's previous bounty contribution to storedNetUSD was. Pure — the
-// Sheets I/O wrapper is UpdateTournamentHandStats.
-func reconcileTournamentBounty(storedNetUSD, storedBountyUSD, newBountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
-	netUSD = (storedNetUSD - storedBountyUSD) + newBountyUSD
-	return netUSD, netUSD + buyInUSD
-}
-
 // AppendTournament upserts one row in Tournaments (keyed by TournamentID) and
 // upserts its Bankroll Ledger row (see upsertLedgerTournamentRow). If the
 // Tournaments row already exists (created by UpdateTournamentHandStats),
@@ -612,7 +493,7 @@ func reconcileTournamentBounty(storedNetUSD, storedBountyUSD, newBountyUSD, buyI
 // has recorded (column L, Bounty Won) — the summary file this data comes
 // from has no concept of bounties at all, only the hand history file's
 // elimination lines do (why two files: plan §Why Tournaments Need Two
-// Files) — and carries forward the knockoutPlaceholder into a real
+// Files) — and carries forward the storage.KnockoutPlaceholder into a real
 // "<base>-ko" Type if the row was flagged knockout. Writes Prize Won
 // (column M, = NetUSD + BuyInUSD) alongside. Leaves VPIP/PFR/Bounty Won
 // (J:L) untouched. Returns the final NetUSD (baseline net plus any bounty)
@@ -648,38 +529,37 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
 			return 0, err
 		}
 		bounty = snap.bountyUSD
-		typeOut = reconcileKnockoutType(t.Type, snap.typeVal)
+		typeOut = storage.ReconcileKnockoutType(t.Type, snap.typeVal)
 	}
-	netUSD, prizeWon := foldBountyIntoNet(t.NetUSD, bounty, t.BuyInUSD)
+	netUSD, prizeWon := storage.FoldBountyIntoNet(t.NetUSD, bounty, t.BuyInUSD)
 
 	if found {
-		// Row was pre-created by UpdateTournamentHandStats — update main
-		// columns only, leaving VPIP/PFR/Bounty Won (J:L) untouched.
-		rangeStr := fmt.Sprintf("Tournaments!A%d:I%d", rowIndex, rowIndex)
-		_, err := c.svc.Spreadsheets.Values.Update(
-			c.spreadsheetID, rangeStr,
-			&sheetsapi.ValueRange{Values: [][]interface{}{{
-				t.Date.Format(dateFormat),
-				typeOut,
-				t.TournamentID,
-				t.BuyInUSD,
-				prizePool,
-				multiplier,
-				t.FinishPos,
-				t.TotalPlayers,
-				netUSD,
-			}}},
-		).ValueInputOption("RAW").Do()
-		if err != nil {
-			return 0, fmt.Errorf("updating tournament row: %w", err)
-		}
-
-		mRange := fmt.Sprintf("Tournaments!M%d", rowIndex)
-		if _, err := c.svc.Spreadsheets.Values.Update(
-			c.spreadsheetID, mRange,
-			&sheetsapi.ValueRange{Values: [][]interface{}{{prizeWon}}},
-		).ValueInputOption("RAW").Do(); err != nil {
-			return 0, fmt.Errorf("updating prize won for tournament %s: %w", t.TournamentID, err)
+		// Row was pre-created by UpdateTournamentHandStats — update the main
+		// columns (A:I) and Prize Won (M) in one batched call, leaving
+		// VPIP/PFR/Bounty Won (J:L) and Hands (N) untouched. One call
+		// instead of two also means no window where Net is written but
+		// Prize Won isn't yet.
+		if err := c.svc.valuesBatchUpdate(c.spreadsheetID, []valueRange{
+			{
+				Range: fmt.Sprintf("Tournaments!A%d:I%d", rowIndex, rowIndex),
+				Values: [][]interface{}{{
+					t.Date.Format(dateFormat),
+					typeOut,
+					t.TournamentID,
+					t.BuyInUSD,
+					prizePool,
+					multiplier,
+					t.FinishPos,
+					t.TotalPlayers,
+					netUSD,
+				}},
+			},
+			{
+				Range:  fmt.Sprintf("Tournaments!M%d", rowIndex),
+				Values: [][]interface{}{{prizeWon}},
+			},
+		}); err != nil {
+			return 0, fmt.Errorf("updating tournament %s: %w", t.TournamentID, err)
 		}
 	} else {
 		if err := c.appendRow("Tournaments", []interface{}{
@@ -747,12 +627,12 @@ func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, 
 // (why two files: plan §Why Tournaments Need Two Files).
 //
 // If no row exists yet, creates a partial one exactly as before, extended
-// with Bounty Won and (if isKnockout) knockoutPlaceholder in place of Type,
+// with Bounty Won and (if isKnockout) storage.KnockoutPlaceholder in place of Type,
 // and stops there — AppendTournament will complete it once the summary file
 // arrives, combining the placeholder into a real "<base>-ko" Type and
 // folding in this bounty (see its doc comment). If a row exists but summary
 // data (NetUSD, column I) hasn't arrived yet either, only J:L, N (and
-// possibly B, for the same knockoutPlaceholder reason) are written and
+// possibly B, for the same storage.KnockoutPlaceholder reason) are written and
 // NetUSD/Prize Won/the ledger are left alone. If a row exists and already
 // has summary data — the common case, since the hand history file grows and
 // is reparsed (recomputing this tournament's cumulative bounty from scratch)
@@ -777,7 +657,7 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 		// will fill in the remaining columns when the summary file arrives.
 		typeCell := ""
 		if isKnockout {
-			typeCell = knockoutPlaceholder
+			typeCell = storage.KnockoutPlaceholder
 		}
 		return c.appendRow("Tournaments", []interface{}{
 			"", // Date
@@ -802,59 +682,55 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 		return err
 	}
 
+	// Every affected cell goes out in one batched call — previously this was
+	// up to five sequential Values.Update calls (B, J:L, N, I, M), each gap
+	// a window where a failure left the row internally inconsistent (e.g. a
+	// new bounty recorded but Net not yet reconciled to include it).
 	typeOut := snap.typeVal
 	if isKnockout {
-		typeOut = appendKnockoutSuffix(snap.typeVal)
+		typeOut = storage.AppendKnockoutSuffix(snap.typeVal)
+	}
+	data := []valueRange{
+		{
+			Range:  fmt.Sprintf("Tournaments!J%d:L%d", rowIndex, rowIndex),
+			Values: [][]interface{}{{vpip, pfr, bountyUSD}},
+		},
+		{
+			Range:  fmt.Sprintf("Tournaments!N%d", rowIndex),
+			Values: [][]interface{}{{hands}},
+		},
 	}
 	if typeOut != snap.typeVal {
-		bRange := fmt.Sprintf("Tournaments!B%d", rowIndex)
-		if _, err := c.svc.Spreadsheets.Values.Update(
-			c.spreadsheetID, bRange,
-			&sheetsapi.ValueRange{Values: [][]interface{}{{typeOut}}},
-		).ValueInputOption("RAW").Do(); err != nil {
-			return fmt.Errorf("updating type for tournament %s: %w", tournamentID, err)
-		}
+		data = append(data, valueRange{
+			Range:  fmt.Sprintf("Tournaments!B%d", rowIndex),
+			Values: [][]interface{}{{typeOut}},
+		})
 	}
 
-	jlRange := fmt.Sprintf("Tournaments!J%d:L%d", rowIndex, rowIndex)
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, jlRange,
-		&sheetsapi.ValueRange{Values: [][]interface{}{{vpip, pfr, bountyUSD}}},
-	).ValueInputOption("RAW").Do(); err != nil {
+	var netUSD float64
+	if snap.hasNetUSD {
+		var prizeWon float64
+		netUSD, prizeWon = storage.ReconcileTournamentBounty(snap.netUSD, snap.bountyUSD, bountyUSD, snap.buyInUSD)
+		data = append(data,
+			valueRange{
+				Range:  fmt.Sprintf("Tournaments!I%d", rowIndex),
+				Values: [][]interface{}{{netUSD}},
+			},
+			valueRange{
+				Range:  fmt.Sprintf("Tournaments!M%d", rowIndex),
+				Values: [][]interface{}{{prizeWon}},
+			},
+		)
+	}
+
+	if err := c.svc.valuesBatchUpdate(c.spreadsheetID, data); err != nil {
 		return fmt.Errorf("updating hand stats for tournament %s: %w", tournamentID, err)
-	}
-
-	nRange := fmt.Sprintf("Tournaments!N%d", rowIndex)
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, nRange,
-		&sheetsapi.ValueRange{Values: [][]interface{}{{hands}}},
-	).ValueInputOption("RAW").Do(); err != nil {
-		return fmt.Errorf("updating hands for tournament %s: %w", tournamentID, err)
 	}
 
 	if !snap.hasNetUSD {
 		// Summary still hasn't arrived — nothing to reconcile yet.
 		return nil
 	}
-
-	netUSD, prizeWon := reconcileTournamentBounty(snap.netUSD, snap.bountyUSD, bountyUSD, snap.buyInUSD)
-
-	iRange := fmt.Sprintf("Tournaments!I%d", rowIndex)
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, iRange,
-		&sheetsapi.ValueRange{Values: [][]interface{}{{netUSD}}},
-	).ValueInputOption("RAW").Do(); err != nil {
-		return fmt.Errorf("reconciling net for tournament %s: %w", tournamentID, err)
-	}
-
-	mRange := fmt.Sprintf("Tournaments!M%d", rowIndex)
-	if _, err := c.svc.Spreadsheets.Values.Update(
-		c.spreadsheetID, mRange,
-		&sheetsapi.ValueRange{Values: [][]interface{}{{prizeWon}}},
-	).ValueInputOption("RAW").Do(); err != nil {
-		return fmt.Errorf("updating prize won for tournament %s: %w", tournamentID, err)
-	}
-
 	return c.upsertLedgerTournamentRow(tournamentID, snap.date, netUSD)
 }
 
@@ -1092,9 +968,7 @@ func (c *Client) cashSheetHandCount(sessionID string) (hands int, exists bool, e
 	if !found {
 		return 0, false, nil
 	}
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID, fmt.Sprintf("Cash Sessions!C%d", rowIndex),
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Cash Sessions!C%d", rowIndex))
 	if err != nil {
 		return 0, false, fmt.Errorf("reading cash session hand count: %w", err)
 	}
@@ -1114,9 +988,7 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 	if !found {
 		return 0, false, nil
 	}
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID, fmt.Sprintf("Tournaments!N%d", rowIndex),
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!N%d", rowIndex))
 	if err != nil {
 		return 0, false, fmt.Errorf("reading tournament hand count: %w", err)
 	}
@@ -1127,14 +999,19 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 }
 
 // AppendLedgerEntry appends a deposit or withdrawal row to Bankroll Ledger.
-// For withdrawals, the caller passes a negative amountUSD.
+// For withdrawals, the caller passes a negative amountUSD. The date is
+// written as the local wall clock, not UTC — session rows' dates come from
+// PokerStars' zone-less local timestamps, so writing a true-UTC time here
+// would put deposits in a date coordinate system shifted from every session
+// row's by the machine's UTC offset, and window queries would misplace them
+// near day boundaries.
 func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64) error {
 	prev, err := c.getLastRunningTotal()
 	if err != nil {
 		return err
 	}
 	return c.appendRow("Bankroll Ledger", []interface{}{
-		time.Now().UTC().Format(dateFormat),
+		time.Now().Format(dateFormat),
 		entryType,
 		amountUSD,
 		prev + amountUSD,
@@ -1154,10 +1031,7 @@ func (c *Client) GetSheetURL() string {
 
 // GetLedgerEntriesSince returns all Bankroll Ledger rows where Date >= t.
 func (c *Client) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Bankroll Ledger!A:E",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!A:E")
 	if err != nil {
 		return nil, fmt.Errorf("reading bankroll ledger: %w", err)
 	}
@@ -1184,10 +1058,7 @@ func (c *Client) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, erro
 // differing only in the date cutoff and whether the caller wants the
 // Session ID kept or discarded.
 func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Cash Sessions!A:J",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Cash Sessions!A:J")
 	if err != nil {
 		return nil, fmt.Errorf("reading cash sessions: %w", err)
 	}
@@ -1252,10 +1123,7 @@ func (c *Client) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
 // over this single read, differing only in the date cutoff and whether the
 // caller wants those extra columns kept or discarded.
 func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Tournaments!A:N",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:N")
 	if err != nil {
 		return nil, fmt.Errorf("reading tournaments: %w", err)
 	}
@@ -1340,10 +1208,7 @@ func (c *Client) GetAllTournaments() ([]storage.TournamentRecord, error) {
 
 // GetAllTimeAnalysis returns every Time Analysis row. Used only by /export.
 func (c *Client) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
-	resp, err := c.svc.Spreadsheets.Values.Get(
-		c.spreadsheetID,
-		"Time Analysis!A:E",
-	).ValueRenderOption("UNFORMATTED_VALUE").Do()
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Time Analysis!A:E")
 	if err != nil {
 		return nil, fmt.Errorf("reading time analysis: %w", err)
 	}

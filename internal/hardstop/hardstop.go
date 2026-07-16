@@ -16,7 +16,7 @@ import (
 
 // Evaluate checks hard stop conditions after a cash session and triggers a
 // hard stop if any condition is met.
-func Evaluate(session parsers.CashSession, sheetsClient storage.Store, configPath, lockfilePath string, alertChan chan<- string) error {
+func Evaluate(session parsers.CashSession, store storage.Store, configPath, lockfilePath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -37,16 +37,11 @@ func Evaluate(session parsers.CashSession, sheetsClient storage.Store, configPat
 	}
 
 	if h.ConsecutiveLosses != nil {
-		// GetLedgerEntriesSince with the zero time returns the whole ledger —
-		// every row ever written, of any type — mirroring how
-		// DownswingEquityCurve fetches its own window. consecutiveLossesTriggered
-		// does the session-only filtering and windowing locally so a deposit
-		// or withdrawal never occupies one of the ConsecutiveLosses slots.
-		allEntries, err := sheetsClient.GetLedgerEntriesSince(time.Time{})
+		streaking, err := LosingStreakTriggered(store, *h.ConsecutiveLosses)
 		if err != nil {
 			return err
 		}
-		if consecutiveLossesTriggered(allEntries, *h.ConsecutiveLosses) {
+		if streaking {
 			if h.DurationHours == nil {
 				return fmt.Errorf("consecutive_losses configured without duration_hours")
 			}
@@ -55,14 +50,31 @@ func Evaluate(session parsers.CashSession, sheetsClient storage.Store, configPat
 		}
 	}
 
-	if triggered, err := evaluateDownswing(cfg, sheetsClient, session.BuyInUSD, lockfilePath, alertChan); err != nil {
+	if triggered, err := evaluateDownswing(cfg, store, session.BuyInUSD, lockfilePath, alertChan); err != nil {
 		return err
 	} else if triggered {
 		return nil
 	}
 
-	_, err = evaluateDailyLoss(cfg, sheetsClient, lockfilePath, alertChan)
+	_, err = evaluateDailyLoss(cfg, store, lockfilePath, alertChan)
 	return err
+}
+
+// LosingStreakTriggered reports whether the account's most recent
+// ConsecutiveLosses-many session rows are all losses — the shared
+// implementation behind both the consecutive-losses hard stop and the
+// losing-streak alert (bot.EvaluateLosingStreakAlert), so the two sides can
+// never disagree on what counts as a streak. GetLedgerEntriesSince with the
+// zero time returns the whole ledger — every row ever written, of any type —
+// mirroring how DownswingEquityCurve fetches its own window;
+// consecutiveLossesTriggered does the session-only filtering and windowing
+// locally so a deposit or withdrawal never occupies one of the n slots.
+func LosingStreakTriggered(store storage.Store, n int) (bool, error) {
+	allEntries, err := store.GetLedgerEntriesSince(time.Time{})
+	if err != nil {
+		return false, err
+	}
+	return consecutiveLossesTriggered(allEntries, n), nil
 }
 
 // sessionLossExceeds reports whether a session loss of sessionLoss USD
@@ -114,37 +126,54 @@ func consecutiveLossesTriggered(entries []storage.LedgerEntry, n int) bool {
 	return len(sessionRows) == n && consecutiveLossStreak(sessionRows) == len(sessionRows)
 }
 
-// pokerDayStart computes the start of the poker day containing now, using
-// cfg.Schedule.DayStartHour (default 6) as the daily reset hour.
-//
-// Session and tournament dates round-trip through Google Sheets via
-// dateFormat, which carries no zone offset (see sheets.go) — so a date
-// written as local wall-clock "06:30" always reads back as the instant
-// 06:30 UTC, regardless of the machine's real zone. To stay comparable
-// against those dates, this reinterprets now's local wall-clock digits as
-// UTC rather than converting to now's true UTC instant.
-func pokerDayStart(cfg *config.Config, now time.Time) time.Time {
+// PokerDayStart computes the start of the poker day containing now, using
+// cfg.Schedule.DayStartHour (default 6) as the daily reset hour. Computed in
+// the stored-date coordinate system (storage.AsStoredClock — local
+// wall-clock digits read as UTC) so it compares correctly against dates read
+// back from either backend, which carry no real zone offset.
+func PokerDayStart(cfg *config.Config, now time.Time) time.Time {
 	hour := 6
 	if cfg.Schedule.DayStartHour != nil {
 		hour = *cfg.Schedule.DayStartHour
 	}
-	local := now.Local()
-	nowAsStoredWouldRead := time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), local.Minute(), local.Second(), local.Nanosecond(), time.UTC)
-	start := time.Date(local.Year(), local.Month(), local.Day(), hour, 0, 0, 0, time.UTC)
-	if nowAsStoredWouldRead.Before(start) {
+	stored := storage.AsStoredClock(now)
+	start := time.Date(stored.Year(), stored.Month(), stored.Day(), hour, 0, 0, 0, time.UTC)
+	if stored.Before(start) {
 		start = start.AddDate(0, 0, -1)
 	}
 	return start
 }
 
 // rollingWindowStart computes the start of a rolling window of the given
-// duration ending at now, using the same UTC-wall-clock reinterpretation as
-// pokerDayStart (see its comment) so it stays comparable against dates read
-// back from Google Sheets.
+// duration ending at now, in the same stored-date coordinate system as
+// PokerDayStart (storage.AsStoredClock) so it stays comparable against dates
+// read back from either backend.
 func rollingWindowStart(now time.Time, window time.Duration) time.Time {
-	local := now.Local()
-	nowAsStoredWouldRead := time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), local.Minute(), local.Second(), local.Nanosecond(), time.UTC)
-	return nowAsStoredWouldRead.Add(-window)
+	return storage.AsStoredClock(now).Add(-window)
+}
+
+// PokerDaySessionEntries returns the current poker day's session-result
+// ledger rows (cash_session/tournament only — transfers excluded, see
+// sessionOnly). The shared data source behind both the unified daily-loss
+// hard stop and the daily-loss alert (bot.EvaluateDailyLossAlert).
+func PokerDaySessionEntries(store storage.Store, cfg *config.Config, now time.Time) ([]storage.LedgerEntry, error) {
+	entries, err := store.GetLedgerEntriesSince(PokerDayStart(cfg, now))
+	if err != nil {
+		return nil, err
+	}
+	return sessionOnly(entries), nil
+}
+
+// PokerDaySpingoTournaments returns the current poker day's Spin & Go rows
+// (matching by BaseType, so knockout Spin & Gos are included — see
+// spingoOnly). The shared data source behind both the Spin & Go daily-loss
+// hard stop and its alert (bot.EvaluateSpingoDailyLossAlert).
+func PokerDaySpingoTournaments(store storage.Store, cfg *config.Config, now time.Time) ([]parsers.Tournament, error) {
+	tournaments, err := store.GetTournamentsSince(PokerDayStart(cfg, now))
+	if err != nil {
+		return nil, err
+	}
+	return spingoOnly(tournaments), nil
 }
 
 // inRollingWindow reports whether entryDate falls after cutoff. The
@@ -205,11 +234,11 @@ func ComputeEquityCurve(rows []storage.LedgerEntry) (peak, current float64) {
 // 30-day window (see rollingWindowStart/inRollingWindow), filters them to
 // poker results only (see sessionOnly), and returns the resulting equity
 // curve. Shared by the hard stop check and the downswing alert.
-func DownswingEquityCurve(sheetsClient storage.Store) (peak, current float64, err error) {
+func DownswingEquityCurve(store storage.Store) (peak, current float64, err error) {
 	cutoff := rollingWindowStart(time.Now(), 30*24*time.Hour)
 	// GetLedgerEntriesSince is inclusive of cutoff, so this is a superset;
 	// inRollingWindow below applies the precise exclusive boundary.
-	candidates, err := sheetsClient.GetLedgerEntriesSince(cutoff)
+	candidates, err := store.GetLedgerEntriesSince(cutoff)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -237,13 +266,13 @@ func DownswingExceeds(peak, current, buyInUSD, thresholdBuyins float64) bool {
 // satellite entry corrected to a ticket — see RecoverTicketPayout in
 // bot.go) skips the check entirely: a 0 buy-in would make the threshold 0,
 // so any downswing at all would trigger it.
-func evaluateDownswing(cfg *config.Config, sheetsClient storage.Store, buyInUSD float64, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
+func evaluateDownswing(cfg *config.Config, store storage.Store, buyInUSD float64, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.DownswingBuyins == nil || buyInUSD == 0 {
 		return false, nil
 	}
 
-	peak, current, err := DownswingEquityCurve(sheetsClient)
+	peak, current, err := DownswingEquityCurve(store)
 	if err != nil {
 		return false, err
 	}
@@ -258,12 +287,14 @@ func evaluateDownswing(cfg *config.Config, sheetsClient storage.Store, buyInUSD 
 	return false, nil
 }
 
-// dailyLossExceeds sums AmountUSD across entries (expected to already be
+// DailyLossExceeds sums AmountUSD across entries (expected to already be
 // filtered to the current poker day and Type == "cash_session" or
-// "tournament") and reports whether that net P&L falls below -thresholdUSD.
-// This is net P&L, not gross loss — a win elsewhere in the same day offsets
-// losses.
-func dailyLossExceeds(entries []storage.LedgerEntry, thresholdUSD float64) bool {
+// "tournament", i.e. PokerDaySessionEntries' output) and reports whether
+// that net P&L falls below -thresholdUSD. This is net P&L, not gross loss —
+// a win elsewhere in the same day offsets losses. Exported so the daily-loss
+// alert applies the exact same comparison as the hard stop, just against its
+// own threshold.
+func DailyLossExceeds(entries []storage.LedgerEntry, thresholdUSD float64) bool {
 	var net float64
 	for _, e := range entries {
 		net += e.AmountUSD
@@ -271,11 +302,12 @@ func dailyLossExceeds(entries []storage.LedgerEntry, thresholdUSD float64) bool 
 	return net < -thresholdUSD
 }
 
-// spingoDailyLossExceeds sums NetUSD across tournaments (expected to already
-// be filtered to the current poker day and Type == "spingo") and reports
-// whether that net P&L falls below -thresholdUSD. Same net-P&L semantics as
-// dailyLossExceeds, scoped to Spin & Go only.
-func spingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdUSD float64) bool {
+// SpingoDailyLossExceeds sums NetUSD across tournaments (expected to already
+// be filtered to the current poker day and Spin & Go only, i.e.
+// PokerDaySpingoTournaments' output) and reports whether that net P&L falls
+// below -thresholdUSD. Same net-P&L semantics as DailyLossExceeds, scoped to
+// Spin & Go; exported for the same alert-side reuse.
+func SpingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdUSD float64) bool {
 	var net float64
 	for _, t := range tournaments {
 		net += t.NetUSD
@@ -289,20 +321,18 @@ func spingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdUSD float
 // configured threshold. Either check firing is sufficient; they are not
 // mutually exclusive, but only the first one to fire actually triggers —
 // triggered reports whether one did.
-func evaluateDailyLoss(cfg *config.Config, sheetsClient storage.Store, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
+func evaluateDailyLoss(cfg *config.Config, store storage.Store, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.SpingoDailyLossUSD == nil && h.DailyLossUSD == nil {
 		return false, nil
 	}
 
-	start := pokerDayStart(cfg, time.Now())
-
 	if h.SpingoDailyLossUSD != nil {
-		tournaments, err := sheetsClient.GetTournamentsSince(start)
+		spingos, err := PokerDaySpingoTournaments(store, cfg, time.Now())
 		if err != nil {
 			return false, err
 		}
-		if spingoDailyLossExceeds(spingoOnly(tournaments), *h.SpingoDailyLossUSD) {
+		if SpingoDailyLossExceeds(spingos, *h.SpingoDailyLossUSD) {
 			if h.DurationHours == nil {
 				return false, fmt.Errorf("spingo_daily_loss_usd configured without duration_hours")
 			}
@@ -312,17 +342,11 @@ func evaluateDailyLoss(cfg *config.Config, sheetsClient storage.Store, lockfileP
 	}
 
 	if h.DailyLossUSD != nil {
-		entries, err := sheetsClient.GetLedgerEntriesSince(start)
+		entries, err := PokerDaySessionEntries(store, cfg, time.Now())
 		if err != nil {
 			return false, err
 		}
-		var sessionEntries []storage.LedgerEntry
-		for _, e := range entries {
-			if e.Type == "cash_session" || e.Type == "tournament" {
-				sessionEntries = append(sessionEntries, e)
-			}
-		}
-		if dailyLossExceeds(sessionEntries, *h.DailyLossUSD) {
+		if DailyLossExceeds(entries, *h.DailyLossUSD) {
 			if h.DurationHours == nil {
 				return false, fmt.Errorf("daily_loss_usd configured without duration_hours")
 			}
@@ -337,19 +361,19 @@ func evaluateDailyLoss(cfg *config.Config, sheetsClient storage.Store, lockfileP
 // EvaluateTournament checks hard stop conditions after a tournament (cash or
 // Spin & Go). The downswing and daily loss checks re-evaluate against the
 // whole account rather than filtering by t's type.
-func EvaluateTournament(t parsers.Tournament, sheetsClient storage.Store, configPath, lockfilePath string, alertChan chan<- string) error {
+func EvaluateTournament(t parsers.Tournament, store storage.Store, configPath, lockfilePath string, alertChan chan<- string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err
 	}
 
-	if triggered, err := evaluateDownswing(cfg, sheetsClient, t.BuyInUSD, lockfilePath, alertChan); err != nil {
+	if triggered, err := evaluateDownswing(cfg, store, t.BuyInUSD, lockfilePath, alertChan); err != nil {
 		return err
 	} else if triggered {
 		return nil
 	}
 
-	_, err = evaluateDailyLoss(cfg, sheetsClient, lockfilePath, alertChan)
+	_, err = evaluateDailyLoss(cfg, store, lockfilePath, alertChan)
 	return err
 }
 

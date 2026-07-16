@@ -10,7 +10,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -20,13 +19,6 @@ import (
 )
 
 const dateFormat = time.RFC3339
-
-// knockoutPlaceholder marks the Type column of a partial tournament row
-// (created by UpdateTournamentHandStats before the summary file has arrived)
-// as a knockout tournament, since the base "spingo"/"mtt" classification
-// isn't known yet at that point — AppendTournament combines it into the real
-// "<base>-ko" Type once it does. Mirrors sheets.knockoutPlaceholder.
-const knockoutPlaceholder = "ko"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS cash_sessions (
@@ -358,7 +350,7 @@ func (s *Store) cascadeLedgerUpdate(rowID int64, newAmount float64) error {
 	}
 	rows.Close()
 
-	totals := cascadeRunningTotals(amounts, newAmount, base)
+	totals := storage.CascadeRunningTotals(amounts, newAmount, base)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -376,29 +368,6 @@ func (s *Store) cascadeLedgerUpdate(rowID int64, newAmount float64) error {
 		}
 	}
 	return tx.Commit()
-}
-
-// cascadeRunningTotals recomputes running totals for a contiguous tail of the
-// ledger (amounts, oldest first, amounts[0] being the row that changed).
-// amounts[0] is treated as newAmount; every later row keeps its own amount
-// but needs a recomputed running total, since a change to an earlier row
-// shifts every total after it. base is the running total of the ledger row
-// immediately before amounts[0] (0 if amounts[0] is the ledger's first row).
-// Pure — the DB I/O wrapper is cascadeLedgerUpdate.
-func cascadeRunningTotals(amounts []float64, newAmount, base float64) []float64 {
-	if len(amounts) == 0 {
-		return nil
-	}
-	totals := make([]float64, len(amounts))
-	running := base
-	for i, amt := range amounts {
-		if i == 0 {
-			amt = newAmount
-		}
-		running += amt
-		totals[i] = running
-	}
-	return totals
 }
 
 func (s *Store) lastRunningTotal() (float64, error) {
@@ -455,51 +424,6 @@ func (s *Store) readTournamentSnapshot(tournamentID string) (snap tournamentSnap
 	return snap, true, nil
 }
 
-// reconcileKnockoutType computes the Type value AppendTournament should write
-// once the base type ("spingo"/"mtt") is known, combining it with whatever
-// knockout signal an existing row (created by UpdateTournamentHandStats
-// before the summary file arrived) already recorded — either
-// knockoutPlaceholder or a Type already carrying parsers.KnockoutSuffix.
-// Mirrors sheets.reconcileKnockoutType.
-func reconcileKnockoutType(baseType, existingTypeCell string) string {
-	if existingTypeCell == knockoutPlaceholder || strings.HasSuffix(existingTypeCell, parsers.KnockoutSuffix) {
-		return baseType + parsers.KnockoutSuffix
-	}
-	return baseType
-}
-
-// appendKnockoutSuffix computes the Type value UpdateTournamentHandStats
-// should write when a hand history file flags a tournament as knockout,
-// preserving whatever base type (or lack thereof) the row's Type column
-// already has. Idempotent. Mirrors sheets.appendKnockoutSuffix.
-func appendKnockoutSuffix(existingTypeCell string) string {
-	if existingTypeCell == knockoutPlaceholder || strings.HasSuffix(existingTypeCell, parsers.KnockoutSuffix) {
-		return existingTypeCell
-	}
-	if existingTypeCell == "" {
-		return knockoutPlaceholder
-	}
-	return existingTypeCell + parsers.KnockoutSuffix
-}
-
-// foldBountyIntoNet computes the final NetUSD and Prize Won once the summary
-// file's baseline net (payout - buyin) is known, folding in whatever bounty
-// winnings the hand history file has already recorded for this row. Mirrors
-// sheets.foldBountyIntoNet.
-func foldBountyIntoNet(baselineNetUSD, bountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
-	netUSD = baselineNetUSD + bountyUSD
-	return netUSD, netUSD + buyInUSD
-}
-
-// reconcileTournamentBounty computes the corrected NetUSD and Prize Won after
-// a freshly reparsed cumulative bounty total replaces whatever this row's
-// previous bounty contribution to storedNetUSD was. Mirrors
-// sheets.reconcileTournamentBounty.
-func reconcileTournamentBounty(storedNetUSD, storedBountyUSD, newBountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
-	netUSD = (storedNetUSD - storedBountyUSD) + newBountyUSD
-	return netUSD, netUSD + buyInUSD
-}
-
 // AppendTournament upserts one row in tournaments (keyed by TournamentID) and
 // upserts its bankroll_ledger row. If the tournaments row already exists
 // (created by UpdateTournamentHandStats), it folds in whatever bounty
@@ -529,9 +453,9 @@ func (s *Store) AppendTournament(t parsers.Tournament) (float64, error) {
 	typeOut := t.Type
 	if found {
 		bounty = snap.bountyUSD
-		typeOut = reconcileKnockoutType(t.Type, snap.typeVal)
+		typeOut = storage.ReconcileKnockoutType(t.Type, snap.typeVal)
 	}
-	netUSD, prizeWon := foldBountyIntoNet(t.NetUSD, bounty, t.BuyInUSD)
+	netUSD, prizeWon := storage.FoldBountyIntoNet(t.NetUSD, bounty, t.BuyInUSD)
 
 	if found {
 		_, err := s.db.Exec(`
@@ -582,7 +506,7 @@ func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64
 	if !found {
 		typeCell := ""
 		if isKnockout {
-			typeCell = knockoutPlaceholder
+			typeCell = storage.KnockoutPlaceholder
 		}
 		_, err := s.db.Exec(`
 			INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_usd)
@@ -596,7 +520,7 @@ func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64
 
 	typeOut := snap.typeVal
 	if isKnockout {
-		typeOut = appendKnockoutSuffix(snap.typeVal)
+		typeOut = storage.AppendKnockoutSuffix(snap.typeVal)
 	}
 
 	if _, err := s.db.Exec(`
@@ -610,7 +534,7 @@ func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64
 		return nil
 	}
 
-	netUSD, prizeWon := reconcileTournamentBounty(snap.netUSD, snap.bountyUSD, bountyUSD, snap.buyInUSD)
+	netUSD, prizeWon := storage.ReconcileTournamentBounty(snap.netUSD, snap.bountyUSD, bountyUSD, snap.buyInUSD)
 
 	if _, err := s.db.Exec(`
 		UPDATE tournaments SET net_usd = ?, prize_won_usd = ? WHERE tournament_id = ?
@@ -626,7 +550,11 @@ func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64
 }
 
 // AppendLedgerEntry appends a deposit or withdrawal row to bankroll_ledger.
-// For withdrawals, the caller passes a negative amountUSD.
+// For withdrawals, the caller passes a negative amountUSD. The date is
+// stored via storage.AsStoredClock — local wall-clock digits, not the true
+// UTC instant — so deposit/withdrawal rows live in the same date coordinate
+// system as session rows (whose dates come from PokerStars' zone-less local
+// timestamps) and window queries treat both alike.
 func (s *Store) AppendLedgerEntry(entryType string, amountUSD float64) error {
 	prev, err := s.lastRunningTotal()
 	if err != nil {
@@ -634,7 +562,7 @@ func (s *Store) AppendLedgerEntry(entryType string, amountUSD float64) error {
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO bankroll_ledger (date, type, amount_usd, running_total) VALUES (?, ?, ?, ?)
-	`, time.Now().UTC().Format(dateFormat), entryType, amountUSD, prev+amountUSD)
+	`, storage.AsStoredClock(time.Now()).Format(dateFormat), entryType, amountUSD, prev+amountUSD)
 	if err != nil {
 		return fmt.Errorf("appending ledger entry: %w", err)
 	}

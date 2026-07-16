@@ -12,7 +12,7 @@ import (
 // to the previous poker day, one recorded at or after it belongs to today's.
 // now is constructed directly in time.Local so its wall-clock digits are
 // exactly what the test picks, regardless of the machine's real zone offset
-// (pokerDayStart reinterprets those digits as UTC — see its doc comment).
+// (PokerDayStart reinterprets those digits as UTC — see its doc comment).
 func TestPokerDayStart_DefaultHour(t *testing.T) {
 	cfg := &config.Config{}
 
@@ -44,9 +44,9 @@ func TestPokerDayStart_DefaultHour(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := pokerDayStart(cfg, c.now)
+			got := PokerDayStart(cfg, c.now)
 			if !got.Equal(c.want) {
-				t.Errorf("pokerDayStart(%v) = %v, want %v", c.now, got, c.want)
+				t.Errorf("PokerDayStart(%v) = %v, want %v", c.now, got, c.want)
 			}
 		})
 	}
@@ -76,16 +76,16 @@ func TestPokerDayStart_CustomHour(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := pokerDayStart(cfg, c.now)
+			got := PokerDayStart(cfg, c.now)
 			if !got.Equal(c.want) {
-				t.Errorf("pokerDayStart(%v) = %v, want %v", c.now, got, c.want)
+				t.Errorf("PokerDayStart(%v) = %v, want %v", c.now, got, c.want)
 			}
 		})
 	}
 }
 
 // TestRollingWindowStart confirms the cutoff is now's wall-clock digits
-// (reinterpreted as UTC, same as pokerDayStart) minus the window duration.
+// (reinterpreted as UTC, same as PokerDayStart) minus the window duration.
 func TestRollingWindowStart(t *testing.T) {
 	now := time.Date(2026, 7, 13, 15, 30, 0, 0, time.Local)
 	want := time.Date(2026, 6, 13, 15, 30, 0, 0, time.UTC)

@@ -89,9 +89,9 @@ func TestDailyLossExceeds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := dailyLossExceeds(entriesOf(c.nets...), c.threshold)
+			got := DailyLossExceeds(entriesOf(c.nets...), c.threshold)
 			if got != c.want {
-				t.Errorf("dailyLossExceeds(nets=%v, threshold=%.2f) = %v, want %v",
+				t.Errorf("DailyLossExceeds(nets=%v, threshold=%.2f) = %v, want %v",
 					c.nets, c.threshold, got, c.want)
 			}
 		})
@@ -140,9 +140,9 @@ func TestSpingoDailyLossExceeds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := spingoDailyLossExceeds(tournamentsOf(c.nets...), c.threshold)
+			got := SpingoDailyLossExceeds(tournamentsOf(c.nets...), c.threshold)
 			if got != c.want {
-				t.Errorf("spingoDailyLossExceeds(nets=%v, threshold=%.2f) = %v, want %v",
+				t.Errorf("SpingoDailyLossExceeds(nets=%v, threshold=%.2f) = %v, want %v",
 					c.nets, c.threshold, got, c.want)
 			}
 		})
@@ -170,8 +170,8 @@ func TestDailyLossIndependence(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			spingoEntries := []parsers.Tournament{{Type: "spingo", NetUSD: c.spingoNet}}
-			if got := spingoDailyLossExceeds(spingoEntries, c.spingoThresh); got != c.wantSpingoFire {
-				t.Errorf("spingoDailyLossExceeds(spingoNet=%.2f, threshold=%.2f) = %v, want %v",
+			if got := SpingoDailyLossExceeds(spingoEntries, c.spingoThresh); got != c.wantSpingoFire {
+				t.Errorf("SpingoDailyLossExceeds(spingoNet=%.2f, threshold=%.2f) = %v, want %v",
 					c.spingoNet, c.spingoThresh, got, c.wantSpingoFire)
 			}
 
@@ -179,8 +179,8 @@ func TestDailyLossIndependence(t *testing.T) {
 				{Type: "cash_session", AmountUSD: c.cashNet},
 				{Type: "tournament", AmountUSD: c.spingoNet},
 			}
-			if got := dailyLossExceeds(dailyEntries, c.dailyThresh); got != c.wantDailyFire {
-				t.Errorf("dailyLossExceeds(cashNet=%.2f, spingoNet=%.2f, threshold=%.2f) = %v, want %v",
+			if got := DailyLossExceeds(dailyEntries, c.dailyThresh); got != c.wantDailyFire {
+				t.Errorf("DailyLossExceeds(cashNet=%.2f, spingoNet=%.2f, threshold=%.2f) = %v, want %v",
 					c.cashNet, c.spingoNet, c.dailyThresh, got, c.wantDailyFire)
 			}
 		})

@@ -386,9 +386,9 @@ func TestOrdinal(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.want, func(t *testing.T) {
-			got := ordinal(c.input)
+			got := Ordinal(c.input)
 			if got != c.want {
-				t.Errorf("ordinal(%d) = %q, want %q", c.input, got, c.want)
+				t.Errorf("Ordinal(%d) = %q, want %q", c.input, got, c.want)
 			}
 		})
 	}
@@ -465,8 +465,12 @@ func TestStatsSince(t *testing.T) {
 		}
 	})
 
-	t.Run("week is roughly 7 days ago", func(t *testing.T) {
-		now := time.Now()
+	t.Run("week is roughly 7 days ago in the stored-date coordinate system", func(t *testing.T) {
+		// statsSince computes windows via storage.AsStoredClock (local
+		// wall-clock digits read as UTC), so the reference point must be
+		// converted the same way — comparing against a real local-zone
+		// instant would be off by the machine's UTC offset.
+		now := storage.AsStoredClock(time.Now())
 		got := statsSince("week")
 		want := now.AddDate(0, 0, -7)
 		if diff := got.Sub(want); diff < -5*time.Second || diff > 5*time.Second {

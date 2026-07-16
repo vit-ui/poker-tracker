@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -270,6 +271,21 @@ func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error 
 }
 
 func runServe() {
+	// Keep this idle background service's footprint bounded. Despite the
+	// package name, runtime/debug is where Go's production runtime knobs
+	// live: these two calls are the in-code equivalents of the GOMEMLIMIT
+	// and GOGC environment variables (the officially documented GC tuning
+	// mechanism) — set here because Task Scheduler can't set per-process
+	// env vars. The soft memory limit (Go 1.19+) continuously paces both
+	// the GC and the scavenger that returns freed pages to the OS
+	// (MEM_DECOMMIT on Windows, so Task Manager reflects it). The limit
+	// caps read spikes (/export and /stats pull whole tabs); the lower GC
+	// percent tightens the idle floor, since below the limit the collector
+	// would otherwise still let the heap float to 2× live data. Soft means
+	// no OOM risk — a too-low limit only costs extra GC cycles.
+	debug.SetMemoryLimit(32 << 20)
+	debug.SetGCPercent(50)
+
 	// The default slog handler writes to os.Stderr. hideConsole's
 	// FreeConsole call below leaves that handle NULL/invalid — confirmed
 	// via live testing (isolated by reverting to a build without this fix
@@ -449,6 +465,18 @@ func runWorker(
 	var summaryMu sync.Mutex
 	summaryTimers := make(map[string]*time.Timer)
 
+	// firedAlerts dedups the streak/daily/stake alert evaluations: a cash
+	// hand history file gets a fresh event on every hand played, and those
+	// conditions, once true, stay true for the rest of the session or poker
+	// day — without this, the same warning would re-send (and re-query the
+	// store) on every single hand. Keys are per session (FirstHandID /
+	// TournamentID) or per poker day (the day's start time); the map lives
+	// for the process and is rebuilt empty on restart, worst case repeating
+	// one already-sent warning. The immediate per-hand alerts (session loss,
+	// downswing) keep their original fire-every-time behavior — they carry a
+	// changing number and are safety-relevant.
+	firedAlerts := make(map[string]bool)
+
 	for event := range sessionChan {
 		// Re-read on every event rather than capturing once at startup —
 		// the startup guard no longer requires pokerstars_screen_name to be
@@ -485,6 +513,18 @@ func runWorker(
 				if err := bot.EvaluateDownswingAlert(session.BuyInUSD, sc, configPath, alertChan); err != nil {
 					slog.Error("evaluating downswing alert", "err", err)
 				}
+				sessionKey := "cash:" + session.FirstHandID
+				if !firedAlerts["stake:"+sessionKey] {
+					if err := bot.EvaluateStakeChangeAlert(*session, sc, alertChan); err != nil {
+						slog.Error("evaluating stake change alert", "err", err)
+					} else {
+						// Marked fired whether or not it sent — the previous
+						// stake can't change mid-session, so one evaluation
+						// per session settles it either way.
+						firedAlerts["stake:"+sessionKey] = true
+					}
+				}
+				evaluateOncePerKeyAlerts(cfg, sc, configPath, alertChan, firedAlerts, sessionKey)
 				scheduleCashSessionSummary(&summaryMu, summaryTimers, event.Path, cashSessionSummaryQuietPeriod, alertChan, func() string {
 					bankroll, _ := sc.GetCurrentBankroll()
 					return cashSessionSummaryText(*session, bankroll)
@@ -497,7 +537,7 @@ func runWorker(
 				slog.Error("ParseCashFile returned no session and no tournament stats", "path", event.Path)
 			}
 
-		case "spingo":
+		case "tournament":
 			t, err := parsers.ParseTournamentFile(event.Path, screenName)
 			if errors.Is(err, parsers.ErrFreeroll) {
 				continue
@@ -554,6 +594,7 @@ func runWorker(
 			if err := bot.EvaluateDownswingAlert(t.BuyInUSD, sc, configPath, alertChan); err != nil {
 				slog.Error("evaluating downswing alert", "err", err)
 			}
+			evaluateOncePerKeyAlerts(cfg, sc, configPath, alertChan, firedAlerts, "tournament:"+t.TournamentID)
 			bankroll, _ := sc.GetCurrentBankroll()
 			sign, absNet := "+", netUSD
 			if absNet < 0 {
@@ -562,12 +603,48 @@ func runWorker(
 			var alert string
 			if t.BaseType() == "spingo" {
 				alert = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
-					t.BuyInUSD, bot.SpinGoPrizePoolText(t), ordinal(t.FinishPos), sign, absNet, bankroll)
+					t.BuyInUSD, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), sign, absNet, bankroll)
 			} else {
 				alert = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s$%.2f\nBankroll: $%.2f",
-					t.BuyInUSD, ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
+					t.BuyInUSD, bot.Ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
 			}
 			alertChan <- alert
+		}
+	}
+}
+
+// evaluateOncePerKeyAlerts runs the three threshold alerts whose condition,
+// once true, stays true for the rest of the streak or poker day — losing
+// streak, unified daily loss, Spin & Go daily loss — deduped through
+// firedAlerts (see its declaration in runWorker). The streak alert is keyed
+// per session (a new session is a new streak length to judge); the two
+// daily alerts are keyed per poker day, so each sends at most once between
+// day boundaries no matter how many sessions land in it.
+func evaluateOncePerKeyAlerts(cfg *config.Config, sc storage.Store, configPath string, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
+	if !firedAlerts["streak:"+sessionKey] {
+		fired, err := bot.EvaluateLosingStreakAlert(sc, configPath, alertChan)
+		if err != nil {
+			slog.Error("evaluating losing streak alert", "err", err)
+		} else if fired {
+			firedAlerts["streak:"+sessionKey] = true
+		}
+	}
+
+	dayKey := hardstop.PokerDayStart(cfg, time.Now()).Format(time.RFC3339)
+	if !firedAlerts["daily:"+dayKey] {
+		fired, err := bot.EvaluateDailyLossAlert(sc, configPath, alertChan)
+		if err != nil {
+			slog.Error("evaluating daily loss alert", "err", err)
+		} else if fired {
+			firedAlerts["daily:"+dayKey] = true
+		}
+	}
+	if !firedAlerts["spingo_daily:"+dayKey] {
+		fired, err := bot.EvaluateSpingoDailyLossAlert(sc, configPath, alertChan)
+		if err != nil {
+			slog.Error("evaluating spin & go daily loss alert", "err", err)
+		} else if fired {
+			firedAlerts["spingo_daily:"+dayKey] = true
 		}
 	}
 }
@@ -646,21 +723,4 @@ func cashSessionSummaryText(session parsers.CashSession, bankroll float64) strin
 	}
 	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s$%.2f\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
 		session.Stake, sign, absNet, session.Hands, session.DurationMin, bankroll)
-}
-
-// ordinal formats n as "1st", "2nd", "3rd", "4th", etc.
-func ordinal(n int) string {
-	if n%100 >= 11 && n%100 <= 13 {
-		return fmt.Sprintf("%dth", n)
-	}
-	switch n % 10 {
-	case 1:
-		return fmt.Sprintf("%dst", n)
-	case 2:
-		return fmt.Sprintf("%dnd", n)
-	case 3:
-		return fmt.Sprintf("%drd", n)
-	default:
-		return fmt.Sprintf("%dth", n)
-	}
 }

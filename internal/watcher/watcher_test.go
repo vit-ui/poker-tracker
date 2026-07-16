@@ -21,7 +21,7 @@ func waitForEvent(t *testing.T, ch <-chan FileEvent, timeout time.Duration) (Fil
 // TestWatch_DetectsFileTypeByDirectory exercises Watch against two real temp
 // directories with a real fsnotify watcher (no mocks): writing a .txt file
 // into the hand history directory produces a "cash" event, writing one into
-// the tournament directory produces a "spingo" event, a non-.txt file in
+// the tournament directory produces a "tournament" event, a non-.txt file in
 // either directory produces no event at all, and closing done stops Watch.
 // The 2-second debounce means each assertion needs a timeout comfortably
 // above that.
@@ -67,8 +67,8 @@ func TestWatch_DetectsFileTypeByDirectory(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a FileEvent for the tournament summary .txt file, got none")
 	}
-	if ev.Type != "spingo" {
-		t.Errorf("Type = %q, want spingo", ev.Type)
+	if ev.Type != "tournament" {
+		t.Errorf("Type = %q, want tournament", ev.Type)
 	}
 
 	// A non-.txt file must never produce an event.

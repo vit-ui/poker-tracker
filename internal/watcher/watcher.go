@@ -15,7 +15,7 @@ import (
 // FileEvent represents a new or modified session file detected by the watcher.
 type FileEvent struct {
 	Path string
-	Type string // "cash" or "spingo"
+	Type string // "cash" (hand history folder) or "tournament" (tournament summary folder)
 }
 
 // Watch monitors handHistoryPath and tournamentPath for Write and Create events
@@ -77,7 +77,7 @@ func Watch(done <-chan struct{}, handHistoryPath, tournamentPath string, session
 			case absHand:
 				fileType = "cash"
 			case absTourney:
-				fileType = "spingo"
+				fileType = "tournament"
 			default:
 				continue
 			}
