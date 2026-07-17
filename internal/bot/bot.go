@@ -37,7 +37,12 @@ type Bot struct {
 	configPath         string
 	lockfilePath       string
 	serviceAccountPath string
+	dbPath             string
 	restartWatcher     func()
+
+	// pendingSwitch holds a /switchbackend migration awaiting the player's
+	// confirmation tap. Touched only from pollUpdates, like conversation.
+	pendingSwitch *pendingBackendSwitch
 
 	conversation
 }
@@ -78,9 +83,10 @@ func (c *conversation) reset() {
 // restartWatcher is called by the /paths and /screenname saves — it re-joins
 // the base paths with the screen name and restarts the watcher goroutine.
 //
-// serviceAccountPath is only used by /sheet and /credentials when switching
-// to a different spreadsheet or service account.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath string, restartWatcher func()) error {
+// serviceAccountPath is only used by /sheet, /credentials, and /switchbackend
+// when switching to a different spreadsheet or service account. dbPath is the
+// sqlite database path, used by /switchbackend to construct a sqlite target.
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func()) error {
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -92,6 +98,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		configPath:         configPath,
 		lockfilePath:       lockfilePath,
 		serviceAccountPath: serviceAccountPath,
+		dbPath:             dbPath,
 		restartWatcher:     restartWatcher,
 	}
 
@@ -164,6 +171,18 @@ func sendWithKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, text string, markup 
 	msg.ReplyMarkup = markup
 	if _, err := tgBot.Send(msg); err != nil {
 		slog.Error("sending telegram message", "err", err)
+	}
+}
+
+// clearKeyboard removes the inline keyboard from a message after it's been
+// answered, leaving its text intact — a tapped confirmation shouldn't stay
+// tappable. An empty (non-nil) keyboard is required: a nil slice marshals to
+// the null Telegram rejects for this field.
+func (b *Bot) clearKeyboard(chatID int64, messageID int) {
+	noButtons := tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}}
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, noButtons)
+	if _, err := b.tg.Send(edit); err != nil {
+		slog.Error("clearing telegram keyboard", "err", err)
 	}
 }
 
@@ -297,6 +316,10 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.resolveSatellite(chatID, messageID, strings.TrimPrefix(data, "satellite_cash:"), true)
 	case strings.HasPrefix(data, "satellite_ticket:"):
 		b.resolveSatellite(chatID, messageID, strings.TrimPrefix(data, "satellite_ticket:"), false)
+	case data == "switchbackend:yes":
+		b.resolveSwitchBackend(chatID, messageID, true)
+	case data == "switchbackend:no":
+		b.resolveSwitchBackend(chatID, messageID, false)
 	case strings.HasPrefix(data, "paths:"):
 		b.handlePathsCallback(chatID, strings.TrimPrefix(data, "paths:"))
 	case strings.HasPrefix(data, "alerts:"):
@@ -334,6 +357,8 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 		b.handleStats(chatID, msg.CommandArguments())
 	case "sheet":
 		b.handleSheetCommand(chatID, msg.CommandArguments())
+	case "switchbackend":
+		b.handleSwitchBackendCommand(chatID, msg.CommandArguments())
 	case "export":
 		b.handleExportCommand(chatID)
 	case "credentials":

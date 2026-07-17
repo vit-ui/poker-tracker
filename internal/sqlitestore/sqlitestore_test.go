@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"math"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -1146,3 +1147,189 @@ func TestGetAllCashSessions_EmptyReturnsNoRowsNoError(t *testing.T) {
 }
 
 func floatPtr(f float64) *float64 { return &f }
+
+// ---------------------------------------------------------------------------
+// Snapshot export/import + Migrate
+// ---------------------------------------------------------------------------
+
+// populateStore fills s with a varied, realistic history exercising every
+// branch a migration must preserve: deposits/withdrawals, cash sessions, a
+// cash-pool Spin & Go, a ticket-pool (satellite) tournament, a knockout MTT
+// with folded bounty, a summary-only tournament (nil VPIP/PFR/Hands), and a
+// hand-file-only partial tournament (no summary → blank date, no ledger row).
+func populateStore(t *testing.T, s *Store) {
+	t.Helper()
+
+	if err := s.AppendLedgerEntry("deposit", 100); err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-10T20:00:00Z"), "200000000001", 50, -5.25)); err != nil {
+		t.Fatalf("cash A: %v", err)
+	}
+	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-11T21:30:00Z"), "200000000002", 80, 12.40)); err != nil {
+		t.Fatalf("cash B: %v", err)
+	}
+	if err := s.AppendLedgerEntry("withdrawal", -20); err != nil {
+		t.Fatalf("withdrawal: %v", err)
+	}
+
+	// Cash-pool Spin & Go with hand stats.
+	spingo := parsers.Tournament{
+		Date: mustTime(t, "2026-07-12T18:00:00Z"), TournamentID: "T-SPIN-1", Type: "spingo",
+		BuyInUSD: 5, PrizePoolUSD: 30, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3, NetUSD: 25,
+	}
+	if _, err := s.AppendTournament(spingo); err != nil {
+		t.Fatalf("spingo summary: %v", err)
+	}
+	if err := s.UpdateTournamentHandStats("T-SPIN-1", 40, 33, 18, 0, false); err != nil {
+		t.Fatalf("spingo hands: %v", err)
+	}
+
+	// Ticket-denominated satellite (non-cash prize pool).
+	sat := parsers.Tournament{
+		Date: mustTime(t, "2026-07-13T19:00:00Z"), TournamentID: "T-SAT-1", Type: "spingo",
+		BuyInUSD: 1, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", FinishPos: 2, TotalPlayers: 3, NetUSD: -1,
+	}
+	if _, err := s.AppendTournament(sat); err != nil {
+		t.Fatalf("sat summary: %v", err)
+	}
+
+	// Knockout MTT, hand stats first then summary — folds bounty into net.
+	if err := s.UpdateTournamentHandStats("T-KO-1", 22, 17, 120, 4.50, true); err != nil {
+		t.Fatalf("ko hands: %v", err)
+	}
+	koMTT := parsers.Tournament{
+		Date: mustTime(t, "2026-07-14T20:00:00Z"), TournamentID: "T-KO-1", Type: "mtt",
+		BuyInUSD: 10, PrizePoolUSD: 500, FinishPos: 8, TotalPlayers: 60, NetUSD: 15,
+	}
+	if _, err := s.AppendTournament(koMTT); err != nil {
+		t.Fatalf("ko summary: %v", err)
+	}
+
+	// Summary-only MTT — no hand file ever arrived, so VPIP/PFR/Hands stay nil.
+	mtt := parsers.Tournament{
+		Date: mustTime(t, "2026-07-15T20:00:00Z"), TournamentID: "T-MTT-2", Type: "mtt",
+		BuyInUSD: 3, PrizePoolUSD: 200, FinishPos: 40, TotalPlayers: 100, NetUSD: -3,
+	}
+	if _, err := s.AppendTournament(mtt); err != nil {
+		t.Fatalf("mtt summary: %v", err)
+	}
+
+	// Hand-file-only partial — summary hasn't arrived (blank date, no ledger row).
+	if err := s.UpdateTournamentHandStats("T-PARTIAL-1", 30, 25, 45, 2.0, true); err != nil {
+		t.Fatalf("partial hands: %v", err)
+	}
+}
+
+func assertSnapshotsEqual(t *testing.T, want, got storage.Snapshot) {
+	t.Helper()
+	if len(want.CashSessions) != len(got.CashSessions) ||
+		len(want.Tournaments) != len(got.Tournaments) ||
+		len(want.Ledger) != len(got.Ledger) ||
+		len(want.TimeAnalysis) != len(got.TimeAnalysis) {
+		t.Fatalf("snapshot lengths differ: want cash=%d tourn=%d ledger=%d time=%d, got cash=%d tourn=%d ledger=%d time=%d",
+			len(want.CashSessions), len(want.Tournaments), len(want.Ledger), len(want.TimeAnalysis),
+			len(got.CashSessions), len(got.Tournaments), len(got.Ledger), len(got.TimeAnalysis))
+	}
+	for i := range want.CashSessions {
+		if !reflect.DeepEqual(want.CashSessions[i], got.CashSessions[i]) {
+			t.Errorf("cash session %d differs:\n want %+v\n  got %+v", i, want.CashSessions[i], got.CashSessions[i])
+		}
+	}
+	for i := range want.Tournaments {
+		if !reflect.DeepEqual(want.Tournaments[i], got.Tournaments[i]) {
+			t.Errorf("tournament %d differs:\n want %+v\n  got %+v", i, want.Tournaments[i], got.Tournaments[i])
+		}
+	}
+	for i := range want.Ledger {
+		if !reflect.DeepEqual(want.Ledger[i], got.Ledger[i]) {
+			t.Errorf("ledger entry %d differs:\n want %+v\n  got %+v", i, want.Ledger[i], got.Ledger[i])
+		}
+	}
+	for i := range want.TimeAnalysis {
+		if !reflect.DeepEqual(want.TimeAnalysis[i], got.TimeAnalysis[i]) {
+			t.Errorf("time analysis %d differs:\n want %+v\n  got %+v", i, want.TimeAnalysis[i], got.TimeAnalysis[i])
+		}
+	}
+}
+
+func TestExportImportSnapshot_RoundTrip(t *testing.T) {
+	src := newTestStore(t)
+	populateStore(t, src)
+
+	snap, err := src.ExportSnapshot()
+	if err != nil {
+		t.Fatalf("ExportSnapshot: %v", err)
+	}
+
+	// The partial tournament must be present (GetAllTournaments would drop it).
+	var partial *storage.TournamentRecord
+	for i := range snap.Tournaments {
+		if snap.Tournaments[i].TournamentID == "T-PARTIAL-1" {
+			partial = &snap.Tournaments[i]
+		}
+	}
+	if partial == nil {
+		t.Fatal("ExportSnapshot dropped the partial tournament row")
+	}
+	if !partial.Date.IsZero() {
+		t.Errorf("partial tournament Date = %v, want zero", partial.Date)
+	}
+	if partial.Type != storage.KnockoutPlaceholder {
+		t.Errorf("partial tournament Type = %q, want %q", partial.Type, storage.KnockoutPlaceholder)
+	}
+
+	dst := newTestStore(t)
+	if err := dst.ImportSnapshot(snap); err != nil {
+		t.Fatalf("ImportSnapshot: %v", err)
+	}
+
+	got, err := dst.ExportSnapshot()
+	if err != nil {
+		t.Fatalf("re-export: %v", err)
+	}
+	assertSnapshotsEqual(t, snap, got)
+
+	srcBankroll, _ := src.GetCurrentBankroll()
+	dstBankroll, _ := dst.GetCurrentBankroll()
+	if !closeEnough(srcBankroll, dstBankroll) {
+		t.Errorf("bankroll mismatch: src %.2f, dst %.2f", srcBankroll, dstBankroll)
+	}
+}
+
+func TestMigrate_TwoSqliteStores(t *testing.T) {
+	src := newTestStore(t)
+	populateStore(t, src)
+	srcSnap, _ := src.ExportSnapshot()
+	srcBankroll, _ := src.GetCurrentBankroll()
+
+	dst := newTestStore(t)
+	migrated, err := storage.Migrate(src, dst)
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	if len(migrated.Ledger) != len(srcSnap.Ledger) {
+		t.Errorf("migrated ledger count = %d, want %d", len(migrated.Ledger), len(srcSnap.Ledger))
+	}
+	dstBankroll, _ := dst.GetCurrentBankroll()
+	if !closeEnough(srcBankroll, dstBankroll) {
+		t.Errorf("bankroll mismatch after Migrate: src %.2f, dst %.2f", srcBankroll, dstBankroll)
+	}
+	got, _ := dst.ExportSnapshot()
+	assertSnapshotsEqual(t, srcSnap, got)
+}
+
+func TestMigrate_RefusesNonEmptyDestination(t *testing.T) {
+	src := newTestStore(t)
+	populateStore(t, src)
+
+	dst := newTestStore(t)
+	if err := dst.AppendLedgerEntry("deposit", 50); err != nil {
+		t.Fatalf("seeding dst: %v", err)
+	}
+
+	if _, err := storage.Migrate(src, dst); err == nil {
+		t.Fatal("Migrate into a non-empty destination should error, got nil")
+	}
+}

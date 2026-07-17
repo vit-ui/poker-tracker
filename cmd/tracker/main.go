@@ -401,7 +401,7 @@ func runServe() {
 	go hardstop.RunEnforcementLoop(lockfilePath, make(chan struct{}))
 
 	go func() {
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, restartWatcher)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit

@@ -46,6 +46,31 @@ type TimeAnalysisRecord struct {
 	SessionID string
 }
 
+// Snapshot is every row of all four data sets, as full records, used only by
+// the backend-migration path (bot's /switchbackend). Unlike GetAllTournaments,
+// its Tournaments slice includes partial rows (a hand file arrived before the
+// summary — Date zero, no ledger impact yet), so a tournament still in progress
+// across a backend switch keeps its VPIP/PFR/hands/bounty. A Snapshot is a raw
+// copy: every value is carried verbatim (session IDs, dates, and money columns
+// — including each ledger row's stored running total and each tournament's
+// Prize Won), never re-derived, so ImportSnapshot reproduces the source rows
+// byte-for-byte rather than replaying them through the Append* methods (which
+// would re-fold bounties and recompute session IDs off a FirstHandID the read
+// side never carries).
+type Snapshot struct {
+	CashSessions []CashSessionRecord
+	Tournaments  []TournamentRecord
+	Ledger       []LedgerEntry
+	TimeAnalysis []TimeAnalysisRecord
+}
+
+// IsEmpty reports whether the snapshot holds no rows in any data set — the
+// emptiness test a migration target must pass before it's imported into.
+func (s Snapshot) IsEmpty() bool {
+	return len(s.CashSessions) == 0 && len(s.Tournaments) == 0 &&
+		len(s.Ledger) == 0 && len(s.TimeAnalysis) == 0
+}
+
 // Store is the persistence contract both backends implement. Its method set
 // is exactly the operations the worker, bot, and hardstop code call.
 type Store interface {
@@ -61,4 +86,11 @@ type Store interface {
 	GetAllCashSessions() ([]CashSessionRecord, error)
 	GetAllTournaments() ([]TournamentRecord, error)
 	GetAllTimeAnalysis() ([]TimeAnalysisRecord, error)
+
+	// ExportSnapshot and ImportSnapshot move an install's whole history
+	// between backends (bot's /switchbackend). Both backends need both
+	// directions — either can be the source or the empty target — which is
+	// why they're on the interface rather than a concrete type.
+	ExportSnapshot() (Snapshot, error)
+	ImportSnapshot(Snapshot) error
 }

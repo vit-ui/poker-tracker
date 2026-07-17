@@ -2,7 +2,7 @@
 
 A Windows background service that automatically tracks your PokerStars sessions, maintains your bankroll accounting, and exposes it all through a Telegram bot: session alerts, stats, and a hard-stop lock that closes PokerStars when you go on tilt.
 
-It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand histories and tournament summaries to disk; the tracker parses them as they land, and you talk to it entirely through Telegram. Your data lives in **either a Google Sheet or a local SQLite file**, whichever you pick at install.
+It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand histories and tournament summaries to disk; the tracker parses them as they land, and you talk to it entirely through Telegram. Your data lives in **either a Google Sheet or a local SQLite file**, whichever you pick at install — and you can move it between the two later with a single command.
 
 ## Highlights
 
@@ -13,6 +13,7 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 - **Satellite / ticket detection** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never counts as a cash buy-in against your bankroll.
 - **One running ledger** for deposits, withdrawals, and every session net, so your true P&L stays correct through reloads.
 - **CSV export** on both backends, in identical format, so your data stays portable whichever storage you chose.
+- **Switch storage anytime** with `/switchbackend`, which migrates your whole history between Google Sheets and the local file and verifies the copy before flipping over.
 
 ## Installing
 
@@ -84,6 +85,12 @@ With no argument, replies with the spreadsheet URL. With a sheet name or a paste
 </details>
 
 <details>
+<summary><code>/switchbackend [sheet name or URL]</code> — migrate between Google Sheets and local storage</summary>
+
+Moves your entire history to the other backend and restarts the tracker on it. Switching **to** Google Sheets takes an empty sheet's name or URL, shared with your service account (run `/credentials` first if this install has none); switching **to** the local file needs no argument. The target must be empty — there is no merge. You confirm a summary of row counts before anything is copied (close PokerStars first so no hand is played mid-switch), and the copy is verified against your current bankroll before the backend is flipped, so a failed migration leaves you exactly where you were.
+</details>
+
+<details>
 <summary><code>/screenname [name]</code> — view or change your PokerStars screen name</summary>
 
 With no argument, shows the configured screen name. With one, saves it and restarts the file watcher immediately, since the watched folders include the screen name as a subfolder. Capitalisation matters.
@@ -92,7 +99,7 @@ With no argument, shows the configured screen name. With one, saves it and resta
 <details>
 <summary><code>/credentials</code> — swap the Google service account key</summary>
 
-Google Sheets backend only. Send the new `google_service_account.json` as an attachment; the current sheet is re-checked against it, and if the new account can't reach it you're prompted to reconnect one with `/sheet`. Takes effect after a service restart.
+Send the new `google_service_account.json` as an attachment. On the Google Sheets backend the current sheet is re-checked against it, and if the new account can't reach it you're prompted to reconnect one with `/sheet`; takes effect after a service restart. On the local-file backend this is how you provide the credentials `/switchbackend` needs before migrating to Google Sheets.
 </details>
 
 <details>

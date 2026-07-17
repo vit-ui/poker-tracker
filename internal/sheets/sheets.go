@@ -1067,32 +1067,39 @@ func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord
 	}
 	var result []storage.CashSessionRecord
 	for _, row := range resp.Values[1:] {
-		if len(row) < 9 {
+		rec, ok := parseCashRow(row)
+		if !ok || rec.Date.Before(since) {
 			continue
-		}
-		date, err := time.Parse(dateFormat, fmt.Sprint(row[0]))
-		if err != nil || date.Before(since) {
-			continue
-		}
-		rec := storage.CashSessionRecord{
-			CashSession: parsers.CashSession{
-				Date:        date,
-				Stake:       fmt.Sprint(row[1]),
-				Hands:       parseInt(row[2]),
-				DurationMin: parseInt(row[3]),
-				NetUSD:      parseFloat(row[4]),
-				RakeUSD:     parseFloat(row[5]),
-				BB100:       parseFloat(row[6]),
-				VPIP:        parseFloat(row[7]),
-				PFR:         parseFloat(row[8]),
-			},
-		}
-		if len(row) > 9 {
-			rec.SessionID = fmt.Sprint(row[9])
 		}
 		result = append(result, rec)
 	}
 	return result, nil
+}
+
+// parseCashRow parses one Cash Sessions row (columns A:J) into a record. ok is
+// false when column A doesn't hold a valid date — a blank or malformed row.
+// Shared by queryCashSessions and the migration round-trip so both decode a
+// row identically.
+func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool) {
+	date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0)))
+	if err != nil {
+		return storage.CashSessionRecord{}, false
+	}
+	rec = storage.CashSessionRecord{
+		CashSession: parsers.CashSession{
+			Date:        date,
+			Stake:       fmt.Sprint(cell(row, 1)),
+			Hands:       parseInt(cell(row, 2)),
+			DurationMin: parseInt(cell(row, 3)),
+			NetUSD:      parseFloat(cell(row, 4)),
+			RakeUSD:     parseFloat(cell(row, 5)),
+			BB100:       parseFloat(cell(row, 6)),
+			VPIP:        parseFloat(cell(row, 7)),
+			PFR:         parseFloat(cell(row, 8)),
+		},
+		SessionID: fmt.Sprint(cell(row, 9)),
+	}
+	return rec, true
 }
 
 // GetCashSessionsSince returns all Cash Sessions rows where Date >= t.
@@ -1132,55 +1139,80 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 	}
 	var result []storage.TournamentRecord
 	for _, row := range resp.Values[1:] {
-		if len(row) < 9 {
+		rec, hasDate := parseTournamentRow(row)
+		if !hasDate || rec.Date.Before(since) {
 			continue
 		}
-		date, err := time.Parse(dateFormat, fmt.Sprint(row[0]))
-		if err != nil || date.Before(since) {
+		result = append(result, rec)
+	}
+	return result, nil
+}
+
+// parseTournamentRow parses one Tournaments row (columns A:N) into a record.
+// hasDate is false for a partial row — a hand file parsed before its summary
+// arrived, whose Date cell (column A) is blank — which callers reading only
+// completed tournaments skip, but the migration snapshot keeps (with a zero
+// Date). Shared by queryTournaments, allTournamentRows, and the migration
+// round-trip so every path decodes a row identically.
+func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDate bool) {
+	rec.Type = fmt.Sprint(cell(row, 1))
+	rec.TournamentID = fmt.Sprint(cell(row, 2))
+	if date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0))); err == nil {
+		rec.Date = date
+		hasDate = true
+	}
+	rec.BuyInUSD = parseFloat(cell(row, 3))
+	// Prize Pool (col E) holds a number for a real cash pool, or text for a
+	// ticket-denominated one (e.g. "$1.00 Power Path Step 2 Ticket") — see
+	// AppendTournament's prizePool write.
+	if desc, ok := cell(row, 4).(string); ok && desc != "" {
+		rec.PrizePoolDescription = desc
+	} else {
+		rec.PrizePoolUSD = parseFloat(cell(row, 4))
+	}
+	// Multiplier (col F) is empty for MTT rows.
+	if mult := fmt.Sprint(cell(row, 5)); mult != "" {
+		m := parseFloat(cell(row, 5))
+		rec.Multiplier = &m
+	}
+	rec.FinishPos = parseInt(cell(row, 6))
+	rec.TotalPlayers = parseInt(cell(row, 7))
+	rec.NetUSD = parseFloat(cell(row, 8))
+	if v := fmt.Sprint(cell(row, 9)); v != "" {
+		f := parseFloat(cell(row, 9))
+		rec.VPIP = &f
+	}
+	if p := fmt.Sprint(cell(row, 10)); p != "" {
+		f := parseFloat(cell(row, 10))
+		rec.PFR = &f
+	}
+	rec.BountyWonUSD = parseFloat(cell(row, 11))
+	rec.PrizeWonUSD = parseFloat(cell(row, 12))
+	if h := fmt.Sprint(cell(row, 13)); h != "" {
+		n := parseInt(cell(row, 13))
+		rec.Hands = &n
+	}
+	return rec, hasDate
+}
+
+// allTournamentRows reads every Tournaments row including partial ones (blank
+// Date), for the migration snapshot. queryTournaments can't be reused: it
+// drops partials, which a migration must carry so an in-progress tournament
+// keeps its hand-file stats across a backend switch.
+func (c *Client) allTournamentRows() ([]storage.TournamentRecord, error) {
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:N")
+	if err != nil {
+		return nil, fmt.Errorf("reading tournaments: %w", err)
+	}
+	if len(resp.Values) <= 1 {
+		return nil, nil
+	}
+	var result []storage.TournamentRecord
+	for _, row := range resp.Values[1:] {
+		if len(row) < 3 {
 			continue
 		}
-		rec := storage.TournamentRecord{
-			Tournament: parsers.Tournament{
-				Date:         date,
-				Type:         fmt.Sprint(row[1]),
-				TournamentID: fmt.Sprint(row[2]),
-				BuyInUSD:     parseFloat(row[3]),
-				FinishPos:    parseInt(row[6]),
-				TotalPlayers: parseInt(row[7]),
-				NetUSD:       parseFloat(row[8]),
-			},
-		}
-		// Prize Pool (col E) holds a number for a real cash pool, or text
-		// for a ticket-denominated one (e.g. "$1.00 Power Path Step 2
-		// Ticket") — see AppendTournament's prizePool write.
-		if desc, ok := row[4].(string); ok && desc != "" {
-			rec.PrizePoolDescription = desc
-		} else {
-			rec.PrizePoolUSD = parseFloat(row[4])
-		}
-		// Multiplier (col F) is empty for MTT rows.
-		if mult := fmt.Sprint(row[5]); mult != "" {
-			m := parseFloat(row[5])
-			rec.Multiplier = &m
-		}
-		if len(row) > 9 && fmt.Sprint(row[9]) != "" {
-			v := parseFloat(row[9])
-			rec.VPIP = &v
-		}
-		if len(row) > 10 && fmt.Sprint(row[10]) != "" {
-			p := parseFloat(row[10])
-			rec.PFR = &p
-		}
-		if len(row) > 11 {
-			rec.BountyWonUSD = parseFloat(row[11])
-		}
-		if len(row) > 12 {
-			rec.PrizeWonUSD = parseFloat(row[12])
-		}
-		if len(row) > 13 && fmt.Sprint(row[13]) != "" {
-			h := parseInt(row[13])
-			rec.Hands = &h
-		}
+		rec, _ := parseTournamentRow(row)
 		result = append(result, rec)
 	}
 	return result, nil
@@ -1217,25 +1249,193 @@ func (c *Client) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
 	}
 	var result []storage.TimeAnalysisRecord
 	for _, row := range resp.Values[1:] {
-		if len(row) < 4 {
+		rec, ok := parseTimeRow(row)
+		if !ok {
 			continue
-		}
-		date, err := time.Parse(dateFormat, fmt.Sprint(row[0]))
-		if err != nil {
-			continue
-		}
-		rec := storage.TimeAnalysisRecord{
-			Date:      date,
-			Hour:      parseInt(row[1]),
-			DayOfWeek: fmt.Sprint(row[2]),
-			NetUSD:    parseFloat(row[3]),
-		}
-		if len(row) > 4 {
-			rec.SessionID = fmt.Sprint(row[4])
 		}
 		result = append(result, rec)
 	}
 	return result, nil
+}
+
+// parseTimeRow parses one Time Analysis row (columns A:E). ok is false when
+// column A doesn't hold a valid date. Shared by GetAllTimeAnalysis and the
+// migration round-trip.
+func parseTimeRow(row []interface{}) (rec storage.TimeAnalysisRecord, ok bool) {
+	date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0)))
+	if err != nil {
+		return storage.TimeAnalysisRecord{}, false
+	}
+	return storage.TimeAnalysisRecord{
+		Date:      date,
+		Hour:      parseInt(cell(row, 1)),
+		DayOfWeek: fmt.Sprint(cell(row, 2)),
+		NetUSD:    parseFloat(cell(row, 3)),
+		SessionID: fmt.Sprint(cell(row, 4)),
+	}, true
+}
+
+// ExportSnapshot returns every row of all four tabs as full records, for a
+// backend migration. Unlike GetAllTournaments its Tournaments slice keeps
+// partial rows (blank Date), read via allTournamentRows.
+func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
+	cash, err := c.GetAllCashSessions()
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	tournaments, err := c.allTournamentRows()
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	ledger, err := c.GetLedgerEntriesSince(time.Time{})
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	timeAnalysis, err := c.GetAllTimeAnalysis()
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	return storage.Snapshot{
+		CashSessions: cash,
+		Tournaments:  tournaments,
+		Ledger:       ledger,
+		TimeAnalysis: timeAnalysis,
+	}, nil
+}
+
+// ImportSnapshot writes a whole snapshot into an empty spreadsheet, one
+// batched append per tab (four API calls, not one per row — a real history
+// would otherwise stall against the Sheets write quota). Every value is
+// written verbatim: session IDs, dates (truncated to the tab's minute
+// precision), running totals, and each tournament's already-bounty-folded Net
+// and Prize Won are stored as-read, never recomputed. The caller
+// (storage.Migrate) guarantees the tabs hold only their header row first.
+func (c *Client) ImportSnapshot(snap storage.Snapshot) error {
+	if rows := buildCashRows(snap.CashSessions); len(rows) > 0 {
+		if err := c.svc.valuesAppend(c.spreadsheetID, "Cash Sessions!A1", rows); err != nil {
+			return fmt.Errorf("importing cash sessions: %w", err)
+		}
+	}
+	if rows := buildTournamentRows(snap.Tournaments); len(rows) > 0 {
+		if err := c.svc.valuesAppend(c.spreadsheetID, "Tournaments!A1", rows); err != nil {
+			return fmt.Errorf("importing tournaments: %w", err)
+		}
+	}
+	if rows := buildLedgerRows(snap.Ledger); len(rows) > 0 {
+		if err := c.svc.valuesAppend(c.spreadsheetID, "Bankroll Ledger!A1", rows); err != nil {
+			return fmt.Errorf("importing bankroll ledger: %w", err)
+		}
+	}
+	if rows := buildTimeRows(snap.TimeAnalysis); len(rows) > 0 {
+		if err := c.svc.valuesAppend(c.spreadsheetID, "Time Analysis!A1", rows); err != nil {
+			return fmt.Errorf("importing time analysis: %w", err)
+		}
+	}
+	return nil
+}
+
+// buildCashRows / buildTournamentRows / buildLedgerRows / buildTimeRows map
+// records to the cell layout each tab's parse* counterpart reads back. They're
+// pure (no Client, no I/O) so a migration's column alignment is unit-tested by
+// round-tripping build → parse without a live sheet.
+func buildCashRows(sessions []storage.CashSessionRecord) [][]interface{} {
+	rows := make([][]interface{}, len(sessions))
+	for i, s := range sessions {
+		rows[i] = []interface{}{
+			s.Date.UTC().Format(dateFormat), s.Stake, s.Hands, s.DurationMin,
+			s.NetUSD, s.RakeUSD, s.BB100, s.VPIP, s.PFR, s.SessionID,
+		}
+	}
+	return rows
+}
+
+func buildTournamentRows(tournaments []storage.TournamentRecord) [][]interface{} {
+	rows := make([][]interface{}, len(tournaments))
+	for i, t := range tournaments {
+		if t.Date.IsZero() {
+			// Partial row: Date and every summary-only column blank, exactly
+			// as rawUpdateTournamentHandStats's partial append writes them, so
+			// Net (col I) stays empty and isn't read back as summary data.
+			rows[i] = []interface{}{
+				"", t.Type, t.TournamentID, "", "", "", "", "", "",
+				floatCell(t.VPIP), floatCell(t.PFR), t.BountyWonUSD, "", intCell(t.Hands),
+			}
+			continue
+		}
+		var prizePool interface{} = t.PrizePoolUSD
+		if t.PrizePoolDescription != "" {
+			prizePool = t.PrizePoolDescription
+		}
+		var multiplier interface{} = ""
+		if t.Multiplier != nil {
+			multiplier = *t.Multiplier
+		}
+		rows[i] = []interface{}{
+			t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInUSD, prizePool, multiplier,
+			t.FinishPos, t.TotalPlayers, t.NetUSD, floatCell(t.VPIP), floatCell(t.PFR),
+			t.BountyWonUSD, t.PrizeWonUSD, intCell(t.Hands),
+		}
+	}
+	return rows
+}
+
+func buildLedgerRows(entries []storage.LedgerEntry) [][]interface{} {
+	rows := make([][]interface{}, len(entries))
+	for i, e := range entries {
+		rows[i] = []interface{}{
+			e.Date.UTC().Format(dateFormat), e.Type, e.AmountUSD, e.RunningTotal, e.SessionID,
+		}
+	}
+	return rows
+}
+
+func buildTimeRows(records []storage.TimeAnalysisRecord) [][]interface{} {
+	rows := make([][]interface{}, len(records))
+	for i, r := range records {
+		rows[i] = []interface{}{
+			r.Date.UTC().Format(dateFormat), r.Hour, r.DayOfWeek, r.NetUSD, r.SessionID,
+		}
+	}
+	return rows
+}
+
+// floatCell / intCell write an optional numeric field as its value, or an
+// empty cell when unset (nil) — VPIP/PFR/Hands on a tournament that has no hand
+// data yet, which must read back as a nil pointer, not 0.
+func floatCell(p *float64) interface{} {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func intCell(p *int) interface{} {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// PendingWrites reports how many failed writes are queued in the write-ahead
+// fallback. A migration must refuse to run while any are pending — they're
+// invisible to the read methods, so the source data on the sheet is
+// incomplete until they flush. Always 0 for a fallback-disabled client.
+func (c *Client) PendingWrites() int {
+	c.fallbackMu.Lock()
+	defer c.fallbackMu.Unlock()
+	return len(c.fallback)
+}
+
+// ClearAllData deletes every data row (row 2 onward) from all four tabs,
+// leaving the header rows. Used to roll a spreadsheet back to empty after a
+// failed migration import, so a retry passes the empty-target check.
+func (c *Client) ClearAllData() error {
+	for _, tab := range []string{"Cash Sessions", "Tournaments", "Bankroll Ledger", "Time Analysis"} {
+		if err := c.svc.valuesClear(c.spreadsheetID, tab+"!A2:Z"); err != nil {
+			return fmt.Errorf("clearing %s: %w", tab, err)
+		}
+	}
+	return nil
 }
 
 func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {
@@ -1260,6 +1460,17 @@ func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// cell returns row[i], or "" when the row is shorter than i+1 — the Sheets API
+// omits trailing empty cells, so a row read back is often shorter than its
+// full column count. Lets the row parsers index any column without a length
+// check at every access.
+func cell(row []interface{}, i int) interface{} {
+	if i < len(row) {
+		return row[i]
+	}
+	return ""
 }
 
 func parseInt(v interface{}) int {

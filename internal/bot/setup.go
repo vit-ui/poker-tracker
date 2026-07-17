@@ -425,6 +425,12 @@ func downloadTelegramFile(tgBot *tgbotapi.BotAPI, fileID, destPath string) error
 	if err != nil {
 		return fmt.Errorf("reading downloaded file: %w", err)
 	}
+	// The destination directory may not exist yet — a sqlite install never
+	// has a credentials\ folder until /credentials uploads one so
+	// /switchbackend can migrate to sheets.
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
 	if err := os.WriteFile(destPath, data, 0644); err != nil {
 		return fmt.Errorf("writing file: %w", err)
 	}

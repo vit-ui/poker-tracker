@@ -182,20 +182,10 @@ func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 // account JSON used to authenticate to Sheets/Drive. Unlike the four
 // config flows (paths/alerts/hardstop/schedule), this one expects a file
 // upload rather than a plain-text reply — see handleCredentialsDocument.
-// Sheets-only, same gating as /sheet — a sqlite install has no Google
-// credentials to swap.
+// Deliberately not gated to the sheets backend like /sheet is: on a sqlite
+// install this is how the credentials /switchbackend needs to migrate to
+// Google Sheets get onto the machine in the first place.
 func (b *Bot) startCredentialsFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
-		send(b.tg, chatID, "This install uses local storage — there is no Google Sheet. Use /export to get your data as CSV.")
-		return
-	}
-
 	b.flow = "credentials"
 	b.field = "file"
 	send(b.tg, chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")
@@ -237,6 +227,13 @@ func (b *Bot) handleCredentialsDocument(chatID int64, fileID string) {
 	if err != nil {
 		slog.Error("loading config", "err", err)
 		send(b.tg, chatID, "✅ Credentials file saved, but something went wrong checking your sheet. Check logs, and run /sheet to reconnect if needed.")
+		return
+	}
+
+	// On the sqlite backend there's no sheet to re-validate — the credentials
+	// exist solely so /switchbackend can migrate to Google Sheets.
+	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
+		send(b.tg, chatID, "✅ Credentials file saved. You can now run /switchbackend <sheet name or URL> to migrate to Google Sheets.")
 		return
 	}
 

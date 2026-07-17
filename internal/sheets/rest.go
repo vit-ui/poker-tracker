@@ -122,6 +122,12 @@ func (s *restService) valuesAppend(spreadsheetID, rng string, values [][]interfa
 		valueRange{Values: values}, nil)
 }
 
+// valuesClear deletes the values in a range, leaving the cells empty. Used to
+// roll back a partially-written migration import.
+func (s *restService) valuesClear(spreadsheetID, rng string) error {
+	return s.doJSON(http.MethodPost, valuesURL(spreadsheetID, rng, ":clear", ""), struct{}{}, nil)
+}
+
 // valuesBatchUpdate writes several disjoint ranges in one call.
 func (s *restService) valuesBatchUpdate(spreadsheetID string, data []valueRange) error {
 	body := struct {

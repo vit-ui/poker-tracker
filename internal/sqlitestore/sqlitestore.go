@@ -785,6 +785,225 @@ func (s *Store) GetAllTournaments() ([]storage.TournamentRecord, error) {
 	return s.queryTournaments(time.Time{})
 }
 
+// ExportSnapshot returns every row of all four tables as full records, for a
+// backend migration. Unlike GetAllTournaments it keeps partial tournament rows
+// (no date), read via allTournamentRows.
+func (s *Store) ExportSnapshot() (storage.Snapshot, error) {
+	cash, err := s.GetAllCashSessions()
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	tournaments, err := s.allTournamentRows()
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	ledger, err := s.GetLedgerEntriesSince(time.Time{})
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	timeAnalysis, err := s.GetAllTimeAnalysis()
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	return storage.Snapshot{
+		CashSessions: cash,
+		Tournaments:  tournaments,
+		Ledger:       ledger,
+		TimeAnalysis: timeAnalysis,
+	}, nil
+}
+
+// allTournamentRows reads every tournaments row including partial ones (date
+// NULL — a hand file parsed before its summary arrived). Every column is
+// scanned nullably, since a partial row leaves date, buy-in, finish position,
+// net, and prize won unset. queryTournaments can't be reused: it filters
+// partials out and scans those columns non-nullably.
+func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
+			multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd, hands
+		FROM tournaments ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("reading tournaments: %w", err)
+	}
+	defer rows.Close()
+
+	var result []storage.TournamentRecord
+	for rows.Next() {
+		var date, prizePoolDesc sql.NullString
+		var typeVal, tournamentID string
+		var buyIn, prizePoolUSD, multiplier, netUSD, vpip, pfr, bountyUSD, prizeWonUSD sql.NullFloat64
+		var finishPos, totalPlayers, hands sql.NullInt64
+		if err := rows.Scan(&date, &typeVal, &tournamentID, &buyIn, &prizePoolUSD, &prizePoolDesc,
+			&multiplier, &finishPos, &totalPlayers, &netUSD, &vpip, &pfr, &bountyUSD, &prizeWonUSD, &hands); err != nil {
+			return nil, fmt.Errorf("scanning tournament row: %w", err)
+		}
+		rec := storage.TournamentRecord{
+			Tournament: parsers.Tournament{Type: typeVal, TournamentID: tournamentID},
+		}
+		if date.Valid {
+			d, err := time.Parse(dateFormat, date.String)
+			if err != nil {
+				return nil, fmt.Errorf("parsing tournament date %q: %w", date.String, err)
+			}
+			rec.Date = d
+		}
+		if buyIn.Valid {
+			rec.BuyInUSD = buyIn.Float64
+		}
+		if prizePoolDesc.Valid && prizePoolDesc.String != "" {
+			rec.PrizePoolDescription = prizePoolDesc.String
+		} else if prizePoolUSD.Valid {
+			rec.PrizePoolUSD = prizePoolUSD.Float64
+		}
+		if multiplier.Valid {
+			m := multiplier.Float64
+			rec.Multiplier = &m
+		}
+		if finishPos.Valid {
+			rec.FinishPos = int(finishPos.Int64)
+		}
+		if totalPlayers.Valid {
+			rec.TotalPlayers = int(totalPlayers.Int64)
+		}
+		if netUSD.Valid {
+			rec.NetUSD = netUSD.Float64
+		}
+		if vpip.Valid {
+			v := vpip.Float64
+			rec.VPIP = &v
+		}
+		if pfr.Valid {
+			p := pfr.Float64
+			rec.PFR = &p
+		}
+		if bountyUSD.Valid {
+			rec.BountyWonUSD = bountyUSD.Float64
+		}
+		if prizeWonUSD.Valid {
+			rec.PrizeWonUSD = prizeWonUSD.Float64
+		}
+		if hands.Valid {
+			h := int(hands.Int64)
+			rec.Hands = &h
+		}
+		result = append(result, rec)
+	}
+	return result, rows.Err()
+}
+
+// ImportSnapshot writes a whole snapshot into an empty database in one
+// transaction, copying every value verbatim — session IDs, dates, running
+// totals, and each tournament's already-bounty-folded Net and Prize Won are
+// stored as-read, never recomputed, so no re-folding or ledger cascade runs.
+// The caller (storage.Migrate) guarantees the database is empty first.
+func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, c := range snap.CashSessions {
+		if _, err := tx.Exec(`
+			INSERT INTO cash_sessions (date, stake, hands, duration_min, net_usd, rake_usd, bb100, vpip, pfr, session_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, c.Date.UTC().Format(dateFormat), c.Stake, c.Hands, c.DurationMin, c.NetUSD, c.RakeUSD,
+			c.BB100, c.VPIP, c.PFR, c.SessionID); err != nil {
+			return fmt.Errorf("importing cash session %s: %w", c.SessionID, err)
+		}
+	}
+
+	for _, t := range snap.Tournaments {
+		if t.Date.IsZero() {
+			// Partial row: only the hand-file columns are set, exactly as
+			// UpdateTournamentHandStats's partial INSERT writes them, so the
+			// row's Net stays NULL and can't be mistaken for summary data.
+			if _, err := tx.Exec(`
+				INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_usd)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`, t.Type, t.TournamentID, derefFloat(t.VPIP), derefFloat(t.PFR), derefInt(t.Hands), t.BountyWonUSD); err != nil {
+				return fmt.Errorf("importing partial tournament %s: %w", t.TournamentID, err)
+			}
+			continue
+		}
+		var prizePoolUSD sql.NullFloat64
+		var prizePoolDesc sql.NullString
+		if t.PrizePoolDescription != "" {
+			prizePoolDesc = sql.NullString{String: t.PrizePoolDescription, Valid: true}
+		} else {
+			prizePoolUSD = sql.NullFloat64{Float64: t.PrizePoolUSD, Valid: true}
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO tournaments (date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
+				multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd, hands)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInUSD, prizePoolUSD, prizePoolDesc,
+			nullFloat(t.Multiplier), t.FinishPos, t.TotalPlayers, t.NetUSD, nullFloat(t.VPIP), nullFloat(t.PFR),
+			t.BountyWonUSD, t.PrizeWonUSD, nullInt(t.Hands)); err != nil {
+			return fmt.Errorf("importing tournament %s: %w", t.TournamentID, err)
+		}
+	}
+
+	for _, e := range snap.Ledger {
+		var sessionID sql.NullString
+		if e.SessionID != "" {
+			sessionID = sql.NullString{String: e.SessionID, Valid: true}
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO bankroll_ledger (date, type, amount_usd, running_total, session_id)
+			VALUES (?, ?, ?, ?, ?)
+		`, e.Date.UTC().Format(dateFormat), e.Type, e.AmountUSD, e.RunningTotal, sessionID); err != nil {
+			return fmt.Errorf("importing ledger entry: %w", err)
+		}
+	}
+
+	for _, ta := range snap.TimeAnalysis {
+		if _, err := tx.Exec(`
+			INSERT INTO time_analysis (date, hour, day_of_week, net_usd, session_id)
+			VALUES (?, ?, ?, ?, ?)
+		`, ta.Date.UTC().Format(dateFormat), ta.Hour, ta.DayOfWeek, ta.NetUSD, ta.SessionID); err != nil {
+			return fmt.Errorf("importing time analysis row: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// derefFloat / derefInt read an optional numeric field for a partial
+// tournament row, where the value is always present but the source type is a
+// pointer; nil defaults to 0.
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// nullFloat / nullInt map an optional field to a nullable column so an unset
+// one (e.g. VPIP on a summary-only tournament) is stored NULL, not 0.
+func nullFloat(p *float64) sql.NullFloat64 {
+	if p == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: *p, Valid: true}
+}
+
+func nullInt(p *int) sql.NullInt64 {
+	if p == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*p), Valid: true}
+}
+
 // GetAllTimeAnalysis returns every time_analysis row. Used only by /export.
 func (s *Store) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
 	rows, err := s.db.Query(`

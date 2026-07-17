@@ -1,13 +1,16 @@
 package sheets
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/parsers"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // closeEnough reports whether a and b differ by less than half a cent —
@@ -367,3 +370,144 @@ func TestFallbackRoundTrip(t *testing.T) {
 		t.Error("deleted cash entry still present after reload")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Migration row builders — pure build → parse round-trip (no live Sheets API)
+// ---------------------------------------------------------------------------
+
+// viaWire round-trips a built row through JSON the way the Sheets API does:
+// every numeric cell a build* function writes as a Go int/float64 comes back
+// as float64 (JSON has one number type), and trailing empty cells are dropped.
+// Parsing this — not the raw built row — is what proves the parse* functions
+// decode real API output, since parseInt/parseFloat only handle float64/string.
+func viaWire(row []interface{}) []interface{} {
+	data, err := json.Marshal(row)
+	if err != nil {
+		panic(err)
+	}
+	var out []interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		panic(err)
+	}
+	n := len(out)
+	for n > 0 {
+		if s, ok := out[n-1].(string); ok && s == "" {
+			n--
+			continue
+		}
+		break
+	}
+	return out[:n]
+}
+
+func TestBuildTournamentRows_RoundTrip(t *testing.T) {
+	utc := func(s string) time.Time {
+		tm, err := time.Parse(dateFormat, s)
+		if err != nil {
+			t.Fatalf("parsing %q: %v", s, err)
+		}
+		return tm
+	}
+	want := []storage.TournamentRecord{
+		{ // full knockout Spin & Go with hand stats and a cash prize pool
+			Tournament: parsers.Tournament{
+				Date: utc("2026-07-12 18:00"), Type: "spingo-ko", TournamentID: "T-SPIN-1",
+				BuyInUSD: 5, PrizePoolUSD: 30, Multiplier: floatPtrS(6), FinishPos: 1, TotalPlayers: 3,
+				NetUSD: 29.5, VPIP: floatPtrS(40), PFR: floatPtrS(33), Hands: intPtrS(18),
+			},
+			BountyWonUSD: 4.5, PrizeWonUSD: 34.5,
+		},
+		{ // summary-only MTT: nil multiplier, nil VPIP/PFR/Hands
+			Tournament: parsers.Tournament{
+				Date: utc("2026-07-15 20:00"), Type: "mtt", TournamentID: "T-MTT-2",
+				BuyInUSD: 3, PrizePoolUSD: 200, FinishPos: 40, TotalPlayers: 100, NetUSD: -3,
+			},
+			PrizeWonUSD: 0,
+		},
+		{ // ticket-denominated satellite: description prize pool, no cash value
+			Tournament: parsers.Tournament{
+				Date: utc("2026-07-13 19:00"), Type: "spingo", TournamentID: "T-SAT-1",
+				BuyInUSD: 1, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket",
+				FinishPos: 2, TotalPlayers: 3, NetUSD: -1,
+			},
+		},
+		{ // hand-file-only partial: blank Date, placeholder Type, no summary cols
+			Tournament: parsers.Tournament{
+				Type: "ko", TournamentID: "T-PARTIAL-1",
+				VPIP: floatPtrS(30), PFR: floatPtrS(25), Hands: intPtrS(45),
+			},
+			BountyWonUSD: 2,
+		},
+	}
+
+	rows := buildTournamentRows(want)
+	if len(rows) != len(want) {
+		t.Fatalf("built %d rows, want %d", len(rows), len(want))
+	}
+	for i, row := range rows {
+		got, hasDate := parseTournamentRow(viaWire(row))
+		if hasDate == want[i].Date.IsZero() {
+			t.Errorf("row %d hasDate = %v, but Date.IsZero = %v", i, hasDate, want[i].Date.IsZero())
+		}
+		if !reflect.DeepEqual(got, want[i]) {
+			t.Errorf("tournament %d round-trip differs:\n want %+v\n  got %+v", i, want[i], got)
+		}
+	}
+}
+
+func TestBuildLedgerRows_RoundTrip(t *testing.T) {
+	d := func(s string) time.Time {
+		tm, _ := time.Parse(dateFormat, s)
+		return tm
+	}
+	want := []storage.LedgerEntry{
+		{Date: d("2026-07-10 12:00"), Type: "deposit", AmountUSD: 100, RunningTotal: 100},
+		{Date: d("2026-07-11 14:30"), Type: "cash_session", AmountUSD: -5.25, RunningTotal: 94.75, SessionID: "abc123def456"},
+		{Date: d("2026-07-12 09:00"), Type: "withdrawal", AmountUSD: -20, RunningTotal: 74.75},
+	}
+	rows := buildLedgerRows(want)
+	got, err := parseLedgerRows(rows)
+	if err != nil {
+		t.Fatalf("parseLedgerRows: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ledger round-trip differs:\n want %+v\n  got %+v", want, got)
+	}
+}
+
+func TestBuildCashRows_RoundTrip(t *testing.T) {
+	tm, _ := time.Parse(dateFormat, "2026-07-10 20:00")
+	want := storage.CashSessionRecord{
+		CashSession: parsers.CashSession{
+			Date: tm, Stake: "NL10", Hands: 50, DurationMin: 100,
+			NetUSD: -5.25, RakeUSD: 2.5, BB100: -10.5, VPIP: 24.5, PFR: 18.2,
+		},
+		SessionID: "abc123def456",
+	}
+	rows := buildCashRows([]storage.CashSessionRecord{want})
+	got, ok := parseCashRow(viaWire(rows[0]))
+	if !ok {
+		t.Fatal("parseCashRow returned ok=false")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("cash round-trip differs:\n want %+v\n  got %+v", want, got)
+	}
+}
+
+func TestBuildTimeRows_RoundTrip(t *testing.T) {
+	tm, _ := time.Parse(dateFormat, "2026-07-10 20:00")
+	want := storage.TimeAnalysisRecord{
+		Date: tm, Hour: 20, DayOfWeek: "Friday", NetUSD: -5.25, SessionID: "abc123def456",
+	}
+	rows := buildTimeRows([]storage.TimeAnalysisRecord{want})
+	got, ok := parseTimeRow(viaWire(rows[0]))
+	if !ok {
+		t.Fatal("parseTimeRow returned ok=false")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("time round-trip differs:\n want %+v\n  got %+v", want, got)
+	}
+}
+
+func floatPtrS(f float64) *float64 { return &f }
+func intPtrS(i int) *int           { return &i }
