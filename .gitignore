@@ -10,6 +10,7 @@ testdata/cash/
 testdata/tournaments/
 /tracker
 /self-tracker
+*.png
 *.md
 !README.md
 data/
