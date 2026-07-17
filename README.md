@@ -42,18 +42,24 @@ Once installed, talk to your bot on Telegram. Every command also has detailed he
 <summary><code>/start</code> — run the full setup wizard</summary>
 
 Chains the four configuration flows in order — paths → alerts → hard stop → schedule — pressing Done on each to advance. Re-runnable any time to reconfigure.
+
+Usage example: `/start`
 </details>
 
 <details>
 <summary><code>/status</code> — current bankroll and P&L</summary>
 
 Shows your current bankroll, today / this week / this month P&L, and details of any active hard-stop lock.
+
+Usage example: `/status`
 </details>
 
 <details>
 <summary><code>/lastsession</code> — summary of your most recent session</summary>
 
 Full breakdown of the last session parsed: game type, stake or buy-in, net result, hands or finish position, duration, and updated bankroll.
+
+Usage example: `/lastsession`
 </details>
 
 <details>
@@ -61,7 +67,11 @@ Full breakdown of the last session parsed: game type, stake or buy-in, net resul
 
 Volume, P&L, and win rates, filtered by game type and time range. `spins` covers Spin & Go, `mtt` covers multi-table tournaments. With no arguments it reports all game types, all-time.
 
-Example: `/stats cash week` — cash-game stats for the past week.
+Usage examples:
+- `/stats` — all game types, all-time
+- `/stats cash week` — cash-game stats for the past 7 days
+- `/stats spins today` — Spin & Go stats for the current poker day
+- `/stats mtt month` — MTT stats for this calendar month
 </details>
 
 <details>
@@ -69,73 +79,110 @@ Example: `/stats cash week` — cash-game stats for the past week.
 
 Records money moving into or out of PokerStars, using the USD value shown on PokerStars. Replies with your new bankroll. Transfers are kept separate from session results in the ledger, so a reload adjusts your bankroll without ever counting as winnings.
 
-Example: `/deposit 100`
+Usage examples:
+- `/deposit 100`
+- `/withdraw 52.75`
+- `/deposit 12,50` — a comma decimal works too
 </details>
 
 <details>
 <summary><code>/export</code> — download all your data as CSV</summary>
 
 Exports the four data sets — cash sessions, tournaments, the bankroll ledger, and time analysis — as four CSV files sent to you as Telegram documents. Output is identical on both the Google Sheets and SQLite backends.
+
+Usage example: `/export`
 </details>
 
 <details>
 <summary><code>/sheet [name or URL]</code> — link to your data, or switch spreadsheets</summary>
 
-With no argument, replies with the spreadsheet URL. With a sheet name or a pasted URL, switches the tracker to that spreadsheet — access is validated before anything is saved, then the service restarts itself to pick up the change. On the local-file backend there is no sheet; the command points you to `/export` instead.
+Two jobs in one command: viewing and **switching spreadsheets**. With no argument, replies with the current spreadsheet's URL. With a sheet name or a pasted URL, switches the tracker to that spreadsheet — access is validated (and any missing tabs created) before anything is saved, then the service restarts itself to pick up the change. On the local-file backend there is no sheet; the command points you to `/export` instead.
+
+Usage examples:
+- `/sheet` — show the current spreadsheet URL
+- `/sheet My Other Bankroll` — switch to a different sheet by name
+- `/sheet https://docs.google.com/spreadsheets/d/…` — switch by pasted URL
 </details>
 
 <details>
 <summary><code>/storage [local | sheets &lt;name or URL&gt;]</code> — view your storage, or migrate to the other backend</summary>
 
 With no argument, shows where your data lives. `/storage local` moves everything to the local file; `/storage sheets <sheet name or URL>` moves everything to an empty Google Sheet shared with your service account (run `/credentials` first if this install has none). Naming the storage you're already on changes nothing. The target must be empty — there is no merge. You confirm a summary of row counts before anything is copied (close PokerStars first so no hand is played mid-switch), and the copy is verified against your current bankroll before the backend is flipped, so a failed migration leaves you exactly where you were.
+
+Usage examples:
+- `/storage` — show the active storage
+- `/storage local` — migrate everything to the local file
+- `/storage sheets My New Tracker` — migrate everything to that (empty) sheet
 </details>
 
 <details>
 <summary><code>/screenname [name]</code> — view or change your PokerStars screen name</summary>
 
 With no argument, shows the configured screen name. With one, saves it and restarts the file watcher immediately, since the watched folders include the screen name as a subfolder. Capitalisation matters.
+
+Usage examples:
+- `/screenname` — show the current screen name
+- `/screenname NewHandle99` — change it
 </details>
 
 <details>
 <summary><code>/credentials</code> — swap the Google service account key</summary>
 
-Send the new `google_service_account.json` as an attachment. On the Google Sheets backend the current sheet is re-checked against it, and if the new account can't reach it you're prompted to reconnect one with `/sheet`; takes effect after a service restart. On the local-file backend this is how you provide the credentials `/storage` needs before migrating to Google Sheets.
+Send the new `google_service_account.json` as an attachment, or type `skip` to keep the current one. On the Google Sheets backend the current sheet is re-checked against the new credentials, and if the new account can't reach it you're prompted to reconnect one with `/sheet`; takes effect after a service restart. On the local-file backend this is how you provide the credentials `/storage` needs before migrating to Google Sheets.
+
+Usage example: `/credentials` — then attach the JSON file
 </details>
 
 <details>
 <summary><code>/paths</code> — set your PokerStars folders</summary>
 
-Configures the base Hand History and Tournament Summary folders (the parent folders — not the screen-name subfolder underneath, which is added automatically). Required before any session can be tracked; saving restarts the file watcher.
+Configures the base Hand History and Tournament Summary folders (the parent folders — not the screen-name subfolder underneath, which is added automatically). Required before any session can be tracked; saving restarts the file watcher. Forward slashes are converted for you, and a path without a drive letter is resolved from your home folder.
+
+Usage example: `/paths` — then tap a field and reply with the folder, e.g. `C:\Users\you\AppData\Local\PokerStars\HandHistory`
 </details>
 
 <details>
 <summary><code>/alerts</code> — configure warning thresholds</summary>
 
-Set the warning-only thresholds: downswing, session loss, losing streak, daily loss, and Spin & Go daily loss. These warn you before the hard stop steps in.
+Set the warning-only thresholds: downswing, session loss, losing streak, daily loss, and Spin & Go daily loss. These warn you before the hard stop steps in. An alert can never be set higher than its matching hard-stop threshold, when that hard stop is configured.
+
+Usage example: `/alerts` — then tap a field and reply with the value, e.g. `5`
 </details>
 
 <details>
 <summary><code>/hardstop</code> — configure the automatic lock</summary>
 
-Set the rules that close PokerStars and lock it for a fixed duration: session loss, rolling drawdown, consecutive losses, daily loss, Spin & Go daily loss, and how long the lock lasts. Send `/hardstop trigger` to lock immediately, by hand.
+Set the rules that close PokerStars and lock it for a fixed duration: session loss, rolling drawdown, consecutive losses, daily loss, Spin & Go daily loss, and how long the lock lasts. The duration must be set if any rule is; a hard stop can never be set lower than its matching alert threshold. **There is no cancel — once triggered, the lock runs its full duration.**
+
+Usage examples:
+- `/hardstop` — open the settings menu
+- `/hardstop trigger` — lock immediately, by hand (requires the duration to be configured)
 </details>
 
 <details>
 <summary><code>/schedule</code> — set your poker-day boundary</summary>
 
 Sets the hour (0–23) your poker day starts, used as the reset point for the daily-loss checks. Defaults to 6am.
+
+Usage example: `/schedule` — then tap the field and reply `6`
 </details>
 
 <details>
 <summary><code>/config</code> — list the configuration commands</summary>
 
 Lists `/paths`, `/alerts`, `/hardstop`, and `/schedule` with a one-line description of each.
+
+Usage example: `/config`
 </details>
 
 <details>
 <summary><code>/help [command]</code> — command reference</summary>
 
 With no argument, lists every command. With a command name, explains it in detail with parameters and an example.
+
+Usage examples:
+- `/help` — list every command
+- `/help stats` — detailed help for `/stats`
 </details>
 
 ## Notes
