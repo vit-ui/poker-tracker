@@ -1,8 +1,10 @@
 package bot
 
-// The /switchbackend command: moves an install's entire history between the
-// Google Sheets and SQLite backends and flips config.Setup.StorageBackend, so
-// the tracker comes back on the other backend after the self-restart.
+// The /storage command: with no argument, shows where the install's data
+// lives; with one, switches to the other backend — moving the entire history
+// across and flipping config.Setup.StorageBackend, so the tracker comes back
+// on the new backend after the self-restart. Same view-vs-change shape as
+// /sheet.
 //
 // The migration is a raw row copy (storage.Migrate → ExportSnapshot/
 // ImportSnapshot), never a replay through the Append* methods — replaying
@@ -26,7 +28,12 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// pendingBackendSwitch holds the target backend prepared during /switchbackend
+const storageUsage = "Usage:\n" +
+	"/storage — show where your data is stored\n" +
+	"/storage local — switch to the local file\n" +
+	"/storage sheets <sheet name or URL> — switch to Google Sheets (needs an empty sheet shared with your service account)"
+
+// pendingBackendSwitch holds the target backend prepared during /storage
 // preflight, kept until the player confirms or cancels. The target store is
 // already constructed and validated (reachable, empty); confirming imports
 // into it, cancelling discards it. Single-goroutine access (pollUpdates), same
@@ -38,33 +45,49 @@ type pendingBackendSwitch struct {
 	sheetID   string
 }
 
-// handleSwitchBackendCommand runs /switchbackend's preflight: determines the
-// target backend, refuses if the source has unflushed writes or the target
-// isn't empty/reachable, then asks the player to confirm the copy. The actual
-// migration runs only on confirmation (resolveSwitchBackend).
-//
-// For a sheets target, args is the destination sheet name or URL (resolved the
-// same way /sheet does); a sqlite target ignores args.
-func (b *Bot) handleSwitchBackendCommand(chatID int64, args string) {
-	// A second /switchbackend before answering the first discards the first's
-	// prepared target (closing a sqlite handle it may have opened).
+// handleStorageCommand implements /storage. No argument shows the active
+// backend. An argument names the target backend and runs the switch preflight:
+// refuse if the source has unflushed writes or the target isn't
+// empty/reachable, then ask the player to confirm the copy. The actual
+// migration runs only on confirmation (resolveStorageSwitch).
+func (b *Bot) handleStorageCommand(chatID int64, args string) {
+	// A second /storage before answering a pending confirmation discards the
+	// prepared target (closing and removing the empty db it may have created).
 	b.discardPendingSwitch()
 
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+	current := b.currentBackend()
+
+	args = strings.TrimSpace(args)
+	if args == "" {
+		if current == "sheets" {
+			send(b.tg, chatID, "Storage: Google Sheets — "+b.store.GetSheetURL()+"\nSwitch to the local file with /storage local")
+		} else {
+			send(b.tg, chatID, "Storage: local file (tracker.db next to the tracker). Use /export to get your data as CSV.\nSwitch with /storage sheets <sheet name or URL>")
+		}
 		return
 	}
 
-	current := b.currentBackend(cfg)
-	target := "sqlite"
-	if current == "sqlite" {
+	first := strings.Fields(args)[0]
+	var target string
+	switch strings.ToLower(first) {
+	case "sheets", "sheet", "google":
 		target = "sheets"
+	case "local", "sqlite", "file":
+		target = "sqlite"
+	default:
+		send(b.tg, chatID, fmt.Sprintf("Unknown storage %q. %s", first, storageUsage))
+		return
 	}
+	if target == current {
+		send(b.tg, chatID, "Already using "+backendLabel(current)+" — nothing changed.")
+		return
+	}
+	sheetArg := strings.TrimSpace(strings.TrimPrefix(args, first))
 
 	// Source preflight: a sheets source with queued write-ahead writes would
 	// migrate incomplete data, since those writes are invisible to the reads.
+	// Re-checked at confirm time (resolveStorageSwitch) — the tap can come
+	// minutes from now.
 	if sheetsSrc, ok := b.store.(*sheets.Client); ok {
 		if n := sheetsSrc.PendingWrites(); n > 0 {
 			send(b.tg, chatID, fmt.Sprintf("Can't migrate yet — %d sheet write(s) are still queued for retry (the sheet was briefly unreachable). Wait a minute for them to flush, then try again.", n))
@@ -72,7 +95,7 @@ func (b *Bot) handleSwitchBackendCommand(chatID int64, args string) {
 		}
 	}
 
-	dst, sheetName, sheetID, err := b.prepareTarget(target, strings.TrimSpace(args), cfg)
+	dst, sheetName, sheetID, err := b.prepareTarget(target, sheetArg)
 	if err != nil {
 		send(b.tg, chatID, err.Error())
 		return
@@ -97,30 +120,29 @@ func (b *Bot) handleSwitchBackendCommand(chatID int64, args string) {
 
 	// Counts for the confirmation come from a source read here; the migration
 	// on confirm re-reads fresh (storage.Migrate), so a change between now and
-	// the tap can't slip through unseen.
+	// the tap can't slip through unseen. The bankroll is the ledger's last
+	// running total, already in the snapshot.
 	snap, err := b.store.ExportSnapshot()
 	if err != nil {
 		closeStore(dst)
 		send(b.tg, chatID, fmt.Sprintf("Couldn't read your current data: %v", err))
 		return
 	}
-	bankroll, err := b.store.GetCurrentBankroll()
-	if err != nil {
-		closeStore(dst)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
+	var bankroll float64
+	if n := len(snap.Ledger); n > 0 {
+		bankroll = snap.Ledger[n-1].RunningTotal
 	}
 
 	b.pendingSwitch = &pendingBackendSwitch{target: target, dst: dst, sheetName: sheetName, sheetID: sheetID}
 
 	text := fmt.Sprintf(
-		"⚠️ Switch storage backend: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\n• %d time-analysis rows\nCurrent bankroll: $%.2f\n\nClose PokerStars first — a hand played mid-switch would be double-counted. Proceed?",
+		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\n• %d time-analysis rows\nCurrent bankroll: $%.2f\n\nClose PokerStars first — a hand played mid-switch would be double-counted. Proceed?",
 		backendLabel(current), backendLabel(target),
 		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), len(snap.TimeAnalysis), bankroll)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Migrate", "switchbackend:yes"),
-			tgbotapi.NewInlineKeyboardButtonData("✖ Cancel", "switchbackend:no"),
+			tgbotapi.NewInlineKeyboardButtonData("✅ Migrate", "storage:yes"),
+			tgbotapi.NewInlineKeyboardButtonData("✖ Cancel", "storage:no"),
 		),
 	)
 	b.sendMessageWithKeyboard(text, markup)
@@ -130,16 +152,16 @@ func (b *Bot) handleSwitchBackendCommand(chatID int64, args string) {
 // it resolves and connects to the named/pasted sheet with the write-ahead
 // fallback disabled (a failed migration write must error, never buffer); for
 // sqlite it opens tracker.db. Errors carry a player-facing message.
-func (b *Bot) prepareTarget(target, args string, cfg *config.Config) (dst storage.Store, sheetName *string, sheetID string, err error) {
+func (b *Bot) prepareTarget(target, sheetArg string) (dst storage.Store, sheetName *string, sheetID string, err error) {
 	switch target {
 	case "sheets":
 		if _, statErr := os.Stat(b.serviceAccountPath); statErr != nil {
-			return nil, nil, "", fmt.Errorf("no Google credentials on this install yet. Run /credentials to upload your google_service_account.json, then /switchbackend <sheet name or URL>")
+			return nil, nil, "", fmt.Errorf("no Google credentials on this install yet. Run /credentials to upload your google_service_account.json, then /storage sheets <sheet name or URL>")
 		}
-		if args == "" {
-			return nil, nil, "", fmt.Errorf("which sheet? Usage: /switchbackend <sheet name or URL> (must be an empty sheet shared with your service account)")
+		if sheetArg == "" {
+			return nil, nil, "", fmt.Errorf("which sheet? Usage: /storage sheets <sheet name or URL> (must be an empty sheet shared with your service account)")
 		}
-		name, id, resolveErr := resolveSheetInput(b.serviceAccountPath, args)
+		name, id, resolveErr := resolveSheetInput(b.serviceAccountPath, sheetArg)
 		if resolveErr != nil {
 			return nil, nil, "", fmt.Errorf("couldn't find that sheet: %v", resolveErr)
 		}
@@ -157,25 +179,40 @@ func (b *Bot) prepareTarget(target, args string, cfg *config.Config) (dst storag
 	}
 }
 
-// resolveSwitchBackend handles a tap on the /switchbackend confirmation. On
-// confirm it runs the migration, and only if it verifies does it flip the
-// backend in config and restart. On any failure config is left untouched, so
-// the tracker stays on the current backend, and the half-written target is
-// rolled back to empty for a clean retry.
-func (b *Bot) resolveSwitchBackend(chatID int64, messageID int, confirmed bool) {
+// resolveStorageSwitch handles a tap on the /storage confirmation. On confirm
+// it runs the migration, and only if it verifies does it flip the backend in
+// config and restart. On any failure config is left untouched, so the tracker
+// stays on the current backend, and the half-written target is rolled back to
+// empty for a clean retry.
+func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) {
 	b.clearKeyboard(chatID, messageID)
 
 	ps := b.pendingSwitch
 	if ps == nil {
-		send(b.tg, chatID, "That switch already expired. Run /switchbackend again.")
+		send(b.tg, chatID, "That switch already expired. Run /storage again.")
 		return
 	}
 	b.pendingSwitch = nil
 
 	if !confirmed {
-		b.rollbackTarget(ps)
+		// Nothing was written to the target — discard, don't roll back.
+		b.discardTarget(ps)
 		send(b.tg, chatID, "Cancelled. No data moved.")
 		return
+	}
+
+	// Re-run the write-ahead check from preflight: the source kept running
+	// while the confirmation sat unanswered, and a write buffered since then
+	// is invisible to the migration reads. A hand that lands *during* the copy
+	// without buffering is caught instead by Migrate's src-vs-dst bankroll
+	// verify; the few seconds between verify and process exit stay covered
+	// only by the close-PokerStars warning.
+	if sheetsSrc, ok := b.store.(*sheets.Client); ok {
+		if n := sheetsSrc.PendingWrites(); n > 0 {
+			b.discardTarget(ps)
+			send(b.tg, chatID, fmt.Sprintf("Can't migrate — %d sheet write(s) queued since the confirmation was sent. Wait a minute for them to flush, then run /storage again.", n))
+			return
+		}
 	}
 
 	send(b.tg, chatID, "Migrating… this can take a moment.")
@@ -184,14 +221,15 @@ func (b *Bot) resolveSwitchBackend(chatID int64, messageID int, confirmed bool) 
 	if err != nil {
 		b.rollbackTarget(ps)
 		slog.Error("migrating backend", "err", err)
-		send(b.tg, chatID, fmt.Sprintf("Migration failed — nothing changed, still on %s.\n%v\n\nBefore retrying, make sure the target is empty (a fresh sheet, or delete tracker.db).", backendLabel(b.currentBackendFromStore()), err))
+		send(b.tg, chatID, fmt.Sprintf("Migration failed — nothing changed, still on %s.\n%v\n\nBefore retrying, make sure the target is empty (a fresh sheet, or delete tracker.db).", backendLabel(b.currentBackend()), err))
 		return
 	}
 
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
+		b.rollbackTarget(ps)
 		slog.Error("loading config after migration", "err", err)
-		send(b.tg, chatID, "Data copied, but saving the backend choice failed. Check logs — do not run /switchbackend again until resolved.")
+		send(b.tg, chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
 		return
 	}
 	cfg.Setup.StorageBackend = &ps.target
@@ -200,8 +238,9 @@ func (b *Bot) resolveSwitchBackend(chatID int64, messageID int, confirmed bool) 
 		cfg.Setup.GoogleSheetID = &ps.sheetID
 	}
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
+		b.rollbackTarget(ps)
 		slog.Error("saving config after migration", "err", err)
-		send(b.tg, chatID, "Data copied, but saving the backend choice failed. Check logs — do not run /switchbackend again until resolved.")
+		send(b.tg, chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
 		return
 	}
 
@@ -219,11 +258,11 @@ func (b *Bot) resolveSwitchBackend(chatID int64, messageID int, confirmed bool) 
 	os.Exit(0)
 }
 
-// rollbackTarget returns a prepared/half-written target to empty so a retry
-// passes the empty-target check: a sheets target's data rows are cleared, a
-// sqlite target's file is closed and deleted. Best-effort — a failure here is
-// logged, not surfaced, since the migration itself already failed or was
-// cancelled and config was never changed.
+// rollbackTarget returns a half-written target to empty so a retry passes the
+// empty-target check: a sheets target's data rows are cleared, a sqlite
+// target's file is closed and deleted. Best-effort — a failure here is
+// logged, not surfaced, since the migration itself already failed and config
+// was never changed.
 func (b *Bot) rollbackTarget(ps *pendingBackendSwitch) {
 	switch dst := ps.dst.(type) {
 	case *sheets.Client:
@@ -238,28 +277,32 @@ func (b *Bot) rollbackTarget(ps *pendingBackendSwitch) {
 	}
 }
 
-// discardPendingSwitch drops a prepared-but-unanswered switch, releasing a
-// sqlite handle it may hold. Unlike rollbackTarget it doesn't delete data —
-// nothing was written yet.
+// discardTarget releases a prepared target that was never written to: closes
+// the sqlite handle and removes the freshly created empty tracker.db. Unlike
+// rollbackTarget there is nothing to clear on a sheets target — no row was
+// appended.
+func (b *Bot) discardTarget(ps *pendingBackendSwitch) {
+	if dst, ok := ps.dst.(*sqlitestore.Store); ok {
+		dst.Close()
+		if err := os.Remove(b.dbPath); err != nil && !os.IsNotExist(err) {
+			slog.Error("removing unused target database", "err", err)
+		}
+	}
+}
+
+// discardPendingSwitch drops a prepared-but-unanswered switch.
 func (b *Bot) discardPendingSwitch() {
 	if b.pendingSwitch == nil {
 		return
 	}
-	closeStore(b.pendingSwitch.dst)
+	b.discardTarget(b.pendingSwitch)
 	b.pendingSwitch = nil
 }
 
-// currentBackend reads the configured backend, falling back to the live
-// store's type if config hasn't recorded it (a pre-backend-field install
-// main.go would normally have migrated at startup).
-func (b *Bot) currentBackend(cfg *config.Config) string {
-	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend != "" {
-		return *cfg.Setup.StorageBackend
-	}
-	return b.currentBackendFromStore()
-}
-
-func (b *Bot) currentBackendFromStore() string {
+// currentBackend reports which backend the live store is — the store's
+// concrete type is definitionally the running backend (runServe constructed
+// it from config at startup).
+func (b *Bot) currentBackend() string {
 	if _, ok := b.store.(*sheets.Client); ok {
 		return "sheets"
 	}

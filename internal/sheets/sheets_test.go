@@ -412,8 +412,8 @@ func TestBuildTournamentRows_RoundTrip(t *testing.T) {
 		{ // full knockout Spin & Go with hand stats and a cash prize pool
 			Tournament: parsers.Tournament{
 				Date: utc("2026-07-12 18:00"), Type: "spingo-ko", TournamentID: "T-SPIN-1",
-				BuyInUSD: 5, PrizePoolUSD: 30, Multiplier: floatPtrS(6), FinishPos: 1, TotalPlayers: 3,
-				NetUSD: 29.5, VPIP: floatPtrS(40), PFR: floatPtrS(33), Hands: intPtrS(18),
+				BuyInUSD: 5, PrizePoolUSD: 30, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3,
+				NetUSD: 29.5, VPIP: floatPtr(40), PFR: floatPtr(33), Hands: intPtr(18),
 			},
 			BountyWonUSD: 4.5, PrizeWonUSD: 34.5,
 		},
@@ -434,7 +434,7 @@ func TestBuildTournamentRows_RoundTrip(t *testing.T) {
 		{ // hand-file-only partial: blank Date, placeholder Type, no summary cols
 			Tournament: parsers.Tournament{
 				Type: "ko", TournamentID: "T-PARTIAL-1",
-				VPIP: floatPtrS(30), PFR: floatPtrS(25), Hands: intPtrS(45),
+				VPIP: floatPtr(30), PFR: floatPtr(25), Hands: intPtr(45),
 			},
 			BountyWonUSD: 2,
 		},
@@ -509,5 +509,28 @@ func TestBuildTimeRows_RoundTrip(t *testing.T) {
 	}
 }
 
-func floatPtrS(f float64) *float64 { return &f }
-func intPtrS(i int) *int           { return &i }
+// TestParseRowGuards_ShortRowsSkipped pins the pre-refactor behavior: a
+// hand-edited row with a valid date but fewer cells than the script ever
+// writes is skipped, not parsed into a zeroed record that would feed /stats
+// and the migration snapshot. Script-written rows are never short — the
+// Sheets API only omits trailing empty cells and every writer ends rows with
+// a non-empty cell — so these guards only re-exclude corrupt rows.
+func TestParseRowGuards_ShortRowsSkipped(t *testing.T) {
+	if _, ok := parseCashRow([]interface{}{"2026-07-01 20:00", "NL10", float64(50)}); ok {
+		t.Error("parseCashRow accepted a 3-cell row")
+	}
+	if _, ok := parseTimeRow([]interface{}{"2026-07-01 20:00", float64(20)}); ok {
+		t.Error("parseTimeRow accepted a 2-cell row")
+	}
+	// The shortest legitimate rows — 9-column pre-v1.4 cash rows and 4-column
+	// pre-v1.4 time rows (no Session ID yet) — still parse.
+	if _, ok := parseCashRow(viaWire([]interface{}{"2026-07-01 20:00", "NL10", 50, 100, -5.0, 2.5, -10.0, 24.5, 18.2})); !ok {
+		t.Error("parseCashRow rejected a 9-cell pre-v1.4 row")
+	}
+	if _, ok := parseTimeRow(viaWire([]interface{}{"2026-07-01 20:00", 20, "Friday", -5.0})); !ok {
+		t.Error("parseTimeRow rejected a 4-cell pre-v1.4 row")
+	}
+}
+
+func floatPtr(f float64) *float64 { return &f }
+func intPtr(i int) *int           { return &i }

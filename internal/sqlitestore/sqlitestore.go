@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS cash_sessions (
 	bb100 REAL NOT NULL,
 	vpip REAL NOT NULL,
 	pfr REAL NOT NULL,
-	session_id TEXT NOT NULL UNIQUE
+	session_id TEXT UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS time_analysis (
 	hour INTEGER NOT NULL,
 	day_of_week TEXT NOT NULL,
 	net_usd REAL NOT NULL,
-	session_id TEXT NOT NULL UNIQUE
+	session_id TEXT UNIQUE
 );
 `
 
@@ -636,7 +636,8 @@ func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord,
 
 	var result []storage.CashSessionRecord
 	for rows.Next() {
-		var dateStr, stake, sessionID string
+		var dateStr, stake string
+		var sessionID sql.NullString // NULL on migrated pre-v1.4 sheets rows
 		var hands, durationMin int
 		var netUSD, rakeUSD, bb100, vpip, pfr float64
 		if err := rows.Scan(&dateStr, &stake, &hands, &durationMin, &netUSD, &rakeUSD, &bb100, &vpip, &pfr, &sessionID); err != nil {
@@ -658,7 +659,7 @@ func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord,
 				VPIP:        vpip,
 				PFR:         pfr,
 			},
-			SessionID: sessionID,
+			SessionID: sessionID.String,
 		})
 	}
 	return result, rows.Err()
@@ -905,12 +906,17 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 	}
 	defer tx.Rollback()
 
+	// A blank session ID (sheets rows from before v1.4, when the column was
+	// added — never backfilled) is stored as NULL, the same blank↔NULL mapping
+	// the ledger loop below uses. NULLs are mutually distinct under sqlite's
+	// UNIQUE, so any number of such legacy rows import cleanly, and no live
+	// upsert can ever match them — live writes always carry a computed ID.
 	for _, c := range snap.CashSessions {
 		if _, err := tx.Exec(`
 			INSERT INTO cash_sessions (date, stake, hands, duration_min, net_usd, rake_usd, bb100, vpip, pfr, session_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, c.Date.UTC().Format(dateFormat), c.Stake, c.Hands, c.DurationMin, c.NetUSD, c.RakeUSD,
-			c.BB100, c.VPIP, c.PFR, c.SessionID); err != nil {
+			c.BB100, c.VPIP, c.PFR, nullString(c.SessionID)); err != nil {
 			return fmt.Errorf("importing cash session %s: %w", c.SessionID, err)
 		}
 	}
@@ -923,7 +929,7 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 			if _, err := tx.Exec(`
 				INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_usd)
 				VALUES (?, ?, ?, ?, ?, ?)
-			`, t.Type, t.TournamentID, derefFloat(t.VPIP), derefFloat(t.PFR), derefInt(t.Hands), t.BountyWonUSD); err != nil {
+			`, t.Type, t.TournamentID, nullFloat(t.VPIP), nullFloat(t.PFR), nullInt(t.Hands), t.BountyWonUSD); err != nil {
 				return fmt.Errorf("importing partial tournament %s: %w", t.TournamentID, err)
 			}
 			continue
@@ -947,14 +953,10 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 	}
 
 	for _, e := range snap.Ledger {
-		var sessionID sql.NullString
-		if e.SessionID != "" {
-			sessionID = sql.NullString{String: e.SessionID, Valid: true}
-		}
 		if _, err := tx.Exec(`
 			INSERT INTO bankroll_ledger (date, type, amount_usd, running_total, session_id)
 			VALUES (?, ?, ?, ?, ?)
-		`, e.Date.UTC().Format(dateFormat), e.Type, e.AmountUSD, e.RunningTotal, sessionID); err != nil {
+		`, e.Date.UTC().Format(dateFormat), e.Type, e.AmountUSD, e.RunningTotal, nullString(e.SessionID)); err != nil {
 			return fmt.Errorf("importing ledger entry: %w", err)
 		}
 	}
@@ -963,7 +965,7 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 		if _, err := tx.Exec(`
 			INSERT INTO time_analysis (date, hour, day_of_week, net_usd, session_id)
 			VALUES (?, ?, ?, ?, ?)
-		`, ta.Date.UTC().Format(dateFormat), ta.Hour, ta.DayOfWeek, ta.NetUSD, ta.SessionID); err != nil {
+		`, ta.Date.UTC().Format(dateFormat), ta.Hour, ta.DayOfWeek, ta.NetUSD, nullString(ta.SessionID)); err != nil {
 			return fmt.Errorf("importing time analysis row: %w", err)
 		}
 	}
@@ -971,21 +973,13 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 	return tx.Commit()
 }
 
-// derefFloat / derefInt read an optional numeric field for a partial
-// tournament row, where the value is always present but the source type is a
-// pointer; nil defaults to 0.
-func derefFloat(p *float64) float64 {
-	if p == nil {
-		return 0
+// nullString maps a blank string to NULL — the blank↔NULL convention every
+// session_id column uses (see ImportSnapshot's cash-session comment).
+func nullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
 	}
-	return *p
-}
-
-func derefInt(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
+	return sql.NullString{String: s, Valid: true}
 }
 
 // nullFloat / nullInt map an optional field to a nullable column so an unset
@@ -1016,7 +1010,8 @@ func (s *Store) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
 
 	var result []storage.TimeAnalysisRecord
 	for rows.Next() {
-		var dateStr, dayOfWeek, sessionID string
+		var dateStr, dayOfWeek string
+		var sessionID sql.NullString // NULL on migrated pre-v1.4 sheets rows
 		var hour int
 		var netUSD float64
 		if err := rows.Scan(&dateStr, &hour, &dayOfWeek, &netUSD, &sessionID); err != nil {
@@ -1031,7 +1026,7 @@ func (s *Store) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
 			Hour:      hour,
 			DayOfWeek: dayOfWeek,
 			NetUSD:    netUSD,
-			SessionID: sessionID,
+			SessionID: sessionID.String,
 		})
 	}
 	return result, rows.Err()

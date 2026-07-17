@@ -123,11 +123,7 @@ func (b *Bot) resolveSatellite(chatID int64, messageID int, tournamentID string,
 		slog.Error("saving pending tournaments", "err", err)
 	}
 
-	// An empty (but non-nil) InlineKeyboard is required to actually clear the
-	// buttons — NewInlineKeyboardMarkup() with no args produces a nil slice,
-	// which marshals to a null the Telegram API rejects for this field.
-	noButtons := tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}}
-	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, resultText, noButtons)
+	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, resultText, emptyKeyboard)
 	if _, err := b.tg.Send(edit); err != nil {
 		slog.Error("editing telegram message", "err", err)
 	}

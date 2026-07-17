@@ -1320,6 +1320,53 @@ func TestMigrate_TwoSqliteStores(t *testing.T) {
 	assertSnapshotsEqual(t, srcSnap, got)
 }
 
+// TestImportSnapshot_BlankSessionIDLegacyRows covers pre-v1.4 sheets data:
+// rows written before the Session ID column existed (one-row-per-hand era)
+// have a blank ID, and a real sheet holds many of them. They must import
+// cleanly — stored as NULL, mutually distinct under sqlite's UNIQUE — read
+// back as "" (same as the sheets backend reads a blank cell), and never
+// collide with live sessions written afterwards.
+func TestImportSnapshot_BlankSessionIDLegacyRows(t *testing.T) {
+	d1 := mustTime(t, "2025-01-10T20:00:00Z")
+	d2 := mustTime(t, "2025-01-11T21:00:00Z")
+	snap := storage.Snapshot{
+		CashSessions: []storage.CashSessionRecord{
+			{CashSession: parsers.CashSession{Date: d1, Stake: "NL10", Hands: 1, DurationMin: 2, NetUSD: -2, RakeUSD: 0.1, BB100: -20, VPIP: 30, PFR: 20}},
+			{CashSession: parsers.CashSession{Date: d2, Stake: "NL10", Hands: 1, DurationMin: 2, NetUSD: 3, RakeUSD: 0.1, BB100: 30, VPIP: 25, PFR: 15}},
+		},
+		Ledger: []storage.LedgerEntry{
+			{Date: d1, Type: "cash_session", AmountUSD: -2, RunningTotal: -2},
+			{Date: d2, Type: "cash_session", AmountUSD: 3, RunningTotal: 1},
+		},
+		TimeAnalysis: []storage.TimeAnalysisRecord{
+			{Date: d1, Hour: 20, DayOfWeek: "Friday", NetUSD: -2},
+			{Date: d2, Hour: 21, DayOfWeek: "Saturday", NetUSD: 3},
+		},
+	}
+
+	dst := newTestStore(t)
+	if err := dst.ImportSnapshot(snap); err != nil {
+		t.Fatalf("ImportSnapshot with blank session IDs: %v", err)
+	}
+	got, err := dst.ExportSnapshot()
+	if err != nil {
+		t.Fatalf("re-export: %v", err)
+	}
+	assertSnapshotsEqual(t, snap, got)
+
+	// A live session written afterwards must coexist with the legacy rows.
+	if err := dst.AppendCashSession(buildCashSession(mustTime(t, "2025-01-12T20:00:00Z"), "200000000009", 10, 5)); err != nil {
+		t.Fatalf("AppendCashSession after legacy import: %v", err)
+	}
+	bankroll, err := dst.GetCurrentBankroll()
+	if err != nil {
+		t.Fatalf("GetCurrentBankroll: %v", err)
+	}
+	if !closeEnough(bankroll, 6) {
+		t.Errorf("bankroll = %.2f, want 6.00 (1 legacy + 5 live)", bankroll)
+	}
+}
+
 func TestMigrate_RefusesNonEmptyDestination(t *testing.T) {
 	src := newTestStore(t)
 	populateStore(t, src)

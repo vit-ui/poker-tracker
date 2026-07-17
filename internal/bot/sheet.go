@@ -183,7 +183,7 @@ func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 // config flows (paths/alerts/hardstop/schedule), this one expects a file
 // upload rather than a plain-text reply — see handleCredentialsDocument.
 // Deliberately not gated to the sheets backend like /sheet is: on a sqlite
-// install this is how the credentials /switchbackend needs to migrate to
+// install this is how the credentials /storage needs to migrate to
 // Google Sheets get onto the machine in the first place.
 func (b *Bot) startCredentialsFlow(chatID int64) {
 	b.flow = "credentials"
@@ -231,9 +231,9 @@ func (b *Bot) handleCredentialsDocument(chatID int64, fileID string) {
 	}
 
 	// On the sqlite backend there's no sheet to re-validate — the credentials
-	// exist solely so /switchbackend can migrate to Google Sheets.
+	// exist solely so /storage can migrate to Google Sheets.
 	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
-		send(b.tg, chatID, "✅ Credentials file saved. You can now run /switchbackend <sheet name or URL> to migrate to Google Sheets.")
+		send(b.tg, chatID, "✅ Credentials file saved. You can now run /storage sheets <sheet name or URL> to migrate to Google Sheets.")
 		return
 	}
 

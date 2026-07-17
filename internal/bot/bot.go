@@ -40,7 +40,7 @@ type Bot struct {
 	dbPath             string
 	restartWatcher     func()
 
-	// pendingSwitch holds a /switchbackend migration awaiting the player's
+	// pendingSwitch holds a /storage migration awaiting the player's
 	// confirmation tap. Touched only from pollUpdates, like conversation.
 	pendingSwitch *pendingBackendSwitch
 
@@ -83,9 +83,9 @@ func (c *conversation) reset() {
 // restartWatcher is called by the /paths and /screenname saves — it re-joins
 // the base paths with the screen name and restarts the watcher goroutine.
 //
-// serviceAccountPath is only used by /sheet, /credentials, and /switchbackend
+// serviceAccountPath is only used by /sheet, /credentials, and /storage
 // when switching to a different spreadsheet or service account. dbPath is the
-// sqlite database path, used by /switchbackend to construct a sqlite target.
+// sqlite database path, used by /storage to construct a sqlite target.
 func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func()) error {
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
@@ -174,13 +174,18 @@ func sendWithKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, text string, markup 
 	}
 }
 
+// emptyKeyboard is the markup that clears a message's buttons when edited in.
+// It must be an empty-but-non-nil slice — NewInlineKeyboardMarkup() with no
+// args produces a nil slice, which marshals to a null the Telegram API
+// rejects for this field. Shared by clearKeyboard and resolveSatellite so
+// that quirk is encoded once.
+var emptyKeyboard = tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}}
+
 // clearKeyboard removes the inline keyboard from a message after it's been
 // answered, leaving its text intact — a tapped confirmation shouldn't stay
-// tappable. An empty (non-nil) keyboard is required: a nil slice marshals to
-// the null Telegram rejects for this field.
+// tappable.
 func (b *Bot) clearKeyboard(chatID int64, messageID int) {
-	noButtons := tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}}
-	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, noButtons)
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, emptyKeyboard)
 	if _, err := b.tg.Send(edit); err != nil {
 		slog.Error("clearing telegram keyboard", "err", err)
 	}
@@ -316,10 +321,10 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.resolveSatellite(chatID, messageID, strings.TrimPrefix(data, "satellite_cash:"), true)
 	case strings.HasPrefix(data, "satellite_ticket:"):
 		b.resolveSatellite(chatID, messageID, strings.TrimPrefix(data, "satellite_ticket:"), false)
-	case data == "switchbackend:yes":
-		b.resolveSwitchBackend(chatID, messageID, true)
-	case data == "switchbackend:no":
-		b.resolveSwitchBackend(chatID, messageID, false)
+	case data == "storage:yes":
+		b.resolveStorageSwitch(chatID, messageID, true)
+	case data == "storage:no":
+		b.resolveStorageSwitch(chatID, messageID, false)
 	case strings.HasPrefix(data, "paths:"):
 		b.handlePathsCallback(chatID, strings.TrimPrefix(data, "paths:"))
 	case strings.HasPrefix(data, "alerts:"):
@@ -357,8 +362,8 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 		b.handleStats(chatID, msg.CommandArguments())
 	case "sheet":
 		b.handleSheetCommand(chatID, msg.CommandArguments())
-	case "switchbackend":
-		b.handleSwitchBackendCommand(chatID, msg.CommandArguments())
+	case "storage":
+		b.handleStorageCommand(chatID, msg.CommandArguments())
 	case "export":
 		b.handleExportCommand(chatID)
 	case "credentials":

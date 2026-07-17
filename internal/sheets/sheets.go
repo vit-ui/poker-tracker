@@ -1077,10 +1077,14 @@ func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord
 }
 
 // parseCashRow parses one Cash Sessions row (columns A:J) into a record. ok is
-// false when column A doesn't hold a valid date — a blank or malformed row.
-// Shared by queryCashSessions and the migration round-trip so both decode a
-// row identically.
+// false when the row is shorter than the 9 always-written columns (a
+// hand-edited or otherwise malformed row — the script never writes fewer) or
+// column A doesn't hold a valid date. Shared by queryCashSessions and the
+// migration round-trip so both decode a row identically.
 func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool) {
+	if len(row) < 9 {
+		return storage.CashSessionRecord{}, false
+	}
 	date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0)))
 	if err != nil {
 		return storage.CashSessionRecord{}, false
@@ -1139,6 +1143,12 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 	}
 	var result []storage.TournamentRecord
 	for _, row := range resp.Values[1:] {
+		// Completed rows always have at least the 9 summary columns; shorter
+		// means hand-edited/malformed (partial rows are skipped below via
+		// hasDate regardless).
+		if len(row) < 9 {
+			continue
+		}
 		rec, hasDate := parseTournamentRow(row)
 		if !hasDate || rec.Date.Before(since) {
 			continue
@@ -1259,9 +1269,13 @@ func (c *Client) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
 }
 
 // parseTimeRow parses one Time Analysis row (columns A:E). ok is false when
-// column A doesn't hold a valid date. Shared by GetAllTimeAnalysis and the
-// migration round-trip.
+// the row is shorter than the 4 always-written columns (hand-edited or
+// malformed) or column A doesn't hold a valid date. Shared by
+// GetAllTimeAnalysis and the migration round-trip.
 func parseTimeRow(row []interface{}) (rec storage.TimeAnalysisRecord, ok bool) {
+	if len(row) < 4 {
+		return storage.TimeAnalysisRecord{}, false
+	}
 	date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0)))
 	if err != nil {
 		return storage.TimeAnalysisRecord{}, false

@@ -47,7 +47,7 @@ type TimeAnalysisRecord struct {
 }
 
 // Snapshot is every row of all four data sets, as full records, used only by
-// the backend-migration path (bot's /switchbackend). Unlike GetAllTournaments,
+// the backend-migration path (bot's /storage). Unlike GetAllTournaments,
 // its Tournaments slice includes partial rows (a hand file arrived before the
 // summary — Date zero, no ledger impact yet), so a tournament still in progress
 // across a backend switch keeps its VPIP/PFR/hands/bounty. A Snapshot is a raw
@@ -88,7 +88,7 @@ type Store interface {
 	GetAllTimeAnalysis() ([]TimeAnalysisRecord, error)
 
 	// ExportSnapshot and ImportSnapshot move an install's whole history
-	// between backends (bot's /switchbackend). Both backends need both
+	// between backends (bot's /storage). Both backends need both
 	// directions — either can be the source or the empty target — which is
 	// why they're on the interface rather than a concrete type.
 	ExportSnapshot() (Snapshot, error)

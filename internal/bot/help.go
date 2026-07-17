@@ -23,7 +23,7 @@ var commandList = []struct {
 	{"lastsession", "Show the summary of the last recorded session."},
 	{"stats", "Show filtered performance stats."},
 	{"sheet", "Get the Google Sheets URL, or switch to a different sheet."},
-	{"switchbackend", "Migrate your data between Google Sheets and local file storage."},
+	{"storage", "View or switch where your data is stored."},
 	{"export", "Export all your data as CSV files."},
 	{"credentials", "Swap the Google service account credentials file."},
 	{"screenname", "Get or change your PokerStars screen name."},
@@ -81,10 +81,11 @@ var commandHelp = map[string]string{
 		"  /sheet — show the current sheet URL\n" +
 		"  /sheet My Other Bankroll — switch by name\n" +
 		"  /sheet https://docs.google.com/spreadsheets/d/... — switch by URL",
-	"switchbackend": "Migrates your entire history to the other storage backend (Google Sheets ↔ local file) and restarts the tracker on it.\n" +
-		"Usage: /switchbackend [sheet name or URL]\n" +
-		"Switching to Google Sheets: pass an empty sheet's name or URL, shared with your service account (run /credentials first if this install has no credentials yet).\n" +
-		"Switching to local file: no argument needed.\n" +
+	"storage": "Shows where your data is stored, or migrates your entire history to the other backend and restarts the tracker on it.\n" +
+		"Usage:\n" +
+		"  /storage — show the current storage\n" +
+		"  /storage local — switch to the local file\n" +
+		"  /storage sheets <sheet name or URL> — switch to Google Sheets (an empty sheet shared with your service account; run /credentials first if this install has no credentials yet)\n" +
 		"The target must be empty — there's no merge. You'll see a confirmation with row counts before anything is copied; close PokerStars first so no hand is played mid-switch. Nothing changes until the copy is verified.",
 	"export": "Exports all your data as CSV files: cash sessions, tournaments, bankroll ledger, time analysis.\n" +
 		"Usage: /export\n" +
@@ -93,7 +94,7 @@ var commandHelp = map[string]string{
 		"Usage: /credentials — then send the google_service_account.json file as an attachment, or type skip to cancel.\n" +
 		"If a sheet is already configured, it's re-checked against the new credentials — if it's no longer reachable (not shared with the new service account, or a different Google Cloud project entirely), the sheet is cleared from config and you'll need to run /sheet again.\n" +
 		"Requires a restart of the tracker service to take effect.\n" +
-		"On the local-file backend, this is how you provide the credentials /switchbackend needs before migrating to Google Sheets.",
+		"On the local-file backend, this is how you provide the credentials /storage needs before migrating to Google Sheets.",
 	"screenname": "Gets or changes your PokerStars screen name (exact capitalisation matters).\n" +
 		"Usage: /screenname [name]\n" +
 		"With no argument, shows the current screen name. With an argument, changes it and restarts the watcher immediately — no service restart needed.\n" +

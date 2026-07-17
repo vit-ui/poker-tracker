@@ -13,7 +13,7 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 - **Satellite / ticket detection** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never counts as a cash buy-in against your bankroll.
 - **One running ledger** for deposits, withdrawals, and every session net, so your true P&L stays correct through reloads.
 - **CSV export** on both backends, in identical format, so your data stays portable whichever storage you chose.
-- **Switch storage anytime** with `/switchbackend`, which migrates your whole history between Google Sheets and the local file and verifies the copy before flipping over.
+- **Switch storage anytime** with `/storage`, which migrates your whole history between Google Sheets and the local file and verifies the copy before flipping over.
 
 ## Installing
 
@@ -85,9 +85,9 @@ With no argument, replies with the spreadsheet URL. With a sheet name or a paste
 </details>
 
 <details>
-<summary><code>/switchbackend [sheet name or URL]</code> — migrate between Google Sheets and local storage</summary>
+<summary><code>/storage [local | sheets &lt;name or URL&gt;]</code> — view your storage, or migrate to the other backend</summary>
 
-Moves your entire history to the other backend and restarts the tracker on it. Switching **to** Google Sheets takes an empty sheet's name or URL, shared with your service account (run `/credentials` first if this install has none); switching **to** the local file needs no argument. The target must be empty — there is no merge. You confirm a summary of row counts before anything is copied (close PokerStars first so no hand is played mid-switch), and the copy is verified against your current bankroll before the backend is flipped, so a failed migration leaves you exactly where you were.
+With no argument, shows where your data lives. `/storage local` moves everything to the local file; `/storage sheets <sheet name or URL>` moves everything to an empty Google Sheet shared with your service account (run `/credentials` first if this install has none). Naming the storage you're already on changes nothing. The target must be empty — there is no merge. You confirm a summary of row counts before anything is copied (close PokerStars first so no hand is played mid-switch), and the copy is verified against your current bankroll before the backend is flipped, so a failed migration leaves you exactly where you were.
 </details>
 
 <details>
@@ -99,7 +99,7 @@ With no argument, shows the configured screen name. With one, saves it and resta
 <details>
 <summary><code>/credentials</code> — swap the Google service account key</summary>
 
-Send the new `google_service_account.json` as an attachment. On the Google Sheets backend the current sheet is re-checked against it, and if the new account can't reach it you're prompted to reconnect one with `/sheet`; takes effect after a service restart. On the local-file backend this is how you provide the credentials `/switchbackend` needs before migrating to Google Sheets.
+Send the new `google_service_account.json` as an attachment. On the Google Sheets backend the current sheet is re-checked against it, and if the new account can't reach it you're prompted to reconnect one with `/sheet`; takes effect after a service restart. On the local-file backend this is how you provide the credentials `/storage` needs before migrating to Google Sheets.
 </details>
 
 <details>
