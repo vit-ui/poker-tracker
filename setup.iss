@@ -39,6 +39,8 @@ PrivilegesRequired=admin
 OutputBaseFilename=PokerTracker-v{#AppVersion}-{#PublishArch}
 Compression=lzma
 SolidCompression=yes
+SetupIconFile=icon.ico
+UninstallDisplayIcon={app}\tracker.exe
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
