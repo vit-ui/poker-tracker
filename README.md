@@ -8,7 +8,7 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 
 - **Automatic parsing** of cash games, Spin & Go, and MTT sessions, read straight from PokerStars' hand-history and tournament-summary folders. Nothing is entered by hand.
 - **Your choice of storage:** a live **Google Sheet** you can open in a browser, or a single local **SQLite file** that needs no Google account and no configuration.
-- **Telegram summaries** after every session, plus configurable alerts for downswings, session losses, losing streaks, and daily-loss limits. It also points out when you sit at a different stake than your previous cash session.
+- **Telegram summaries** after every session, weekly and monthly recaps, plus configurable alerts for downswings, session losses, losing streaks, and daily-loss limits. It also points out when you sit at a different stake than your previous cash session.
 - **Automatic hard stop.** When a limit you set is breached (a session loss, a rolling 30-day drawdown, a losing streak, or a daily-loss cap), it closes the PokerStars client and keeps it locked for a set duration.
 - **Satellite / ticket detection** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never counts as a cash buy-in against your bankroll.
 - **One running ledger** for deposits, withdrawals, and every session net, so your true P&L stays correct through reloads.
