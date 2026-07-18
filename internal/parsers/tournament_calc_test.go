@@ -50,6 +50,9 @@ func TestIsNonCashPrize(t *testing.T) {
 		{"tournament dollars", "T$11.00", true},
 		{"satellite", "Sunday Million Satellite Seat", true},
 		{"sat, deliberately broad — also matches inside an ordinary word", "$50 Saturday Special", true},
+		{"qualifier", "Sunday Storm Qualifier", true},
+		{"qualy", "Sunday Qualy", true},
+		{"qually", "Mega Qually", true},
 		{"case insensitive", "TICKET", true},
 		{"empty string", "", false},
 	}
@@ -86,6 +89,43 @@ Total Prize Pool: $45.00
 	}
 	if !tourn.LikelySatellite {
 		t.Error("LikelySatellite = false, want true — hero's own payout is T$ (Tournament Dollars), not cash")
+	}
+}
+
+// TestParseTournamentFile_SatelliteFromHeader covers a satellite whose only
+// signal is the title line: a real cash prize pool, and every result row still
+// reading "still playing" or blank because PokerStars wrote the summary the
+// moment hero busted while the field played on. The result-row scan finds no
+// non-cash payout — LikelySatellite must fire from the "Super Satellite" title
+// (confirmed against a real summary, Tournament #4014688191).
+func TestParseTournamentFile_SatelliteFromHeader(t *testing.T) {
+	contents := `PokerStars Tournament #4014688191, No Limit Hold'em
+Super Satellite
+Buy-In: $1.40/$0.10 USD
+87 players
+Total Prize Pool: $330.00 USD
+Target Tournament #4014688078 Buy-In: $11.00 USD
+Tournament started 2026/07/17 23:05:00 ET
+  1: Villain1 (South Korea), still playing
+  2: Villain2 (Canada), still playing
+  3: AnonHero01 (Brazil),
+  4: Villain3 (Brazil), still playing
+
+You finished the tournament (eliminated at hand #261468132892).
+`
+	path := writeTournamentSummary(t, contents)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+	if tourn.PrizePoolUSD != 330.00 {
+		t.Errorf("PrizePoolUSD = %v, want 330.00 (a real cash pool, not the satellite signal)", tourn.PrizePoolUSD)
+	}
+	if !tourn.LikelySatellite {
+		t.Error("LikelySatellite = false, want true — the 'Super Satellite' title is the only signal, no row has a non-cash payout")
+	}
+	if tourn.WinnerPrizeDescription != "Super Satellite" {
+		t.Errorf("WinnerPrizeDescription = %q, want %q", tourn.WinnerPrizeDescription, "Super Satellite")
 	}
 }
 

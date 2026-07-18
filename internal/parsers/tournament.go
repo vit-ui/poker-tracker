@@ -45,12 +45,14 @@ type Tournament struct {
 	PFR                  *float64 // populated from hand history via UpdateTournamentHandStats
 	Hands                *int     // populated from hand history via UpdateTournamentHandStats; the weight /stats uses for VPIP/PFR
 
-	// LikelySatellite is true if any result row's payout is non-cash
-	// (ticket, seat/package, or T$ — see isNonCashPrize), scanning every
-	// row in ascending finish-position order rather than just position 1 —
-	// the summary file can be written the moment screenName busts, while
-	// the tournament continues for players still in, so position 1's row
-	// can still read "still playing" rather than showing a payout at all.
+	// LikelySatellite is true if the tournament title (the summary's
+	// subtitle line, e.g. "Super Satellite") or any result row's payout is
+	// non-cash (ticket, seat/package, T$, or qualifier — see isNonCashPrize).
+	// Rows are scanned in ascending finish-position order rather than just
+	// position 1 — the summary file can be written the moment screenName
+	// busts, while the tournament continues for players still in, so position
+	// 1's row can still read "still playing" (and every other row with it),
+	// leaving the title line as the only satellite signal in the file.
 	LikelySatellite bool
 
 	// WinnerPrizeDescription is the first non-cash payout text found
@@ -86,6 +88,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	var (
 		t           Tournament
 		playerCount int
+		beforeBuyIn bool // between the "PokerStars Tournament #" line and "Buy-In:" — the title/subtitle region
 	)
 	playerMarker := ": " + screenName + " ("
 
@@ -98,6 +101,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			if end := strings.Index(rest, ","); end > 0 {
 				t.TournamentID = rest[:end]
 			}
+			beforeBuyIn = true
 
 		case strings.HasSuffix(line, " players"):
 			if n, err := strconv.Atoi(strings.TrimSuffix(line, " players")); err == nil {
@@ -105,6 +109,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			}
 
 		case strings.HasPrefix(line, "Buy-In: $"):
+			beforeBuyIn = false
 			rest := line[len("Buy-In: $"):]
 			slashIdx := strings.Index(rest, "/")
 			if slashIdx >= 0 {
@@ -170,6 +175,20 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			}
 		}
 
+		// Header-title satellite detection: a summary can name its
+		// satellite/qualifier only in the title line (e.g. "Super Satellite")
+		// while every result row still reads "still playing" and the prize
+		// pool is a real cash amount — the summary is written the moment
+		// screenName busts, with the field still in, so the row scan below
+		// finds no non-cash payout at all. Word-check only the title/subtitle
+		// region between the header line and "Buy-In:"; the "Total Prize Pool"
+		// line (which can itself be ticket-denominated) sits after Buy-In and
+		// is already handled as PrizePoolDescription, so it's excluded here.
+		if !t.LikelySatellite && beforeBuyIn && isNonCashPrize(line) {
+			t.LikelySatellite = true
+			t.WinnerPrizeDescription = line
+		}
+
 		// Satellite/qualifier detection: scan every result row, not just
 		// finish position 1 — the file lists rows in ascending position
 		// order, so the first non-cash payout found here is always the
@@ -226,9 +245,11 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	return t, nil
 }
 
-// isNonCashPrize reports whether a payout description is a non-cash prize
-// (ticket, seat/package, satellite/sat, or T$ tournament dollars) rather
-// than a real cash payout. These can still start with a dollar sign (e.g.
+// isNonCashPrize reports whether a payout description (or a tournament title
+// line — see the header-title check in ParseTournamentFile) is a non-cash
+// prize: ticket, seat/package, satellite/sat, qualifier/qualy/qually, or T$
+// tournament dollars, rather than a real cash payout. These can still start
+// with a dollar sign (e.g.
 // "$1.00 Power Path Step 2 Ticket" — the ticket's own face-value name, not a
 // cash credit PokerStars actually paid out, or "T$11.00" — Tournament
 // Dollars, usable only for buy-ins, not real cash), so this is a text
@@ -246,7 +267,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 // signal that anything went wrong at all.
 func isNonCashPrize(payout string) bool {
 	lower := strings.ToLower(payout)
-	for _, word := range []string{"ticket", "pass", "seat", "package", "t$", "satellite", "sat"} {
+	for _, word := range []string{"ticket", "pass", "seat", "package", "t$", "satellite", "sat", "qualifier", "qualy", "qually"} {
 		if strings.Contains(lower, word) {
 			return true
 		}
