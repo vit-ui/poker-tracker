@@ -532,5 +532,40 @@ func TestParseRowGuards_ShortRowsSkipped(t *testing.T) {
 	}
 }
 
+// TestParseSheetDate covers both serializations a Date cell can arrive in: the
+// plain text the tracker writes, and the serial-number float64 Sheets returns
+// when the column has been formatted as a Date/Time (the bug that crashed
+// /status with "parsing time \"46218.61319444444\"").
+func TestParseSheetDate(t *testing.T) {
+	want, _ := time.Parse(dateFormat, "2026-07-17 16:49")
+
+	// String form — the normal case.
+	if got, err := parseSheetDate("2026-07-17 16:49"); err != nil || !got.Equal(want) {
+		t.Errorf("string form: got %v, err %v; want %v", got, err, want)
+	}
+
+	// Serial form — same instant expressed as days-since-1899-12-30. Computed
+	// the way Sheets would, then fed back to prove the round-trip.
+	serial := float64(want.Sub(sheetsEpoch)) / float64(24*time.Hour)
+	if got, err := parseSheetDate(serial); err != nil || !got.Equal(want) {
+		t.Errorf("serial form: got %v, err %v; want %v (serial %.10f)", got, err, want, serial)
+	}
+
+	// The exact value from the crash must parse (to some sane mid-2026 date)
+	// rather than error.
+	got, err := parseSheetDate(46218.61319444444)
+	if err != nil {
+		t.Fatalf("crash value errored: %v", err)
+	}
+	if got.Year() != 2026 || got.Month() != time.July {
+		t.Errorf("crash value parsed to %v, want a July 2026 date", got)
+	}
+
+	// A blank/garbage cell still errors, so callers keep skipping it.
+	if _, err := parseSheetDate(""); err == nil {
+		t.Error("empty cell should still error")
+	}
+}
+
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }

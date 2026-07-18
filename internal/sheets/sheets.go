@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"sync"
@@ -19,6 +20,32 @@ import (
 )
 
 const dateFormat = "2006-01-02 15:04"
+
+// sheetsEpoch is Google Sheets' serial-date origin: serial 0 is 1899-12-30,
+// and the fractional part is the fraction of a day elapsed. See parseSheetDate.
+var sheetsEpoch = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+
+// parseSheetDate reads a Date column cell that may arrive in either of two
+// serializations. The tracker always writes dates as plain "2006-01-02 15:04"
+// text, but if the player (or a spreadsheet template) formats that column as a
+// Date/Time in Sheets, the API returns the cell as a serial-number float64
+// under UNFORMATTED_VALUE instead of the string — the same instant, a
+// different wire type. fmt.Sprint on that float then yields "46218.613..."
+// which time.Parse can't read, crashing every read path (/status, /stats,
+// migration). Handling both here, in the one helper every date read funnels
+// through, keeps a date-formatted column from breaking the tracker no matter
+// which column the player formats.
+//
+// Stored dates carry minute precision (the write format has no seconds), so
+// the serial is rounded to the nearest minute — reproducing the exact
+// wall-clock the string form would, with no float dust in the seconds place.
+func parseSheetDate(v interface{}) (time.Time, error) {
+	if serial, ok := v.(float64); ok {
+		minutes := math.Round(serial * 24 * 60)
+		return sheetsEpoch.Add(time.Duration(minutes) * time.Minute), nil
+	}
+	return time.Parse(dateFormat, fmt.Sprint(v))
+}
 
 // Client holds the authenticated Sheets service and spreadsheet ID. It also
 // owns the write-ahead fallback (see fallback.go concepts inlined below): when
@@ -466,7 +493,7 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 	row := resp.Values[0]
 	var snap tournamentRowSnapshot
 	if len(row) > 0 {
-		if date, err := time.Parse(dateFormat, fmt.Sprint(row[0])); err == nil {
+		if date, err := parseSheetDate(row[0]); err == nil {
 			snap.date = date
 		}
 	}
@@ -1085,7 +1112,7 @@ func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool) {
 	if len(row) < 9 {
 		return storage.CashSessionRecord{}, false
 	}
-	date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0)))
+	date, err := parseSheetDate(cell(row, 0))
 	if err != nil {
 		return storage.CashSessionRecord{}, false
 	}
@@ -1167,7 +1194,7 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDate bool) {
 	rec.Type = fmt.Sprint(cell(row, 1))
 	rec.TournamentID = fmt.Sprint(cell(row, 2))
-	if date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0))); err == nil {
+	if date, err := parseSheetDate(cell(row, 0)); err == nil {
 		rec.Date = date
 		hasDate = true
 	}
@@ -1276,7 +1303,7 @@ func parseTimeRow(row []interface{}) (rec storage.TimeAnalysisRecord, ok bool) {
 	if len(row) < 4 {
 		return storage.TimeAnalysisRecord{}, false
 	}
-	date, err := time.Parse(dateFormat, fmt.Sprint(cell(row, 0)))
+	date, err := parseSheetDate(cell(row, 0))
 	if err != nil {
 		return storage.TimeAnalysisRecord{}, false
 	}
@@ -1458,7 +1485,7 @@ func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {
 		if len(row) < 4 {
 			continue
 		}
-		date, err := time.Parse(dateFormat, fmt.Sprint(row[0]))
+		date, err := parseSheetDate(row[0])
 		if err != nil {
 			return nil, fmt.Errorf("parsing ledger date %q: %w", row[0], err)
 		}
