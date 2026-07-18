@@ -13,4 +13,5 @@ testdata/tournaments/
 *.png
 *.md
 !README.md
+!LICENSE.md
 data/

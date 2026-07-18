@@ -1,5 +1,3 @@
-Copyright 2026 Vitor Cipriano
-
 # PolyForm Strict License 1.0.0
 
 <https://polyformproject.org/licenses/strict/1.0.0>
@@ -59,3 +57,7 @@ The **licensor** is the individual or entity offering these terms, and the **sof
 **Your licenses** are all the licenses granted to you for the software under these terms.
 
 **Use** means anything you do with the software requiring one of your licenses.
+
+---
+
+Copyright 2026 Vitor Cipriano
