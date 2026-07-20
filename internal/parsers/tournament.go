@@ -86,11 +86,19 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	}
 
 	var (
-		t           Tournament
-		playerCount int
-		beforeBuyIn bool // between the "PokerStars Tournament #" line and "Buy-In:" — the title/subtitle region
+		t              Tournament
+		playerCount    int
+		beforeBuyIn    bool    // between the "PokerStars Tournament #" line and "Buy-In:" — the title/subtitle region
+		foundPlayerRow bool    // screenName's best result row has been read (rows are ascending, so the first is best)
+		reEntryCost    float64 // extra buy-ins beyond the first (re-entries / rebuys / add-ons), folded into BuyInUSD after the loop
 	)
-	playerMarker := ": " + screenName + " ("
+	// A re-entry lists screenName once per entry, each row after the first
+	// carrying a "[N]" bullet marker between the name and the country paren
+	// ("Name [2] (Country)"). Match both the plain "(" and the "[" forms so the
+	// re-entered bullets are visible — otherwise only the busted first entry
+	// (which has no marker) is ever read.
+	playerParen := ": " + screenName + " ("
+	playerBracket := ": " + screenName + " ["
 
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, "\r")
@@ -146,7 +154,25 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 				}
 			}
 
-		case strings.Contains(line, playerMarker):
+		case strings.HasPrefix(line, "You made ") && strings.Contains(line, "for a total of $"):
+			// Re-entries / rebuys / add-ons are extra money spent beyond the
+			// base buy-in ("You made 1 re-entries for a total of $1.00.").
+			// Anchoring on "for a total of $" (not the word "re-entries")
+			// covers all three uniformly. The total is folded into BuyInUSD
+			// after the loop, so NetUSD ends up as payout − total buy-in.
+			rest := line[strings.Index(line, "for a total of $")+len("for a total of $"):]
+			// The amount carries a trailing period ("$1.00.") that
+			// parseLeadingAmount would otherwise consume as a digit and fail on.
+			rest = strings.TrimRight(rest, ". \r")
+			if amt, ok := parseLeadingAmount(rest); ok {
+				reEntryCost += amt
+			}
+
+		// Only the first matching row wins: rows are in ascending finish-position
+		// order, so screenName's first match is their best (deepest) finish — the
+		// re-entered bullet that lasted longest, not an earlier busted one.
+		case !foundPlayerRow && (strings.Contains(line, playerParen) || strings.Contains(line, playerBracket)):
+			foundPlayerRow = true
 			trimmed := strings.TrimLeft(line, " ")
 			colonIdx := strings.Index(trimmed, ":")
 			if colonIdx > 0 {
@@ -226,6 +252,12 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	if t.BuyInUSD == 0 {
 		return Tournament{}, ErrFreeroll
 	}
+
+	// Re-entries make BuyInUSD the sum of every entry's buy-in, and NetUSD the
+	// payout minus that total (NetUSD was computed in-loop against the base
+	// buy-in only). Both are no-ops for a single-entry tournament.
+	t.BuyInUSD += reEntryCost
+	t.NetUSD -= reEntryCost
 
 	t.TotalPlayers = playerCount
 
