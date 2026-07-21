@@ -233,13 +233,16 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		// ticket awarded), that's still as reliable a satellite signal as
 		// position 1's would be.
 		//
-		// This does not close every gap: if screenName busts before any
-		// non-cash-awarding position has been decided at all (busted early,
-		// won nothing, and nobody else has cashed a non-cash prize yet
-		// either), there is genuinely no signal left in this file to detect
-		// it from — PokerStars' own export format doesn't expose a
-		// tournament's satellite/qualifier structure independent of an
-		// actual decided payout. This is a known hard problem for
+		// This does not close every gap, but the remaining one is narrow: a
+		// ticket-denominated prize pool is caught after the loop via
+		// PrizePoolDescription (the "Total Prize Pool" line names the ticket
+		// even when every result row still reads "still playing"), so only a
+		// *cash*-denominated satellite is undetectable here — and only when
+		// screenName busts before any seat has been decided (won nothing, and
+		// nobody else has cashed a non-cash prize yet either), leaving no
+		// signal in the file at all. PokerStars' export format doesn't expose
+		// a cash-pool tournament's satellite/qualifier structure independent
+		// of an actual decided payout. This is a known hard problem for
 		// third-party trackers generally, not unique to this parser.
 		if !t.LikelySatellite {
 			if _, payout, ok := parseFinishLine(line); ok && isNonCashPrize(payout) {
@@ -272,6 +275,17 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		}
 	} else {
 		t.Type = "mtt"
+	}
+
+	// A ticket-denominated prize pool (PrizePoolDescription set) is itself a
+	// definitive satellite/qualifier signal, even when every result row still
+	// reads "still playing" and the title line carries no keyword — the
+	// summary is written the moment screenName busts, with the field still in.
+	// Guarded so a row-scan/title hit keeps its own (row-derived)
+	// WinnerPrizeDescription.
+	if !t.LikelySatellite && t.PrizePoolDescription != "" {
+		t.LikelySatellite = true
+		t.WinnerPrizeDescription = t.PrizePoolDescription
 	}
 
 	return t, nil

@@ -216,6 +216,16 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 			}
 
 		case line == "*** HOLE CARDS ***":
+			// Only Hold'em/Omaha deal via "*** HOLE CARDS ***", so VPIP/PFR
+			// (preflop concepts) are only counted for those games. Stud/draw
+			// rounds in a mixed game (HORSE, 8-Game) open with "*** 3rd STREET
+			// ***" / "*** DEALING HANDS ***" instead and never set inPreflop,
+			// so their hands land in the denominator (playerDealt still fires
+			// on "Dealt to") but never register a VPIP/PFR action — VPIP/PFR
+			// are deliberately Hold'em/Omaha-only and read as diluted (or 0
+			// for an all-stud/draw sample) on mixed formats. Money fields are
+			// unaffected: tournament net comes from the summary plus folded
+			// bounty, not from these streets.
 			inPreflop = true
 
 		case strings.HasPrefix(line, dealtPfx):

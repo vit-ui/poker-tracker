@@ -93,6 +93,113 @@ func TestParseTournamentFileSingleEntryUnchanged(t *testing.T) {
 	}
 }
 
+// satelliteBustedSummary is the real #4017575047 Power Path satellite where
+// Mayor2003 busted 3rd. PokerStars wrote the file mid-tournament, so the other
+// two rows read "still playing" and Mayor2003's own row is empty — the only
+// satellite signal left is the ticket-denominated "Total Prize Pool" line.
+// This is the regression guard for that case.
+const satelliteBustedSummary = `PokerStars Tournament #4017575047, No Limit Hold'em
+Buy-In: $0.46/$0.04 USD
+3 players
+Total Prize Pool: $1.00 Power Path Step 2 Ticket
+Tournament started 2026/07/20 21:16:34 BRT [2026/07/20 20:16:34 ET]
+
+  1: CuspedeGelo (Brazil), still playing
+  2: HeimaS (Ukraine), still playing
+  3: Mayor2003 (Brazil),
+
+You finished in 3rd place.
+`
+
+// satelliteWonSummary is the real #4017575075 Power Path satellite where
+// Mayor2003 won the ticket outright — position 1's row shows it, so the row
+// scan flags LikelySatellite and derives WinnerPrizeDescription from that row.
+// The post-loop prize-pool guard must not clobber that.
+const satelliteWonSummary = `PokerStars Tournament #4017575075, No Limit Hold'em
+Buy-In: $0.46/$0.04 USD
+3 players
+Total Prize Pool: $1.00 Power Path Step 2 Ticket
+Tournament started 2026/07/20 21:16:47 BRT [2026/07/20 20:16:47 ET]
+Tournament finished 2026/07/20 21:18:24 BRT [2026/07/20 20:18:24 ET]
+  1: Mayor2003 (Brazil), $1.00 Power Path Step 2 Ticket
+  2: TomasStark (Brazil),
+  3: bugaAA634 (Brazil),
+
+You finished in 1st place (eliminated at hand #261496886217).
+`
+
+// freerollSummary is the real #4017348137 freeroll (no "Buy-In: $" line) —
+// ParseTournamentFile must return ErrFreeroll so the caller skips it.
+const freerollSummary = `PokerStars Tournament #4017348137, No Limit Hold'em
+Freeroll
+4 players
+Tournament started 2026/07/19 21:53:39 BRT [2026/07/19 20:53:39 ET]
+
+  1: AAkriss (Panama), still playing
+  2: lukitasrione (Argentina), still playing
+  3: Mayor2003 (Brazil),
+  4: BigDegs99 (United Kingdom),
+
+You finished in 3rd place (eliminated at hand #261487659541).
+`
+
+func TestParseTournamentFileSatelliteBustedPrizePool(t *testing.T) {
+	got, err := ParseTournamentFile(writeTempSummary(t, satelliteBustedSummary), "Mayor2003")
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+	if !got.LikelySatellite {
+		t.Error("LikelySatellite = false, want true (ticket-denominated prize pool)")
+	}
+	if got.PrizePoolDescription != "$1.00 Power Path Step 2 Ticket" {
+		t.Errorf("PrizePoolDescription = %q, want %q", got.PrizePoolDescription, "$1.00 Power Path Step 2 Ticket")
+	}
+	if got.PrizePoolUSD != 0 {
+		t.Errorf("PrizePoolUSD = %.2f, want 0 (non-cash pool)", got.PrizePoolUSD)
+	}
+	if got.Multiplier != nil {
+		t.Errorf("Multiplier = %v, want nil (non-cash pool)", *got.Multiplier)
+	}
+	if got.Type != "spingo" {
+		t.Errorf("Type = %q, want \"spingo\"", got.Type)
+	}
+	if got.FinishPos != 3 {
+		t.Errorf("FinishPos = %d, want 3", got.FinishPos)
+	}
+	if math.Abs(got.BuyInUSD-0.50) > 1e-9 {
+		t.Errorf("BuyInUSD = %.4f, want 0.50", got.BuyInUSD)
+	}
+	if math.Abs(got.NetUSD-(-0.50)) > 1e-9 {
+		t.Errorf("NetUSD = %.4f, want -0.50 (won nothing; ticket not counted as cash)", got.NetUSD)
+	}
+}
+
+func TestParseTournamentFileSatelliteWonPrizePool(t *testing.T) {
+	got, err := ParseTournamentFile(writeTempSummary(t, satelliteWonSummary), "Mayor2003")
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+	if !got.LikelySatellite {
+		t.Error("LikelySatellite = false, want true")
+	}
+	if got.WinnerPrizeDescription != "$1.00 Power Path Step 2 Ticket" {
+		t.Errorf("WinnerPrizeDescription = %q, want %q (row-derived, not clobbered by the pool guard)", got.WinnerPrizeDescription, "$1.00 Power Path Step 2 Ticket")
+	}
+	if got.FinishPos != 1 {
+		t.Errorf("FinishPos = %d, want 1", got.FinishPos)
+	}
+	if math.Abs(got.NetUSD-(-0.50)) > 1e-9 {
+		t.Errorf("NetUSD = %.4f, want -0.50 (ticket win is not cash)", got.NetUSD)
+	}
+}
+
+func TestParseTournamentFileFreeroll(t *testing.T) {
+	_, err := ParseTournamentFile(writeTempSummary(t, freerollSummary), "Mayor2003")
+	if !errors.Is(err, ErrFreeroll) {
+		t.Errorf("err = %v, want ErrFreeroll", err)
+	}
+}
+
 func TestParseTournamentFile(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "tournaments", "*.txt"))
 	if err != nil {
