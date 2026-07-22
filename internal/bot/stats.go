@@ -71,7 +71,7 @@ func buildWeeklySummary(sc storage.Store, now time.Time) (string, error) {
 	return fmt.Sprintf(
 		"📊 Weekly Summary\nSessions: %d\nNet: %s\nBB/100: %.1f\nSpin & Go ROI: %s\nMTT ROI: %s\nHands: %s",
 		sessionCount,
-		formatSignedUSD(netUSD),
+		FormatSignedUSD(netUSD),
 		bb100,
 		formatSignedPercent(roi(tournaments, "spingo")),
 		formatSignedPercent(roi(tournaments, "mtt")),
@@ -140,10 +140,10 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
 	return fmt.Sprintf(
 		"📅 Monthly Summary — %s\nCash Net: %s\nSpins Net: %s\nMTT Net: %s\nTotal: %s\nBB/100: %.1f\nSpins ROI: %s\nMTT ROI: %s\nHands: %s\nVolume: %d sessions",
 		firstOfPrevMonth.Format("January 2006"),
-		formatSignedUSD(cashNet),
-		formatSignedUSD(spinsNet),
-		formatSignedUSD(mttNet),
-		formatSignedUSD(totalNet),
+		FormatSignedUSD(cashNet),
+		FormatSignedUSD(spinsNet),
+		FormatSignedUSD(mttNet),
+		FormatSignedUSD(totalNet),
 		bb100,
 		formatSignedPercent(roi(tournaments, "spingo")),
 		formatSignedPercent(roi(tournaments, "mtt")),
@@ -224,7 +224,11 @@ func roi(tournaments []parsers.Tournament, tType string) float64 {
 	return netSum / buyinSum * 100
 }
 
-func formatSignedUSD(v float64) string {
+// FormatSignedUSD renders a net amount as "+$5.50" / "-$12.75" — the single
+// signed-USD formatter, shared by /stats, /status, the flow displays, and
+// main.go's post-session and post-tournament alerts. Do not hand-roll the
+// sign/abs split at a call site.
+func FormatSignedUSD(v float64) string {
 	sign := "+"
 	if v < 0 {
 		sign = "-"
@@ -344,7 +348,7 @@ func (b *Bot) handleStatus(chatID int64) {
 	}
 
 	text := fmt.Sprintf("💰 Status\nBankroll: $%.2f\nToday: %s\nWeek: %s\nMonth: %s",
-		bankroll, formatSignedUSD(todayNet), formatSignedUSD(weekNet), formatSignedUSD(monthNet))
+		bankroll, FormatSignedUSD(todayNet), FormatSignedUSD(weekNet), FormatSignedUSD(monthNet))
 
 	lock, err := config.LoadLock(b.lockfilePath)
 	if err != nil {
@@ -418,19 +422,19 @@ func (b *Bot) handleLastSession(chatID int64) {
 
 	if lastTourn == nil || (lastCash != nil && lastCash.Date.After(lastTourn.Date)) {
 		send(b.tg, chatID, fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
-			lastCash.Stake, formatSignedUSD(lastCash.NetUSD), lastCash.Hands, lastCash.DurationMin,
+			lastCash.Stake, FormatSignedUSD(lastCash.NetUSD), lastCash.Hands, lastCash.DurationMin,
 			formatPercent(lastCash.VPIP), formatPercent(lastCash.PFR), bankroll))
 		return
 	}
 
 	if lastTourn.BaseType() == "spingo" {
 		send(b.tg, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
-			lastTourn.BuyInUSD, SpinGoPrizePoolText(*lastTourn), Ordinal(lastTourn.FinishPos), formatSignedUSD(lastTourn.NetUSD),
+			lastTourn.BuyInUSD, SpinGoPrizePoolText(*lastTourn), Ordinal(lastTourn.FinishPos), FormatSignedUSD(lastTourn.NetUSD),
 			formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 		return
 	}
 	send(b.tg, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
-		lastTourn.BuyInUSD, Ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, formatSignedUSD(lastTourn.NetUSD),
+		lastTourn.BuyInUSD, Ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, FormatSignedUSD(lastTourn.NetUSD),
 		formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 }
 
@@ -514,7 +518,7 @@ func cashStatsMessage(sc storage.Store, since time.Time, periodLabel string) (st
 	}
 	bb100, vpip, pfr := weightedCashAverages(sessions)
 	return fmt.Sprintf("📈 Cash Stats (%s)\nNet: %s\nBB/100: %.1f\nVPIP: %s\nPFR: %s\nHands: %d\nSessions: %d",
-		periodLabel, formatSignedUSD(net), bb100, formatPercent(vpip), formatPercent(pfr), hands, len(sessions)), nil
+		periodLabel, FormatSignedUSD(net), bb100, formatPercent(vpip), formatPercent(pfr), hands, len(sessions)), nil
 }
 
 func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabel, label, emoji string, includeAvgFinish bool) (string, error) {
@@ -537,7 +541,7 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 
 	if !includeAvgFinish {
 		return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d",
-			emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered)), nil
+			emoji, label, periodLabel, FormatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered)), nil
 	}
 
 	var avgFinishSum float64
@@ -553,5 +557,5 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 		avgFinish = avgFinishSum / float64(cnt)
 	}
 	return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d\nAvg finish: %.0f%%",
-		emoji, label, periodLabel, formatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered), avgFinish), nil
+		emoji, label, periodLabel, FormatSignedUSD(net), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered), avgFinish), nil
 }

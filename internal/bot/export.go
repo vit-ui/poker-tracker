@@ -38,7 +38,7 @@ const vpipPfrPrecision = 2
 
 // moneyPrecision is the fixed decimal count every USD-denominated CSV
 // column is rounded to, matching how Telegram already displays USD amounts
-// (formatSignedUSD's "$%.2f") — chained float64 arithmetic (running totals,
+// (FormatSignedUSD's "$%.2f") — chained float64 arithmetic (running totals,
 // bounty folding, ...) otherwise leaves values like -0.32000000000000006
 // with no observable meaning beyond a cent.
 const moneyPrecision = 2

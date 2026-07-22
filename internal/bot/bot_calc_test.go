@@ -301,9 +301,9 @@ func TestFormatSignedUSD(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := formatSignedUSD(c.input)
+			got := FormatSignedUSD(c.input)
 			if got != c.want {
-				t.Errorf("formatSignedUSD(%v) = %q, want %q", c.input, got, c.want)
+				t.Errorf("FormatSignedUSD(%v) = %q, want %q", c.input, got, c.want)
 			}
 		})
 	}

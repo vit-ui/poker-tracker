@@ -107,7 +107,7 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 		send(b.tg, chatID, "Something went wrong. Check logs.")
 		return
 	}
-	send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, formatSignedUSD(ledgerAmount), bankroll))
+	send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, FormatSignedUSD(ledgerAmount), bankroll))
 }
 
 // ensureScreenName checks Setup.PokerStarsScreenName before any of the four
