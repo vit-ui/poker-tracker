@@ -390,18 +390,32 @@ func extractHandID(line string) string {
 	return rest[:end]
 }
 
-// parseLeadingAmount parses a leading decimal number from s, ignoring a leading '$'.
+// parseLeadingAmount parses a leading decimal number from s, ignoring a
+// leading '$'. Thousands-separator commas are consumed and stripped — but
+// only when a digit follows, so "$12,500.00" parses as 12500 while a
+// sentence comma after the amount ("$1, and…") still ends the number.
+// Without this, "Total Prize Pool: $12,500.00" silently parsed as 12 —
+// corrupted money with no error and no user-facing signal.
 func parseLeadingAmount(s string) (float64, bool) {
 	if len(s) > 0 && s[0] == '$' {
 		s = s[1:]
 	}
 	i := 0
-	for i < len(s) && (s[i] == '.' || (s[i] >= '0' && s[i] <= '9')) {
-		i++
+	for i < len(s) {
+		c := s[i]
+		if c == '.' || (c >= '0' && c <= '9') {
+			i++
+			continue
+		}
+		if c == ',' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+			i++
+			continue
+		}
+		break
 	}
 	if i == 0 {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(s[:i], 64)
+	v, err := strconv.ParseFloat(strings.ReplaceAll(s[:i], ",", ""), 64)
 	return v, err == nil
 }

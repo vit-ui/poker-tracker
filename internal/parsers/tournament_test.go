@@ -117,14 +117,18 @@ Tournament started 2026/07/20 21:16:34 BRT [2026/07/20 20:16:34 ET]
 You finished in 3rd place.
 `
 
-// satelliteWonSummary is the real #4017575075 Power Path satellite where
-// Mayor2003 won the ticket outright — position 1's row shows it, so the row
-// scan flags LikelySatellite and derives WinnerPrizeDescription from that row.
-// The post-loop prize-pool guard must not clobber that.
+// satelliteWonSummary is adapted from the real #4017575075 Power Path
+// satellite where Mayor2003 won the ticket outright — position 1's row shows
+// it, so the row scan flags LikelySatellite and derives
+// WinnerPrizeDescription from that row. The post-loop prize-pool guard must
+// not clobber that. The pool line's text is deliberately altered to DIFFER
+// from the row payout text: with identical strings (as in the real file) the
+// clobber assertion is unfalsifiable — the guard could overwrite the
+// row-derived value with the same bytes and the test would still pass.
 const satelliteWonSummary = `PokerStars Tournament #4017575075, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
 3 players
-Total Prize Pool: $1.00 Power Path Step 2 Ticket
+Total Prize Pool: $2.00 in Power Path Step 2 Tickets
 Tournament started 2026/07/20 21:16:47 BRT [2026/07/20 20:16:47 ET]
 Tournament finished 2026/07/20 21:18:24 BRT [2026/07/20 20:18:24 ET]
   1: Mayor2003 (Brazil), $1.00 Power Path Step 2 Ticket
@@ -148,6 +152,44 @@ Tournament started 2026/07/19 21:53:39 BRT [2026/07/19 20:53:39 ET]
 
 You finished in 3rd place (eliminated at hand #261487659541).
 `
+
+// rebuyAddonSummary exercises the extra-spend accumulation across MULTIPLE
+// "You made … for a total of $" lines — the case arm is deliberately anchored
+// on the money phrase so re-entries, rebuys, and add-ons all fold into
+// BuyInUSD uniformly, and ReEntries sums every line's leading count. Only the
+// single-line re-entry form exists in committed fixtures otherwise, so the
+// += accumulation path had no CI coverage.
+const rebuyAddonSummary = `PokerStars Tournament #4017600001, No Limit Hold'em
+Buy-In: $0.90/$0.10 USD
+40 players
+Total Prize Pool: $60.00 USD
+Tournament started 2026/07/21 20:00:00 BRT [2026/07/21 19:00:00 ET]
+
+  1: SomeoneElse (Brazil), still playing
+  9: Mayor2003 (Brazil),
+
+You finished in 9th place.You finished the tournament.
+
+
+You made 2 rebuys for a total of $2.00.
+You made 1 addons for a total of $1.00.
+`
+
+func TestParseTournamentFileRebuyAddonAccumulation(t *testing.T) {
+	got, err := ParseTournamentFile(writeTempSummary(t, rebuyAddonSummary), "Mayor2003")
+	if err != nil {
+		t.Fatalf("ParseTournamentFile: %v", err)
+	}
+	if math.Abs(got.BuyInUSD-4.00) > 1e-9 {
+		t.Errorf("BuyInUSD = %.4f, want 4.00 (base 1.00 + rebuys 2.00 + addon 1.00)", got.BuyInUSD)
+	}
+	if math.Abs(got.NetUSD-(-4.00)) > 1e-9 {
+		t.Errorf("NetUSD = %.4f, want -4.00 (won nothing)", got.NetUSD)
+	}
+	if got.ReEntries != 3 {
+		t.Errorf("ReEntries = %d, want 3 (2 rebuys + 1 addon summed across both lines)", got.ReEntries)
+	}
+}
 
 func TestParseTournamentFileSatelliteBustedPrizePool(t *testing.T) {
 	got, err := ParseTournamentFile(writeTempSummary(t, satelliteBustedSummary), "Mayor2003")
@@ -188,6 +230,12 @@ func TestParseTournamentFileSatelliteWonPrizePool(t *testing.T) {
 	if !got.LikelySatellite {
 		t.Error("LikelySatellite = false, want true")
 	}
+	if got.PrizePoolDescription != "$2.00 in Power Path Step 2 Tickets" {
+		t.Errorf("PrizePoolDescription = %q, want the pool line's text", got.PrizePoolDescription)
+	}
+	// The discriminating assertion: pool text and row text differ, and the
+	// row-derived one must win — a guard regression that overwrote it with
+	// PrizePoolDescription fails here.
 	if got.WinnerPrizeDescription != "$1.00 Power Path Step 2 Ticket" {
 		t.Errorf("WinnerPrizeDescription = %q, want %q (row-derived, not clobbered by the pool guard)", got.WinnerPrizeDescription, "$1.00 Power Path Step 2 Ticket")
 	}

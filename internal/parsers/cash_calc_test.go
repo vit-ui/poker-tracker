@@ -28,6 +28,13 @@ func TestParseLeadingAmount(t *testing.T) {
 		{"dollar sign only", "$", 0, false},
 		{"chips, no dollar sign", "25", 25, true},
 		{"zero", "0", 0, true},
+		// Thousands separators: a comma inside a digit run is consumed and
+		// stripped ("$12,500.00" was silently parsed as 12 before this).
+		{"thousands-separated dollars", "$12,500.00", 12500.00, true},
+		{"thousands-separated with trailing text", "1,048.00 USD) - 2026", 1048.00, true},
+		{"multiple thousands groups", "1,234,567.89", 1234567.89, true},
+		{"sentence comma after the amount stops parsing", "1, and more", 1, true},
+		{"trailing comma not consumed", "5,", 5, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
