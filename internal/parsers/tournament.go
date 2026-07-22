@@ -41,9 +41,17 @@ type Tournament struct {
 	FinishPos            int
 	TotalPlayers         int
 	NetUSD               float64
-	VPIP                 *float64 // populated from hand history via UpdateTournamentHandStats
-	PFR                  *float64 // populated from hand history via UpdateTournamentHandStats
-	Hands                *int     // populated from hand history via UpdateTournamentHandStats; the weight /stats uses for VPIP/PFR
+
+	// ReEntries is the number of re-entries/rebuys/add-ons beyond the first
+	// entry, from the "You made N re-entries for a total of $X" line (0 for a
+	// single-entry tournament). BuyInUSD/NetUSD already fold in their cost;
+	// this count is kept only so the post-session alert can say the row is a
+	// re-entry and how many entries it represents. Not persisted by either
+	// storage backend — it's read straight off the summary each parse.
+	ReEntries int
+	VPIP      *float64 // populated from hand history via UpdateTournamentHandStats
+	PFR       *float64 // populated from hand history via UpdateTournamentHandStats
+	Hands     *int     // populated from hand history via UpdateTournamentHandStats; the weight /stats uses for VPIP/PFR
 
 	// LikelySatellite is true if the tournament title (the summary's
 	// subtitle line, e.g. "Super Satellite") or any result row's payout is
@@ -91,6 +99,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		beforeBuyIn    bool    // between the "PokerStars Tournament #" line and "Buy-In:" — the title/subtitle region
 		foundPlayerRow bool    // screenName's best result row has been read (rows are ascending, so the first is best)
 		reEntryCost    float64 // extra buy-ins beyond the first (re-entries / rebuys / add-ons), folded into BuyInUSD after the loop
+		reEntryCount   int     // number of re-entries beyond the first entry (the "N" in "You made N re-entries")
 	)
 	// A re-entry lists screenName once per entry, each row after the first
 	// carrying a "[N]" bullet marker between the name and the country paren
@@ -166,6 +175,11 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			rest = strings.TrimRight(rest, ". \r")
 			if amt, ok := parseLeadingAmount(rest); ok {
 				reEntryCost += amt
+			}
+			// The count is the leading integer right after "You made "
+			// ("You made 2 re-entries …" → 2), kept only for the alert text.
+			if n, ok := parseLeadingAmount(line[len("You made "):]); ok {
+				reEntryCount += int(n)
 			}
 
 		// Only the first matching row wins: rows are in ascending finish-position
@@ -261,6 +275,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	// buy-in only). Both are no-ops for a single-entry tournament.
 	t.BuyInUSD += reEntryCost
 	t.NetUSD -= reEntryCost
+	t.ReEntries = reEntryCount
 
 	t.TotalPlayers = playerCount
 

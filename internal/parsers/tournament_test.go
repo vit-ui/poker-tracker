@@ -75,6 +75,9 @@ func TestParseTournamentFileReEntry(t *testing.T) {
 	if got.TotalPlayers != 32 {
 		t.Errorf("TotalPlayers = %d, want 32", got.TotalPlayers)
 	}
+	if got.ReEntries != 1 {
+		t.Errorf("ReEntries = %d, want 1", got.ReEntries)
+	}
 }
 
 func TestParseTournamentFileSingleEntryUnchanged(t *testing.T) {
@@ -87,6 +90,9 @@ func TestParseTournamentFileSingleEntryUnchanged(t *testing.T) {
 	}
 	if got.BuyInUSD != 1.00 {
 		t.Errorf("BuyInUSD = %.2f, want 1.00 (no re-entry)", got.BuyInUSD)
+	}
+	if got.ReEntries != 0 {
+		t.Errorf("ReEntries = %d, want 0 (single entry)", got.ReEntries)
 	}
 	if math.Abs(got.NetUSD-2.00) > 1e-9 {
 		t.Errorf("NetUSD = %.4f, want 2.00 (payout 3.00 - buy-in 1.00)", got.NetUSD)

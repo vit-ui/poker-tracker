@@ -106,12 +106,16 @@ func TestParseDataSummaryMoney(t *testing.T) {
 		finishPos    int
 		prizePoolUSD float64
 		satellite    bool
+		reEntries    int
 	}{
-		{"T4014978222 HORSE", "mtt", 1.10, 69, 41, 75.00, false},
-		{"T4014977703 Pot Limit Omaha", "mtt", 1.10, 183, 59, 87.84, false},
+		{"T4014978222 HORSE", "mtt", 1.10, 69, 41, 75.00, false, 0},
+		{"T4014977703 Pot Limit Omaha", "mtt", 1.10, 183, 59, 87.84, false, 0},
 		// PKO 2-7 draw: "Buy-In: $2.94/$0.36" — the $2.94 half already sums
 		// the base buy-in and the bounty, so BuyInUSD is the full 3.30.
-		{"T4016701188 No Limit 2-7 Single Draw", "mtt", 3.30, 19, 0, 71.50, false},
+		{"T4016701188 No Limit 2-7 Single Draw", "mtt", 3.30, 19, 0, 71.50, false, 0},
+		// PLO re-entry: Mayor2003 played 3 entries (rows 43/81/86), busted
+		// 43rd of 162, $2.20 across 2 re-entries on top of the $1.10 base.
+		{"T4016700037 Pot Limit Omaha", "mtt", 3.30, 162, 43, 77.76, false, 2},
 	}
 	for _, c := range cases {
 		t.Run(c.sub, func(t *testing.T) {
@@ -136,6 +140,9 @@ func TestParseDataSummaryMoney(t *testing.T) {
 			}
 			if got.LikelySatellite != c.satellite {
 				t.Errorf("LikelySatellite = %v, want %v", got.LikelySatellite, c.satellite)
+			}
+			if got.ReEntries != c.reEntries {
+				t.Errorf("ReEntries = %d, want %d", got.ReEntries, c.reEntries)
 			}
 		})
 	}
