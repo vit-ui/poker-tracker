@@ -13,12 +13,12 @@ func entry(entryType string, amount float64) storage.LedgerEntry {
 	return storage.LedgerEntry{Type: entryType, AmountUSD: amount}
 }
 
-// TestConsecutiveLossesTriggered exercises the fixed decision end to end:
+// TestLosingStreakTriggered exercises the fixed decision end to end:
 // filtering to session rows and windowing to the last n happen together
 // (recentSessionRows) before the streak is measured, so a deposit or
 // withdrawal anywhere in the ledger can never dilute or break the window a
 // losing streak is measured against.
-func TestConsecutiveLossesTriggered(t *testing.T) {
+func TestLosingStreakTriggered(t *testing.T) {
 	cases := []struct {
 		name    string
 		entries []storage.LedgerEntry
@@ -105,9 +105,9 @@ func TestConsecutiveLossesTriggered(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := consecutiveLossesTriggered(c.entries, c.n)
+			got := LosingStreakTriggered(c.entries, c.n)
 			if got != c.want {
-				t.Errorf("consecutiveLossesTriggered(%+v, n=%d) = %v, want %v", c.entries, c.n, got, c.want)
+				t.Errorf("LosingStreakTriggered(%+v, n=%d) = %v, want %v", c.entries, c.n, got, c.want)
 			}
 		})
 	}

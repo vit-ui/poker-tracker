@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged
 `vX.Y`, and each GitHub Release pulls its notes from the matching section below.
 
+## Unreleased
+
+### Changed
+- The per-hand evaluation path fetches its data once per file event instead
+  of once per check: the Bankroll Ledger was being downloaded up to six times
+  and the Tournaments tab twice for every single hand (hard stop checks and
+  their alert twins each fetched their own identical copy), which with
+  several tables open could brush the Google Sheets per-minute request quota.
+  Both backends now do one ledger read and at most one tournaments read per
+  hand; `config.json` is likewise read once per event instead of ~7 times.
+  Alert messages, hard stop decisions, and stored rows are unchanged.
+- The Sheets ledger-cascade update no longer re-reads a cell it already
+  fetched, saving one API call on every hand after a session's first.
+
+### Fixed
+- CLAUDE.md claimed the cash post-session summary waits 10 minutes of table
+  quiet; the code says 5. Corrected the doc to match the code.
+
 ## v2.8 — 2026-07-22
 
 Fixes from a code review of the v2.6/v2.7 changes.

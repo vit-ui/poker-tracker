@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -109,12 +110,12 @@ func TestSpingoOnly(t *testing.T) {
 		{Type: "mtt", NetUSD: -3},
 		{Type: "mtt" + parsers.KnockoutSuffix, NetUSD: -4},
 	}
-	got := spingoOnly(tournaments)
+	got := SpingoOnly(tournaments)
 	if len(got) != 2 {
-		t.Fatalf("len(spingoOnly(...)) = %d, want 2", len(got))
+		t.Fatalf("len(SpingoOnly(...)) = %d, want 2", len(got))
 	}
 	if got[0].NetUSD != -1 || got[1].NetUSD != -2 {
-		t.Errorf("spingoOnly(...) = %+v, want the two spingo/spingo-ko rows only", got)
+		t.Errorf("SpingoOnly(...) = %+v, want the two spingo/spingo-ko rows only", got)
 	}
 }
 
@@ -300,6 +301,65 @@ func TestComputeEquityCurve(t *testing.T) {
 					c.amounts, peak, current, c.wantPeak, c.wantCurrent)
 			}
 		})
+	}
+}
+
+// TestDownswingEquityCurve confirms the data-taking curve — which windows a
+// full-ledger fetch locally — produces exactly what the old per-evaluator
+// windowed fetch did: the 30-day boundary stays exclusive, transfers stay
+// out of the curve, and rows older than the window never contribute to the
+// peak. now is constructed in time.Local so its wall-clock digits are fixed
+// regardless of the machine's zone (see TestPokerDayStart_DefaultHour);
+// entry dates are constructed directly in UTC, the stored-date coordinate.
+func TestDownswingEquityCurve(t *testing.T) {
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.Local)
+	cutoff := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC) // now's digits minus 30 days
+
+	dated := func(entryType string, amount float64, date time.Time) storage.LedgerEntry {
+		return storage.LedgerEntry{Type: entryType, AmountUSD: amount, Date: date}
+	}
+	entries := []storage.LedgerEntry{
+		dated("cash_session", 50, time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)), // outside window
+		dated("cash_session", 10, cutoff),                                       // exactly at cutoff — excluded
+		dated("cash_session", 10, cutoff.Add(time.Minute)),                      // just inside
+		dated("deposit", 100, time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)),    // transfer — excluded
+		dated("cash_session", -3, time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)),
+		dated("withdrawal", -40, time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)), // transfer — excluded
+		dated("tournament", -2, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)),
+	}
+
+	// Curve over the three included rows (+10, -3, -2): 10 → 7 → 5.
+	peak, current := DownswingEquityCurve(entries, now)
+	if peak != 10 || current != 5 {
+		t.Errorf("DownswingEquityCurve(...) = (peak=%v, current=%v), want (peak=10, current=5)", peak, current)
+	}
+}
+
+// TestPokerDaySessionEntries confirms the data-taking poker-day filter —
+// applied to a full-ledger fetch — matches the old windowed
+// GetLedgerEntriesSince fetch: the day-start boundary is inclusive, rows
+// before it are dropped, and transfers inside the day are excluded.
+func TestPokerDaySessionEntries(t *testing.T) {
+	cfg := &config.Config{} // default 6am day start
+	now := time.Date(2026, 7, 13, 15, 0, 0, 0, time.Local)
+	dayStart := time.Date(2026, 7, 13, 6, 0, 0, 0, time.UTC)
+
+	dated := func(entryType string, amount float64, date time.Time) storage.LedgerEntry {
+		return storage.LedgerEntry{Type: entryType, AmountUSD: amount, Date: date}
+	}
+	entries := []storage.LedgerEntry{
+		dated("cash_session", -5, dayStart.Add(-time.Minute)), // previous poker day — dropped
+		dated("deposit", 100, dayStart.Add(2*time.Hour)),      // in the day but a transfer — dropped
+		dated("cash_session", -3, dayStart),                   // exactly at the boundary — kept (inclusive)
+		dated("tournament", -2, dayStart.Add(6*time.Hour)),
+	}
+
+	got := PokerDaySessionEntries(entries, cfg, now)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].AmountUSD != -3 || got[1].AmountUSD != -2 {
+		t.Errorf("got = %+v, want the boundary session (-3) and the tournament (-2)", got)
 	}
 }
 

@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // TestResolveStorageBackend covers the three startup-guard outcomes from
@@ -265,6 +267,138 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	if handled(tourney("888", 1.10, 12, 90, -1.10)) {
 		t.Error("partial hand-file-only row wrongly reported as handled — its summary would never be recorded")
 	}
+}
+
+// TestLedgerBankroll confirms the bankroll derived from an already-fetched
+// full ledger — its last row's running total — equals what a separate
+// GetCurrentBankroll store call returns, which is the read it replaced on
+// the worker's per-event path.
+func TestLedgerBankroll(t *testing.T) {
+	t.Run("empty ledger is 0", func(t *testing.T) {
+		if got := ledgerBankroll(nil); got != 0 {
+			t.Errorf("ledgerBankroll(nil) = %v, want 0", got)
+		}
+	})
+
+	t.Run("matches GetCurrentBankroll on a real store", func(t *testing.T) {
+		store, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "tracker.db"))
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		defer store.Close()
+
+		if err := store.AppendLedgerEntry("deposit", 100); err != nil {
+			t.Fatalf("AppendLedgerEntry: %v", err)
+		}
+		session := parsers.CashSession{Date: storage.AsStoredClock(time.Now()), Stake: "NL5", NetUSD: -6, FirstHandID: "h1"}
+		if err := store.AppendCashSession(session); err != nil {
+			t.Fatalf("AppendCashSession: %v", err)
+		}
+
+		ledger, err := store.GetLedgerEntriesSince(time.Time{})
+		if err != nil {
+			t.Fatalf("GetLedgerEntriesSince: %v", err)
+		}
+		want, err := store.GetCurrentBankroll()
+		if err != nil {
+			t.Fatalf("GetCurrentBankroll: %v", err)
+		}
+		if got := ledgerBankroll(ledger); got != want || got != 94 {
+			t.Errorf("ledgerBankroll = %v, GetCurrentBankroll = %v, want both 94", got, want)
+		}
+	})
+}
+
+// TestWorkerAlertEvaluationEndToEnd drives the worker's post-write
+// evaluation path — one shared fetchEvalData per event feeding every
+// evaluator — against a real sqlite store, asserting the exact alert
+// messages the old per-evaluator-fetch code produced for the same rows.
+// Hand-checked sequence: deposit $100; session 1 loses $6 at a $5 buy-in
+// (session-loss alert at 1.2 buy-ins, daily-loss alert at -$6, bankroll
+// $94); session 2 loses $4 (under the session-loss threshold, completes the
+// 2-session losing streak, daily alert already fired for this poker day and
+// must not repeat, bankroll $90). Hard stop config left null so Evaluate
+// short-circuits — its trigger path (taskkill + lockfile) stays out of unit
+// tests per the working agreement.
+func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
+	store, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sessionLoss := 1.0
+	streak := 2
+	daily := 5.0
+	cfg := &config.Config{Alerts: config.Alerts{
+		SessionLossBuyins: &sessionLoss,
+		LosingStreakCount: &streak,
+		DailyLossUSD:      &daily,
+	}}
+
+	alertChan := make(chan string, 10)
+	firedAlerts := make(map[string]bool)
+	drain := func() []string {
+		var msgs []string
+		for {
+			select {
+			case m := <-alertChan:
+				msgs = append(msgs, m)
+			default:
+				return msgs
+			}
+		}
+	}
+	assertMsgs := func(step string, want []string) {
+		t.Helper()
+		got := drain()
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %d alerts %q, want %d %q", step, len(got), got, len(want), want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("%s: alert[%d] = %q, want %q", step, i, got[i], want[i])
+			}
+		}
+	}
+
+	if err := store.AppendLedgerEntry("deposit", 100); err != nil {
+		t.Fatalf("AppendLedgerEntry: %v", err)
+	}
+
+	now := storage.AsStoredClock(time.Now())
+	session1 := parsers.CashSession{Date: now, Stake: "NL5", BuyInUSD: 5, NetUSD: -6, Hands: 40, FirstHandID: "h1"}
+	if err := store.AppendCashSession(session1); err != nil {
+		t.Fatalf("AppendCashSession(session1): %v", err)
+	}
+
+	ledger, dayTournaments := fetchEvalData(store, cfg, false)
+	bankroll := ledgerBankroll(ledger)
+	if bankroll != 94 {
+		t.Fatalf("bankroll after session 1 = %v, want 94", bankroll)
+	}
+	bot.EvaluateSessionLossAlert(session1, cfg, bankroll, alertChan)
+	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "cash:h1")
+	assertMsgs("session 1", []string{
+		"⚠️ Session loss alert\nLost 1.2 buy-ins this session ($6.00)\nBankroll: $94.00",
+		"⚠️ Daily loss alert\nDown $6.00 across all games this poker day\nBankroll: $94.00",
+	})
+
+	session2 := parsers.CashSession{Date: now.Add(time.Minute), Stake: "NL5", BuyInUSD: 5, NetUSD: -4, Hands: 30, FirstHandID: "h2"}
+	if err := store.AppendCashSession(session2); err != nil {
+		t.Fatalf("AppendCashSession(session2): %v", err)
+	}
+
+	ledger, dayTournaments = fetchEvalData(store, cfg, false)
+	bankroll = ledgerBankroll(ledger)
+	if bankroll != 90 {
+		t.Fatalf("bankroll after session 2 = %v, want 90", bankroll)
+	}
+	bot.EvaluateSessionLossAlert(session2, cfg, bankroll, alertChan)
+	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "cash:h2")
+	assertMsgs("session 2", []string{
+		"⚠️ Losing streak alert\n2 losing sessions in a row\nBankroll: $90.00",
+	})
 }
 
 func TestTournamentAlertText(t *testing.T) {

@@ -201,6 +201,52 @@ func TestCascadeLedgerAmounts(t *testing.T) {
 	})
 }
 
+// TestRunningTotalAbove confirms the cascade's base — the running total of
+// the row above the corrected one — is read correctly out of the C:D range
+// the cascade already fetched, for every row position. This replaced a
+// second single-cell API read of the same value (the old
+// runningTotalBeforeRow), so each case's expected value is exactly what that
+// read returned: 0 for the first data row, the row-above's D cell otherwise.
+func TestRunningTotalAbove(t *testing.T) {
+	// The fetched C:D range, header at index 0; data rows are sheet rows 2-4:
+	//   row2 deposit +100 -> RT 100, row3 session -5 -> RT 95, row4 session -3 -> RT 92.
+	values := [][]interface{}{
+		{"Amount (USD)", "Running Total (USD)"},
+		{100.0, 100.0},
+		{-5.0, 95.0},
+		{-3.0, 92.0},
+	}
+
+	cases := []struct {
+		name     string
+		rowIndex int
+		want     float64
+	}{
+		{"first data row has nothing above it", 2, 0},
+		{"second data row reads the first's total", 3, 100},
+		{"last data row reads the middle's total", 4, 95},
+		{"row index past the fetched range", 6, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := runningTotalAbove(values, c.rowIndex); got != c.want {
+				t.Errorf("runningTotalAbove(values, %d) = %v, want %v", c.rowIndex, got, c.want)
+			}
+		})
+	}
+
+	t.Run("row above has its D cell omitted by the API", func(t *testing.T) {
+		short := [][]interface{}{
+			{"Amount (USD)", "Running Total (USD)"},
+			{100.0}, // trailing empty D cell omitted in the response
+			{-5.0, 95.0},
+		}
+		if got := runningTotalAbove(short, 3); got != 0 {
+			t.Errorf("runningTotalAbove(short, 3) = %v, want 0", got)
+		}
+	})
+}
+
 func equalUpdates(got, want [][]interface{}) bool {
 	if len(got) != len(want) {
 		return false

@@ -283,25 +283,6 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 	return 0, false, nil
 }
 
-// runningTotalBeforeRow returns the Bankroll Ledger running total as of the
-// row immediately above rowIndex — 0 if rowIndex is the first data row. Used
-// when correcting an existing cash-session ledger row in place, where
-// getLastRunningTotal (the sheet's last row) would double-count that row's
-// own stale amount if it happens to already be the last row.
-func (c *Client) runningTotalBeforeRow(rowIndex int) (float64, error) {
-	if rowIndex <= 2 {
-		return 0, nil
-	}
-	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Bankroll Ledger!D%d", rowIndex-1))
-	if err != nil {
-		return 0, fmt.Errorf("reading running total above row %d: %w", rowIndex, err)
-	}
-	if len(resp.Values) == 0 || len(resp.Values[0]) == 0 {
-		return 0, nil
-	}
-	return parseFloat(resp.Values[0][0]), nil
-}
-
 // AppendCashSession upserts one row in Cash Sessions, one row in Time
 // Analysis, and one row in Bankroll Ledger — all three keyed by the same
 // cashSessionID, so a cash hand history file that's re-parsed after every
@@ -412,10 +393,7 @@ func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) er
 		return fmt.Errorf("reading bankroll ledger for cascade update: %w", err)
 	}
 
-	base, err := c.runningTotalBeforeRow(rowIndex)
-	if err != nil {
-		return err
-	}
+	base := runningTotalAbove(resp.Values, rowIndex)
 
 	amounts := make([]float64, len(resp.Values))
 	for i, row := range resp.Values {
@@ -434,6 +412,26 @@ func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) er
 		return fmt.Errorf("cascading bankroll ledger update: %w", err)
 	}
 	return nil
+}
+
+// runningTotalAbove returns the Bankroll Ledger running total of the row
+// immediately above rowIndex (1-based sheet row, header at row 1) — 0 if
+// rowIndex is the first data row — read from the C:D values the cascade
+// update already fetched, so no separate single-cell API read is needed.
+// Starting the cascade from the row above (rather than getLastRunningTotal,
+// the sheet's last row) matters because that last row could be this very
+// row, whose own stale amount would then be double-counted. values holds the
+// header at index 0, so sheet row r sits at values[r-1] and its Running
+// Total (column D) at [1].
+func runningTotalAbove(values [][]interface{}, rowIndex int) float64 {
+	if rowIndex <= 2 || rowIndex-2 >= len(values) {
+		return 0
+	}
+	row := values[rowIndex-2]
+	if len(row) < 2 {
+		return 0
+	}
+	return parseFloat(row[1])
 }
 
 // cascadeLedgerAmounts computes updated (Amount, Running Total) pairs for

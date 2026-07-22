@@ -505,15 +505,16 @@ func runWorker(
 				if err := sc.AppendCashSession(*session); err != nil {
 					slog.Error("appending cash session to sheets", "err", err)
 				}
-				if err := hardstop.Evaluate(*session, sc, configPath, lockfilePath, alertChan); err != nil {
+				// Fetched after the write so the shared data includes the
+				// session just recorded — the same state each evaluator saw
+				// back when it did its own fetch.
+				ledger, dayTournaments := fetchEvalData(sc, cfg, false)
+				bankroll := ledgerBankroll(ledger)
+				if err := hardstop.Evaluate(*session, cfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
 					slog.Error("evaluating hard stop", "err", err)
 				}
-				if err := bot.EvaluateSessionLossAlert(*session, sc, configPath, alertChan); err != nil {
-					slog.Error("evaluating session loss alert", "err", err)
-				}
-				if err := bot.EvaluateDownswingAlert(session.BuyInUSD, sc, configPath, alertChan); err != nil {
-					slog.Error("evaluating downswing alert", "err", err)
-				}
+				bot.EvaluateSessionLossAlert(*session, cfg, bankroll, alertChan)
+				bot.EvaluateDownswingAlert(session.BuyInUSD, cfg, ledger, bankroll, alertChan)
 				sessionKey := "cash:" + session.FirstHandID
 				if !firedAlerts["stake:"+sessionKey] {
 					if err := bot.EvaluateStakeChangeAlert(*session, sc, alertChan); err != nil {
@@ -525,7 +526,7 @@ func runWorker(
 						firedAlerts["stake:"+sessionKey] = true
 					}
 				}
-				evaluateOncePerKeyAlerts(cfg, sc, configPath, alertChan, firedAlerts, sessionKey)
+				evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, sessionKey)
 				scheduleCashSessionSummary(&summaryMu, summaryTimers, event.Path, cashSessionSummaryQuietPeriod, alertChan, func() string {
 					bankroll, _ := sc.GetCurrentBankroll()
 					return cashSessionSummaryText(*session, bankroll)
@@ -592,14 +593,17 @@ func runWorker(
 			if err != nil {
 				slog.Error("appending tournament to sheets", "err", err)
 			}
-			if err := hardstop.EvaluateTournament(t, sc, configPath, lockfilePath, alertChan); err != nil {
+			// Fetched after the write, like the cash branch — and always
+			// including the ledger here, since the post-tournament alert
+			// below needs the bankroll (its last running total) regardless
+			// of what's configured.
+			ledger, dayTournaments := fetchEvalData(sc, cfg, true)
+			bankroll := ledgerBankroll(ledger)
+			if err := hardstop.EvaluateTournament(t, cfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
 				slog.Error("evaluating hard stop", "err", err)
 			}
-			if err := bot.EvaluateDownswingAlert(t.BuyInUSD, sc, configPath, alertChan); err != nil {
-				slog.Error("evaluating downswing alert", "err", err)
-			}
-			evaluateOncePerKeyAlerts(cfg, sc, configPath, alertChan, firedAlerts, "tournament:"+t.TournamentID)
-			bankroll, _ := sc.GetCurrentBankroll()
+			bot.EvaluateDownswingAlert(t.BuyInUSD, cfg, ledger, bankroll, alertChan)
+			evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "tournament:"+t.TournamentID)
 			alertChan <- tournamentAlertText(t, netUSD, bankroll)
 		}
 	}
@@ -611,34 +615,72 @@ func runWorker(
 // firedAlerts (see its declaration in runWorker). The streak alert is keyed
 // per session (a new session is a new streak length to judge); the two
 // daily alerts are keyed per poker day, so each sends at most once between
-// day boundaries no matter how many sessions land in it.
-func evaluateOncePerKeyAlerts(cfg *config.Config, sc storage.Store, configPath string, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
+// day boundaries no matter how many sessions land in it. Re-evaluating an
+// unfired condition on every hand is pure math on the worker's shared
+// per-event data — no store access happens here.
+func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, bankroll float64, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
 	if !firedAlerts["streak:"+sessionKey] {
-		fired, err := bot.EvaluateLosingStreakAlert(sc, configPath, alertChan)
-		if err != nil {
-			slog.Error("evaluating losing streak alert", "err", err)
-		} else if fired {
+		if bot.EvaluateLosingStreakAlert(cfg, ledger, bankroll, alertChan) {
 			firedAlerts["streak:"+sessionKey] = true
 		}
 	}
 
 	dayKey := hardstop.PokerDayStart(cfg, time.Now()).Format(time.RFC3339)
 	if !firedAlerts["daily:"+dayKey] {
-		fired, err := bot.EvaluateDailyLossAlert(sc, configPath, alertChan)
-		if err != nil {
-			slog.Error("evaluating daily loss alert", "err", err)
-		} else if fired {
+		if bot.EvaluateDailyLossAlert(cfg, ledger, bankroll, alertChan) {
 			firedAlerts["daily:"+dayKey] = true
 		}
 	}
 	if !firedAlerts["spingo_daily:"+dayKey] {
-		fired, err := bot.EvaluateSpingoDailyLossAlert(sc, configPath, alertChan)
-		if err != nil {
-			slog.Error("evaluating spin & go daily loss alert", "err", err)
-		} else if fired {
+		if bot.EvaluateSpingoDailyLossAlert(cfg, dayTournaments, bankroll, alertChan) {
 			firedAlerts["spingo_daily:"+dayKey] = true
 		}
 	}
+}
+
+// fetchEvalData reads the shared data every post-write evaluation runs on —
+// the full Bankroll Ledger and the current poker day's tournaments — at most
+// once per file event, replacing the six-per-hand identical fetches the
+// evaluators used to do themselves. Each fetch is skipped entirely when
+// nothing configured needs it, so an install with no alerts or hard stops
+// set does zero extra reads; forTournament forces the ledger fetch because
+// the post-tournament alert needs the bankroll regardless of config. A
+// failed fetch is logged and returns nil for that data set — every consumer
+// treats nil as "no rows", the same no-trigger outcome the old per-evaluator
+// fetch errors produced.
+func fetchEvalData(sc storage.Store, cfg *config.Config, forTournament bool) (ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament) {
+	a, h := cfg.Alerts, cfg.Hardstop
+	needLedger := forTournament ||
+		a.SessionLossBuyins != nil || a.DownswingBuyins != nil || a.LosingStreakCount != nil ||
+		a.DailyLossUSD != nil || a.SpingoDailyLossUSD != nil ||
+		h.ConsecutiveLosses != nil || h.DownswingBuyins != nil || h.DailyLossUSD != nil
+	if needLedger {
+		var err error
+		ledger, err = sc.GetLedgerEntriesSince(time.Time{})
+		if err != nil {
+			slog.Error("reading bankroll ledger for alert evaluation", "err", err)
+		}
+	}
+	if a.SpingoDailyLossUSD != nil || h.SpingoDailyLossUSD != nil {
+		var err error
+		dayTournaments, err = sc.GetTournamentsSince(hardstop.PokerDayStart(cfg, time.Now()))
+		if err != nil {
+			slog.Error("reading tournaments for daily loss evaluation", "err", err)
+		}
+	}
+	return ledger, dayTournaments
+}
+
+// ledgerBankroll returns the account's current bankroll from an
+// already-fetched full ledger — the last row's running total, exactly what
+// storage.Store.GetCurrentBankroll reads, without a second store call. 0 for
+// an empty (or unfetched) ledger, matching GetCurrentBankroll's empty-ledger
+// behavior.
+func ledgerBankroll(ledger []storage.LedgerEntry) float64 {
+	if len(ledger) == 0 {
+		return 0
+	}
+	return ledger[len(ledger)-1].RunningTotal
 }
 
 // tournamentAlreadyHandled reports whether tournament t has already been
