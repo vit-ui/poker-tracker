@@ -552,9 +552,12 @@ func runWorker(
 			// tournament already handled (a stray re-trigger, or literally
 			// the same file copied) must never send a second Telegram
 			// alert, ask the satellite/ticket question twice, or queue a
-			// second pending entry. See tournamentAlreadyHandled's doc
-			// comment for why this is the only place that needs the check.
-			duplicate, err := tournamentAlreadyHandled(t.TournamentID, configPath, sc)
+			// second pending entry. A re-entry rewrite is deliberately *not*
+			// treated as a duplicate: PokerStars overwrites the summary each
+			// time screenName busts an entry, and each rewrite carries a
+			// larger buy-in / different finish that must update the row,
+			// ledger, and bankroll. See tournamentAlreadyHandled's doc comment.
+			duplicate, err := tournamentAlreadyHandled(t, configPath, sc)
 			if err != nil {
 				slog.Error("checking for duplicate tournament processing", "err", err)
 			} else if duplicate {
@@ -596,19 +599,7 @@ func runWorker(
 			}
 			evaluateOncePerKeyAlerts(cfg, sc, configPath, alertChan, firedAlerts, "tournament:"+t.TournamentID)
 			bankroll, _ := sc.GetCurrentBankroll()
-			sign, absNet := "+", netUSD
-			if absNet < 0 {
-				sign, absNet = "-", -absNet
-			}
-			var alert string
-			if t.BaseType() == "spingo" {
-				alert = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
-					t.BuyInUSD, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), sign, absNet, bankroll)
-			} else {
-				alert = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s$%.2f\nBankroll: $%.2f",
-					t.BuyInUSD, bot.Ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
-			}
-			alertChan <- alert
+			alertChan <- tournamentAlertText(t, netUSD, bankroll)
 		}
 	}
 }
@@ -649,15 +640,21 @@ func evaluateOncePerKeyAlerts(cfg *config.Config, sc storage.Store, configPath s
 	}
 }
 
-// tournamentAlreadyHandled reports whether tournamentID has already been
+// tournamentAlreadyHandled reports whether tournament t has already been
 // queued for a satellite/ticket answer, or already fully recorded in the
-// Tournaments sheet. This is the single place that guards against a
-// duplicate tournament summary file event (a stray re-trigger, or literally
-// the same file copied) causing a second Telegram alert, a second
-// satellite/ticket question, or a second pending-queue entry for the same
-// TournamentID — every caller checks here first, so this is the only place
-// that ever needs to.
-func tournamentAlreadyHandled(tournamentID, configPath string, sc storage.Store) (bool, error) {
+// Tournaments sheet with the same money-relevant data. This is the single
+// place that guards against a duplicate tournament summary file event (a
+// stray re-trigger, or literally the same file copied) causing a second
+// Telegram alert, a second satellite/ticket question, or a second
+// pending-queue entry for the same TournamentID — every caller checks here
+// first, so this is the only place that ever needs to.
+//
+// A re-entry rewrite is intentionally *not* a duplicate: PokerStars overwrites
+// the same summary each time screenName busts an entry, and each rewrite
+// carries a larger total buy-in and a different finish, which must flow
+// through to the row/ledger/bankroll (AppendTournament upserts by
+// TournamentID, so re-processing corrects in place rather than duplicating).
+func tournamentAlreadyHandled(t parsers.Tournament, configPath string, sc storage.Store) (bool, error) {
 	pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
 	pending, err := config.LoadPendingTournaments(pendingPath)
 	if err != nil {
@@ -671,22 +668,30 @@ func tournamentAlreadyHandled(tournamentID, configPath string, sc storage.Store)
 	if err != nil {
 		return false, err
 	}
-	return isDuplicateTournament(tournamentID, pending, recorded), nil
+	return isDuplicateTournament(t, pending, recorded), nil
 }
 
 // isDuplicateTournament is the pure decision tournamentAlreadyHandled wraps
-// around its two I/O reads: tournamentID is a duplicate if it's already
-// awaiting an answer in the pending queue, or already fully written to the
-// Tournaments sheet.
-func isDuplicateTournament(tournamentID string, pending []config.PendingTournament, recorded []parsers.Tournament) bool {
+// around its two I/O reads: t is a duplicate if it's already awaiting an
+// answer in the pending queue, or already recorded in the Tournaments sheet
+// with the same buy-in, finish position, and field size.
+//
+// The content comparison is what lets a re-entry rewrite through: an
+// already-recorded tournament whose buy-in / finish / field size have changed
+// is a fresh bust (screenName re-entered and busted again), not a duplicate,
+// so it must be re-processed to update the stored data. Net is deliberately
+// not compared — a hand file folding in knockout bounty changes the recorded
+// net without any re-entry, and that is not a re-entry the summary should
+// overwrite.
+func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournament, recorded []parsers.Tournament) bool {
 	for _, p := range pending {
-		if p.Tournament.TournamentID == tournamentID {
+		if p.Tournament.TournamentID == t.TournamentID {
 			return true
 		}
 	}
-	for _, t := range recorded {
-		if t.TournamentID == tournamentID {
-			return true
+	for _, r := range recorded {
+		if r.TournamentID == t.TournamentID {
+			return t.BuyInUSD == r.BuyInUSD && t.FinishPos == r.FinishPos && t.TotalPlayers == r.TotalPlayers
 		}
 	}
 	return false
@@ -713,6 +718,31 @@ func scheduleCashSessionSummary(mu *sync.Mutex, timers map[string]*time.Timer, p
 		mu.Unlock()
 		alertChan <- buildMessage()
 	})
+}
+
+// tournamentAlertText formats the post-tournament summary alert. When the
+// summary reports re-entries, a trailing line makes clear this is a re-entry
+// bust and that it supersedes the earlier alert for the same tournament —
+// PokerStars overwrites the summary on each bust, so screenName gets one
+// corrected alert per entry, each reflecting the running total buy-in and net.
+func tournamentAlertText(t parsers.Tournament, netUSD, bankroll float64) string {
+	sign, absNet := "+", netUSD
+	if absNet < 0 {
+		sign, absNet = "-", -absNet
+	}
+	var msg string
+	if t.BaseType() == "spingo" {
+		msg = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
+			t.BuyInUSD, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), sign, absNet, bankroll)
+	} else {
+		msg = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s$%.2f\nBankroll: $%.2f",
+			t.BuyInUSD, bot.Ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
+	}
+	if t.ReEntries > 0 {
+		msg += fmt.Sprintf("\n🔁 Re-entered %d× — %d entries total for this tournament; buy-in and net cover all of them, updating the earlier alert.",
+			t.ReEntries, t.ReEntries+1)
+	}
+	return msg
 }
 
 // cashSessionSummaryText formats the post-session summary alert.

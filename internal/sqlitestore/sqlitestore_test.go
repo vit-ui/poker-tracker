@@ -524,6 +524,67 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 	}
 }
 
+// TestAppendTournament_ReEntryRewriteUpsertsInPlace reproduces the re-entry
+// bug: PokerStars overwrites the same tournament summary each time screenName
+// busts an entry, so AppendTournament is called once per bust with a growing
+// total buy-in and a different finish. Each call must UPDATE the single row
+// (correlated by TournamentID) and correct the ledger/bankroll in place — not
+// append a second row and not leave the first-bust snapshot frozen. Only the
+// final state ($3.30 risked across three entries, $0 won) may survive.
+func TestAppendTournament_ReEntryRewriteUpsertsInPlace(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-21T23:21:00Z")
+	base := func(buyIn float64, finishPos, players int, net float64) parsers.Tournament {
+		return parsers.Tournament{
+			Date:         date,
+			Type:         "mtt",
+			TournamentID: "4016700037",
+			BuyInUSD:     buyIn,
+			PrizePoolUSD: 77.76,
+			FinishPos:    finishPos,
+			TotalPlayers: players,
+			NetUSD:       net,
+		}
+	}
+	// The three busts, as the rewritten summary parses each time.
+	sequence := []parsers.Tournament{
+		base(1.10, 50, 126, -1.10), // original entry busts
+		base(2.20, 60, 140, -2.20), // one re-entry busts
+		base(3.30, 43, 162, -3.30), // second re-entry busts (final summary)
+	}
+	for i, tourn := range sequence {
+		if _, err := s.AppendTournament(tourn); err != nil {
+			t.Fatalf("AppendTournament[%d]: %v", i, err)
+		}
+	}
+
+	tournaments, err := s.GetTournamentsSince(time.Time{})
+	if err != nil {
+		t.Fatalf("GetTournamentsSince: %v", err)
+	}
+	if len(tournaments) != 1 {
+		t.Fatalf("len(tournaments) = %d, want 1 (upsert, not a new row per bust)", len(tournaments))
+	}
+	got := tournaments[0]
+	if !closeEnough(got.BuyInUSD, 3.30) {
+		t.Errorf("BuyInUSD = %v, want 3.30 (all three entries)", got.BuyInUSD)
+	}
+	if got.FinishPos != 43 || got.TotalPlayers != 162 {
+		t.Errorf("finish = %d/%d, want 43/162 (final summary, not the 50/126 first bust)", got.FinishPos, got.TotalPlayers)
+	}
+	if !closeEnough(got.NetUSD, -3.30) {
+		t.Errorf("NetUSD = %v, want -3.30", got.NetUSD)
+	}
+
+	bankroll, err := s.GetCurrentBankroll()
+	if err != nil {
+		t.Fatalf("GetCurrentBankroll: %v", err)
+	}
+	if !closeEnough(bankroll, -3.30) {
+		t.Errorf("bankroll = %v, want -3.30 (ledger corrected in place, not stuck at -1.10)", bankroll)
+	}
+}
+
 func TestAppendTournament_HandStatsFirstThenSummary(t *testing.T) {
 	s := newTestStore(t)
 	tournamentID := "1000000002"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,7 +69,9 @@ func TestResolveStorageBackend(t *testing.T) {
 // against a duplicate tournament summary file event (a stray re-trigger, or
 // literally the same file copied) — the exact bug that caused a repeated
 // Telegram alert and a repeated satellite/ticket question for the same
-// tournament before this check existed.
+// tournament before this check existed — while still letting a re-entry
+// rewrite (a larger buy-in / different finish for an already-recorded
+// TournamentID) through to update the row, ledger, and bankroll.
 func TestIsDuplicateTournament(t *testing.T) {
 	pendingOf := func(ids ...string) []config.PendingTournament {
 		pending := make([]config.PendingTournament, len(ids))
@@ -77,33 +80,38 @@ func TestIsDuplicateTournament(t *testing.T) {
 		}
 		return pending
 	}
-	recordedOf := func(ids ...string) []parsers.Tournament {
-		recorded := make([]parsers.Tournament, len(ids))
-		for i, id := range ids {
-			recorded[i] = parsers.Tournament{TournamentID: id}
-		}
-		return recorded
+	// tourney builds a parsed/recorded tournament with the money-relevant
+	// fields isDuplicateTournament compares.
+	tourney := func(id string, buyIn float64, finishPos, players int) parsers.Tournament {
+		return parsers.Tournament{TournamentID: id, BuyInUSD: buyIn, FinishPos: finishPos, TotalPlayers: players}
 	}
+
+	// The first bust of a re-entry MTT, as already recorded (buy-in $1.10,
+	// busted 50th of 126) — see data/ TS…T4016700037.
+	firstBust := tourney("111", 1.10, 50, 126)
 
 	cases := []struct {
 		name     string
-		id       string
+		t        parsers.Tournament
 		pending  []config.PendingTournament
 		recorded []parsers.Tournament
 		want     bool
 	}{
-		{"brand new tournament, neither pending nor recorded", "111", nil, nil, false},
-		{"already awaiting a satellite/ticket answer", "111", pendingOf("111"), nil, true},
-		{"already fully recorded in the Tournaments sheet", "111", nil, recordedOf("111"), true},
-		{"a different tournament pending doesn't false-positive", "111", pendingOf("222"), nil, false},
-		{"a different tournament recorded doesn't false-positive", "111", nil, recordedOf("222"), false},
-		{"pending and recorded both present but for other IDs", "111", pendingOf("222"), recordedOf("333"), false},
+		{"brand new tournament, neither pending nor recorded", tourney("111", 1.10, 50, 126), nil, nil, false},
+		{"already awaiting a satellite/ticket answer", tourney("111", 0.50, 3, 3), pendingOf("111"), nil, true},
+		{"identical re-parse of a recorded tournament is a duplicate", firstBust, nil, []parsers.Tournament{firstBust}, true},
+		{"re-entry rewrite: larger buy-in is not a duplicate", tourney("111", 2.20, 60, 140), nil, []parsers.Tournament{firstBust}, false},
+		{"re-entry rewrite: final $3.30 / 43rd of 162 is not a duplicate", tourney("111", 3.30, 43, 162), nil, []parsers.Tournament{firstBust}, false},
+		{"only finish position changed is not a duplicate", tourney("111", 1.10, 43, 126), nil, []parsers.Tournament{firstBust}, false},
+		{"only field size changed is not a duplicate", tourney("111", 1.10, 50, 162), nil, []parsers.Tournament{firstBust}, false},
+		{"a different tournament pending doesn't false-positive", tourney("111", 1.10, 50, 126), pendingOf("222"), nil, false},
+		{"a different tournament recorded doesn't false-positive", tourney("111", 1.10, 50, 126), nil, []parsers.Tournament{tourney("222", 1.10, 50, 126)}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := isDuplicateTournament(c.id, c.pending, c.recorded)
+			got := isDuplicateTournament(c.t, c.pending, c.recorded)
 			if got != c.want {
-				t.Errorf("isDuplicateTournament(%q, ...) = %v, want %v", c.id, got, c.want)
+				t.Errorf("isDuplicateTournament(%q, ...) = %v, want %v", c.t.TournamentID, got, c.want)
 			}
 		})
 	}
@@ -138,6 +146,41 @@ func TestCashSessionSummaryText(t *testing.T) {
 			got := cashSessionSummaryText(c.session, c.bankroll)
 			if got != c.want {
 				t.Errorf("cashSessionSummaryText() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestTournamentAlertText(t *testing.T) {
+	mtt := func(finish, players, reEntries int, buyIn float64) parsers.Tournament {
+		return parsers.Tournament{Type: "mtt", BuyInUSD: buyIn, FinishPos: finish, TotalPlayers: players, ReEntries: reEntries}
+	}
+	cases := []struct {
+		name    string
+		t       parsers.Tournament
+		netUSD  float64
+		bank    float64
+		wantHas string // substring the re-entry line must (not) contain
+		reEntry bool
+	}{
+		{
+			name: "plain MTT has no re-entry line", t: mtt(50, 126, 0, 1.10), netUSD: -1.10, bank: 22.00,
+			reEntry: false,
+		},
+		{
+			name: "re-entry MTT names the entry count", t: mtt(43, 162, 2, 3.30), netUSD: -3.30, bank: 19.80,
+			wantHas: "🔁 Re-entered 2× — 3 entries total", reEntry: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := tournamentAlertText(c.t, c.netUSD, c.bank)
+			has := strings.Contains(got, "🔁")
+			if has != c.reEntry {
+				t.Errorf("re-entry line present = %v, want %v\ngot: %q", has, c.reEntry, got)
+			}
+			if c.reEntry && !strings.Contains(got, c.wantHas) {
+				t.Errorf("missing %q in:\n%s", c.wantHas, got)
 			}
 		})
 	}
