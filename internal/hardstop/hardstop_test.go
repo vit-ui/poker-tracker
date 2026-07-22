@@ -3,6 +3,7 @@ package hardstop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -386,6 +387,198 @@ func TestInRollingWindow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEvaluateTriggers drives the full trigger path — Evaluate through
+// trigger to the lockfile and alert — for each hard stop reason, against a
+// real temp lockfile. The taskkill.exe call inside trigger fails harmlessly
+// on a non-Windows test machine and its error is ignored by design, so the
+// observable outcomes are exactly the lockfile contents and the alert
+// message. Ledger dates are recent stored-clock instants so the downswing
+// window and poker-day filters see them.
+func TestEvaluateTriggers(t *testing.T) {
+	duration := 12
+	stored := storage.AsStoredClock(time.Now())
+	sessionRow := func(amount float64, age time.Duration) storage.LedgerEntry {
+		return storage.LedgerEntry{Type: "cash_session", AmountUSD: amount, Date: stored.Add(-age)}
+	}
+
+	assertLocked := func(t *testing.T, lockPath, wantReason string, ch chan string) {
+		t.Helper()
+		lock, err := config.LoadLock(lockPath)
+		if err != nil {
+			t.Fatalf("LoadLock: %v", err)
+		}
+		if lock == nil {
+			t.Fatal("no lockfile written, want a hard stop")
+		}
+		if lock.Reason != wantReason || lock.DurationHours != duration {
+			t.Errorf("lock = reason %q / %dh, want %q / %dh", lock.Reason, lock.DurationHours, wantReason, duration)
+		}
+		if want := lock.TriggeredAt.Add(12 * time.Hour); !lock.ExpiresAt.Equal(want) {
+			t.Errorf("ExpiresAt = %v, want TriggeredAt+12h (%v)", lock.ExpiresAt, want)
+		}
+		select {
+		case msg := <-ch:
+			if !strings.Contains(msg, "Hard Stop triggered") || !strings.Contains(msg, wantReason) {
+				t.Errorf("alert = %q, want it to name the hard stop and reason %q", msg, wantReason)
+			}
+		default:
+			t.Error("no alert sent for the hard stop")
+		}
+	}
+
+	pf := func(v float64) *float64 { return &v }
+	pi := func(v int) *int { return &v }
+
+	losingSession := parsers.CashSession{BuyInUSD: 5, NetUSD: -12}
+	calmSession := parsers.CashSession{BuyInUSD: 5, NetUSD: 0}
+
+	cases := []struct {
+		name           string
+		cfg            *config.Config
+		session        parsers.CashSession
+		ledger         []storage.LedgerEntry
+		dayTournaments []parsers.Tournament
+		wantReason     string // "" = must not trigger
+	}{
+		{
+			// Loss 12 > 1 × $5 buy-in.
+			name:       "session loss",
+			cfg:        &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
+			session:    losingSession,
+			wantReason: "session_loss_buyins",
+		},
+		{
+			name:       "consecutive losses",
+			cfg:        &config.Config{Hardstop: config.Hardstop{ConsecutiveLosses: pi(2), DurationHours: pi(duration)}},
+			session:    calmSession,
+			ledger:     []storage.LedgerEntry{sessionRow(-3, 2*time.Hour), sessionRow(-2, time.Hour)},
+			wantReason: "consecutive_losses",
+		},
+		{
+			// Curve +100 → +70: drawdown 30 > 2 × $5.
+			name:       "downswing",
+			cfg:        &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2), DurationHours: pi(duration)}},
+			session:    calmSession,
+			ledger:     []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)},
+			wantReason: "downswing_buyins",
+		},
+		{
+			// Spin net -1.20 < -$1.00.
+			name:           "spin & go daily loss",
+			cfg:            &config.Config{Hardstop: config.Hardstop{SpingoDailyLossUSD: pf(1), DurationHours: pi(duration)}},
+			session:        calmSession,
+			dayTournaments: []parsers.Tournament{{Type: "spingo", NetUSD: -0.60}, {Type: "spingo", NetUSD: -0.60}},
+			wantReason:     "spingo_daily_loss_usd",
+		},
+		{
+			// Day net -6 < -$5.
+			name:       "unified daily loss",
+			cfg:        &config.Config{Hardstop: config.Hardstop{DailyLossUSD: pf(5), DurationHours: pi(duration)}},
+			session:    calmSession,
+			ledger:     []storage.LedgerEntry{sessionRow(-3, 2*time.Hour), sessionRow(-3, time.Hour)},
+			wantReason: "daily_loss_usd",
+		},
+		{
+			name:    "nothing configured never triggers",
+			cfg:     &config.Config{},
+			session: losingSession,
+			ledger:  []storage.LedgerEntry{sessionRow(-100, time.Hour)},
+		},
+		{
+			name:    "thresholds not breached",
+			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(10), DailyLossUSD: pf(500), DurationHours: pi(duration)}},
+			session: losingSession,
+			ledger:  []storage.LedgerEntry{sessionRow(-12, time.Hour)},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lockPath := filepath.Join(t.TempDir(), "lockfile.json")
+			ch := make(chan string, 2)
+			if err := Evaluate(c.session, c.cfg, c.ledger, c.dayTournaments, lockPath, ch); err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if c.wantReason == "" {
+				if lock, err := config.LoadLock(lockPath); err != nil || lock != nil {
+					t.Errorf("lockfile = %v (err %v), want none", lock, err)
+				}
+				if got := len(ch); got != 0 {
+					t.Errorf("%d alerts sent, want none", got)
+				}
+				return
+			}
+			assertLocked(t, lockPath, c.wantReason, ch)
+		})
+	}
+
+	t.Run("EvaluateTournament triggers the downswing check", func(t *testing.T) {
+		lockPath := filepath.Join(t.TempDir(), "lockfile.json")
+		ch := make(chan string, 2)
+		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2), DurationHours: pi(duration)}}
+		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
+		if err := EvaluateTournament(parsers.Tournament{BuyInUSD: 5}, cfg, ledger, nil, lockPath, ch); err != nil {
+			t.Fatalf("EvaluateTournament: %v", err)
+		}
+		assertLocked(t, lockPath, "downswing_buyins", ch)
+	})
+
+	t.Run("breach with duration_hours unset errors instead of locking", func(t *testing.T) {
+		lockPath := filepath.Join(t.TempDir(), "lockfile.json")
+		ch := make(chan string, 2)
+		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2)}}
+		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
+		err := Evaluate(calmSession, cfg, ledger, nil, lockPath, ch)
+		if err == nil {
+			t.Fatal("Evaluate = nil error, want the missing-duration error")
+		}
+		if lock, _ := config.LoadLock(lockPath); lock != nil {
+			t.Errorf("lockfile written despite missing duration_hours: %+v", lock)
+		}
+	})
+}
+
+// TestManualTrigger covers /hardstop trigger's path: it loads the duration
+// from a real config.json and refuses when duration_hours was never set.
+func TestManualTrigger(t *testing.T) {
+	t.Run("locks for the configured duration with reason manual", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "config.json")
+		lockPath := filepath.Join(dir, "lockfile.json")
+		duration := 8
+		if err := config.SaveConfig(configPath, &config.Config{Hardstop: config.Hardstop{DurationHours: &duration}}); err != nil {
+			t.Fatalf("SaveConfig: %v", err)
+		}
+
+		ch := make(chan string, 1)
+		if err := ManualTrigger(configPath, lockPath, ch); err != nil {
+			t.Fatalf("ManualTrigger: %v", err)
+		}
+		lock, err := config.LoadLock(lockPath)
+		if err != nil || lock == nil {
+			t.Fatalf("LoadLock = %v, %v — want an active lock", lock, err)
+		}
+		if lock.Reason != "manual" || lock.DurationHours != 8 {
+			t.Errorf("lock = reason %q / %dh, want manual / 8h", lock.Reason, lock.DurationHours)
+		}
+	})
+
+	t.Run("errors when duration_hours is not configured", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "config.json")
+		lockPath := filepath.Join(dir, "lockfile.json")
+		if err := config.SaveConfig(configPath, &config.Config{}); err != nil {
+			t.Fatalf("SaveConfig: %v", err)
+		}
+
+		if err := ManualTrigger(configPath, lockPath, make(chan string, 1)); err == nil {
+			t.Fatal("ManualTrigger = nil error, want the not-configured error")
+		}
+		if lock, _ := config.LoadLock(lockPath); lock != nil {
+			t.Errorf("lockfile written despite missing duration_hours: %+v", lock)
+		}
+	})
 }
 
 func TestLockfileActiveAt(t *testing.T) {

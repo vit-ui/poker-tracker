@@ -33,8 +33,15 @@ const (
 
 // restService issues authenticated Google API requests. hc comes from the
 // service account's JWT config and refreshes its token automatically.
+// baseURL and driveURL are the API roots — always the real Google endpoints
+// in production (see newRESTService), overridden only by the package's own
+// tests, which point them at an httptest server standing in for Google so
+// the read/write/fallback code paths run against real HTTP without real
+// credentials.
 type restService struct {
-	hc *http.Client
+	hc       *http.Client
+	baseURL  string
+	driveURL string
 }
 
 // newRESTService builds a transport from the service account key JSON,
@@ -44,7 +51,7 @@ func newRESTService(serviceAccountJSON []byte, scope string) (*restService, erro
 	if err != nil {
 		return nil, fmt.Errorf("parsing credentials: %w", err)
 	}
-	return &restService{hc: conf.Client(context.Background())}, nil
+	return &restService{hc: conf.Client(context.Background()), baseURL: sheetsBaseURL, driveURL: driveFilesURL}, nil
 }
 
 // valueRange is the request/response payload for every values endpoint —
@@ -95,8 +102,8 @@ func (s *restService) doJSON(method, reqURL string, body, out interface{}) error
 // valuesURL builds the .../values/{range} URL. Ranges contain spaces (tab
 // names like "Cash Sessions") and must be path-escaped; suffix is "" or an
 // API verb like ":append".
-func valuesURL(spreadsheetID, rng, suffix, query string) string {
-	return sheetsBaseURL + spreadsheetID + "/values/" + url.PathEscape(rng) + suffix + "?" + query
+func (s *restService) valuesURL(spreadsheetID, rng, suffix, query string) string {
+	return s.baseURL + spreadsheetID + "/values/" + url.PathEscape(rng) + suffix + "?" + query
 }
 
 // valuesGet reads a range with UNFORMATTED_VALUE rendering — numbers come
@@ -105,27 +112,27 @@ func valuesURL(spreadsheetID, rng, suffix, query string) string {
 // omitted by the API, same as with the official client.
 func (s *restService) valuesGet(spreadsheetID, rng string) (valueRange, error) {
 	var out valueRange
-	err := s.doJSON(http.MethodGet, valuesURL(spreadsheetID, rng, "", "valueRenderOption=UNFORMATTED_VALUE"), nil, &out)
+	err := s.doJSON(http.MethodGet, s.valuesURL(spreadsheetID, rng, "", "valueRenderOption=UNFORMATTED_VALUE"), nil, &out)
 	return out, err
 }
 
 // valuesUpdate overwrites a range with RAW input (no cell-format parsing).
 func (s *restService) valuesUpdate(spreadsheetID, rng string, values [][]interface{}) error {
-	return s.doJSON(http.MethodPut, valuesURL(spreadsheetID, rng, "", "valueInputOption=RAW"),
+	return s.doJSON(http.MethodPut, s.valuesURL(spreadsheetID, rng, "", "valueInputOption=RAW"),
 		valueRange{Values: values}, nil)
 }
 
 // valuesAppend appends rows after the last data row of the table containing
 // rng, with RAW input.
 func (s *restService) valuesAppend(spreadsheetID, rng string, values [][]interface{}) error {
-	return s.doJSON(http.MethodPost, valuesURL(spreadsheetID, rng, ":append", "valueInputOption=RAW"),
+	return s.doJSON(http.MethodPost, s.valuesURL(spreadsheetID, rng, ":append", "valueInputOption=RAW"),
 		valueRange{Values: values}, nil)
 }
 
 // valuesClear deletes the values in a range, leaving the cells empty. Used to
 // roll back a partially-written migration import.
 func (s *restService) valuesClear(spreadsheetID, rng string) error {
-	return s.doJSON(http.MethodPost, valuesURL(spreadsheetID, rng, ":clear", ""), struct{}{}, nil)
+	return s.doJSON(http.MethodPost, s.valuesURL(spreadsheetID, rng, ":clear", ""), struct{}{}, nil)
 }
 
 // valuesBatchUpdate writes several disjoint ranges in one call.
@@ -134,7 +141,7 @@ func (s *restService) valuesBatchUpdate(spreadsheetID string, data []valueRange)
 		ValueInputOption string       `json:"valueInputOption"`
 		Data             []valueRange `json:"data"`
 	}{"RAW", data}
-	return s.doJSON(http.MethodPost, sheetsBaseURL+spreadsheetID+"/values:batchUpdate", body, nil)
+	return s.doJSON(http.MethodPost, s.baseURL+spreadsheetID+"/values:batchUpdate", body, nil)
 }
 
 // spreadsheetTabTitles returns the titles of every tab in the spreadsheet.
@@ -148,7 +155,7 @@ func (s *restService) spreadsheetTabTitles(spreadsheetID string) ([]string, erro
 			} `json:"properties"`
 		} `json:"sheets"`
 	}
-	if err := s.doJSON(http.MethodGet, sheetsBaseURL+spreadsheetID+"?fields=sheets.properties.title", nil, &out); err != nil {
+	if err := s.doJSON(http.MethodGet, s.baseURL+spreadsheetID+"?fields=sheets.properties.title", nil, &out); err != nil {
 		return nil, err
 	}
 	titles := make([]string, len(out.Sheets))
@@ -167,7 +174,7 @@ func (s *restService) addSheet(spreadsheetID, title string) error {
 			}},
 		},
 	}
-	return s.doJSON(http.MethodPost, sheetsBaseURL+spreadsheetID+":batchUpdate", body, nil)
+	return s.doJSON(http.MethodPost, s.baseURL+spreadsheetID+":batchUpdate", body, nil)
 }
 
 // driveFindSpreadsheets returns the IDs of every spreadsheet the service
@@ -182,7 +189,7 @@ func (s *restService) driveFindSpreadsheets(name string) ([]string, error) {
 			ID string `json:"id"`
 		} `json:"files"`
 	}
-	if err := s.doJSON(http.MethodGet, driveFilesURL+"?"+q.Encode(), nil, &out); err != nil {
+	if err := s.doJSON(http.MethodGet, s.driveURL+"?"+q.Encode(), nil, &out); err != nil {
 		return nil, err
 	}
 	ids := make([]string, len(out.Files))

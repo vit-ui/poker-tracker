@@ -1,10 +1,14 @@
 package bot
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
+	"github.com/vit-ui/self-tracker/internal/sqlitestore"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // TestPreviousStake exercises the pure decision behind the stake-change
@@ -86,4 +90,117 @@ func TestPreviousStake(t *testing.T) {
 			}
 		})
 	}
+}
+
+// drainAlerts empties a buffered alert channel into a slice.
+func drainAlerts(ch chan string) []string {
+	var msgs []string
+	for {
+		select {
+		case m := <-ch:
+			msgs = append(msgs, m)
+		default:
+			return msgs
+		}
+	}
+}
+
+// TestEvaluateSpingoDailyLossAlert hand-checks the Spin & Go drain warning
+// against the worker-fetched poker-day tournaments: two -$0.60 spins breach
+// a $1.00 threshold ($1.20 net loss), an in-day MTT loss must not count, and
+// an unconfigured threshold stays silent.
+func TestEvaluateSpingoDailyLossAlert(t *testing.T) {
+	threshold := 1.0
+	dayTournaments := []parsers.Tournament{
+		{Type: "spingo", NetUSD: -0.60},
+		{Type: "spingo" + parsers.KnockoutSuffix, NetUSD: -0.60},
+		{Type: "mtt", NetUSD: -50}, // not a spin — must not count toward the drain
+	}
+
+	t.Run("breach fires with the spin-only net", func(t *testing.T) {
+		cfg := &config.Config{Alerts: config.Alerts{SpingoDailyLossUSD: &threshold}}
+		ch := make(chan string, 1)
+		if fired := EvaluateSpingoDailyLossAlert(cfg, dayTournaments, 50, ch); !fired {
+			t.Fatal("fired = false, want true")
+		}
+		want := "⚠️ Spin & Go drain alert\nDown $1.20 on Spin & Gos this poker day\nBankroll: $50.00"
+		if got := drainAlerts(ch); len(got) != 1 || got[0] != want {
+			t.Errorf("alerts = %q, want [%q]", got, want)
+		}
+	})
+
+	t.Run("loss equal to the threshold does not fire", func(t *testing.T) {
+		cfg := &config.Config{Alerts: config.Alerts{SpingoDailyLossUSD: &threshold}}
+		ch := make(chan string, 1)
+		atThreshold := []parsers.Tournament{{Type: "spingo", NetUSD: -1.00}}
+		if fired := EvaluateSpingoDailyLossAlert(cfg, atThreshold, 50, ch); fired {
+			t.Error("fired = true at exactly the threshold, want false")
+		}
+	})
+
+	t.Run("unconfigured threshold is silent", func(t *testing.T) {
+		ch := make(chan string, 1)
+		if fired := EvaluateSpingoDailyLossAlert(&config.Config{}, dayTournaments, 50, ch); fired {
+			t.Error("fired = true with no threshold configured, want false")
+		}
+	})
+}
+
+// TestEvaluateStakeChangeAlert drives the one evaluator that keeps its own
+// store fetch against a real sqlite store: a session at a new stake alerts,
+// a session at the unchanged stake stays silent, and the first session ever
+// stays silent.
+func TestEvaluateStakeChangeAlert(t *testing.T) {
+	store, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	base := storage.AsStoredClock(time.Now()).Add(-time.Hour)
+	first := parsers.CashSession{Date: base, Stake: "NL2", NetUSD: -1, FirstHandID: "s1"}
+	if err := store.AppendCashSession(first); err != nil {
+		t.Fatalf("AppendCashSession(first): %v", err)
+	}
+
+	t.Run("first session ever is silent — nothing to compare against", func(t *testing.T) {
+		ch := make(chan string, 1)
+		if err := EvaluateStakeChangeAlert(first, store, ch); err != nil {
+			t.Fatalf("EvaluateStakeChangeAlert: %v", err)
+		}
+		if got := drainAlerts(ch); len(got) != 0 {
+			t.Errorf("alerts = %q, want none", got)
+		}
+	})
+
+	moved := parsers.CashSession{Date: base.Add(10 * time.Minute), Stake: "NL5", NetUSD: -1, FirstHandID: "s2"}
+	if err := store.AppendCashSession(moved); err != nil {
+		t.Fatalf("AppendCashSession(moved): %v", err)
+	}
+
+	t.Run("different stake than the previous session alerts", func(t *testing.T) {
+		ch := make(chan string, 1)
+		if err := EvaluateStakeChangeAlert(moved, store, ch); err != nil {
+			t.Fatalf("EvaluateStakeChangeAlert: %v", err)
+		}
+		want := "🃏 Stake change detected\nPrevious cash session: NL2\nThis session: NL5"
+		if got := drainAlerts(ch); len(got) != 1 || got[0] != want {
+			t.Errorf("alerts = %q, want [%q]", got, want)
+		}
+	})
+
+	same := parsers.CashSession{Date: base.Add(20 * time.Minute), Stake: "NL5", NetUSD: 2, FirstHandID: "s3"}
+	if err := store.AppendCashSession(same); err != nil {
+		t.Fatalf("AppendCashSession(same): %v", err)
+	}
+
+	t.Run("unchanged stake is silent", func(t *testing.T) {
+		ch := make(chan string, 1)
+		if err := EvaluateStakeChangeAlert(same, store, ch); err != nil {
+			t.Fatalf("EvaluateStakeChangeAlert: %v", err)
+		}
+		if got := drainAlerts(ch); len(got) != 0 {
+			t.Errorf("alerts = %q, want none", got)
+		}
+	})
 }
