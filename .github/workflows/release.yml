@@ -66,11 +66,25 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: Setup
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: |
+          # Pull the "## <tag> …" section (up to the next "## ") into the body.
+          awk -v h="## ${GITHUB_REF_NAME} " '
+            index($0, h) == 1 { grab = 1; next }
+            /^## / && grab { exit }
+            grab { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No CHANGELOG entry for ${GITHUB_REF_NAME} — see CHANGELOG.md." > RELEASE_NOTES.md
+          fi
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           files: |
             PokerTracker-v${{ needs.installer.outputs.version }}-x64.exe
             PokerTracker-v${{ needs.installer.outputs.version }}-arm.exe

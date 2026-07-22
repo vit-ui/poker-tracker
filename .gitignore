@@ -14,4 +14,6 @@ testdata/tournaments/
 *.md
 !README.md
 !LICENSE.md
+!CHANGELOG.md
+!CONTRIBUTING.md
 data/
