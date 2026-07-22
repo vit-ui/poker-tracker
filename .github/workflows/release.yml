@@ -74,13 +74,17 @@ jobs:
         shell: bash
         run: |
           # Pull the "## <tag> …" section (up to the next "## ") into the body.
+          # No matching section fails the job: a public release must never
+          # ship with a placeholder description — fix the CHANGELOG heading
+          # ("## <tag> — <date>", trailing space after the tag) and re-tag.
           awk -v h="## ${GITHUB_REF_NAME} " '
             index($0, h) == 1 { grab = 1; next }
             /^## / && grab { exit }
             grab { print }
           ' CHANGELOG.md > RELEASE_NOTES.md
           if [ ! -s RELEASE_NOTES.md ]; then
-            echo "No CHANGELOG entry for ${GITHUB_REF_NAME} — see CHANGELOG.md." > RELEASE_NOTES.md
+            echo "::error::CHANGELOG.md has no '## ${GITHUB_REF_NAME} — <date>' section — add it and re-tag."
+            exit 1
           fi
       - uses: softprops/action-gh-release@v2
         with:

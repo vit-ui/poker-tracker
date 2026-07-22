@@ -79,7 +79,15 @@ go test ./internal/parsers/...      # one package
   the binaries and installers and publishes a **public GitHub Release**.
 - Add a matching `## vX.Y — <date>` section to [CHANGELOG.md](CHANGELOG.md)
   **before** tagging — the release job extracts that section as the release
-  description, so a missing section means an empty release body.
+  description, and **fails the release** if no section matches the tag (the
+  heading must start exactly `## vX.Y ` — tag, then a space).
+- To check the extraction before pushing a tag, run the job's exact awk
+  locally and confirm it prints the section:
+
+  ```bash
+  TAG=v2.8; awk -v h="## ${TAG} " \
+    'index($0,h)==1{g=1;next} /^## /&&g{exit} g{print}' CHANGELOG.md
+  ```
 - Tag and push only after verifying the build end-to-end (a real session, a
   Telegram round-trip, an installer upgrade). Releases are never automated from
   a commit.

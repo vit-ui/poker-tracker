@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged
 `vX.Y`, and each GitHub Release pulls its notes from the matching section below.
 
+## v2.8 — 2026-07-22
+
+Fixes from a code review of the v2.6/v2.7 changes.
+
+### Fixed
+- A satellite answered "used a ticket" could be asked about again on a stray
+  file event (its recorded $0 buy-in never matched the file's real buy-in),
+  and a second "paid cash" answer would have overwritten the correct record
+  with a cash loss. Ticket-resolved tournaments are now correctly recognized
+  as already handled.
+- Re-entering a satellite while its ticket/cash question was still unanswered
+  silently discarded the re-entry: the rewritten summary was dropped as a
+  duplicate and the eventual answer recorded only the first bust's buy-in.
+  The queued tournament now updates in place, so the answer records the full
+  amount.
+- Buy-in comparison in duplicate detection now uses a half-cent tolerance
+  instead of exact float equality, which could permanently mis-classify
+  re-entry tournaments on the Google Sheets backend.
+- Amounts with thousands separators (e.g. a `$12,500.00` prize pool) were
+  silently truncated at the comma (parsed as `$12`); commas inside numbers
+  are now handled.
+- A tag with no matching CHANGELOG section now fails the release job instead
+  of publishing a release with a placeholder description.
+
+### Changed
+- The duplicate check reads one tournament row (new `GetTournamentByID` point
+  lookup) instead of the entire tournament history on every file event.
+- One shared signed-money formatter across `/stats`, the config flows, and
+  the post-session/post-tournament alerts.
+
 ## v2.7 — 2026-07-21
 
 ### Fixed
