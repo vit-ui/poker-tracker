@@ -694,13 +694,19 @@ func (s *Store) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
 // single query, differing only in the date cutoff and whether the caller
 // wants those extra columns kept or discarded.
 func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
+	return s.queryTournamentRows(`date >= ?`, since.UTC().Format(dateFormat))
+}
+
+// queryTournamentRows is the single SELECT+scan queryTournaments and
+// GetTournamentByID share; where is ANDed onto the partial-row skip.
+func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
 			multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd, hands
 		FROM tournaments
-		WHERE date IS NOT NULL AND date >= ?
+		WHERE date IS NOT NULL AND `+where+`
 		ORDER BY id ASC
-	`, since.UTC().Format(dateFormat))
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading tournaments: %w", err)
 	}
@@ -778,6 +784,19 @@ func (s *Store) GetTournamentsSince(since time.Time) ([]parsers.Tournament, erro
 		result[i] = r.Tournament
 	}
 	return result, nil
+}
+
+// GetTournamentByID returns the single completed tournament row with this
+// TournamentID — the point lookup the worker's duplicate check runs per file
+// event (tournament_id is UNIQUE). found is false for an absent tournament
+// and for a partial row (hand file before summary — no Date), matching
+// GetTournamentsSince's partial-row skip.
+func (s *Store) GetTournamentByID(tournamentID string) (parsers.Tournament, bool, error) {
+	records, err := s.queryTournamentRows(`tournament_id = ?`, tournamentID)
+	if err != nil || len(records) == 0 {
+		return parsers.Tournament{}, false, err
+	}
+	return records[0].Tournament, true, nil
 }
 
 // GetAllTournaments returns every tournaments row, including VPIP, PFR,

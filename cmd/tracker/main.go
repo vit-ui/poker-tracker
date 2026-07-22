@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -660,41 +661,86 @@ func tournamentAlreadyHandled(t parsers.Tournament, configPath string, sc storag
 	if err != nil {
 		return false, err
 	}
-	// GetTournamentsSince skips partial rows (no Date — created only by a
-	// hand file arriving before the summary; see sheets.GetTournamentsSince),
-	// so a tournament whose hand stats arrived first but whose summary
-	// hasn't been processed yet is correctly reported as not yet handled.
-	recorded, err := sc.GetTournamentsSince(time.Time{})
+	// Point lookup, not a full-history read — this runs on every tournament
+	// file event (and once per re-entry bust). found is false for a partial
+	// row (hand file arrived before the summary), so a tournament whose hand
+	// stats landed first is correctly reported as not yet handled.
+	recorded, found, err := sc.GetTournamentByID(t.TournamentID)
 	if err != nil {
 		return false, err
 	}
-	return isDuplicateTournament(t, pending, recorded), nil
+	duplicate, refreshIdx := isDuplicateTournament(t, pending, recorded, found)
+	if refreshIdx >= 0 {
+		// Re-entry rewrite while the satellite/ticket question is still
+		// unanswered: no second question, but the queued snapshot is stale —
+		// refresh it so the eventual answer records the current buy-in and
+		// finish instead of the first bust's. Reminder timestamps are kept;
+		// the next reminder simply shows the updated numbers.
+		pending[refreshIdx].Tournament = t
+		if err := config.SavePendingTournaments(pendingPath, pending); err != nil {
+			// Still a duplicate — the question is already pending. Failing to
+			// refresh must not cause a second queue entry or a second alert.
+			slog.Error("refreshing pending tournament after re-entry rewrite", "err", err)
+		}
+	}
+	return duplicate, nil
 }
 
 // isDuplicateTournament is the pure decision tournamentAlreadyHandled wraps
-// around its two I/O reads: t is a duplicate if it's already awaiting an
-// answer in the pending queue, or already recorded in the Tournaments sheet
-// with the same buy-in, finish position, and field size.
+// around its I/O: t is a duplicate if it's already awaiting an answer in the
+// pending queue, or already recorded in the Tournaments sheet with the same
+// content (see sameTournamentContent).
 //
-// The content comparison is what lets a re-entry rewrite through: an
-// already-recorded tournament whose buy-in / finish / field size have changed
-// is a fresh bust (screenName re-entered and busted again), not a duplicate,
-// so it must be re-processed to update the stored data. Net is deliberately
-// not compared — a hand file folding in knockout bounty changes the recorded
-// net without any re-entry, and that is not a re-entry the summary should
-// overwrite.
-func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournament, recorded []parsers.Tournament) bool {
-	for _, p := range pending {
+// refreshPendingIdx >= 0 means t matched a pending entry by ID but its
+// content changed — a re-entry rewrite arriving while the satellite/ticket
+// question is unanswered. The event is still handled (duplicate true: the
+// pending question already covers this tournament), but the caller must
+// replace the queued snapshot with t so the eventual answer records the
+// current money, not the first bust's.
+//
+// The content comparison is what lets a re-entry rewrite through on the
+// recorded side: an already-recorded tournament whose buy-in / finish /
+// field size have changed is a fresh bust (screenName re-entered and busted
+// again), not a duplicate, so it must be re-processed to update the stored
+// data. Net is deliberately not compared — a hand file folding in knockout
+// bounty changes the recorded net without any re-entry, and that is not a
+// re-entry the summary should overwrite.
+func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournament, recorded parsers.Tournament, recordedFound bool) (duplicate bool, refreshPendingIdx int) {
+	for i, p := range pending {
 		if p.Tournament.TournamentID == t.TournamentID {
-			return true
+			if sameTournamentContent(t, p.Tournament) {
+				return true, -1
+			}
+			return true, i
 		}
 	}
-	for _, r := range recorded {
-		if r.TournamentID == t.TournamentID {
-			return t.BuyInUSD == r.BuyInUSD && t.FinishPos == r.FinishPos && t.TotalPlayers == r.TotalPlayers
+	if recordedFound {
+		// A recorded zero buy-in is a satellite answered "used a ticket" —
+		// RecoverTicketPayout zeroed it (freerolls never reach storage), so
+		// the parsed buy-in can never equal it again. Without this exemption
+		// every ticket-resolved tournament would fail the content match on
+		// any stray re-trigger of its unchanged file, be re-queued, and have
+		// the already-answered satellite question re-asked — with a wrong
+		// second answer overwriting the correct $0 row as a cash loss.
+		if recorded.BuyInUSD == 0 && t.BuyInUSD > 0 {
+			return t.FinishPos == recorded.FinishPos && t.TotalPlayers == recorded.TotalPlayers, -1
 		}
+		return sameTournamentContent(t, recorded), -1
 	}
-	return false
+	return false, -1
+}
+
+// sameTournamentContent reports whether two parses of a tournament summary
+// carry the same money-relevant content: buy-in (within half a cent — the
+// same tolerance storage.Migrate's verification uses), finish position, and
+// field size. Exact float equality would misfire: a re-entry buy-in is a sum
+// (1.10+2.20 is not exactly 3.30 in float64), and the sheets backend's
+// number round-trip is not guaranteed to preserve the last bit — either
+// would make an unchanged file read as a fresh rewrite forever.
+func sameTournamentContent(a, b parsers.Tournament) bool {
+	return math.Abs(a.BuyInUSD-b.BuyInUSD) < 0.005 &&
+		a.FinishPos == b.FinishPos &&
+		a.TotalPlayers == b.TotalPlayers
 }
 
 // scheduleCashSessionSummary (re)starts a quietPeriod timer for path, keyed
@@ -726,17 +772,13 @@ func scheduleCashSessionSummary(mu *sync.Mutex, timers map[string]*time.Timer, p
 // PokerStars overwrites the summary on each bust, so screenName gets one
 // corrected alert per entry, each reflecting the running total buy-in and net.
 func tournamentAlertText(t parsers.Tournament, netUSD, bankroll float64) string {
-	sign, absNet := "+", netUSD
-	if absNet < 0 {
-		sign, absNet = "-", -absNet
-	}
 	var msg string
 	if t.BaseType() == "spingo" {
-		msg = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s$%.2f\nBankroll: $%.2f",
-			t.BuyInUSD, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), sign, absNet, bankroll)
+		msg = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nBankroll: $%.2f",
+			t.BuyInUSD, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), bot.FormatSignedUSD(netUSD), bankroll)
 	} else {
-		msg = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s$%.2f\nBankroll: $%.2f",
-			t.BuyInUSD, bot.Ordinal(t.FinishPos), t.TotalPlayers, sign, absNet, bankroll)
+		msg = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nBankroll: $%.2f",
+			t.BuyInUSD, bot.Ordinal(t.FinishPos), t.TotalPlayers, bot.FormatSignedUSD(netUSD), bankroll)
 	}
 	if t.ReEntries > 0 {
 		msg += fmt.Sprintf("\n🔁 Re-entered %d× — %d entries total for this tournament; buy-in and net cover all of them, updating the earlier alert.",
@@ -747,10 +789,6 @@ func tournamentAlertText(t parsers.Tournament, netUSD, bankroll float64) string 
 
 // cashSessionSummaryText formats the post-session summary alert.
 func cashSessionSummaryText(session parsers.CashSession, bankroll float64) string {
-	sign, absNet := "+", session.NetUSD
-	if absNet < 0 {
-		sign, absNet = "-", -absNet
-	}
-	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s$%.2f\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
-		session.Stake, sign, absNet, session.Hands, session.DurationMin, bankroll)
+	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
+		session.Stake, bot.FormatSignedUSD(session.NetUSD), session.Hands, session.DurationMin, bankroll)
 }

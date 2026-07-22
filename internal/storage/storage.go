@@ -83,6 +83,14 @@ type Store interface {
 	GetLedgerEntriesSince(t time.Time) ([]LedgerEntry, error)
 	GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error)
 	GetTournamentsSince(since time.Time) ([]parsers.Tournament, error)
+
+	// GetTournamentByID is the point lookup the worker's duplicate check
+	// uses on every tournament file event — a full-history read there would
+	// scale with lifetime tournament count (and is a whole-tab network read
+	// on the sheets backend). found is false for an absent tournament and
+	// for a partial row (hand file arrived before the summary — no Date),
+	// matching GetTournamentsSince's partial-row skip.
+	GetTournamentByID(tournamentID string) (t parsers.Tournament, found bool, err error)
 	GetAllCashSessions() ([]CashSessionRecord, error)
 	GetAllTournaments() ([]TournamentRecord, error)
 	GetAllTimeAnalysis() ([]TimeAnalysisRecord, error)

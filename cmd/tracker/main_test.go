@@ -9,6 +9,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
+	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 )
 
 // TestResolveStorageBackend covers the three startup-guard outcomes from
@@ -71,12 +72,14 @@ func TestResolveStorageBackend(t *testing.T) {
 // Telegram alert and a repeated satellite/ticket question for the same
 // tournament before this check existed — while still letting a re-entry
 // rewrite (a larger buy-in / different finish for an already-recorded
-// TournamentID) through to update the row, ledger, and bankroll.
+// TournamentID) through to update the row, ledger, and bankroll, refreshing
+// a stale pending-queue snapshot, and never re-asking a satellite question
+// already answered "used a ticket" (recorded buy-in zeroed).
 func TestIsDuplicateTournament(t *testing.T) {
-	pendingOf := func(ids ...string) []config.PendingTournament {
-		pending := make([]config.PendingTournament, len(ids))
-		for i, id := range ids {
-			pending[i] = config.PendingTournament{Tournament: parsers.Tournament{TournamentID: id}}
+	pendingOf := func(tourneys ...parsers.Tournament) []config.PendingTournament {
+		pending := make([]config.PendingTournament, len(tourneys))
+		for i, tt := range tourneys {
+			pending[i] = config.PendingTournament{Tournament: tt}
 		}
 		return pending
 	}
@@ -89,29 +92,47 @@ func TestIsDuplicateTournament(t *testing.T) {
 	// The first bust of a re-entry MTT, as already recorded (buy-in $1.10,
 	// busted 50th of 126) — see data/ TS…T4016700037.
 	firstBust := tourney("111", 1.10, 50, 126)
+	// A satellite the player answered "used a ticket" for: RecoverTicketPayout
+	// zeroed the recorded buy-in, but a re-parse of the unchanged file still
+	// reads the real $0.50.
+	ticketResolved := tourney("111", 0, 3, 3)
+	none := parsers.Tournament{}
 
 	cases := []struct {
-		name     string
-		t        parsers.Tournament
-		pending  []config.PendingTournament
-		recorded []parsers.Tournament
-		want     bool
+		name          string
+		t             parsers.Tournament
+		pending       []config.PendingTournament
+		recorded      parsers.Tournament
+		recordedFound bool
+		want          bool
+		wantRefresh   int
 	}{
-		{"brand new tournament, neither pending nor recorded", tourney("111", 1.10, 50, 126), nil, nil, false},
-		{"already awaiting a satellite/ticket answer", tourney("111", 0.50, 3, 3), pendingOf("111"), nil, true},
-		{"identical re-parse of a recorded tournament is a duplicate", firstBust, nil, []parsers.Tournament{firstBust}, true},
-		{"re-entry rewrite: larger buy-in is not a duplicate", tourney("111", 2.20, 60, 140), nil, []parsers.Tournament{firstBust}, false},
-		{"re-entry rewrite: final $3.30 / 43rd of 162 is not a duplicate", tourney("111", 3.30, 43, 162), nil, []parsers.Tournament{firstBust}, false},
-		{"only finish position changed is not a duplicate", tourney("111", 1.10, 43, 126), nil, []parsers.Tournament{firstBust}, false},
-		{"only field size changed is not a duplicate", tourney("111", 1.10, 50, 162), nil, []parsers.Tournament{firstBust}, false},
-		{"a different tournament pending doesn't false-positive", tourney("111", 1.10, 50, 126), pendingOf("222"), nil, false},
-		{"a different tournament recorded doesn't false-positive", tourney("111", 1.10, 50, 126), nil, []parsers.Tournament{tourney("222", 1.10, 50, 126)}, false},
+		{"brand new tournament, neither pending nor recorded", tourney("111", 1.10, 50, 126), nil, none, false, false, -1},
+		{"already awaiting a satellite/ticket answer, unchanged content", tourney("111", 0.50, 3, 3), pendingOf(tourney("111", 0.50, 3, 3)), none, false, true, -1},
+		{"pending + re-entry rewrite: still handled but queue must refresh", tourney("111", 2.20, 60, 140), pendingOf(tourney("111", 1.10, 50, 126)), none, false, true, 0},
+		{"pending + re-entry rewrite at a later index", tourney("111", 2.20, 60, 140), pendingOf(tourney("999", 5, 1, 3), tourney("111", 1.10, 50, 126)), none, false, true, 1},
+		{"identical re-parse of a recorded tournament is a duplicate", firstBust, nil, firstBust, true, true, -1},
+		{"re-entry rewrite: larger buy-in is not a duplicate", tourney("111", 2.20, 60, 140), nil, firstBust, true, false, -1},
+		{"re-entry rewrite: final $3.30 / 43rd of 162 is not a duplicate", tourney("111", 3.30, 43, 162), nil, firstBust, true, false, -1},
+		{"only finish position changed is not a duplicate", tourney("111", 1.10, 43, 126), nil, firstBust, true, false, -1},
+		{"only field size changed is not a duplicate", tourney("111", 1.10, 50, 162), nil, firstBust, true, false, -1},
+		{"a different tournament pending doesn't false-positive", tourney("111", 1.10, 50, 126), pendingOf(tourney("222", 1.10, 50, 126)), none, false, false, -1},
+		// The ticket-answer regression: recorded buy-in is 0 (satellite
+		// resolved as a ticket entry), the file re-parses as $0.50 — an
+		// unchanged file must still be a duplicate, or every ticket-resolved
+		// tournament gets re-queued and re-asked on any stray event.
+		{"ticket-resolved satellite, unchanged file re-parse is a duplicate", tourney("111", 0.50, 3, 3), nil, ticketResolved, true, true, -1},
+		{"ticket-resolved satellite, re-entry rewrite (new finish) is not a duplicate", tourney("111", 1.00, 2, 3), nil, ticketResolved, true, false, -1},
+		// Buy-in comparison is a half-cent tolerance, not float equality: a
+		// re-entry sum (1.10+2.20) is not exactly 3.30 in float64, and the
+		// sheets backend's number round-trip may not preserve the last bit.
+		{"float-noise buy-in difference still matches", tourney("111", 1.10+2.20, 43, 162), nil, tourney("111", 3.30, 43, 162), true, true, -1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := isDuplicateTournament(c.t, c.pending, c.recorded)
-			if got != c.want {
-				t.Errorf("isDuplicateTournament(%q, ...) = %v, want %v", c.t.TournamentID, got, c.want)
+			got, gotRefresh := isDuplicateTournament(c.t, c.pending, c.recorded, c.recordedFound)
+			if got != c.want || gotRefresh != c.wantRefresh {
+				t.Errorf("isDuplicateTournament(%q, ...) = (%v, %d), want (%v, %d)", c.t.TournamentID, got, gotRefresh, c.want, c.wantRefresh)
 			}
 		})
 	}
@@ -151,6 +172,101 @@ func TestCashSessionSummaryText(t *testing.T) {
 	}
 }
 
+// TestTournamentAlreadyHandledIntegration drives the real I/O wrapper — a
+// sqlitestore in a temp dir plus the real pending_tournaments.json round-trip
+// — through the duplicate/rewrite scenarios the pure isDuplicateTournament
+// test covers in isolation. The original frozen-at-first-bust bug lived in
+// this wiring (the pure decision was fine; the composition wasn't), so the
+// composition is what this test pins.
+func TestTournamentAlreadyHandledIntegration(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	date := time.Date(2026, 7, 21, 23, 21, 0, 0, time.UTC)
+	tourney := func(id string, buyIn float64, finishPos, players int, net float64) parsers.Tournament {
+		return parsers.Tournament{
+			Date: date, Type: "mtt", TournamentID: id,
+			BuyInUSD: buyIn, FinishPos: finishPos, TotalPlayers: players, NetUSD: net,
+		}
+	}
+	handled := func(tt parsers.Tournament) bool {
+		t.Helper()
+		got, err := tournamentAlreadyHandled(tt, configPath, store)
+		if err != nil {
+			t.Fatalf("tournamentAlreadyHandled(%s): %v", tt.TournamentID, err)
+		}
+		return got
+	}
+
+	firstBust := tourney("111", 1.10, 50, 126, -1.10)
+	if handled(firstBust) {
+		t.Error("fresh tournament reported as already handled")
+	}
+	if _, err := store.AppendTournament(firstBust); err != nil {
+		t.Fatalf("AppendTournament: %v", err)
+	}
+	if !handled(firstBust) {
+		t.Error("identical re-parse of a recorded tournament not reported as duplicate")
+	}
+	rewrite := tourney("111", 2.20, 60, 140, -2.20)
+	if handled(rewrite) {
+		t.Error("re-entry rewrite wrongly reported as duplicate — the frozen-at-first-bust bug")
+	}
+	if _, err := store.AppendTournament(rewrite); err != nil {
+		t.Fatalf("AppendTournament(rewrite): %v", err)
+	}
+	if !handled(rewrite) {
+		t.Error("re-parse after processing the rewrite not reported as duplicate")
+	}
+
+	// Ticket-resolved satellite: recorded with buy-in zeroed (as
+	// bot.RecoverTicketPayout stores it); the unchanged file still parses
+	// the real $0.50 — must be a duplicate, not a re-queue + second question.
+	satRecorded := parsers.Tournament{Date: date, Type: "spingo", TournamentID: "555", BuyInUSD: 0, FinishPos: 3, TotalPlayers: 3, NetUSD: 0}
+	if _, err := store.AppendTournament(satRecorded); err != nil {
+		t.Fatalf("AppendTournament(satellite): %v", err)
+	}
+	satParse := parsers.Tournament{Date: date, Type: "spingo", TournamentID: "555", BuyInUSD: 0.50, FinishPos: 3, TotalPlayers: 3, NetUSD: -0.50}
+	if !handled(satParse) {
+		t.Error("ticket-resolved satellite's unchanged file re-parse not reported as duplicate — would re-ask the answered question")
+	}
+
+	// Pending-queue refresh: a rewrite arriving while the satellite question
+	// is unanswered is still handled (no second question) but must replace
+	// the queued stale snapshot with the current money.
+	pendingPath := filepath.Join(dir, "pending_tournaments.json")
+	stale := tourney("777", 1.10, 50, 126, -1.10)
+	if err := config.SavePendingTournaments(pendingPath, []config.PendingTournament{{Tournament: stale, FirstQueuedAt: date, LastRemindedAt: date}}); err != nil {
+		t.Fatalf("SavePendingTournaments: %v", err)
+	}
+	rewrite777 := tourney("777", 2.20, 60, 140, -2.20)
+	if !handled(rewrite777) {
+		t.Error("rewrite of a pending tournament not reported as handled — would queue a second entry")
+	}
+	pending, err := config.LoadPendingTournaments(pendingPath)
+	if err != nil {
+		t.Fatalf("LoadPendingTournaments: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Tournament.BuyInUSD != 2.20 || pending[0].Tournament.FinishPos != 60 {
+		t.Errorf("pending queue not refreshed with the rewrite: %+v", pending)
+	}
+	if !pending[0].FirstQueuedAt.Equal(date) || !pending[0].LastRemindedAt.Equal(date) {
+		t.Errorf("pending refresh must keep the reminder timestamps: %+v", pending[0])
+	}
+
+	// Partial row (hand file arrived before the summary): not yet handled —
+	// the summary still needs processing.
+	if err := store.UpdateTournamentHandStats("888", 20, 10, 50, 0, false); err != nil {
+		t.Fatalf("UpdateTournamentHandStats: %v", err)
+	}
+	if handled(tourney("888", 1.10, 12, 90, -1.10)) {
+		t.Error("partial hand-file-only row wrongly reported as handled — its summary would never be recorded")
+	}
+}
+
 func TestTournamentAlertText(t *testing.T) {
 	mtt := func(finish, players, reEntries int, buyIn float64) parsers.Tournament {
 		return parsers.Tournament{Type: "mtt", BuyInUSD: buyIn, FinishPos: finish, TotalPlayers: players, ReEntries: reEntries}
@@ -171,6 +287,53 @@ func TestTournamentAlertText(t *testing.T) {
 			name: "re-entry MTT names the entry count", t: mtt(43, 162, 2, 3.30), netUSD: -3.30, bank: 19.80,
 			wantHas: "🔁 Re-entered 2× — 3 entries total", reEntry: true,
 		},
+	}
+	// The Spin & Go branch renders the prize pool via bot.SpinGoPrizePoolText
+	// — the nil-*Multiplier ticket-pool path once caused a production panic
+	// when formatted directly, so both pool shapes are pinned in full here.
+	mult := 2.0
+	spingoCases := []struct {
+		name   string
+		t      parsers.Tournament
+		netUSD float64
+		bank   float64
+		want   string
+	}{
+		{
+			name: "spingo with a real cash pool",
+			t: parsers.Tournament{
+				Type: "spingo", BuyInUSD: 0.50, PrizePoolUSD: 1.00,
+				Multiplier: &mult, FinishPos: 1, TotalPlayers: 3,
+			},
+			netUSD: 0.50, bank: 23.58,
+			want: "🎰 Spin & Go\nBuy-in: $0.50\nPrize pool: $1.00 (2x)\nFinish: 1st\nNet: +$0.50\nBankroll: $23.58",
+		},
+		{
+			name: "spingo with a ticket-denominated pool (nil multiplier)",
+			t: parsers.Tournament{
+				Type: "spingo", BuyInUSD: 0.50,
+				PrizePoolDescription: "$1.00 Power Path Step 2 Ticket",
+				FinishPos:            3, TotalPlayers: 3,
+			},
+			netUSD: -0.50, bank: 23.08,
+			want: "🎰 Spin & Go\nBuy-in: $0.50\nPrize pool: $1.00 Power Path Step 2 Ticket\nFinish: 3rd\nNet: -$0.50\nBankroll: $23.08",
+		},
+		{
+			name: "knockout spingo re-entry keeps the spingo format plus the re-entry line",
+			t: parsers.Tournament{
+				Type: "spingo-ko", BuyInUSD: 1.00, PrizePoolUSD: 2.00,
+				Multiplier: &mult, FinishPos: 2, TotalPlayers: 3, ReEntries: 1,
+			},
+			netUSD: -1.00, bank: 22.08,
+			want: "🎰 Spin & Go\nBuy-in: $1.00\nPrize pool: $2.00 (2x)\nFinish: 2nd\nNet: -$1.00\nBankroll: $22.08\n🔁 Re-entered 1× — 2 entries total for this tournament; buy-in and net cover all of them, updating the earlier alert.",
+		},
+	}
+	for _, c := range spingoCases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := tournamentAlertText(c.t, c.netUSD, c.bank); got != c.want {
+				t.Errorf("tournamentAlertText() =\n%q\nwant\n%q", got, c.want)
+			}
+		})
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

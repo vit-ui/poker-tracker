@@ -69,6 +69,54 @@ func TestCascadeRunningTotals(t *testing.T) {
 	})
 }
 
+// TestReEntryRewriteSequenceMath is the sheets-side twin of sqlitestore's
+// TestAppendTournament_ReEntryRewriteUpsertsInPlace: the sqlite test proves
+// the three-bust re-entry sequence end-to-end against a real .db, while the
+// sheets backend composes the same per-bust update from these shared pure
+// helpers (rawAppendTournament: FoldBountyIntoNet on the found row;
+// updateLedgerAmountCascading: CascadeRunningTotals). Asserting the sequence
+// here pins that both backends' re-entry arithmetic agrees — the "backends
+// never diverge" invariant for this path — without live-sheets I/O.
+func TestReEntryRewriteSequenceMath(t *testing.T) {
+	// The real T4016700037 sequence: three busts, no cashes, no bounties.
+	busts := []struct{ buyIn, summaryNet float64 }{
+		{1.10, -1.10},
+		{2.20, -2.20},
+		{3.30, -3.30},
+	}
+	var net, prizeWon float64
+	for _, b := range busts {
+		net, prizeWon = FoldBountyIntoNet(b.summaryNet, 0, b.buyIn)
+	}
+	if !closeEnough(net, -3.30) || !closeEnough(prizeWon, 0) {
+		t.Errorf("final fold = (net %.4f, prizeWon %.4f), want (-3.30, 0)", net, prizeWon)
+	}
+
+	// A knockout variant: a $0.25 bounty already on the row (hand file ran
+	// first) must be re-folded against each successively larger buy-in, not
+	// lost or double-counted across rewrites.
+	var koNet, koPrize float64
+	for _, b := range busts {
+		koNet, koPrize = FoldBountyIntoNet(b.summaryNet, 0.25, b.buyIn)
+	}
+	if !closeEnough(koNet, -3.05) || !closeEnough(koPrize, 0.25) {
+		t.Errorf("knockout fold = (net %.4f, prizeWon %.4f), want (-3.05, 0.25)", koNet, koPrize)
+	}
+
+	// The ledger side: the tournament's single row is corrected in place on
+	// each bust, cascading over a later row (a cash session that landed
+	// after the first bust). Start bankroll 20.
+	amounts := []float64{-1.10, 2.50} // tournament row, then a later cash win
+	var totals []float64
+	for _, b := range busts[1:] {
+		totals = CascadeRunningTotals(amounts, b.summaryNet, 20)
+		amounts[0] = b.summaryNet
+	}
+	if len(totals) != 2 || !closeEnough(totals[0], 16.70) || !closeEnough(totals[1], 19.20) {
+		t.Errorf("cascaded totals = %v, want [16.70 19.20] (20 - 3.30, then + 2.50)", totals)
+	}
+}
+
 func TestReconcileKnockoutType(t *testing.T) {
 	cases := []struct {
 		name             string

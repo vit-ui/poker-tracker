@@ -524,6 +524,43 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 	}
 }
 
+// TestGetTournamentByID covers the worker duplicate check's point lookup:
+// found for a completed row, not found for an absent ID, and not found for a
+// partial row (hand file arrived before the summary — no date), matching
+// GetTournamentsSince's partial-row skip.
+func TestGetTournamentByID(t *testing.T) {
+	s := newTestStore(t)
+	date := mustTime(t, "2026-07-21T20:00:00Z")
+	tourn := parsers.Tournament{
+		Date: date, Type: "mtt", TournamentID: "5000000001",
+		BuyInUSD: 1.10, PrizePoolUSD: 60, FinishPos: 9, TotalPlayers: 40, NetUSD: -1.10,
+	}
+	if _, err := s.AppendTournament(tourn); err != nil {
+		t.Fatalf("AppendTournament: %v", err)
+	}
+
+	got, found, err := s.GetTournamentByID("5000000001")
+	if err != nil || !found {
+		t.Fatalf("GetTournamentByID = (found %v, err %v), want found", found, err)
+	}
+	if got.TournamentID != "5000000001" || !closeEnough(got.BuyInUSD, 1.10) || got.FinishPos != 9 || got.TotalPlayers != 40 {
+		t.Errorf("GetTournamentByID = %+v, unexpected fields", got)
+	}
+
+	if _, found, err := s.GetTournamentByID("nope"); err != nil || found {
+		t.Errorf("absent ID = (found %v, err %v), want not found", found, err)
+	}
+
+	// Partial row: hand stats arrive before the summary — no date, so the
+	// lookup must report not-found (the summary still needs processing).
+	if err := s.UpdateTournamentHandStats("5000000002", 25, 12, 80, 0, false); err != nil {
+		t.Fatalf("UpdateTournamentHandStats: %v", err)
+	}
+	if _, found, err := s.GetTournamentByID("5000000002"); err != nil || found {
+		t.Errorf("partial row = (found %v, err %v), want not found", found, err)
+	}
+}
+
 // TestAppendTournament_ReEntryRewriteUpsertsInPlace reproduces the re-entry
 // bug: PokerStars overwrites the same tournament summary each time screenName
 // busts an entry, so AppendTournament is called once per bust with a growing

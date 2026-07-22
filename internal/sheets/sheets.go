@@ -1255,6 +1255,31 @@ func (c *Client) allTournamentRows() ([]storage.TournamentRecord, error) {
 	return result, nil
 }
 
+// GetTournamentByID returns the single completed tournament row with this
+// TournamentID — the point lookup the worker's duplicate check runs per file
+// event: an ID-column read plus one row read, instead of the whole tab.
+// found is false for an absent tournament and for a partial row (hand file
+// before summary — blank Date cell), matching GetTournamentsSince's
+// partial-row skip.
+func (c *Client) GetTournamentByID(tournamentID string) (parsers.Tournament, bool, error) {
+	rowIndex, found, err := c.findTournamentRow(tournamentID)
+	if err != nil || !found {
+		return parsers.Tournament{}, false, err
+	}
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:N%d", rowIndex, rowIndex))
+	if err != nil {
+		return parsers.Tournament{}, false, fmt.Errorf("reading tournament row %d: %w", rowIndex, err)
+	}
+	if len(resp.Values) == 0 {
+		return parsers.Tournament{}, false, nil
+	}
+	rec, hasDate := parseTournamentRow(resp.Values[0])
+	if !hasDate {
+		return parsers.Tournament{}, false, nil
+	}
+	return rec.Tournament, true, nil
+}
+
 // GetTournamentsSince returns all Tournaments rows where Date >= since.
 // Partial rows (no Date) created by UpdateTournamentHandStats are skipped.
 func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
