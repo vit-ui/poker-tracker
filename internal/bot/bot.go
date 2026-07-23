@@ -51,19 +51,14 @@ type Bot struct {
 // single configured chat. It is only ever touched from the
 // update-processing goroutine (pollUpdates), so no locking is needed.
 type conversation struct {
-	flow  string // "", "screen_name", "paths", "alerts", "hardstop", "schedule", "credentials"
+	flow  string // "", "screen_name", "menu", "credentials"
 	field string // field awaiting a text reply within flow, "" if none
 
-	// pathsFirstTimeSetup is captured when the /paths flow starts, recording
-	// whether both paths were null at that point — used to pick between the
-	// "watcher restarted" and "tracker now active" messages on Done.
-	pathsFirstTimeSetup bool
-
-	// startWizard is true while /start is chaining paths -> alerts ->
-	// hardstop -> schedule. Each flow's Done handler checks it to decide
-	// whether to auto-advance into the next flow instead of just stopping.
-	// reset() doesn't touch it, so it survives across the four flows.
-	startWizard bool
+	// menuMessageID is the message a cascade config menu currently lives in,
+	// captured when a value prompt is issued (beginValueEntry) so the typed
+	// reply can edit that same message back to the relevant screen instead of
+	// sending a new one.
+	menuMessageID int
 
 	// resumeFlow names the flow (see ensureScreenName) to start once the
 	// screen-name recovery prompt is answered.
@@ -311,14 +306,8 @@ func (b *Bot) handleFlowReply(msg *tgbotapi.Message) {
 	switch b.flow {
 	case "screen_name":
 		b.handleScreenNameReply(msg.Chat.ID, msg.Text)
-	case "paths":
-		b.handlePathsReply(msg.Chat.ID, msg.Text)
-	case "alerts":
-		b.handleAlertsReply(msg.Chat.ID, msg.Text)
-	case "hardstop":
-		b.handleHardstopReply(msg.Chat.ID, msg.Text)
-	case "schedule":
-		b.handleScheduleReply(msg.Chat.ID, msg.Text)
+	case "menu":
+		b.handleMenuReply(msg.Chat.ID, msg.Text)
 	case "credentials":
 		b.handleCredentialsTextReply(msg.Chat.ID, msg.Text)
 	}
@@ -342,29 +331,16 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.resolveStorageSwitch(chatID, messageID, true)
 	case data == "storage:no":
 		b.resolveStorageSwitch(chatID, messageID, false)
-	case strings.HasPrefix(data, "paths:"):
-		b.handlePathsCallback(chatID, strings.TrimPrefix(data, "paths:"))
-	case strings.HasPrefix(data, "alerts:"):
-		b.handleAlertsCallback(chatID, strings.TrimPrefix(data, "alerts:"))
-	case strings.HasPrefix(data, "hardstop:"):
-		b.handleHardstopCallback(chatID, strings.TrimPrefix(data, "hardstop:"))
-	case strings.HasPrefix(data, "schedule:"):
-		b.handleScheduleCallback(chatID, strings.TrimPrefix(data, "schedule:"))
+	case strings.HasPrefix(data, "menu:"):
+		b.handleMenuCallback(chatID, messageID, strings.TrimPrefix(data, "menu:"))
 	}
 }
 
 // handleCommand dispatches a slash command to its handler.
 func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
-	// Disarm wizard chaining for every command except the one that (re-)arms
-	// it. Without this, abandoning /start partway (or running /paths, /alerts,
-	// etc. standalone afterwards) would leave startWizard stuck true, and a
-	// later unrelated flow's Done would silently chain into the next wizard
-	// step.
-	b.startWizard = false
 	switch msg.Command() {
 	case "start":
-		b.startWizard = true
 		send(b.tg, chatID, "Welcome to Poker Tracker. Let's configure your settings.\nYou can re-run /start at any time to update these settings.")
 		b.startPathsFlow(chatID)
 	case "deposit":

@@ -14,6 +14,16 @@ All notable changes to this project are documented here. The format follows
   previous always-on behavior). The threshold warning alerts are unaffected —
   those already only fire on a loss.
 
+### Changed
+- The `/paths`, `/alerts`, `/hardstop`, and `/schedule` settings menus are now
+  cascading, BotFather-style: one message you drill into and back out of, with a
+  Back button and no more Done. Each alert/hard-stop threshold has its own screen
+  where you can change it or **turn it off** (clearing the value) — previously
+  there was no way to unset one from the menu. The `/paths` watcher restart and
+  the hard-stop "set a duration" guard are preserved (the guard now warns when
+  you leave the hard-stop menu). `/start` opens the paths menu (the old forced
+  paths→alerts→hard stop→schedule wizard is gone).
+
 ## v2.9 — 2026-07-22
 
 ### Changed

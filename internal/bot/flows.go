@@ -1,8 +1,17 @@
 package bot
 
-// The four inline-keyboard config flows (/paths, /alerts, /hardstop,
+// The cascading inline-keyboard config menus (/paths, /alerts, /hardstop,
 // /schedule), the screen-name recovery gate they share, /deposit and
 // /withdraw, and the input parsing/validation helpers.
+//
+// Menu model: every config screen is one message edited in place as the player
+// drills in and out (BotFather-style), dispatched by a single router
+// (handleMenuCallback) on a "menu:"-prefixed callback path. A screen opened at
+// the top (via its command) shows ✖ Cancel; a screen drilled into shows
+// ‹ Back to its parent (parent = the path with its last ":" segment removed).
+// There is no Done button — a threshold field is turned off from its own
+// screen, paths restart the watcher on save, and the hard-stop duration guard
+// fires when leaving the hard-stop menu.
 
 import (
 	"fmt"
@@ -171,81 +180,320 @@ func (b *Bot) handleScreenNameReply(chatID int64, text string) {
 	}
 }
 
-// --- /paths flow ---
+// --- menu router ---
 
-func (b *Bot) startPathsFlow(chatID int64) {
+// parentPath returns path with its last ":" segment removed, or "" if path is
+// a single top-level segment. Back navigation targets this; an empty parent
+// means the screen is a root and shows Cancel instead of Back.
+func parentPath(path string) string {
+	if i := strings.LastIndex(path, ":"); i >= 0 {
+		return path[:i]
+	}
+	return ""
+}
+
+func menuRow(label, data string) []tgbotapi.InlineKeyboardButton {
+	return tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, data))
+}
+
+// navButton returns a screen's footer: ‹ Back to its parent, or ✖ Cancel when
+// it's a root.
+func navButton(path string) []tgbotapi.InlineKeyboardButton {
+	if parent := parentPath(path); parent != "" {
+		return menuRow("‹ Back", "menu:"+parent)
+	}
+	return menuRow("✖ Cancel", "menu:cancel")
+}
+
+// showMenu sends a fresh keyboard message when messageID is 0 (a command
+// opening a menu) or edits the existing one in place otherwise (a drill-down
+// tap).
+func (b *Bot) showMenu(chatID int64, messageID int, text string, rows [][]tgbotapi.InlineKeyboardButton) {
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	if messageID == 0 {
+		sendWithKeyboard(b.tg, chatID, text, markup)
+		return
+	}
+	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, markup)
+	if _, err := b.tg.Send(edit); err != nil {
+		slog.Error("editing menu message", "err", err)
+	}
+}
+
+// handleMenuCallback routes a "menu:"-prefixed callback (path is everything
+// after that prefix). Actions (:set, :off, leave) run and re-render; anything
+// else is a screen path handed to renderScreen.
+func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
+	if path == "cancel" {
+		b.reset()
+		b.clearKeyboard(chatID, messageID)
+		return
+	}
+	segs := strings.Split(path, ":")
+	if segs[0] == "leave" {
+		b.reset()
+		b.handleHardstopLeave(chatID, messageID, strings.TrimPrefix(path, "leave:"))
+		return
+	}
+	switch segs[len(segs)-1] {
+	case "set":
+		// Starts a value entry — sets the conversation state itself.
+		b.beginValueEntry(chatID, messageID, strings.TrimSuffix(path, ":set"))
+	case "off":
+		b.reset()
+		b.turnOff(chatID, messageID, strings.TrimSuffix(path, ":off"))
+	default:
+		// Any navigation abandons a pending value entry so a later stray
+		// text message isn't applied to the field it was prompting for.
+		b.reset()
+		b.renderScreen(chatID, messageID, path)
+	}
+}
+
+// renderScreen edits messageID to show the screen at path. The kind of screen
+// is decided by path's last segment — a known menu name renders that menu, a
+// field key renders its item (thresholds) or begins value entry (paths /
+// schedule) — so it works whether the screen sits at a root (via a command) or
+// nested under a hub.
+func (b *Bot) renderScreen(chatID int64, messageID int, path string) {
+	segs := strings.Split(path, ":")
+	switch segs[len(segs)-1] {
+	case "alerts":
+		b.renderAlertsMenu(chatID, messageID, path)
+	case "hardstop":
+		b.renderHardstopMenu(chatID, messageID, path, "")
+	case "paths":
+		b.renderPathsMenu(chatID, messageID, path)
+	case "schedule":
+		b.renderScheduleMenu(chatID, messageID, path)
+	default:
+		// A field key: flow is the segment before it.
+		flow := segs[len(segs)-2]
+		switch flow {
+		case "alerts", "hardstop":
+			b.renderThresholdItem(chatID, messageID, path)
+		case "paths", "schedule":
+			b.beginValueEntry(chatID, messageID, path)
+		}
+	}
+}
+
+// --- threshold flows (/alerts, /hardstop) ---
+
+var alertKeys = []string{"downswing", "session_loss", "losing_streak", "daily_loss", "spingo_daily_loss"}
+var hardstopKeys = []string{"session_loss", "downswing", "consecutive_losses", "daily_loss", "spingo_daily_loss", "duration"}
+
+func floatText(v *float64) string {
+	if v == nil {
+		return "not set"
+	}
+	return fmt.Sprintf("%g", *v)
+}
+
+func intText(v *int) string {
+	if v == nil {
+		return "not set"
+	}
+	return strconv.Itoa(*v)
+}
+
+func alertLabel(key string) string {
+	switch key {
+	case "downswing":
+		return "Downswing (buy-ins)"
+	case "session_loss":
+		return "Session loss (buy-ins)"
+	case "losing_streak":
+		return "Losing streak (sessions)"
+	case "daily_loss":
+		return "Daily loss, all games ($)"
+	case "spingo_daily_loss":
+		return "Spin & Go daily loss ($)"
+	}
+	return key
+}
+
+func alertValueText(cfg *config.Config, key string) string {
+	switch key {
+	case "downswing":
+		return floatText(cfg.Alerts.DownswingBuyins)
+	case "session_loss":
+		return floatText(cfg.Alerts.SessionLossBuyins)
+	case "losing_streak":
+		return intText(cfg.Alerts.LosingStreakCount)
+	case "daily_loss":
+		return floatText(cfg.Alerts.DailyLossUSD)
+	case "spingo_daily_loss":
+		return floatText(cfg.Alerts.SpingoDailyLossUSD)
+	}
+	return "not set"
+}
+
+func hardstopLabel(key string) string {
+	switch key {
+	case "session_loss":
+		return "Session loss (buy-ins)"
+	case "downswing":
+		return "Downswing (buy-ins)"
+	case "consecutive_losses":
+		return "Consecutive losses (sessions)"
+	case "daily_loss":
+		return "Daily loss, all games ($)"
+	case "spingo_daily_loss":
+		return "Spin & Go daily loss ($)"
+	case "duration":
+		return "Duration (hours)"
+	}
+	return key
+}
+
+func hardstopValueText(cfg *config.Config, key string) string {
+	switch key {
+	case "session_loss":
+		return floatText(cfg.Hardstop.SessionLossBuyins)
+	case "downswing":
+		return floatText(cfg.Hardstop.DownswingBuyins)
+	case "consecutive_losses":
+		return intText(cfg.Hardstop.ConsecutiveLosses)
+	case "daily_loss":
+		return floatText(cfg.Hardstop.DailyLossUSD)
+	case "spingo_daily_loss":
+		return floatText(cfg.Hardstop.SpingoDailyLossUSD)
+	case "duration":
+		return intText(cfg.Hardstop.DurationHours)
+	}
+	return "not set"
+}
+
+func (b *Bot) renderAlertsMenu(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
 		send(b.tg, chatID, "Something went wrong. Check logs.")
 		return
 	}
-	if !b.ensureScreenName(chatID, cfg, "paths") {
-		return
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, key := range alertKeys {
+		rows = append(rows, menuRow(alertLabel(key)+" ["+alertValueText(cfg, key)+"]", "menu:"+path+":"+key))
 	}
-	b.flow = "paths"
-	b.field = ""
-	b.pathsFirstTimeSetup = cfg.Paths.HandHistory == nil && cfg.Paths.TournamentSummary == nil
-	b.sendPathsKeyboard(chatID, cfg)
+	rows = append(rows, navButton(path))
+	b.showMenu(chatID, messageID, "Alert thresholds — tap one to change:", rows)
 }
 
-func (b *Bot) sendPathsKeyboard(chatID int64, cfg *config.Config) {
-	// The value is shown on the button only when set, and only as the part
-	// relative to the user's home directory (displayRelativeToHome) — short
-	// enough now to fit the button without the Telegram client truncating
-	// it, unlike the full absolute path shown here previously.
-	hhLabel := "Hand History"
+// renderHardstopMenu shows the hard-stop rules. warning, when non-empty, is
+// prepended — used by handleHardstopLeave to keep the player on this screen
+// when a rule is set with no duration.
+func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning string) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, key := range hardstopKeys {
+		rows = append(rows, menuRow(hardstopLabel(key)+" ["+hardstopValueText(cfg, key)+"]", "menu:"+path+":"+key))
+	}
+	// The footer routes through the leave guard rather than navigating
+	// directly, so backing out with a rule set but no duration warns and stays.
+	label := "✖ Cancel"
+	if parentPath(path) != "" {
+		label = "‹ Back"
+	}
+	rows = append(rows, menuRow(label, "menu:leave:"+path))
+	text := "Hard stop rules — tap one to change:"
+	if warning != "" {
+		text = warning + "\n\n" + text
+	}
+	b.showMenu(chatID, messageID, text, rows)
+}
+
+// renderThresholdItem shows one alert/hard-stop field's screen: Change value,
+// Turn off (except Duration, which can't be turned off), and Back.
+func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
+	segs := strings.Split(path, ":")
+	key := segs[len(segs)-1]
+	flow := segs[len(segs)-2]
+
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	var label, value string
+	if flow == "alerts" {
+		label, value = alertLabel(key), alertValueText(cfg, key)
+	} else {
+		label, value = hardstopLabel(key), hardstopValueText(cfg, key)
+	}
+	notSet := value == "not set"
+	canTurnOff := !(flow == "hardstop" && key == "duration")
+
+	setLabel := "Change value"
+	if notSet {
+		setLabel = "Set value"
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{menuRow(setLabel, "menu:"+path+":set")}
+	if canTurnOff && !notSet {
+		rows = append(rows, menuRow("Turn off", "menu:"+path+":off"))
+	}
+	rows = append(rows, navButton(path))
+	b.showMenu(chatID, messageID, fmt.Sprintf("%s\nCurrent: %s", label, value), rows)
+}
+
+// handleHardstopLeave enforces the duration guard when leaving the hard-stop
+// menu: if any rule is set with no duration_hours, it re-renders with a warning
+// and stays; otherwise it navigates to the parent (or clears the keyboard at a
+// root).
+func (b *Bot) handleHardstopLeave(chatID int64, messageID int, menuPath string) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if hardstopRuleSetWithoutDuration(cfg) {
+		b.renderHardstopMenu(chatID, messageID, menuPath, "⚠️ Set a duration first — a hard stop rule with no duration can never fire.")
+		return
+	}
+	if parent := parentPath(menuPath); parent != "" {
+		b.renderScreen(chatID, messageID, parent)
+		return
+	}
+	b.clearKeyboard(chatID, messageID)
+}
+
+func hardstopRuleSetWithoutDuration(cfg *config.Config) bool {
+	h := cfg.Hardstop
+	anyRule := h.SessionLossBuyins != nil || h.DownswingBuyins != nil || h.ConsecutiveLosses != nil ||
+		h.DailyLossUSD != nil || h.SpingoDailyLossUSD != nil
+	return anyRule && h.DurationHours == nil
+}
+
+// --- /paths flow ---
+
+func (b *Bot) renderPathsMenu(chatID int64, messageID int, path string) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	hh := "not set"
 	if cfg.Paths.HandHistory != nil {
-		hhLabel = "Hand History: " + displayRelativeToHome(*cfg.Paths.HandHistory)
+		hh = displayRelativeToHome(*cfg.Paths.HandHistory)
 	}
-	tsLabel := "Tournament Summary"
+	ts := "not set"
 	if cfg.Paths.TournamentSummary != nil {
-		tsLabel = "Tournament Summary: " + displayRelativeToHome(*cfg.Paths.TournamentSummary)
+		ts = displayRelativeToHome(*cfg.Paths.TournamentSummary)
 	}
-	markup := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(hhLabel, "paths:hand_history")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(tsLabel, "paths:tournament_summary")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Done", "paths:done")),
-	)
-	sendWithKeyboard(b.tg, chatID, "Configure PokerStars folder locations:", markup)
-}
-
-func (b *Bot) handlePathsCallback(chatID int64, action string) {
-	if action == "done" {
-		cfg, err := config.LoadConfig(b.configPath)
-		if err != nil {
-			slog.Error("loading config", "err", err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
-			return
-		}
-
-		if cfg.Paths.HandHistory == nil || cfg.Paths.TournamentSummary == nil {
-			send(b.tg, chatID, "Both paths must be set before continuing. Tap a field to configure it.")
-			b.sendPathsKeyboard(chatID, cfg)
-			return
-		}
-
-		wasFirstTime := b.pathsFirstTimeSetup
-		inWizard := b.startWizard
-		b.reset()
-
-		b.restartWatcher()
-
-		if wasFirstTime {
-			send(b.tg, chatID, "✅ Paths saved. Tracker is now active.")
-		} else {
-			send(b.tg, chatID, "✅ Paths saved. Watcher restarted.")
-		}
-
-		if inWizard {
-			b.startAlertsFlow(chatID)
-		}
-		return
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Hand History: "+hh, "menu:"+path+":hand_history"),
+		menuRow("Tournament Summary: "+ts, "menu:"+path+":tournament_summary"),
+		navButton(path),
 	}
-
-	b.flow = "paths"
-	b.field = action
-	send(b.tg, chatID, pathPromptText(action))
+	b.showMenu(chatID, messageID, "PokerStars folder locations — tap one to change:", rows)
 }
 
 func pathPromptText(field string) string {
@@ -258,6 +506,422 @@ func pathPromptText(field string) string {
 		`Example: AppData\Local\PokerStars\HandHistory` + "\n" +
 		`(C:\Users\<you>\ and \YourScreenName are both added automatically — a full path with a drive letter, e.g. D:\..., also works if your data isn't under your user folder)`
 }
+
+// --- /schedule flow ---
+
+func (b *Bot) renderScheduleMenu(chatID int64, messageID int, path string) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Poker day start hour ["+intText(cfg.Schedule.DayStartHour)+"]", "menu:"+path+":day_start"),
+		navButton(path),
+	}
+	b.showMenu(chatID, messageID, "Poker day schedule — tap to change (default 6 = 6am):", rows)
+}
+
+// --- value entry ---
+
+// beginValueEntry sends the prompt for a field and records the target and the
+// menu message to edit back once the reply is saved.
+func (b *Bot) beginValueEntry(chatID int64, messageID int, target string) {
+	b.flow = "menu"
+	b.field = target
+	b.menuMessageID = messageID
+	send(b.tg, chatID, promptFor(target))
+}
+
+func promptFor(target string) string {
+	segs := strings.Split(target, ":")
+	key := segs[len(segs)-1]
+	switch segs[len(segs)-2] {
+	case "alerts":
+		return alertsPromptText(key)
+	case "hardstop":
+		return hardstopPromptText(key)
+	case "paths":
+		return pathPromptText(key)
+	case "schedule":
+		return "What hour does your poker day start? Send a number from 0 to 23 (e.g. 6 for 6am local time)."
+	}
+	return "Send the new value."
+}
+
+func alertsPromptText(field string) string {
+	switch field {
+	case "downswing":
+		return "Send the downswing alert threshold, in buy-ins (e.g. 5 — alerts when bankroll drops 5 buy-ins below your rolling 30-day peak)."
+	case "session_loss":
+		return "Send the session loss threshold, in buy-ins, that should trigger a warning alert (e.g. 3 — the hard stop threshold for this, if set, must be at least this high)."
+	case "losing_streak":
+		return "Send the number of consecutive losing sessions that should trigger an alert (e.g. 3)."
+	case "daily_loss":
+		return "Send the daily loss threshold in USD, across all game types, that should trigger an alert (e.g. 20)."
+	case "spingo_daily_loss":
+		return "Send the Spin & Go daily loss threshold in USD that should trigger an alert (e.g. 20)."
+	}
+	return "Send the new value."
+}
+
+func hardstopPromptText(field string) string {
+	switch field {
+	case "session_loss":
+		return "Send the session loss threshold, in buy-ins, that should trigger a hard stop (e.g. 5)."
+	case "downswing":
+		return "Send the downswing threshold, in buy-ins, that should trigger a hard stop (e.g. 10 — fires when your rolling 30-day peak minus your current bankroll exceeds this many buy-ins)."
+	case "consecutive_losses":
+		return "Send the number of consecutive losing sessions that should trigger a hard stop (e.g. 4)."
+	case "daily_loss":
+		return "Send the daily loss threshold in USD, across all game types, that should trigger a hard stop (e.g. 30)."
+	case "spingo_daily_loss":
+		return "Send the Spin & Go daily loss threshold in USD that should trigger a hard stop (e.g. 30)."
+	case "duration":
+		return "Send the hard stop lock duration in hours. Must be 12 or 24."
+	}
+	return "Send the new value."
+}
+
+// turnOff clears an alert/hard-stop threshold (writes it to null) and
+// re-renders its item screen.
+func (b *Bot) turnOff(chatID int64, messageID int, target string) {
+	segs := strings.Split(target, ":")
+	key := segs[len(segs)-1]
+	flow := segs[len(segs)-2]
+
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if flow == "alerts" {
+		clearAlertField(cfg, key)
+	} else {
+		clearHardstopField(cfg, key)
+	}
+	if err := config.SaveConfig(b.configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	b.renderThresholdItem(chatID, messageID, target)
+}
+
+func clearAlertField(cfg *config.Config, key string) {
+	switch key {
+	case "downswing":
+		cfg.Alerts.DownswingBuyins = nil
+	case "session_loss":
+		cfg.Alerts.SessionLossBuyins = nil
+	case "losing_streak":
+		cfg.Alerts.LosingStreakCount = nil
+	case "daily_loss":
+		cfg.Alerts.DailyLossUSD = nil
+	case "spingo_daily_loss":
+		cfg.Alerts.SpingoDailyLossUSD = nil
+	}
+}
+
+func clearHardstopField(cfg *config.Config, key string) {
+	switch key {
+	case "session_loss":
+		cfg.Hardstop.SessionLossBuyins = nil
+	case "downswing":
+		cfg.Hardstop.DownswingBuyins = nil
+	case "consecutive_losses":
+		cfg.Hardstop.ConsecutiveLosses = nil
+	case "daily_loss":
+		cfg.Hardstop.DailyLossUSD = nil
+	case "spingo_daily_loss":
+		cfg.Hardstop.SpingoDailyLossUSD = nil
+	}
+}
+
+// handleMenuReply saves a value typed in response to beginValueEntry's prompt
+// and edits the remembered menu message back to the relevant screen. On a
+// validation error it sends the message and keeps the flow state so the player
+// can retry.
+func (b *Bot) handleMenuReply(chatID int64, text string) {
+	target := b.field
+	segs := strings.Split(target, ":")
+	key := segs[len(segs)-1]
+	flow := segs[len(segs)-2]
+
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reset()
+		return
+	}
+
+	pathsWasComplete := cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil
+
+	var saveErr error
+	switch flow {
+	case "alerts":
+		saveErr = saveAlertValue(cfg, key, text)
+	case "hardstop":
+		saveErr = saveHardstopValue(cfg, key, text)
+	case "paths":
+		saveErr = savePathValue(cfg, key, text)
+	case "schedule":
+		saveErr = saveScheduleValue(cfg, text)
+	}
+	if saveErr != nil {
+		send(b.tg, chatID, saveErr.Error())
+		return
+	}
+	if err := config.SaveConfig(b.configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reset()
+		return
+	}
+
+	messageID := b.menuMessageID
+	b.reset()
+
+	if flow == "paths" {
+		b.afterPathSave(chatID, cfg, pathsWasComplete)
+	}
+
+	switch flow {
+	case "alerts", "hardstop":
+		b.renderThresholdItem(chatID, messageID, target)
+	default:
+		b.renderScreen(chatID, messageID, flow)
+	}
+}
+
+// afterPathSave restarts the watcher once both base paths are set (its only
+// requirement), reporting first-time activation vs a re-config, and prompts for
+// the other folder when only one is set — replacing the old paths "Done".
+func (b *Bot) afterPathSave(chatID int64, cfg *config.Config, wasComplete bool) {
+	if cfg.Paths.HandHistory == nil || cfg.Paths.TournamentSummary == nil {
+		send(b.tg, chatID, "Saved. Set the other folder too before the tracker can start.")
+		return
+	}
+	b.restartWatcher()
+	if wasComplete {
+		send(b.tg, chatID, "✅ Paths saved. Watcher restarted.")
+	} else {
+		send(b.tg, chatID, "✅ Paths saved. Tracker is now active.")
+	}
+}
+
+func saveAlertValue(cfg *config.Config, key, text string) error {
+	switch key {
+	case "downswing":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotAbove(v, cfg.Hardstop.DownswingBuyins, "downswing alert", "the hard stop downswing threshold"); err != nil {
+			return err
+		}
+		cfg.Alerts.DownswingBuyins = &v
+	case "session_loss":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotAbove(v, cfg.Hardstop.SessionLossBuyins, "session loss alert", "the hard stop session loss threshold"); err != nil {
+			return err
+		}
+		cfg.Alerts.SessionLossBuyins = &v
+	case "losing_streak":
+		v, err := parsePositiveInt(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive whole number.")
+		}
+		if err := validateNotAbove(v, cfg.Hardstop.ConsecutiveLosses, "losing streak alert", "the hard stop consecutive-losses threshold"); err != nil {
+			return err
+		}
+		cfg.Alerts.LosingStreakCount = &v
+	case "daily_loss":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotAbove(v, cfg.Hardstop.DailyLossUSD, "daily loss alert", "the hard stop daily loss threshold"); err != nil {
+			return err
+		}
+		cfg.Alerts.DailyLossUSD = &v
+	case "spingo_daily_loss":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotAbove(v, cfg.Hardstop.SpingoDailyLossUSD, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold"); err != nil {
+			return err
+		}
+		cfg.Alerts.SpingoDailyLossUSD = &v
+	}
+	return nil
+}
+
+func saveHardstopValue(cfg *config.Config, key, text string) error {
+	switch key {
+	case "session_loss":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotBelow(v, cfg.Alerts.SessionLossBuyins, "hard stop session loss threshold", "the session loss alert"); err != nil {
+			return err
+		}
+		cfg.Hardstop.SessionLossBuyins = &v
+	case "downswing":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotBelow(v, cfg.Alerts.DownswingBuyins, "hard stop downswing threshold", "the downswing alert"); err != nil {
+			return err
+		}
+		cfg.Hardstop.DownswingBuyins = &v
+	case "consecutive_losses":
+		v, err := parsePositiveInt(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive whole number.")
+		}
+		if err := validateNotBelow(v, cfg.Alerts.LosingStreakCount, "hard stop consecutive-losses threshold", "the losing streak alert"); err != nil {
+			return err
+		}
+		cfg.Hardstop.ConsecutiveLosses = &v
+	case "daily_loss":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotBelow(v, cfg.Alerts.DailyLossUSD, "hard stop daily loss threshold", "the daily loss alert"); err != nil {
+			return err
+		}
+		cfg.Hardstop.DailyLossUSD = &v
+	case "spingo_daily_loss":
+		v, err := parsePositiveFloat(text)
+		if err != nil {
+			return fmt.Errorf("Invalid value. Please send a positive number.")
+		}
+		if err := validateNotBelow(v, cfg.Alerts.SpingoDailyLossUSD, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert"); err != nil {
+			return err
+		}
+		cfg.Hardstop.SpingoDailyLossUSD = &v
+	case "duration":
+		v, err := strconv.Atoi(strings.TrimSpace(text))
+		if err != nil || (v != 12 && v != 24) {
+			return fmt.Errorf("Duration must be 12 or 24.")
+		}
+		cfg.Hardstop.DurationHours = &v
+	}
+	return nil
+}
+
+func savePathValue(cfg *config.Config, key, text string) error {
+	if cfg.Setup.PokerStarsScreenName == nil {
+		return fmt.Errorf("Screen name isn't set. Run /paths again.")
+	}
+	full, err := resolveAgainstHomeDir(fixMissingDriveColon(NormalizeWindowsPath(text)))
+	if err != nil {
+		slog.Error("resolving home directory", "err", err)
+		return fmt.Errorf("Something went wrong resolving that path. Send it again.")
+	}
+	joined := filepath.Join(full, *cfg.Setup.PokerStarsScreenName)
+	if !windowsPathExists(joined) {
+		return fmt.Errorf("That path doesn't exist: %s\nSend the folder path again.", joined)
+	}
+	switch key {
+	case "hand_history":
+		cfg.Paths.HandHistory = &full
+	case "tournament_summary":
+		cfg.Paths.TournamentSummary = &full
+	}
+	return nil
+}
+
+func saveScheduleValue(cfg *config.Config, text string) error {
+	v, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || v < 0 || v > 23 {
+		return fmt.Errorf("Invalid value. Please send a whole number from 0 to 23.")
+	}
+	cfg.Schedule.DayStartHour = &v
+	return nil
+}
+
+// --- flow entry points (commands) ---
+
+func (b *Bot) startPathsFlow(chatID int64) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if !b.ensureScreenName(chatID, cfg, "paths") {
+		return
+	}
+	b.renderPathsMenu(chatID, 0, "paths")
+}
+
+func (b *Bot) startAlertsFlow(chatID int64) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if !b.ensureScreenName(chatID, cfg, "alerts") {
+		return
+	}
+	b.renderAlertsMenu(chatID, 0, "alerts")
+}
+
+func (b *Bot) startHardstopFlow(chatID int64) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if !b.ensureScreenName(chatID, cfg, "hardstop") {
+		return
+	}
+	b.renderHardstopMenu(chatID, 0, "hardstop", "")
+}
+
+func (b *Bot) startScheduleFlow(chatID int64) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	if !b.ensureScreenName(chatID, cfg, "schedule") {
+		return
+	}
+	b.renderScheduleMenu(chatID, 0, "schedule")
+}
+
+// handleHardstopCommand implements /hardstop. "trigger" fires a manual hard
+// stop; anything else opens the hard-stop menu.
+func (b *Bot) handleHardstopCommand(chatID int64, args string) {
+	if strings.TrimSpace(args) == "trigger" {
+		manualAlert := make(chan string, 1)
+		if err := hardstop.ManualTrigger(b.configPath, b.lockfilePath, manualAlert); err != nil {
+			send(b.tg, chatID, "Configure duration first with /hardstop")
+			return
+		}
+		send(b.tg, chatID, <-manualAlert)
+		return
+	}
+	b.startHardstopFlow(chatID)
+}
+
+// --- path helpers ---
 
 func NormalizeWindowsPath(input string) string {
 	return strings.ReplaceAll(strings.TrimSpace(input), "/", "\\")
@@ -332,486 +996,4 @@ func displayRelativeToHome(path string) string {
 		return rel
 	}
 	return path
-}
-
-func (b *Bot) handlePathsReply(chatID int64, text string) {
-	normalized := fixMissingDriveColon(NormalizeWindowsPath(text))
-
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-	if cfg.Setup.PokerStarsScreenName == nil {
-		// Lost between startPathsFlow and this reply (e.g. config.json
-		// touched externally mid-flow) — re-enter recovery rather than
-		// dead-ending on an error.
-		b.startPathsFlow(chatID)
-		return
-	}
-
-	full, err := resolveAgainstHomeDir(normalized)
-	if err != nil {
-		slog.Error("resolving home directory", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-
-	joined := filepath.Join(full, *cfg.Setup.PokerStarsScreenName)
-	if !windowsPathExists(joined) {
-		send(b.tg, chatID, fmt.Sprintf("That path doesn't exist: %s\nSend the folder path again.", joined))
-		return
-	}
-
-	switch b.field {
-	case "hand_history":
-		cfg.Paths.HandHistory = &full
-	case "tournament_summary":
-		cfg.Paths.TournamentSummary = &full
-	}
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-	b.field = ""
-	b.sendPathsKeyboard(chatID, cfg)
-}
-
-// --- /alerts flow ---
-
-func (b *Bot) startAlertsFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if !b.ensureScreenName(chatID, cfg, "alerts") {
-		return
-	}
-	b.flow = "alerts"
-	b.field = ""
-	b.sendAlertsKeyboard(chatID, cfg)
-}
-
-func (b *Bot) sendAlertsKeyboard(chatID int64, cfg *config.Config) {
-	downswing := "not set"
-	if cfg.Alerts.DownswingBuyins != nil {
-		downswing = fmt.Sprintf("%g", *cfg.Alerts.DownswingBuyins)
-	}
-	streak := "not set"
-	if cfg.Alerts.LosingStreakCount != nil {
-		streak = strconv.Itoa(*cfg.Alerts.LosingStreakCount)
-	}
-	dailyLoss := "not set"
-	if cfg.Alerts.DailyLossUSD != nil {
-		dailyLoss = fmt.Sprintf("%g", *cfg.Alerts.DailyLossUSD)
-	}
-	spingoLoss := "not set"
-	if cfg.Alerts.SpingoDailyLossUSD != nil {
-		spingoLoss = fmt.Sprintf("%g", *cfg.Alerts.SpingoDailyLossUSD)
-	}
-	sessionLoss := "not set"
-	if cfg.Alerts.SessionLossBuyins != nil {
-		sessionLoss = fmt.Sprintf("%g", *cfg.Alerts.SessionLossBuyins)
-	}
-	// Values are shown in brackets directly on the button — these are all
-	// short numeric thresholds, unlike the long file paths in /paths, so
-	// there's no truncation risk on narrow screens.
-	markup := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Downswing (buy-ins) ["+downswing+"]", "alerts:downswing")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Session loss (buy-ins) ["+sessionLoss+"]", "alerts:session_loss")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Losing streak (sessions) ["+streak+"]", "alerts:losing_streak")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Daily loss, all games ($) ["+dailyLoss+"]", "alerts:daily_loss")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Spin & Go daily loss ($) ["+spingoLoss+"]", "alerts:spingo_daily_loss")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Done", "alerts:done")),
-	)
-	sendWithKeyboard(b.tg, chatID, "Configure alert thresholds:", markup)
-}
-
-func (b *Bot) handleAlertsCallback(chatID int64, action string) {
-	if action == "done" {
-		inWizard := b.startWizard
-		b.reset()
-		send(b.tg, chatID, "✅ Alert settings saved.")
-		if inWizard {
-			b.startHardstopFlow(chatID)
-		}
-		return
-	}
-	b.flow = "alerts"
-	b.field = action
-	send(b.tg, chatID, alertsPromptText(action))
-}
-
-func alertsPromptText(field string) string {
-	switch field {
-	case "downswing":
-		return "Send the downswing alert threshold, in buy-ins (e.g. 5 — alerts when bankroll drops 5 buy-ins below your rolling 30-day peak)."
-	case "session_loss":
-		return "Send the session loss threshold, in buy-ins, that should trigger a warning alert (e.g. 3 — the hard stop threshold for this, if set, must be at least this high)."
-	case "losing_streak":
-		return "Send the number of consecutive losing sessions that should trigger an alert (e.g. 3)."
-	case "daily_loss":
-		return "Send the daily loss threshold in USD, across all game types, that should trigger an alert (e.g. 20)."
-	case "spingo_daily_loss":
-		return "Send the Spin & Go daily loss threshold in USD that should trigger an alert (e.g. 20)."
-	}
-	return "Send the new value."
-}
-
-func (b *Bot) handleAlertsReply(chatID int64, text string) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-
-	switch b.field {
-	case "downswing":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotAbove(v, cfg.Hardstop.DownswingBuyins, "downswing alert", "the hard stop downswing threshold"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Alerts.DownswingBuyins = &v
-	case "session_loss":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotAbove(v, cfg.Hardstop.SessionLossBuyins, "session loss alert", "the hard stop session loss threshold"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Alerts.SessionLossBuyins = &v
-	case "losing_streak":
-		v, err := parsePositiveInt(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive whole number.")
-			return
-		}
-		if err := validateNotAbove(v, cfg.Hardstop.ConsecutiveLosses, "losing streak alert", "the hard stop consecutive-losses threshold"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Alerts.LosingStreakCount = &v
-	case "daily_loss":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotAbove(v, cfg.Hardstop.DailyLossUSD, "daily loss alert", "the hard stop daily loss threshold"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Alerts.DailyLossUSD = &v
-	case "spingo_daily_loss":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotAbove(v, cfg.Hardstop.SpingoDailyLossUSD, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Alerts.SpingoDailyLossUSD = &v
-	}
-
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-	b.field = ""
-	b.sendAlertsKeyboard(chatID, cfg)
-}
-
-// --- /hardstop flow ---
-
-func (b *Bot) handleHardstopCommand(chatID int64, args string) {
-	if strings.TrimSpace(args) == "trigger" {
-		manualAlert := make(chan string, 1)
-		if err := hardstop.ManualTrigger(b.configPath, b.lockfilePath, manualAlert); err != nil {
-			send(b.tg, chatID, "Configure duration first with /hardstop")
-			return
-		}
-		send(b.tg, chatID, <-manualAlert)
-		return
-	}
-	b.startHardstopFlow(chatID)
-}
-
-func (b *Bot) startHardstopFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if !b.ensureScreenName(chatID, cfg, "hardstop") {
-		return
-	}
-	b.flow = "hardstop"
-	b.field = ""
-	b.sendHardstopKeyboard(chatID, cfg)
-}
-
-func (b *Bot) sendHardstopKeyboard(chatID int64, cfg *config.Config) {
-	sessionLoss := "not set"
-	if cfg.Hardstop.SessionLossBuyins != nil {
-		sessionLoss = fmt.Sprintf("%g", *cfg.Hardstop.SessionLossBuyins)
-	}
-	consecutive := "not set"
-	if cfg.Hardstop.ConsecutiveLosses != nil {
-		consecutive = strconv.Itoa(*cfg.Hardstop.ConsecutiveLosses)
-	}
-	dailyLoss := "not set"
-	if cfg.Hardstop.DailyLossUSD != nil {
-		dailyLoss = fmt.Sprintf("%g", *cfg.Hardstop.DailyLossUSD)
-	}
-	spingoLoss := "not set"
-	if cfg.Hardstop.SpingoDailyLossUSD != nil {
-		spingoLoss = fmt.Sprintf("%g", *cfg.Hardstop.SpingoDailyLossUSD)
-	}
-	downswing := "not set"
-	if cfg.Hardstop.DownswingBuyins != nil {
-		downswing = fmt.Sprintf("%g", *cfg.Hardstop.DownswingBuyins)
-	}
-	duration := "not set"
-	if cfg.Hardstop.DurationHours != nil {
-		duration = strconv.Itoa(*cfg.Hardstop.DurationHours)
-	}
-	markup := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Session loss (buy-ins) ["+sessionLoss+"]", "hardstop:session_loss")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Downswing (buy-ins) ["+downswing+"]", "hardstop:downswing")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Consecutive losses (sessions) ["+consecutive+"]", "hardstop:consecutive_losses")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Daily loss, all games ($) ["+dailyLoss+"]", "hardstop:daily_loss")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Spin & Go daily loss ($) ["+spingoLoss+"]", "hardstop:spingo_daily_loss")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Duration (hours) ["+duration+"]", "hardstop:duration")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Done", "hardstop:done")),
-	)
-	sendWithKeyboard(b.tg, chatID, "Configure hard stop rules:", markup)
-}
-
-func (b *Bot) handleHardstopCallback(chatID int64, action string) {
-	if action == "done" {
-		cfg, err := config.LoadConfig(b.configPath)
-		if err != nil {
-			slog.Error("loading config", "err", err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
-			return
-		}
-
-		anyRuleConfigured := cfg.Hardstop.SessionLossBuyins != nil ||
-			cfg.Hardstop.DownswingBuyins != nil ||
-			cfg.Hardstop.ConsecutiveLosses != nil ||
-			cfg.Hardstop.DailyLossUSD != nil ||
-			cfg.Hardstop.SpingoDailyLossUSD != nil
-		if cfg.Hardstop.DurationHours == nil && anyRuleConfigured {
-			send(b.tg, chatID, "Duration must be set if any hard stop rule is configured. Tap Duration to set it.")
-			b.sendHardstopKeyboard(chatID, cfg)
-			return
-		}
-
-		inWizard := b.startWizard
-		b.reset()
-		send(b.tg, chatID, "✅ Hard stop settings saved.")
-		if inWizard {
-			b.startScheduleFlow(chatID)
-		}
-		return
-	}
-	b.flow = "hardstop"
-	b.field = action
-	send(b.tg, chatID, hardstopPromptText(action))
-}
-
-func hardstopPromptText(field string) string {
-	switch field {
-	case "session_loss":
-		return "Send the session loss threshold, in buy-ins, that should trigger a hard stop (e.g. 5)."
-	case "downswing":
-		return "Send the downswing threshold, in buy-ins, that should trigger a hard stop (e.g. 10 — fires when your rolling 30-day peak minus your current bankroll exceeds this many buy-ins)."
-	case "consecutive_losses":
-		return "Send the number of consecutive losing sessions that should trigger a hard stop (e.g. 4)."
-	case "daily_loss":
-		return "Send the daily loss threshold in USD, across all game types, that should trigger a hard stop (e.g. 30)."
-	case "spingo_daily_loss":
-		return "Send the Spin & Go daily loss threshold in USD that should trigger a hard stop (e.g. 30)."
-	case "duration":
-		return "Send the hard stop lock duration in hours. Must be 12 or 24."
-	}
-	return "Send the new value."
-}
-
-func (b *Bot) handleHardstopReply(chatID int64, text string) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-
-	switch b.field {
-	case "session_loss":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotBelow(v, cfg.Alerts.SessionLossBuyins, "hard stop session loss threshold", "the session loss alert"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Hardstop.SessionLossBuyins = &v
-	case "downswing":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotBelow(v, cfg.Alerts.DownswingBuyins, "hard stop downswing threshold", "the downswing alert"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Hardstop.DownswingBuyins = &v
-	case "consecutive_losses":
-		v, err := parsePositiveInt(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive whole number.")
-			return
-		}
-		if err := validateNotBelow(v, cfg.Alerts.LosingStreakCount, "hard stop consecutive-losses threshold", "the losing streak alert"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Hardstop.ConsecutiveLosses = &v
-	case "daily_loss":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotBelow(v, cfg.Alerts.DailyLossUSD, "hard stop daily loss threshold", "the daily loss alert"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Hardstop.DailyLossUSD = &v
-	case "spingo_daily_loss":
-		v, err := parsePositiveFloat(text)
-		if err != nil {
-			send(b.tg, chatID, "Invalid value. Please send a positive number.")
-			return
-		}
-		if err := validateNotBelow(v, cfg.Alerts.SpingoDailyLossUSD, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert"); err != nil {
-			send(b.tg, chatID, err.Error())
-			return
-		}
-		cfg.Hardstop.SpingoDailyLossUSD = &v
-	case "duration":
-		v, err := strconv.Atoi(strings.TrimSpace(text))
-		if err != nil || (v != 12 && v != 24) {
-			send(b.tg, chatID, "Duration must be 12 or 24.")
-			return
-		}
-		cfg.Hardstop.DurationHours = &v
-	}
-
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-	b.field = ""
-	b.sendHardstopKeyboard(chatID, cfg)
-}
-
-// --- /schedule flow ---
-
-func (b *Bot) startScheduleFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if !b.ensureScreenName(chatID, cfg, "schedule") {
-		return
-	}
-	b.flow = "schedule"
-	b.field = ""
-	b.sendScheduleKeyboard(chatID, cfg)
-}
-
-func (b *Bot) sendScheduleKeyboard(chatID int64, cfg *config.Config) {
-	dayStartHour := "not set"
-	if cfg.Schedule.DayStartHour != nil {
-		dayStartHour = strconv.Itoa(*cfg.Schedule.DayStartHour)
-	}
-	markup := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Poker day start hour", "schedule:day_start_hour")),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Done", "schedule:done")),
-	)
-	text := fmt.Sprintf("Configure your poker day schedule:\nPoker day start hour: %s", dayStartHour)
-	sendWithKeyboard(b.tg, chatID, text, markup)
-}
-
-func (b *Bot) handleScheduleCallback(chatID int64, action string) {
-	if action == "done" {
-		inWizard := b.startWizard
-		b.startWizard = false
-		b.reset()
-		send(b.tg, chatID, "✅ Schedule saved.")
-		if inWizard {
-			send(b.tg, chatID, "✅ Setup complete. The tracker is running. Type /help to see all commands.")
-		}
-		return
-	}
-	b.flow = "schedule"
-	b.field = action
-	send(b.tg, chatID, "What hour does your poker day start? Send a number from 0 to 23 (e.g. 6 for 6am local time).")
-}
-
-func (b *Bot) handleScheduleReply(chatID int64, text string) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-
-	v, err := strconv.Atoi(strings.TrimSpace(text))
-	if err != nil || v < 0 || v > 23 {
-		send(b.tg, chatID, "Invalid value. Please send a whole number from 0 to 23.")
-		return
-	}
-	cfg.Schedule.DayStartHour = &v
-
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-	b.field = ""
-	b.sendScheduleKeyboard(chatID, cfg)
 }

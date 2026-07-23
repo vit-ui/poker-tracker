@@ -39,9 +39,9 @@ Either way, the service registers itself in Task Scheduler and starts automatica
 Once installed, talk to your bot on Telegram. Every command also has detailed help via `/help <command>`. Expand any entry below for the details:
 
 <details>
-<summary><code>/start</code> — run the full setup wizard</summary>
+<summary><code>/start</code> — begin configuration</summary>
 
-Chains the four configuration flows in order — paths → alerts → hard stop → schedule — pressing Done on each to advance. Re-runnable any time to reconfigure.
+Opens the `/paths` menu to start setup. The other settings menus — `/alerts`, `/hardstop`, `/schedule` — are reached by their own commands. Re-runnable any time to reconfigure.
 
 Usage example: `/start`
 </details>
@@ -145,6 +145,8 @@ Usage example: `/paths` — then tap a field and reply with the folder, e.g. `C:
 <summary><code>/alerts</code> — configure warning thresholds</summary>
 
 Set the warning-only thresholds: downswing, session loss, losing streak, daily loss, and Spin & Go daily loss. These warn you before the hard stop steps in. An alert can never be set higher than its matching hard-stop threshold, when that hard stop is configured.
+
+Tap a threshold to change its value or turn it off, then Back to step out — there's no Done button.
 
 Usage example: `/alerts` — then tap a field and reply with the value, e.g. `5`
 </details>
