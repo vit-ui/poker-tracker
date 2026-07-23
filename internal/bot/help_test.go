@@ -11,7 +11,7 @@ import (
 func TestHelpText(t *testing.T) {
 	t.Run("empty arg lists all commands", func(t *testing.T) {
 		got := helpText("")
-		if !strings.Contains(got, "/start") || !strings.Contains(got, "/help") {
+		if !strings.Contains(got, "/menu") || !strings.Contains(got, "/help") {
 			t.Errorf("helpText(\"\") missing expected commands: %q", got)
 		}
 	})

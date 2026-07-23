@@ -18,7 +18,6 @@ var commandList = []struct {
 	name string
 	desc string
 }{
-	{"start", "Open the full menu (same as /menu)."},
 	{"menu", "Open the full menu: settings, notifications, info, money."},
 	{"deposit", "Log a deposit to your bankroll ledger."},
 	{"withdraw", "Log a withdrawal from your bankroll ledger."},
@@ -73,8 +72,6 @@ var commandHelp = map[string]string{
 	"lastsession": "Shows the summary of the last recorded session (cash or Spin & Go).\n" +
 		"Usage: /lastsession\n" +
 		"No arguments.",
-	"start": "Opens the full menu (same as /menu). Re-runnable at any time.\n" +
-		"Usage: /start",
 	"menu": "Opens the full menu — a single place to reach everything:\n" +
 		"  Setup — paths, schedule, screen name, storage, and (on the Sheets backend) sheet and credentials\n" +
 		"  Notifications — the /notify menu (summaries and alerts)\n" +
