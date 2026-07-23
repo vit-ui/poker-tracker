@@ -371,6 +371,8 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 		b.handleHardstopCommand(chatID, msg.CommandArguments())
 	case "schedule":
 		b.startScheduleFlow(chatID)
+	case "notify":
+		b.startNotifyFlow(chatID)
 	case "config":
 		send(b.tg, chatID, configText)
 	case "help":

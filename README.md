@@ -170,6 +170,14 @@ Usage example: `/schedule` — then tap the field and reply `6`
 </details>
 
 <details>
+<summary><code>/notify</code> — choose which messages the bot sends</summary>
+
+Two sections. **Summaries**: the cash, tournament, weekly, and monthly result summaries — each can be set to send on **every** result, only **wins**, only **losses**, or **off**; stake-change notices are a plain on/off. (For weekly and monthly, wins/losses is judged on the whole period's net.) **Alerts**: the same warning thresholds as `/alerts`. Everything defaults to on, so nothing changes until you turn something down.
+
+Usage example: `/notify`
+</details>
+
+<details>
 <summary><code>/config</code> — list the configuration commands</summary>
 
 Lists `/paths`, `/alerts`, `/hardstop`, and `/schedule` with a one-line description of each.

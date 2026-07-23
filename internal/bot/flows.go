@@ -235,11 +235,20 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 		b.handleHardstopLeave(chatID, messageID, strings.TrimPrefix(path, "leave:"))
 		return
 	}
-	switch segs[len(segs)-1] {
-	case "set":
+	last := segs[len(segs)-1]
+	switch {
+	case last == "set":
 		// Starts a value entry — sets the conversation state itself.
 		b.beginValueEntry(chatID, messageID, strings.TrimSuffix(path, ":set"))
-	case "off":
+	case last == "toggle":
+		b.reset()
+		b.toggleStakeChange(chatID, messageID, strings.TrimSuffix(path, ":toggle"))
+	case isSummaryMode(last) && strings.Contains(path, "summaries"):
+		// A summary mode pick ("...:every|wins|losses|off"). Checked before the
+		// plain ":off" case below, which "off" would otherwise also match.
+		b.reset()
+		b.setSummaryMode(chatID, messageID, path)
+	case last == "off":
 		b.reset()
 		b.turnOff(chatID, messageID, strings.TrimSuffix(path, ":off"))
 	default:
@@ -266,12 +275,18 @@ func (b *Bot) renderScreen(chatID int64, messageID int, path string) {
 		b.renderPathsMenu(chatID, messageID, path)
 	case "schedule":
 		b.renderScheduleMenu(chatID, messageID, path)
+	case "notify":
+		b.renderNotifyMenu(chatID, messageID, path)
+	case "summaries":
+		b.renderSummariesMenu(chatID, messageID, path)
 	default:
 		// A field key: flow is the segment before it.
 		flow := segs[len(segs)-2]
 		switch flow {
 		case "alerts", "hardstop":
 			b.renderThresholdItem(chatID, messageID, path)
+		case "summaries":
+			b.renderSummaryItem(chatID, messageID, path)
 		case "paths", "schedule":
 			b.beginValueEntry(chatID, messageID, path)
 		}
@@ -521,6 +536,172 @@ func (b *Bot) renderScheduleMenu(chatID int64, messageID int, path string) {
 		navButton(path),
 	}
 	b.showMenu(chatID, messageID, "Poker day schedule — tap to change (default 6 = 6am):", rows)
+}
+
+// --- /notify flow ---
+
+var summaryKeys = []string{"cash", "tournament", "weekly", "monthly"}
+
+func summaryLabel(key string) string {
+	switch key {
+	case "cash":
+		return "Cash session summary"
+	case "tournament":
+		return "Tournament summary"
+	case "weekly":
+		return "Weekly summary"
+	case "monthly":
+		return "Monthly summary"
+	}
+	return key
+}
+
+// summaryModeLabel is the human label for a stored mode value.
+func summaryModeLabel(mode string) string {
+	switch mode {
+	case "wins":
+		return "Only wins"
+	case "losses":
+		return "Only losses"
+	case "off":
+		return "Off"
+	default:
+		return "Every"
+	}
+}
+
+func isSummaryMode(s string) bool {
+	return s == "every" || s == "wins" || s == "losses" || s == "off"
+}
+
+func summaryModePtr(cfg *config.Config, key string) *string {
+	switch key {
+	case "cash":
+		return cfg.Notifications.CashSessionSummary
+	case "tournament":
+		return cfg.Notifications.TournamentSummary
+	case "weekly":
+		return cfg.Notifications.WeeklySummary
+	case "monthly":
+		return cfg.Notifications.MonthlySummary
+	}
+	return nil
+}
+
+func setSummaryModeField(cfg *config.Config, key, mode string) {
+	m := mode
+	switch key {
+	case "cash":
+		cfg.Notifications.CashSessionSummary = &m
+	case "tournament":
+		cfg.Notifications.TournamentSummary = &m
+	case "weekly":
+		cfg.Notifications.WeeklySummary = &m
+	case "monthly":
+		cfg.Notifications.MonthlySummary = &m
+	}
+}
+
+func (b *Bot) startNotifyFlow(chatID int64) {
+	b.renderNotifyMenu(chatID, 0, "notify")
+}
+
+func (b *Bot) renderNotifyMenu(chatID int64, messageID int, path string) {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Summaries", "menu:"+path+":summaries"),
+		menuRow("Alerts", "menu:"+path+":alerts"),
+		navButton(path),
+	}
+	b.showMenu(chatID, messageID, "Notifications — what should the bot send you?", rows)
+}
+
+func (b *Bot) renderSummariesMenu(chatID int64, messageID int, path string) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, key := range summaryKeys {
+		mode := config.SummaryMode(summaryModePtr(cfg, key))
+		rows = append(rows, menuRow(summaryLabel(key)+" ["+summaryModeLabel(mode)+"]", "menu:"+path+":"+key))
+	}
+	stake := "Off"
+	if config.NotificationEnabled(cfg.Notifications.StakeChange) {
+		stake = "On"
+	}
+	rows = append(rows, menuRow("Stake change ["+stake+"]", "menu:"+path+":stake:toggle"))
+	rows = append(rows, navButton(path))
+	b.showMenu(chatID, messageID, "Summaries — tap a result summary to filter it (or toggle stake change):", rows)
+}
+
+// renderSummaryItem shows a result summary's mode screen (Every / Only wins /
+// Only losses / Off), the current one marked.
+func (b *Bot) renderSummaryItem(chatID int64, messageID int, path string) {
+	segs := strings.Split(path, ":")
+	key := segs[len(segs)-1]
+
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	current := config.SummaryMode(summaryModePtr(cfg, key))
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, m := range []string{"every", "wins", "losses", "off"} {
+		label := summaryModeLabel(m)
+		if m == current {
+			label = "✓ " + label
+		}
+		rows = append(rows, menuRow(label, "menu:"+path+":"+m))
+	}
+	rows = append(rows, navButton(path))
+	b.showMenu(chatID, messageID, summaryLabel(key)+" — when should I send it?", rows)
+}
+
+// setSummaryMode stores a result summary's chosen mode and re-renders its
+// screen. path is the mode action, e.g. "notify:summaries:cash:losses".
+func (b *Bot) setSummaryMode(chatID int64, messageID int, path string) {
+	segs := strings.Split(path, ":")
+	mode := segs[len(segs)-1]
+	itemPath := strings.TrimSuffix(path, ":"+mode)
+	key := segs[len(segs)-2]
+
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	setSummaryModeField(cfg, key, mode)
+	if err := config.SaveConfig(b.configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	b.renderSummaryItem(chatID, messageID, itemPath)
+}
+
+// toggleStakeChange flips the stake-change on/off and re-renders the summaries
+// list. path is the item path, e.g. "notify:summaries:stake".
+func (b *Bot) toggleStakeChange(chatID int64, messageID int, path string) {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	enabled := !config.NotificationEnabled(cfg.Notifications.StakeChange)
+	cfg.Notifications.StakeChange = &enabled
+	if err := config.SaveConfig(b.configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	b.renderScreen(chatID, messageID, parentPath(path))
 }
 
 // --- value entry ---

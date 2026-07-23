@@ -10,9 +10,9 @@ All notable changes to this project are documented here. The format follows
 - Notification controls for the always-on messages. Each result summary — cash
   session, tournament, weekly, and monthly — now takes a mode: send **every**
   one, only **wins**, only **losses**, or **off**. The stake-change note can be
-  switched off too. Stored under `config.notifications` (all default to the
-  previous always-on behavior). The threshold warning alerts are unaffected —
-  those already only fire on a loss.
+  switched off too. Set them in the new **`/notify`** menu (Summaries + Alerts);
+  all default to the previous always-on behavior. The threshold warning alerts
+  are unaffected — those already only fire on a loss.
 
 ### Changed
 - The `/paths`, `/alerts`, `/hardstop`, and `/schedule` settings menus are now

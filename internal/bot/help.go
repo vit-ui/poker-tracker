@@ -10,7 +10,8 @@ import (
 const configText = "/paths — set PokerStars hand history and tournament folder locations\n" +
 	"/alerts — configure notification thresholds (downswing, losing streak, Spin & Go drain)\n" +
 	"/hardstop — configure automatic hard stop rules and lock duration\n" +
-	"/schedule — set your poker day start hour for daily loss tracking"
+	"/schedule — set your poker day start hour for daily loss tracking\n" +
+	"/notify — choose which summaries and alerts the bot sends"
 
 var commandList = []struct {
 	name string
@@ -31,6 +32,7 @@ var commandList = []struct {
 	{"alerts", "Configure alert thresholds."},
 	{"hardstop", "Configure hard stop rules, or trigger one manually."},
 	{"schedule", "Set your poker day start hour."},
+	{"notify", "Choose which summaries and alerts the bot sends."},
 	{"config", "List configuration commands."},
 	{"help", "Show this help, or details on one command."},
 }
@@ -107,6 +109,12 @@ var commandHelp = map[string]string{
 	"config": "Lists the available configuration commands.\n" +
 		"Usage: /config\n" +
 		"No arguments.",
+	"notify": "Chooses which messages the bot sends you.\n" +
+		"Usage: /notify — opens the notifications menu\n" +
+		"Two sections:\n" +
+		"  Summaries — the cash, tournament, weekly, and monthly result summaries. Each can be set to Every, Only wins, Only losses, or Off. Stake-change notices are a plain On/Off.\n" +
+		"  Alerts — the warning thresholds (same as /alerts).\n" +
+		"For weekly and monthly, wins/losses is judged on the whole period's net.",
 	"schedule": "Sets the hour your poker day starts, used for the daily loss\n" +
 		"hard stop and alert thresholds.\n" +
 		"Usage: /schedule — opens the settings menu\n" +
