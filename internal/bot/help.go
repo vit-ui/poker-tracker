@@ -7,7 +7,8 @@ import (
 	"strings"
 )
 
-const configText = "/paths — set PokerStars hand history and tournament folder locations\n" +
+const configText = "/menu — open the full menu (settings, notifications, info, money)\n" +
+	"/paths — set PokerStars hand history and tournament folder locations\n" +
 	"/alerts — configure notification thresholds (downswing, losing streak, Spin & Go drain)\n" +
 	"/hardstop — configure automatic hard stop rules and lock duration\n" +
 	"/schedule — set your poker day start hour for daily loss tracking\n" +
@@ -17,7 +18,8 @@ var commandList = []struct {
 	name string
 	desc string
 }{
-	{"start", "Run the full setup wizard (paths, alerts, hard stop, schedule)."},
+	{"start", "Open the full menu (same as /menu)."},
+	{"menu", "Open the full menu: settings, notifications, info, money."},
 	{"deposit", "Log a deposit to your bankroll ledger."},
 	{"withdraw", "Log a withdrawal from your bankroll ledger."},
 	{"status", "Show current bankroll and P&L."},
@@ -71,9 +73,16 @@ var commandHelp = map[string]string{
 	"lastsession": "Shows the summary of the last recorded session (cash or Spin & Go).\n" +
 		"Usage: /lastsession\n" +
 		"No arguments.",
-	"start": "Runs the full setup wizard: /paths, then /alerts, then /hardstop, then /schedule.\n" +
-		"Usage: /start\n" +
-		"Re-runnable at any time.",
+	"start": "Opens the full menu (same as /menu). Re-runnable at any time.\n" +
+		"Usage: /start",
+	"menu": "Opens the full menu — a single place to reach everything:\n" +
+		"  Setup — paths, schedule, screen name, storage, and (on the Sheets backend) sheet and credentials\n" +
+		"  Notifications — the /notify menu (summaries and alerts)\n" +
+		"  Hard stop — the hard-stop rules\n" +
+		"  Info — status, last session, stats, export\n" +
+		"  Money — deposit, withdraw\n" +
+		"  Help\n" +
+		"Every item is also reachable by its own command. Drill in and tap Back to step out; there's no Done button.",
 	"status": "Shows current bankroll and profit/loss.\n" +
 		"Usage: /status\n" +
 		"No arguments.",

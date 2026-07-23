@@ -15,14 +15,19 @@ All notable changes to this project are documented here. The format follows
   are unaffected — those already only fire on a loss.
 
 ### Changed
+- New `/menu` command — one grouped hub for everything: Setup (paths, schedule,
+  screen name, storage, and on Sheets installs sheet/credentials), Notifications,
+  Hard stop, Info (status, last session, stats, export), Money (deposit,
+  withdraw), and Help. Drill in and tap Back to step out. Every item is still its
+  own command, and `/start` now opens this menu.
 - The `/paths`, `/alerts`, `/hardstop`, and `/schedule` settings menus are now
   cascading, BotFather-style: one message you drill into and back out of, with a
   Back button and no more Done. Each alert/hard-stop threshold has its own screen
   where you can change it or **turn it off** (clearing the value) — previously
   there was no way to unset one from the menu. The `/paths` watcher restart and
   the hard-stop "set a duration" guard are preserved (the guard now warns when
-  you leave the hard-stop menu). `/start` opens the paths menu (the old forced
-  paths→alerts→hard stop→schedule wizard is gone).
+  you leave the hard-stop menu). The old forced paths→alerts→hard stop→schedule
+  wizard is gone.
 - Migrating a local-file install to Google Sheets with `/storage sheets` no
   longer errors when there's no service-account key on the machine — it prompts
   you to upload the `google_service_account.json` right there and continues the

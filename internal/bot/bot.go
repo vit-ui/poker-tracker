@@ -354,8 +354,8 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	switch msg.Command() {
 	case "start":
-		send(b.tg, chatID, "Welcome to Poker Tracker. Let's configure your settings.\nYou can re-run /start at any time to update these settings.")
-		b.startPathsFlow(chatID)
+		send(b.tg, chatID, "Welcome to Poker Tracker. Use the menu below any time — or type a command directly.")
+		b.startMenuFlow(chatID)
 	case "deposit":
 		b.handleDepositWithdraw(chatID, msg.CommandArguments(), "deposit")
 	case "withdraw":
@@ -386,6 +386,8 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 		b.startScheduleFlow(chatID)
 	case "notify":
 		b.startNotifyFlow(chatID)
+	case "menu":
+		b.startMenuFlow(chatID)
 	case "config":
 		send(b.tg, chatID, configText)
 	case "help":

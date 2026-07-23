@@ -39,11 +39,19 @@ Either way, the service registers itself in Task Scheduler and starts automatica
 Once installed, talk to your bot on Telegram. Every command also has detailed help via `/help <command>`. Expand any entry below for the details:
 
 <details>
-<summary><code>/start</code> — begin configuration</summary>
+<summary><code>/start</code> — open the menu</summary>
 
-Opens the `/paths` menu to start setup. The other settings menus — `/alerts`, `/hardstop`, `/schedule` — are reached by their own commands. Re-runnable any time to reconfigure.
+Opens the full menu (the same as `/menu`). Re-runnable any time.
 
 Usage example: `/start`
+</details>
+
+<details>
+<summary><code>/menu</code> — the full menu</summary>
+
+One place to reach everything, drilled into and back out of like BotFather — no Done button, just Back. Groups: **Setup** (paths, schedule, screen name, storage, and — on the Google Sheets backend — sheet and credentials), **Notifications** (the `/notify` summaries and alerts), **Hard stop**, **Info** (status, last session, stats, export), **Money** (deposit, withdraw), and **Help**. Every item is also its own command, so you can skip the menu whenever you like.
+
+Usage example: `/menu`
 </details>
 
 <details>

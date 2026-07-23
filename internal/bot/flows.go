@@ -251,11 +251,54 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 	case last == "off":
 		b.reset()
 		b.turnOff(chatID, messageID, strings.TrimSuffix(path, ":off"))
+	case last == "deposit" || last == "withdraw":
+		b.beginMoneyEntry(chatID, messageID, path)
+	case isCommandAction(last):
+		// A hub shortcut to an existing command — runs it (which sends its own
+		// output or starts its flow); the menu message stays for more taps.
+		b.reset()
+		b.runCommandAction(chatID, last)
 	default:
 		// Any navigation abandons a pending value entry so a later stray
 		// text message isn't applied to the field it was prompting for.
 		b.reset()
 		b.renderScreen(chatID, messageID, path)
+	}
+}
+
+// isCommandAction reports whether a menu leaf token maps to an existing command
+// (as opposed to a cascade screen or a config field).
+func isCommandAction(token string) bool {
+	switch token {
+	case "screenname", "storage", "sheet", "credentials",
+		"status", "lastsession", "stats", "export", "help":
+		return true
+	}
+	return false
+}
+
+// runCommandAction invokes the command a hub button stands for. These send
+// their own messages (or start their own flow), leaving the menu in place.
+func (b *Bot) runCommandAction(chatID int64, token string) {
+	switch token {
+	case "screenname":
+		b.handleScreenNameCommand(chatID, "")
+	case "storage":
+		b.handleStorageCommand(chatID, "")
+	case "sheet":
+		b.handleSheetCommand(chatID, "")
+	case "credentials":
+		b.startCredentialsFlow(chatID)
+	case "status":
+		b.handleStatus(chatID)
+	case "lastsession":
+		b.handleLastSession(chatID)
+	case "stats":
+		b.handleStats(chatID, "")
+	case "export":
+		b.handleExportCommand(chatID)
+	case "help":
+		send(b.tg, chatID, helpText(""))
 	}
 }
 
@@ -267,6 +310,14 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 func (b *Bot) renderScreen(chatID int64, messageID int, path string) {
 	segs := strings.Split(path, ":")
 	switch segs[len(segs)-1] {
+	case "root":
+		b.renderRootMenu(chatID, messageID, path)
+	case "setup":
+		b.renderSetupMenu(chatID, messageID, path)
+	case "info":
+		b.renderInfoMenu(chatID, messageID, path)
+	case "money":
+		b.renderMoneyMenu(chatID, messageID, path)
 	case "alerts":
 		b.renderAlertsMenu(chatID, messageID, path)
 	case "hardstop":
@@ -704,6 +755,76 @@ func (b *Bot) toggleStakeChange(chatID int64, messageID int, path string) {
 	b.renderScreen(chatID, messageID, parentPath(path))
 }
 
+// --- /menu hub ---
+
+func (b *Bot) startMenuFlow(chatID int64) {
+	b.renderRootMenu(chatID, 0, "root")
+}
+
+func (b *Bot) renderRootMenu(chatID int64, messageID int, path string) {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("⚙ Setup", "menu:"+path+":setup"),
+		menuRow("🔔 Notifications", "menu:"+path+":notify"),
+		menuRow("🛑 Hard stop", "menu:"+path+":hardstop"),
+		menuRow("📊 Info", "menu:"+path+":info"),
+		menuRow("💵 Money", "menu:"+path+":money"),
+		menuRow("❓ Help", "menu:"+path+":help"),
+		navButton(path),
+	}
+	b.showMenu(chatID, messageID, "Menu — what do you want to do?", rows)
+}
+
+func (b *Bot) renderSetupMenu(chatID int64, messageID int, path string) {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Paths", "menu:"+path+":paths"),
+		menuRow("Schedule", "menu:"+path+":schedule"),
+		menuRow("Screen name", "menu:"+path+":screenname"),
+		menuRow("Storage", "menu:"+path+":storage"),
+	}
+	// Sheet and Credentials are only meaningful on the Google Sheets backend.
+	if b.currentBackend() == "sheets" {
+		rows = append(rows,
+			menuRow("Sheet", "menu:"+path+":sheet"),
+			menuRow("Credentials", "menu:"+path+":credentials"))
+	}
+	rows = append(rows, navButton(path))
+	b.showMenu(chatID, messageID, "Setup — tap a setting:", rows)
+}
+
+func (b *Bot) renderInfoMenu(chatID int64, messageID int, path string) {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Status", "menu:"+path+":status"),
+		menuRow("Last session", "menu:"+path+":lastsession"),
+		menuRow("Stats", "menu:"+path+":stats"),
+		menuRow("Export", "menu:"+path+":export"),
+		navButton(path),
+	}
+	b.showMenu(chatID, messageID, "Info — tap one:", rows)
+}
+
+func (b *Bot) renderMoneyMenu(chatID int64, messageID int, path string) {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Deposit", "menu:"+path+":deposit"),
+		menuRow("Withdraw", "menu:"+path+":withdraw"),
+		navButton(path),
+	}
+	b.showMenu(chatID, messageID, "Money — log a deposit or withdrawal:", rows)
+}
+
+// beginMoneyEntry prompts for a deposit/withdrawal amount. path is the full
+// menu path (its last segment "deposit"/"withdraw"), stored as the field so the
+// reply re-renders the money menu at its real depth under the hub.
+func (b *Bot) beginMoneyEntry(chatID int64, messageID int, path string) {
+	verb := "deposit"
+	if strings.HasSuffix(path, "withdraw") {
+		verb = "withdraw"
+	}
+	b.flow = "menu"
+	b.field = path
+	b.menuMessageID = messageID
+	send(b.tg, chatID, fmt.Sprintf("Send the USD amount to %s (as shown on PokerStars, not BRL).", verb))
+}
+
 // --- value entry ---
 
 // beginValueEntry sends the prompt for a field and records the target and the
@@ -831,6 +952,21 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 	key := segs[len(segs)-1]
 	flow := segs[len(segs)-2]
 
+	// Money entry (Deposit / Withdraw) doesn't touch config — handleDepositWithdraw
+	// sends its own confirmation or error. key is the menu token; map it to the
+	// ledger kind.
+	if flow == "money" {
+		kind := "deposit"
+		if key == "withdraw" {
+			kind = "withdrawal"
+		}
+		messageID := b.menuMessageID
+		b.reset()
+		b.handleDepositWithdraw(chatID, text, kind)
+		b.renderScreen(chatID, messageID, parentPath(target))
+		return
+	}
+
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
@@ -874,7 +1010,9 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 	case "alerts", "hardstop":
 		b.renderThresholdItem(chatID, messageID, target)
 	default:
-		b.renderScreen(chatID, messageID, flow)
+		// paths / schedule: back to their list, at whatever depth it sits
+		// (root, or nested under the /menu hub).
+		b.renderScreen(chatID, messageID, parentPath(target))
 	}
 }
 
