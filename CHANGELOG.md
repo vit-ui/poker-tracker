@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged
 `vX.Y`, and each GitHub Release pulls its notes from the matching section below.
 
-## Unreleased
+## v3.0 — 2026-07-23
 
 ### Added
 - Notification controls for the always-on messages. Each result summary — cash
