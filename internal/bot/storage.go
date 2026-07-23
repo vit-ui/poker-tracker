@@ -52,8 +52,13 @@ type pendingBackendSwitch struct {
 // migration runs only on confirmation (resolveStorageSwitch).
 func (b *Bot) handleStorageCommand(chatID int64, args string) {
 	// A second /storage before answering a pending confirmation discards the
-	// prepared target (closing and removing the empty db it may have created).
+	// prepared target (closing and removing the empty db it may have created)
+	// and abandons a half-started inline credentials upload.
 	b.discardPendingSwitch()
+	if b.flow == "storage_credentials" {
+		b.reset()
+	}
+	b.pendingStorageSheetArg = ""
 
 	current := b.currentBackend()
 
@@ -95,6 +100,26 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 		}
 	}
 
+	// Migrating to Sheets needs the service-account key on disk. Rather than
+	// erroring "run /credentials first", collect it inline and resume the
+	// switch once it's uploaded (handleStorageCredentialsDocument).
+	if target == "sheets" && sheetArg != "" {
+		if _, err := os.Stat(b.serviceAccountPath); err != nil {
+			b.pendingStorageSheetArg = sheetArg
+			b.flow = "storage_credentials"
+			b.field = "file"
+			send(b.tg, chatID, "This install has no Google credentials yet. Send your google_service_account.json file as an attachment and I'll continue the migration — or type cancel.")
+			return
+		}
+	}
+
+	b.prepareAndConfirmSwitch(chatID, target, sheetArg)
+}
+
+// prepareAndConfirmSwitch constructs and validates the target backend, then
+// asks the player to confirm the copy (resolveStorageSwitch runs it). Shared by
+// the direct /storage path and the inline-credentials resume.
+func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 	dst, sheetName, sheetID, err := b.prepareTarget(target, sheetArg)
 	if err != nil {
 		send(b.tg, chatID, err.Error())
@@ -137,7 +162,7 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 
 	text := fmt.Sprintf(
 		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\n• %d time-analysis rows\nCurrent bankroll: $%.2f\n\nClose PokerStars first — a hand played mid-switch would be double-counted. Proceed?",
-		backendLabel(current), backendLabel(target),
+		backendLabel(b.currentBackend()), backendLabel(target),
 		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), len(snap.TimeAnalysis), bankroll)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -146,6 +171,36 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 		),
 	)
 	b.sendMessageWithKeyboard(text, markup)
+}
+
+// handleStorageCredentialsDocument saves the service-account key uploaded
+// during an inline /storage migration and resumes the switch with the sheet
+// argument the player originally gave.
+func (b *Bot) handleStorageCredentialsDocument(chatID int64, fileID string) {
+	if err := downloadTelegramFile(b.tg, fileID, b.serviceAccountPath); err != nil {
+		slog.Error("downloading credentials file", "err", err)
+		send(b.tg, chatID, "Couldn't download that file. Try again, or type cancel.")
+		return
+	}
+	sheetArg := b.pendingStorageSheetArg
+	b.pendingStorageSheetArg = ""
+	b.reset()
+	send(b.tg, chatID, "✅ Credentials saved. Continuing the migration…")
+	b.prepareAndConfirmSwitch(chatID, "sheets", sheetArg)
+}
+
+// handleStorageCredentialsText handles a plain-text reply during the inline
+// /storage credentials upload — only "cancel" (or "skip") is valid; anything
+// else re-prompts, since the real reply here is a file.
+func (b *Bot) handleStorageCredentialsText(chatID int64, text string) {
+	t := strings.TrimSpace(text)
+	if strings.EqualFold(t, "cancel") || strings.EqualFold(t, "skip") {
+		b.pendingStorageSheetArg = ""
+		b.reset()
+		send(b.tg, chatID, "Cancelled. No data moved.")
+		return
+	}
+	send(b.tg, chatID, "Send the google_service_account.json file as an attachment, or type cancel.")
 }
 
 // prepareTarget constructs and validates the destination backend. For sheets

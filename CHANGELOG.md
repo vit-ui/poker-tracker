@@ -23,6 +23,10 @@ All notable changes to this project are documented here. The format follows
   the hard-stop "set a duration" guard are preserved (the guard now warns when
   you leave the hard-stop menu). `/start` opens the paths menu (the old forced
   paths→alerts→hard stop→schedule wizard is gone).
+- Migrating a local-file install to Google Sheets with `/storage sheets` no
+  longer errors when there's no service-account key on the machine — it prompts
+  you to upload the `google_service_account.json` right there and continues the
+  migration once you do.
 
 ## v2.9 — 2026-07-22
 

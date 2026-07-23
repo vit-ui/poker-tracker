@@ -87,7 +87,7 @@ var commandHelp = map[string]string{
 		"Usage:\n" +
 		"  /storage — show the current storage\n" +
 		"  /storage local — switch to the local file\n" +
-		"  /storage sheets <sheet name or URL> — switch to Google Sheets (an empty sheet shared with your service account; run /credentials first if this install has no credentials yet)\n" +
+		"  /storage sheets <sheet name or URL> — switch to Google Sheets (an empty sheet shared with your service account; if this install has no credentials yet, you'll be prompted to upload the google_service_account.json right here and the migration continues)\n" +
 		"The target must be empty — there's no merge. You'll see a confirmation with row counts before anything is copied; close PokerStars first so no hand is played mid-switch. Nothing changes until the copy is verified.",
 	"export": "Exports all your data as CSV files: cash sessions, tournaments, bankroll ledger, time analysis.\n" +
 		"Usage: /export\n" +

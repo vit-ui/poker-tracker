@@ -44,6 +44,11 @@ type Bot struct {
 	// confirmation tap. Touched only from pollUpdates, like conversation.
 	pendingSwitch *pendingBackendSwitch
 
+	// pendingStorageSheetArg holds the sheet name/URL from a /storage sheets
+	// migration that paused to collect the service-account key inline, resumed
+	// once the file is uploaded. Touched only from pollUpdates.
+	pendingStorageSheetArg string
+
 	conversation
 }
 
@@ -283,9 +288,15 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	// A document upload has no Text — the check below would otherwise
 	// silently drop it. This is the only flow that ever expects a file
 	// instead of a text reply.
-	if b.flow == "credentials" && b.field == "file" && msg.Document != nil {
-		b.handleCredentialsDocument(msg.Chat.ID, msg.Document.FileID)
-		return
+	if b.field == "file" && msg.Document != nil {
+		switch b.flow {
+		case "credentials":
+			b.handleCredentialsDocument(msg.Chat.ID, msg.Document.FileID)
+			return
+		case "storage_credentials":
+			b.handleStorageCredentialsDocument(msg.Chat.ID, msg.Document.FileID)
+			return
+		}
 	}
 
 	if msg.Text == "" {
@@ -310,6 +321,8 @@ func (b *Bot) handleFlowReply(msg *tgbotapi.Message) {
 		b.handleMenuReply(msg.Chat.ID, msg.Text)
 	case "credentials":
 		b.handleCredentialsTextReply(msg.Chat.ID, msg.Text)
+	case "storage_credentials":
+		b.handleStorageCredentialsText(msg.Chat.ID, msg.Text)
 	}
 }
 
