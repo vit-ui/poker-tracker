@@ -516,7 +516,7 @@ func runWorker(
 				bot.EvaluateSessionLossAlert(*session, cfg, bankroll, alertChan)
 				bot.EvaluateDownswingAlert(session.BuyInUSD, cfg, ledger, bankroll, alertChan)
 				sessionKey := "cash:" + session.FirstHandID
-				if !firedAlerts["stake:"+sessionKey] {
+				if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
 					if err := bot.EvaluateStakeChangeAlert(*session, sc, alertChan); err != nil {
 						slog.Error("evaluating stake change alert", "err", err)
 					} else {
@@ -528,6 +528,15 @@ func runWorker(
 				}
 				evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, sessionKey)
 				scheduleCashSessionSummary(&summaryMu, summaryTimers, event.Path, cashSessionSummaryQuietPeriod, alertChan, func() string {
+					// Re-read config at fire time: the mode may have changed
+					// during the quiet period, and the session net is only
+					// final now. A config read error falls through and sends
+					// (fail open); a muted/filtered-out result returns "".
+					if fireCfg, err := config.LoadConfig(configPath); err != nil {
+						slog.Error("loading config for cash summary gate", "err", err)
+					} else if !config.ShouldSendSummary(config.SummaryMode(fireCfg.Notifications.CashSessionSummary), session.NetUSD) {
+						return ""
+					}
 					bankroll, _ := sc.GetCurrentBankroll()
 					return cashSessionSummaryText(*session, bankroll)
 				})
@@ -604,7 +613,9 @@ func runWorker(
 			}
 			bot.EvaluateDownswingAlert(t.BuyInUSD, cfg, ledger, bankroll, alertChan)
 			evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "tournament:"+t.TournamentID)
-			alertChan <- tournamentAlertText(t, netUSD, bankroll)
+			if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.TournamentSummary), netUSD) {
+				alertChan <- tournamentAlertText(t, netUSD, bankroll)
+			}
 		}
 	}
 }
@@ -804,7 +815,11 @@ func scheduleCashSessionSummary(mu *sync.Mutex, timers map[string]*time.Timer, p
 		mu.Lock()
 		delete(timers, path)
 		mu.Unlock()
-		alertChan <- buildMessage()
+		// An empty message means the caller's closure decided not to send
+		// (e.g. the cash summary is muted or filtered out by win/loss).
+		if msg := buildMessage(); msg != "" {
+			alertChan <- msg
+		}
 	})
 }
 

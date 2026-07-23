@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged
 `vX.Y`, and each GitHub Release pulls its notes from the matching section below.
 
+## Unreleased
+
+### Added
+- Notification controls for the always-on messages. Each result summary — cash
+  session, tournament, weekly, and monthly — now takes a mode: send **every**
+  one, only **wins**, only **losses**, or **off**. The stake-change note can be
+  switched off too. Stored under `config.notifications` (all default to the
+  previous always-on behavior). The threshold warning alerts are unaffected —
+  those already only fire on a loss.
+
 ## v2.9 — 2026-07-22
 
 ### Changed

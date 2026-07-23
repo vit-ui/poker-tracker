@@ -57,14 +57,60 @@ type Schedule struct {
 	DayStartHour *int `json:"day_start_hour"`
 }
 
+// Notifications controls the always-on summary messages. The four result
+// summaries carry a *string mode — "every" | "wins" | "losses" | "off" — that
+// also filters them by win/loss; nil means "every" (the original always-on
+// behavior). StakeChange has no P&L, so it's a plain on/off; nil means On.
+type Notifications struct {
+	CashSessionSummary *string `json:"cash_session_summary"`
+	TournamentSummary  *string `json:"tournament_summary"`
+	WeeklySummary      *string `json:"weekly_summary"`
+	MonthlySummary     *string `json:"monthly_summary"`
+	StakeChange        *bool   `json:"stake_change"`
+}
+
+// SummaryMode returns a result summary's configured mode, defaulting to
+// "every" (send every result) when unset.
+func SummaryMode(mode *string) string {
+	if mode == nil {
+		return "every"
+	}
+	return *mode
+}
+
+// ShouldSendSummary reports whether a result summary with the given net should
+// be sent under mode. "off" never sends; "wins" only a net above zero;
+// "losses" only a net below zero; "every" (and any unrecognized value) always.
+// A breakeven net of exactly zero is neither a win nor a loss, so it sends
+// under neither "wins" nor "losses".
+func ShouldSendSummary(mode string, net float64) bool {
+	switch mode {
+	case "off":
+		return false
+	case "wins":
+		return net > 0
+	case "losses":
+		return net < 0
+	default:
+		return true
+	}
+}
+
+// NotificationEnabled reports whether an on/off notification is enabled,
+// defaulting to enabled when unset.
+func NotificationEnabled(enabled *bool) bool {
+	return enabled == nil || *enabled
+}
+
 // Config is the in-memory representation of config.json.
 // All leaf fields are pointers so that null and zero are distinguishable.
 type Config struct {
-	Setup    Setup    `json:"setup"`
-	Paths    Paths    `json:"paths"`
-	Alerts   Alerts   `json:"alerts"`
-	Hardstop Hardstop `json:"hardstop"`
-	Schedule Schedule `json:"schedule"`
+	Setup         Setup         `json:"setup"`
+	Paths         Paths         `json:"paths"`
+	Alerts        Alerts        `json:"alerts"`
+	Hardstop      Hardstop      `json:"hardstop"`
+	Schedule      Schedule      `json:"schedule"`
+	Notifications Notifications `json:"notifications"`
 }
 
 // LockFile is the in-memory representation of lockfile.json.

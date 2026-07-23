@@ -36,23 +36,24 @@ func sameDay(a, b time.Time) bool {
 	return a.Year() == b.Year() && a.YearDay() == b.YearDay()
 }
 
-// buildWeeklySummary formats the past 7 days of activity.
-func buildWeeklySummary(sc storage.Store, now time.Time) (string, error) {
+// buildWeeklySummary formats the past 7 days of activity and returns the
+// period's results-only net (for the notification win/loss filter).
+func buildWeeklySummary(sc storage.Store, now time.Time) (string, float64, error) {
 	since := storage.AsStoredClock(now).AddDate(0, 0, -7)
 	cashSessions, err := sc.GetCashSessionsSince(since)
 	if err != nil {
-		return "", fmt.Errorf("loading cash sessions: %w", err)
+		return "", 0, fmt.Errorf("loading cash sessions: %w", err)
 	}
 	tournaments, err := sc.GetTournamentsSince(since)
 	if err != nil {
-		return "", fmt.Errorf("loading tournaments: %w", err)
+		return "", 0, fmt.Errorf("loading tournaments: %w", err)
 	}
 	// Net is session results only, unlike /status — deposits/withdrawals are
 	// excluded so a deposit this week can't turn a losing week into an
 	// apparent winning one.
 	rawLedger, err := sc.GetLedgerEntriesSince(since)
 	if err != nil {
-		return "", fmt.Errorf("loading ledger entries: %w", err)
+		return "", 0, fmt.Errorf("loading ledger entries: %w", err)
 	}
 	var netUSD float64
 	for _, e := range rawLedger {
@@ -76,22 +77,23 @@ func buildWeeklySummary(sc storage.Store, now time.Time) (string, error) {
 		formatSignedPercent(roi(tournaments, "spingo")),
 		formatSignedPercent(roi(tournaments, "mtt")),
 		commas(totalHands),
-	), nil
+	), netUSD, nil
 }
 
-// buildMonthlySummary formats the previous calendar month's activity.
-func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
+// buildMonthlySummary formats the previous calendar month's activity and
+// returns the month's results-only net (for the notification win/loss filter).
+func buildMonthlySummary(sc storage.Store, now time.Time) (string, float64, error) {
 	stored := storage.AsStoredClock(now)
 	firstOfThisMonth := time.Date(stored.Year(), stored.Month(), 1, 0, 0, 0, 0, time.UTC)
 	firstOfPrevMonth := firstOfThisMonth.AddDate(0, -1, 0)
 
 	rawCashSessions, err := sc.GetCashSessionsSince(firstOfPrevMonth)
 	if err != nil {
-		return "", fmt.Errorf("loading cash sessions: %w", err)
+		return "", 0, fmt.Errorf("loading cash sessions: %w", err)
 	}
 	rawTournaments, err := sc.GetTournamentsSince(firstOfPrevMonth)
 	if err != nil {
-		return "", fmt.Errorf("loading tournaments: %w", err)
+		return "", 0, fmt.Errorf("loading tournaments: %w", err)
 	}
 
 	var cashSessions []parsers.CashSession
@@ -127,7 +129,7 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
 	// apparent winning one.
 	rawLedger, err := sc.GetLedgerEntriesSince(firstOfPrevMonth)
 	if err != nil {
-		return "", fmt.Errorf("loading ledger entries: %w", err)
+		return "", 0, fmt.Errorf("loading ledger entries: %w", err)
 	}
 	var totalNet float64
 	for _, e := range rawLedger {
@@ -149,7 +151,7 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, error) {
 		formatSignedPercent(roi(tournaments, "mtt")),
 		commas(totalHands),
 		sessionCount,
-	), nil
+	), totalNet, nil
 }
 
 // weightedAverages computes the hands-weighted average of each of an item's

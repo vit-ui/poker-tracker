@@ -187,6 +187,61 @@ func TestDeleteLock_RemovesFile(t *testing.T) {
 	}
 }
 
+func TestShouldSendSummary(t *testing.T) {
+	cases := []struct {
+		mode string
+		net  float64
+		want bool
+	}{
+		{"off", 10, false},
+		{"off", -10, false},
+		{"off", 0, false},
+		{"every", 10, true},
+		{"every", -10, true},
+		{"every", 0, true},
+		{"wins", 10, true},
+		{"wins", -10, false},
+		{"wins", 0, false}, // breakeven is not a win
+		{"losses", -10, true},
+		{"losses", 10, false},
+		{"losses", 0, false}, // breakeven is not a loss
+		{"", 5, true},        // unrecognized/empty falls back to "every"
+	}
+	for _, c := range cases {
+		if got := config.ShouldSendSummary(c.mode, c.net); got != c.want {
+			t.Errorf("ShouldSendSummary(%q, %v) = %v, want %v", c.mode, c.net, got, c.want)
+		}
+	}
+}
+
+func TestSummaryMode(t *testing.T) {
+	if got := config.SummaryMode(nil); got != "every" {
+		t.Errorf("SummaryMode(nil) = %q, want %q", got, "every")
+	}
+	losses := "losses"
+	if got := config.SummaryMode(&losses); got != "losses" {
+		t.Errorf("SummaryMode(&\"losses\") = %q, want %q", got, "losses")
+	}
+}
+
+func TestNotificationEnabled(t *testing.T) {
+	tru, fls := true, false
+	cases := []struct {
+		name string
+		in   *bool
+		want bool
+	}{
+		{"nil defaults enabled", nil, true},
+		{"explicit true", &tru, true},
+		{"explicit false", &fls, false},
+	}
+	for _, c := range cases {
+		if got := config.NotificationEnabled(c.in); got != c.want {
+			t.Errorf("%s: NotificationEnabled = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestIsLockExpired(t *testing.T) {
 	past := &config.LockFile{ExpiresAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
 	if !config.IsLockExpired(past) {

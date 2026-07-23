@@ -110,20 +110,24 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		for range ticker.C {
 			now := time.Now()
 			if now.Weekday() == time.Monday && inSummaryWindow(now) && !sameDay(lastWeeklySent, now) {
-				summary, err := buildWeeklySummary(b.store, now)
+				summary, net, err := buildWeeklySummary(b.store, now)
 				if err != nil {
 					slog.Error("building weekly summary", "err", err)
 				} else {
-					b.sendMessage(summary)
+					if b.summaryModeAllows(net, func(n config.Notifications) *string { return n.WeeklySummary }) {
+						b.sendMessage(summary)
+					}
 					lastWeeklySent = now
 				}
 			}
 			if now.Day() == 1 && inSummaryWindow(now) && !sameDay(lastMonthlySent, now) {
-				summary, err := buildMonthlySummary(b.store, now)
+				summary, net, err := buildMonthlySummary(b.store, now)
 				if err != nil {
 					slog.Error("building monthly summary", "err", err)
 				} else {
-					b.sendMessage(summary)
+					if b.summaryModeAllows(net, func(n config.Notifications) *string { return n.MonthlySummary }) {
+						b.sendMessage(summary)
+					}
 					lastMonthlySent = now
 				}
 			}
@@ -200,6 +204,19 @@ func (b *Bot) sendMessage(text string) {
 		return
 	}
 	send(b.tg, chatID, text)
+}
+
+// summaryModeAllows loads the current config and reports whether a result
+// summary with the given net should go out under its configured mode (pick
+// selects which summary's mode from Notifications). On a config read error it
+// fails open — a transient error must never silently drop a summary.
+func (b *Bot) summaryModeAllows(net float64, pick func(config.Notifications) *string) bool {
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config for summary gate", "err", err)
+		return true
+	}
+	return config.ShouldSendSummary(config.SummaryMode(pick(cfg.Notifications)), net)
 }
 
 // sendMessageWithKeyboard is sendMessage with an inline keyboard attached.

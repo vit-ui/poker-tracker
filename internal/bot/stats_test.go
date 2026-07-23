@@ -515,7 +515,7 @@ func TestBuildWeeklySummary(t *testing.T) {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 
-	got, err := buildWeeklySummary(store, now)
+	got, net, err := buildWeeklySummary(store, now)
 	if err != nil {
 		t.Fatalf("buildWeeklySummary: %v", err)
 	}
@@ -525,6 +525,9 @@ func TestBuildWeeklySummary(t *testing.T) {
 	want := "📊 Weekly Summary\nSessions: 3\nNet: -$3.00\nBB/100: -15.0\nSpin & Go ROI: +200%\nMTT ROI: -100%\nHands: 100"
 	if got != want {
 		t.Errorf("buildWeeklySummary =\n%q\nwant\n%q", got, want)
+	}
+	if net != -3.00 {
+		t.Errorf("weekly net = %v, want -3.00", net)
 	}
 }
 
@@ -560,7 +563,7 @@ func TestBuildMonthlySummary(t *testing.T) {
 		t.Fatalf("AppendCashSession(July): %v", err)
 	}
 
-	got, err := buildMonthlySummary(store, now)
+	got, net, err := buildMonthlySummary(store, now)
 	if err != nil {
 		t.Fatalf("buildMonthlySummary: %v", err)
 	}
@@ -569,6 +572,9 @@ func TestBuildMonthlySummary(t *testing.T) {
 	want := "📅 Monthly Summary — June 2026\nCash Net: +$10.00\nSpins Net: -$1.00\nMTT Net: +$4.00\nTotal: +$13.00\nBB/100: 5.0\nSpins ROI: -100%\nMTT ROI: +200%\nHands: 200\nVolume: 3 sessions"
 	if got != want {
 		t.Errorf("buildMonthlySummary =\n%q\nwant\n%q", got, want)
+	}
+	if net != 13.00 {
+		t.Errorf("monthly net = %v, want 13.00", net)
 	}
 }
 
