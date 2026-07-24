@@ -494,6 +494,14 @@ func runWorker(
 		}
 		screenName := *cfg.Setup.PokerStarsScreenName
 
+		// Threshold evaluation must see a turned-off alert/hard-stop as unset.
+		// Blank the off ones out here (EffectiveAlerts/EffectiveHardstop) so the
+		// evaluators and the per-event fetch never learn about the *_enabled
+		// flags; cfg stays raw for the notification gates further down.
+		evalCfg := *cfg
+		evalCfg.Alerts = config.EffectiveAlerts(cfg.Alerts)
+		evalCfg.Hardstop = config.EffectiveHardstop(cfg.Hardstop)
+
 		switch event.Type {
 		case "cash":
 			session, tourneyStats, err := parsers.ParseCashFile(event.Path, screenName)
@@ -508,13 +516,13 @@ func runWorker(
 				// Fetched after the write so the shared data includes the
 				// session just recorded — the same state each evaluator saw
 				// back when it did its own fetch.
-				ledger, dayTournaments := fetchEvalData(sc, cfg, false)
+				ledger, dayTournaments := fetchEvalData(sc, &evalCfg, false)
 				bankroll := ledgerBankroll(ledger)
-				if err := hardstop.Evaluate(*session, cfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
+				if err := hardstop.Evaluate(*session, &evalCfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
 					slog.Error("evaluating hard stop", "err", err)
 				}
-				bot.EvaluateSessionLossAlert(*session, cfg, bankroll, alertChan)
-				bot.EvaluateDownswingAlert(session.BuyInUSD, cfg, ledger, bankroll, alertChan)
+				bot.EvaluateSessionLossAlert(*session, &evalCfg, bankroll, alertChan)
+				bot.EvaluateDownswingAlert(session.BuyInUSD, &evalCfg, ledger, bankroll, alertChan)
 				sessionKey := "cash:" + session.FirstHandID
 				if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
 					if err := bot.EvaluateStakeChangeAlert(*session, sc, alertChan); err != nil {
@@ -526,7 +534,7 @@ func runWorker(
 						firedAlerts["stake:"+sessionKey] = true
 					}
 				}
-				evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, sessionKey)
+				evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, sessionKey)
 				scheduleCashSessionSummary(&summaryMu, summaryTimers, event.Path, cashSessionSummaryQuietPeriod, alertChan, func() string {
 					// Re-read config at fire time: the mode may have changed
 					// during the quiet period, and the session net is only
@@ -606,13 +614,13 @@ func runWorker(
 			// including the ledger here, since the post-tournament alert
 			// below needs the bankroll (its last running total) regardless
 			// of what's configured.
-			ledger, dayTournaments := fetchEvalData(sc, cfg, true)
+			ledger, dayTournaments := fetchEvalData(sc, &evalCfg, true)
 			bankroll := ledgerBankroll(ledger)
-			if err := hardstop.EvaluateTournament(t, cfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
+			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
 				slog.Error("evaluating hard stop", "err", err)
 			}
-			bot.EvaluateDownswingAlert(t.BuyInUSD, cfg, ledger, bankroll, alertChan)
-			evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "tournament:"+t.TournamentID)
+			bot.EvaluateDownswingAlert(t.BuyInUSD, &evalCfg, ledger, bankroll, alertChan)
+			evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "tournament:"+t.TournamentID)
 			if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.TournamentSummary), netUSD) {
 				alertChan <- tournamentAlertText(t, netUSD, bankroll)
 			}

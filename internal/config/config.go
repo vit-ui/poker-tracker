@@ -30,23 +30,39 @@ type Paths struct {
 	TournamentSummary *string `json:"tournament_summary"`
 }
 
-// Alerts holds thresholds for automatic outgoing alerts.
+// Alerts holds thresholds for automatic outgoing alerts. Each threshold has a
+// sibling *_enabled flag: a set value with the flag false is "off but
+// remembered" — kept in config so it can be switched back on without retyping,
+// but blanked out for evaluation by EffectiveAlerts. A null flag defaults to
+// on, so a value that predates this field (or was just set) is active.
 type Alerts struct {
-	DownswingBuyins    *float64 `json:"downswing_buyins"`
-	LosingStreakCount  *int     `json:"losing_streak_count"`
-	DailyLossUSD       *float64 `json:"daily_loss_usd"`
-	SpingoDailyLossUSD *float64 `json:"spingo_daily_loss_usd"`
-	SessionLossBuyins  *float64 `json:"session_loss_buyins"`
+	DownswingBuyins        *float64 `json:"downswing_buyins"`
+	DownswingEnabled       *bool    `json:"downswing_buyins_enabled"`
+	LosingStreakCount      *int     `json:"losing_streak_count"`
+	LosingStreakEnabled    *bool    `json:"losing_streak_count_enabled"`
+	DailyLossUSD           *float64 `json:"daily_loss_usd"`
+	DailyLossEnabled       *bool    `json:"daily_loss_usd_enabled"`
+	SpingoDailyLossUSD     *float64 `json:"spingo_daily_loss_usd"`
+	SpingoDailyLossEnabled *bool    `json:"spingo_daily_loss_usd_enabled"`
+	SessionLossBuyins      *float64 `json:"session_loss_buyins"`
+	SessionLossEnabled     *bool    `json:"session_loss_buyins_enabled"`
 }
 
-// Hardstop holds the hard stop trigger rules and lock duration.
+// Hardstop holds the hard stop trigger rules and lock duration. The threshold
+// rules carry the same *_enabled flags as Alerts (see EffectiveHardstop);
+// DurationHours has none — it's not a rule that fires, and has no turn-off.
 type Hardstop struct {
-	SessionLossBuyins  *float64 `json:"session_loss_buyins"`
-	ConsecutiveLosses  *int     `json:"consecutive_losses"`
-	DailyLossUSD       *float64 `json:"daily_loss_usd"`
-	SpingoDailyLossUSD *float64 `json:"spingo_daily_loss_usd"`
-	DurationHours      *int     `json:"duration_hours"`
-	DownswingBuyins    *float64 `json:"downswing_buyins"`
+	SessionLossBuyins        *float64 `json:"session_loss_buyins"`
+	SessionLossEnabled       *bool    `json:"session_loss_buyins_enabled"`
+	ConsecutiveLosses        *int     `json:"consecutive_losses"`
+	ConsecutiveLossesEnabled *bool    `json:"consecutive_losses_enabled"`
+	DailyLossUSD             *float64 `json:"daily_loss_usd"`
+	DailyLossEnabled         *bool    `json:"daily_loss_usd_enabled"`
+	SpingoDailyLossUSD       *float64 `json:"spingo_daily_loss_usd"`
+	SpingoDailyLossEnabled   *bool    `json:"spingo_daily_loss_usd_enabled"`
+	DurationHours            *int     `json:"duration_hours"`
+	DownswingBuyins          *float64 `json:"downswing_buyins"`
+	DownswingEnabled         *bool    `json:"downswing_buyins_enabled"`
 }
 
 // Schedule holds player-specific timing settings.
@@ -96,10 +112,60 @@ func ShouldSendSummary(mode string, net float64) bool {
 	}
 }
 
+// FlagEnabled reports whether an on/off flag is enabled, defaulting to enabled
+// when unset (nil). Shared by NotificationEnabled and the threshold flags.
+func FlagEnabled(b *bool) bool {
+	return b == nil || *b
+}
+
 // NotificationEnabled reports whether an on/off notification is enabled,
 // defaulting to enabled when unset.
 func NotificationEnabled(enabled *bool) bool {
-	return enabled == nil || *enabled
+	return FlagEnabled(enabled)
+}
+
+// EffectiveAlerts returns a copy of a with every turned-off threshold's value
+// blanked to nil — "off" is a set value whose *_enabled flag is false. The
+// alert evaluators read this so an off threshold looks exactly like an unset
+// one, without their firing logic having to know about the flags.
+func EffectiveAlerts(a Alerts) Alerts {
+	if !FlagEnabled(a.DownswingEnabled) {
+		a.DownswingBuyins = nil
+	}
+	if !FlagEnabled(a.LosingStreakEnabled) {
+		a.LosingStreakCount = nil
+	}
+	if !FlagEnabled(a.DailyLossEnabled) {
+		a.DailyLossUSD = nil
+	}
+	if !FlagEnabled(a.SpingoDailyLossEnabled) {
+		a.SpingoDailyLossUSD = nil
+	}
+	if !FlagEnabled(a.SessionLossEnabled) {
+		a.SessionLossBuyins = nil
+	}
+	return a
+}
+
+// EffectiveHardstop is EffectiveAlerts' counterpart for the hard-stop rules.
+// DurationHours has no flag and is left untouched.
+func EffectiveHardstop(h Hardstop) Hardstop {
+	if !FlagEnabled(h.SessionLossEnabled) {
+		h.SessionLossBuyins = nil
+	}
+	if !FlagEnabled(h.ConsecutiveLossesEnabled) {
+		h.ConsecutiveLosses = nil
+	}
+	if !FlagEnabled(h.DailyLossEnabled) {
+		h.DailyLossUSD = nil
+	}
+	if !FlagEnabled(h.SpingoDailyLossEnabled) {
+		h.SpingoDailyLossUSD = nil
+	}
+	if !FlagEnabled(h.DownswingEnabled) {
+		h.DownswingBuyins = nil
+	}
+	return h
 }
 
 // Config is the in-memory representation of config.json.

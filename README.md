@@ -146,7 +146,7 @@ Usage example: `/paths` — then tap a field and reply with the folder, e.g. `C:
 
 Set the warning-only thresholds: downswing, session loss, losing streak, daily loss, and Spin & Go daily loss. These warn you before the hard stop steps in. An alert can never be set higher than its matching hard-stop threshold, when that hard stop is configured.
 
-Tap a threshold to change its value or turn it off, then Back to step out — there's no Done button.
+Tap a threshold to change its value or turn it off, then Back to step out — there's no Done button. Turning one off keeps its number (it just stops firing), so you can turn it back on later without retyping.
 
 Usage example: `/alerts` — then tap a field and reply with the value, e.g. `5`
 </details>
@@ -154,7 +154,7 @@ Usage example: `/alerts` — then tap a field and reply with the value, e.g. `5`
 <details>
 <summary><code>/hardstop</code> — configure the automatic lock</summary>
 
-Set the rules that close PokerStars and lock it for a fixed duration: session loss, rolling drawdown, consecutive losses, daily loss, Spin & Go daily loss, and how long the lock lasts. The duration must be set if any rule is; a hard stop can never be set lower than its matching alert threshold. **There is no cancel — once triggered, the lock runs its full duration.**
+Set the rules that close PokerStars and lock it for a fixed duration: session loss, rolling drawdown, consecutive losses, daily loss, Spin & Go daily loss, and how long the lock lasts. The duration must be set if any rule is; a hard stop can never be set lower than its matching alert threshold. Each rule can be turned off (it keeps its number for later), but since it's a safety lock, turning one off asks you to confirm first. **There is no cancel — once triggered, the lock runs its full duration.**
 
 Usage examples:
 - `/hardstop` — open the settings menu

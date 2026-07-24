@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged
 `vX.Y`, and each GitHub Release pulls its notes from the matching section below.
 
+## Unreleased
+
+### Changed
+- Turning off an alert or hard-stop threshold now **keeps its number** instead of
+  erasing it. Each threshold has an on/off switch: off stops it firing but
+  remembers the value, so you can switch it back on from the menu without
+  retyping. A set-but-off threshold shows **Turn on**; turning a hard stop off
+  asks for confirmation first (it's a safety rule) and explains what it protects.
+
 ## v3.0 — 2026-07-23
 
 ### Added

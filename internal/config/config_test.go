@@ -242,6 +242,76 @@ func TestNotificationEnabled(t *testing.T) {
 	}
 }
 
+func TestFlagEnabled(t *testing.T) {
+	tru, fls := true, false
+	if !config.FlagEnabled(nil) {
+		t.Error("nil flag should default to enabled")
+	}
+	if !config.FlagEnabled(&tru) {
+		t.Error("true should be enabled")
+	}
+	if config.FlagEnabled(&fls) {
+		t.Error("false should be disabled")
+	}
+}
+
+func fp(x float64) *float64 { return &x }
+func ip(x int) *int         { return &x }
+func bp(x bool) *bool       { return &x }
+
+func TestEffectiveAlerts(t *testing.T) {
+	a := config.Alerts{
+		DownswingBuyins: fp(5), DownswingEnabled: bp(false), // off → blanked
+		SessionLossBuyins: fp(3), SessionLossEnabled: bp(true), // on → kept
+		LosingStreakCount: ip(4),                               // nil flag → on → kept
+		DailyLossUSD:      fp(20), DailyLossEnabled: bp(false), // off → blanked
+		// SpingoDailyLossUSD unset → stays nil
+	}
+	eff := config.EffectiveAlerts(a)
+	if eff.DownswingBuyins != nil {
+		t.Error("off downswing should be blanked to nil")
+	}
+	if eff.SessionLossBuyins == nil || *eff.SessionLossBuyins != 3 {
+		t.Error("on session loss should be kept")
+	}
+	if eff.LosingStreakCount == nil || *eff.LosingStreakCount != 4 {
+		t.Error("nil-flag losing streak should stay on")
+	}
+	if eff.DailyLossUSD != nil {
+		t.Error("off daily loss should be blanked to nil")
+	}
+	if eff.SpingoDailyLossUSD != nil {
+		t.Error("unset spingo daily loss should stay nil")
+	}
+	// The input must not be mutated (value receiver → the caller's config keeps
+	// the remembered numbers).
+	if a.DownswingBuyins == nil || *a.DownswingBuyins != 5 {
+		t.Error("EffectiveAlerts must not mutate its argument")
+	}
+}
+
+func TestEffectiveHardstop(t *testing.T) {
+	dur := ip(12)
+	h := config.Hardstop{
+		SessionLossBuyins: fp(8), SessionLossEnabled: bp(false), // off → blanked
+		DownswingBuyins: fp(10), // nil flag → on → kept
+		DurationHours:   dur,    // no flag → always kept
+	}
+	eff := config.EffectiveHardstop(h)
+	if eff.SessionLossBuyins != nil {
+		t.Error("off session loss should be blanked to nil")
+	}
+	if eff.DownswingBuyins == nil || *eff.DownswingBuyins != 10 {
+		t.Error("nil-flag downswing should stay on")
+	}
+	if eff.DurationHours == nil || *eff.DurationHours != 12 {
+		t.Error("duration has no flag and must be kept")
+	}
+	if h.SessionLossBuyins == nil || *h.SessionLossBuyins != 8 {
+		t.Error("EffectiveHardstop must not mutate its argument")
+	}
+}
+
 func TestIsLockExpired(t *testing.T) {
 	past := &config.LockFile{ExpiresAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
 	if !config.IsLockExpired(past) {

@@ -250,7 +250,13 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 		b.setSummaryMode(chatID, messageID, path)
 	case last == "off":
 		b.reset()
-		b.turnOff(chatID, messageID, strings.TrimSuffix(path, ":off"))
+		b.requestTurnOff(chatID, messageID, strings.TrimSuffix(path, ":off"))
+	case last == "offconfirm":
+		b.reset()
+		b.doTurnOff(chatID, messageID, strings.TrimSuffix(path, ":offconfirm"))
+	case last == "on":
+		b.reset()
+		b.turnOn(chatID, messageID, strings.TrimSuffix(path, ":on"))
 	case last == "deposit" || last == "withdraw":
 		b.beginMoneyEntry(chatID, messageID, path)
 	case isCommandAction(last):
@@ -431,6 +437,110 @@ func hardstopValueText(cfg *config.Config, key string) string {
 	return "not set"
 }
 
+// thresholdFlag returns a threshold's *_enabled flag, or nil (read as on) for
+// one that has none (hard-stop Duration).
+func thresholdFlag(cfg *config.Config, flow, key string) *bool {
+	if flow == "alerts" {
+		switch key {
+		case "downswing":
+			return cfg.Alerts.DownswingEnabled
+		case "session_loss":
+			return cfg.Alerts.SessionLossEnabled
+		case "losing_streak":
+			return cfg.Alerts.LosingStreakEnabled
+		case "daily_loss":
+			return cfg.Alerts.DailyLossEnabled
+		case "spingo_daily_loss":
+			return cfg.Alerts.SpingoDailyLossEnabled
+		}
+		return nil
+	}
+	switch key {
+	case "session_loss":
+		return cfg.Hardstop.SessionLossEnabled
+	case "downswing":
+		return cfg.Hardstop.DownswingEnabled
+	case "consecutive_losses":
+		return cfg.Hardstop.ConsecutiveLossesEnabled
+	case "daily_loss":
+		return cfg.Hardstop.DailyLossEnabled
+	case "spingo_daily_loss":
+		return cfg.Hardstop.SpingoDailyLossEnabled
+	}
+	return nil
+}
+
+// setThresholdEnabled writes a threshold's *_enabled flag.
+func setThresholdEnabled(cfg *config.Config, flow, key string, on bool) {
+	v := on
+	if flow == "alerts" {
+		switch key {
+		case "downswing":
+			cfg.Alerts.DownswingEnabled = &v
+		case "session_loss":
+			cfg.Alerts.SessionLossEnabled = &v
+		case "losing_streak":
+			cfg.Alerts.LosingStreakEnabled = &v
+		case "daily_loss":
+			cfg.Alerts.DailyLossEnabled = &v
+		case "spingo_daily_loss":
+			cfg.Alerts.SpingoDailyLossEnabled = &v
+		}
+		return
+	}
+	switch key {
+	case "session_loss":
+		cfg.Hardstop.SessionLossEnabled = &v
+	case "downswing":
+		cfg.Hardstop.DownswingEnabled = &v
+	case "consecutive_losses":
+		cfg.Hardstop.ConsecutiveLossesEnabled = &v
+	case "daily_loss":
+		cfg.Hardstop.DailyLossEnabled = &v
+	case "spingo_daily_loss":
+		cfg.Hardstop.SpingoDailyLossEnabled = &v
+	}
+}
+
+// thresholdState returns a threshold's display value, whether a value is set,
+// and whether it's on. A set-but-off threshold keeps its value but doesn't fire.
+func thresholdState(cfg *config.Config, flow, key string) (valueText string, isSet, on bool) {
+	if flow == "alerts" {
+		valueText = alertValueText(cfg, key)
+	} else {
+		valueText = hardstopValueText(cfg, key)
+	}
+	return valueText, valueText != "not set", config.FlagEnabled(thresholdFlag(cfg, flow, key))
+}
+
+// thresholdDisplay is the value shown on a list button: the number, plus an
+// "off" marker when it's set but turned off.
+func thresholdDisplay(cfg *config.Config, flow, key string) string {
+	valueText, isSet, on := thresholdState(cfg, flow, key)
+	if isSet && !on {
+		return valueText + " — off"
+	}
+	return valueText
+}
+
+// hardstopRuleExplain is the one-line "what this protects you from" shown on the
+// hard-stop turn-off confirmation.
+func hardstopRuleExplain(key string) string {
+	switch key {
+	case "session_loss":
+		return "This closes PokerStars when a single session loses more than your set buy-ins."
+	case "downswing":
+		return "This closes PokerStars when your bankroll falls this many buy-ins below its rolling 30-day peak."
+	case "consecutive_losses":
+		return "This closes PokerStars after this many losing sessions in a row."
+	case "daily_loss":
+		return "This closes PokerStars when your net for the poker day drops below this loss."
+	case "spingo_daily_loss":
+		return "This closes PokerStars when your Spin & Go net for the poker day drops below this loss."
+	}
+	return ""
+}
+
 func (b *Bot) renderAlertsMenu(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -440,7 +550,7 @@ func (b *Bot) renderAlertsMenu(chatID int64, messageID int, path string) {
 	}
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, key := range alertKeys {
-		rows = append(rows, menuRow(alertLabel(key)+" ["+alertValueText(cfg, key)+"]", "menu:"+path+":"+key))
+		rows = append(rows, menuRow(alertLabel(key)+" ["+thresholdDisplay(cfg, "alerts", key)+"]", "menu:"+path+":"+key))
 	}
 	rows = append(rows, navButton(path))
 	b.showMenu(chatID, messageID, "Alert thresholds — tap one to change:", rows)
@@ -458,7 +568,7 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	}
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, key := range hardstopKeys {
-		rows = append(rows, menuRow(hardstopLabel(key)+" ["+hardstopValueText(cfg, key)+"]", "menu:"+path+":"+key))
+		rows = append(rows, menuRow(hardstopLabel(key)+" ["+thresholdDisplay(cfg, "hardstop", key)+"]", "menu:"+path+":"+key))
 	}
 	// The footer routes through the leave guard rather than navigating
 	// directly, so backing out with a rule set but no duration warns and stays.
@@ -474,8 +584,9 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	b.showMenu(chatID, messageID, text, rows)
 }
 
-// renderThresholdItem shows one alert/hard-stop field's screen: Change value,
-// Turn off (except Duration, which can't be turned off), and Back.
+// renderThresholdItem shows one alert/hard-stop field's screen. Three states:
+// unset (Set value); set & on (Change value / Turn off); set & off (Turn on /
+// Change value — the number is kept). Duration can never be turned off.
 func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 	segs := strings.Split(path, ":")
 	key := segs[len(segs)-1]
@@ -487,25 +598,31 @@ func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 		send(b.tg, chatID, "Something went wrong. Check logs.")
 		return
 	}
-	var label, value string
-	if flow == "alerts" {
-		label, value = alertLabel(key), alertValueText(cfg, key)
-	} else {
-		label, value = hardstopLabel(key), hardstopValueText(cfg, key)
+	label := alertLabel(key)
+	if flow == "hardstop" {
+		label = hardstopLabel(key)
 	}
-	notSet := value == "not set"
+	value, isSet, on := thresholdState(cfg, flow, key)
 	canTurnOff := !(flow == "hardstop" && key == "duration")
 
-	setLabel := "Change value"
-	if notSet {
-		setLabel = "Set value"
-	}
-	rows := [][]tgbotapi.InlineKeyboardButton{menuRow(setLabel, "menu:"+path+":set")}
-	if canTurnOff && !notSet {
-		rows = append(rows, menuRow("Turn off", "menu:"+path+":off"))
+	var rows [][]tgbotapi.InlineKeyboardButton
+	text := fmt.Sprintf("%s\nCurrent: %s", label, value)
+	switch {
+	case !isSet:
+		rows = append(rows, menuRow("Set value", "menu:"+path+":set"))
+	case on:
+		rows = append(rows, menuRow("Change value", "menu:"+path+":set"))
+		if canTurnOff {
+			rows = append(rows, menuRow("Turn off", "menu:"+path+":off"))
+		}
+	default: // set but off
+		text += " (off)"
+		rows = append(rows,
+			menuRow("Turn on", "menu:"+path+":on"),
+			menuRow("Change value", "menu:"+path+":set"))
 	}
 	rows = append(rows, navButton(path))
-	b.showMenu(chatID, messageID, fmt.Sprintf("%s\nCurrent: %s", label, value), rows)
+	b.showMenu(chatID, messageID, text, rows)
 }
 
 // handleHardstopLeave enforces the duration guard when leaving the hard-stop
@@ -531,10 +648,11 @@ func (b *Bot) handleHardstopLeave(chatID int64, messageID int, menuPath string) 
 }
 
 func hardstopRuleSetWithoutDuration(cfg *config.Config) bool {
-	h := cfg.Hardstop
+	// Only an *active* rule needs a duration — a turned-off one won't fire.
+	h := config.EffectiveHardstop(cfg.Hardstop)
 	anyRule := h.SessionLossBuyins != nil || h.DownswingBuyins != nil || h.ConsecutiveLosses != nil ||
 		h.DailyLossUSD != nil || h.SpingoDailyLossUSD != nil
-	return anyRule && h.DurationHours == nil
+	return anyRule && cfg.Hardstop.DurationHours == nil
 }
 
 // --- /paths flow ---
@@ -886,9 +1004,34 @@ func hardstopPromptText(field string) string {
 	return "Send the new value."
 }
 
-// turnOff clears an alert/hard-stop threshold (writes it to null) and
-// re-renders its item screen.
-func (b *Bot) turnOff(chatID int64, messageID int, target string) {
+// requestTurnOff handles a Turn off tap. Alerts turn off immediately; hard-stop
+// rules open a confirmation first, since they're a safety lock.
+func (b *Bot) requestTurnOff(chatID int64, messageID int, target string) {
+	segs := strings.Split(target, ":")
+	if segs[len(segs)-2] == "hardstop" {
+		b.renderHardstopOffConfirm(chatID, messageID, target)
+		return
+	}
+	b.doTurnOff(chatID, messageID, target)
+}
+
+// renderHardstopOffConfirm asks the player to confirm switching off a hard-stop
+// rule, spelling out the protection being removed.
+func (b *Bot) renderHardstopOffConfirm(chatID int64, messageID int, target string) {
+	segs := strings.Split(target, ":")
+	key := segs[len(segs)-1]
+	text := "⚠️ Turn off this hard stop?\n\n" + hardstopRuleExplain(key) +
+		"\n\nWith it off, PokerStars won't be closed when this limit is hit. Are you sure?"
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Yes, turn it off", "menu:"+target+":offconfirm"),
+		menuRow("Keep it on", "menu:"+target),
+	}
+	b.showMenu(chatID, messageID, text, rows)
+}
+
+// doTurnOff sets a threshold's flag to off (keeping its value) and re-renders
+// the item screen.
+func (b *Bot) doTurnOff(chatID int64, messageID int, target string) {
 	segs := strings.Split(target, ":")
 	key := segs[len(segs)-1]
 	flow := segs[len(segs)-2]
@@ -899,11 +1042,7 @@ func (b *Bot) turnOff(chatID int64, messageID int, target string) {
 		send(b.tg, chatID, "Something went wrong. Check logs.")
 		return
 	}
-	if flow == "alerts" {
-		clearAlertField(cfg, key)
-	} else {
-		clearHardstopField(cfg, key)
-	}
+	setThresholdEnabled(cfg, flow, key, false)
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
 		send(b.tg, chatID, "Something went wrong. Check logs.")
@@ -912,34 +1051,68 @@ func (b *Bot) turnOff(chatID int64, messageID int, target string) {
 	b.renderThresholdItem(chatID, messageID, target)
 }
 
-func clearAlertField(cfg *config.Config, key string) {
-	switch key {
-	case "downswing":
-		cfg.Alerts.DownswingBuyins = nil
-	case "session_loss":
-		cfg.Alerts.SessionLossBuyins = nil
-	case "losing_streak":
-		cfg.Alerts.LosingStreakCount = nil
-	case "daily_loss":
-		cfg.Alerts.DailyLossUSD = nil
-	case "spingo_daily_loss":
-		cfg.Alerts.SpingoDailyLossUSD = nil
+// turnOn switches a remembered-off threshold back on, provided its saved value
+// still respects hard stop ≥ alert against the active counterpart (the
+// counterpart may have changed while this was off). If not, it stays off and
+// the player is told to set a new value.
+func (b *Bot) turnOn(chatID int64, messageID int, target string) {
+	segs := strings.Split(target, ":")
+	key := segs[len(segs)-1]
+	flow := segs[len(segs)-2]
+
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil {
+		slog.Error("loading config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
 	}
+	if err := validateActivate(cfg, flow, key); err != nil {
+		send(b.tg, chatID, err.Error())
+		return
+	}
+	setThresholdEnabled(cfg, flow, key, true)
+	if err := config.SaveConfig(b.configPath, cfg); err != nil {
+		slog.Error("saving config", "err", err)
+		send(b.tg, chatID, "Something went wrong. Check logs.")
+		return
+	}
+	b.renderThresholdItem(chatID, messageID, target)
 }
 
-func clearHardstopField(cfg *config.Config, key string) {
+// validateActivate checks a threshold's stored value against its *active*
+// counterpart (hard stop ≥ alert) before it's switched on. An off counterpart
+// doesn't constrain, so it compares against the effective settings.
+func validateActivate(cfg *config.Config, flow, key string) error {
+	effA := config.EffectiveAlerts(cfg.Alerts)
+	effH := config.EffectiveHardstop(cfg.Hardstop)
+	if flow == "alerts" {
+		switch key {
+		case "downswing":
+			return validateNotAbove(*cfg.Alerts.DownswingBuyins, effH.DownswingBuyins, "downswing alert", "the hard stop downswing threshold")
+		case "session_loss":
+			return validateNotAbove(*cfg.Alerts.SessionLossBuyins, effH.SessionLossBuyins, "session loss alert", "the hard stop session loss threshold")
+		case "losing_streak":
+			return validateNotAbove(*cfg.Alerts.LosingStreakCount, effH.ConsecutiveLosses, "losing streak alert", "the hard stop consecutive-losses threshold")
+		case "daily_loss":
+			return validateNotAbove(*cfg.Alerts.DailyLossUSD, effH.DailyLossUSD, "daily loss alert", "the hard stop daily loss threshold")
+		case "spingo_daily_loss":
+			return validateNotAbove(*cfg.Alerts.SpingoDailyLossUSD, effH.SpingoDailyLossUSD, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold")
+		}
+		return nil
+	}
 	switch key {
 	case "session_loss":
-		cfg.Hardstop.SessionLossBuyins = nil
+		return validateNotBelow(*cfg.Hardstop.SessionLossBuyins, effA.SessionLossBuyins, "hard stop session loss threshold", "the session loss alert")
 	case "downswing":
-		cfg.Hardstop.DownswingBuyins = nil
+		return validateNotBelow(*cfg.Hardstop.DownswingBuyins, effA.DownswingBuyins, "hard stop downswing threshold", "the downswing alert")
 	case "consecutive_losses":
-		cfg.Hardstop.ConsecutiveLosses = nil
+		return validateNotBelow(*cfg.Hardstop.ConsecutiveLosses, effA.LosingStreakCount, "hard stop consecutive-losses threshold", "the losing streak alert")
 	case "daily_loss":
-		cfg.Hardstop.DailyLossUSD = nil
+		return validateNotBelow(*cfg.Hardstop.DailyLossUSD, effA.DailyLossUSD, "hard stop daily loss threshold", "the daily loss alert")
 	case "spingo_daily_loss":
-		cfg.Hardstop.SpingoDailyLossUSD = nil
+		return validateNotBelow(*cfg.Hardstop.SpingoDailyLossUSD, effA.SpingoDailyLossUSD, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert")
 	}
+	return nil
 }
 
 // handleMenuReply saves a value typed in response to beginValueEntry's prompt
@@ -1033,13 +1206,16 @@ func (b *Bot) afterPathSave(chatID int64, cfg *config.Config, wasComplete bool) 
 }
 
 func saveAlertValue(cfg *config.Config, key, text string) error {
+	// Cross-validate against the *active* hard stop — a turned-off counterpart
+	// doesn't constrain.
+	effH := config.EffectiveHardstop(cfg.Hardstop)
 	switch key {
 	case "downswing":
 		v, err := parsePositiveFloat(text)
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotAbove(v, cfg.Hardstop.DownswingBuyins, "downswing alert", "the hard stop downswing threshold"); err != nil {
+		if err := validateNotAbove(v, effH.DownswingBuyins, "downswing alert", "the hard stop downswing threshold"); err != nil {
 			return err
 		}
 		cfg.Alerts.DownswingBuyins = &v
@@ -1048,7 +1224,7 @@ func saveAlertValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotAbove(v, cfg.Hardstop.SessionLossBuyins, "session loss alert", "the hard stop session loss threshold"); err != nil {
+		if err := validateNotAbove(v, effH.SessionLossBuyins, "session loss alert", "the hard stop session loss threshold"); err != nil {
 			return err
 		}
 		cfg.Alerts.SessionLossBuyins = &v
@@ -1057,7 +1233,7 @@ func saveAlertValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive whole number.")
 		}
-		if err := validateNotAbove(v, cfg.Hardstop.ConsecutiveLosses, "losing streak alert", "the hard stop consecutive-losses threshold"); err != nil {
+		if err := validateNotAbove(v, effH.ConsecutiveLosses, "losing streak alert", "the hard stop consecutive-losses threshold"); err != nil {
 			return err
 		}
 		cfg.Alerts.LosingStreakCount = &v
@@ -1066,7 +1242,7 @@ func saveAlertValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotAbove(v, cfg.Hardstop.DailyLossUSD, "daily loss alert", "the hard stop daily loss threshold"); err != nil {
+		if err := validateNotAbove(v, effH.DailyLossUSD, "daily loss alert", "the hard stop daily loss threshold"); err != nil {
 			return err
 		}
 		cfg.Alerts.DailyLossUSD = &v
@@ -1075,22 +1251,27 @@ func saveAlertValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotAbove(v, cfg.Hardstop.SpingoDailyLossUSD, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold"); err != nil {
+		if err := validateNotAbove(v, effH.SpingoDailyLossUSD, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold"); err != nil {
 			return err
 		}
 		cfg.Alerts.SpingoDailyLossUSD = &v
 	}
+	// A freshly set or changed value is on.
+	setThresholdEnabled(cfg, "alerts", key, true)
 	return nil
 }
 
 func saveHardstopValue(cfg *config.Config, key, text string) error {
+	// Cross-validate against the *active* alert — a turned-off counterpart
+	// doesn't constrain.
+	effA := config.EffectiveAlerts(cfg.Alerts)
 	switch key {
 	case "session_loss":
 		v, err := parsePositiveFloat(text)
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotBelow(v, cfg.Alerts.SessionLossBuyins, "hard stop session loss threshold", "the session loss alert"); err != nil {
+		if err := validateNotBelow(v, effA.SessionLossBuyins, "hard stop session loss threshold", "the session loss alert"); err != nil {
 			return err
 		}
 		cfg.Hardstop.SessionLossBuyins = &v
@@ -1099,7 +1280,7 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotBelow(v, cfg.Alerts.DownswingBuyins, "hard stop downswing threshold", "the downswing alert"); err != nil {
+		if err := validateNotBelow(v, effA.DownswingBuyins, "hard stop downswing threshold", "the downswing alert"); err != nil {
 			return err
 		}
 		cfg.Hardstop.DownswingBuyins = &v
@@ -1108,7 +1289,7 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive whole number.")
 		}
-		if err := validateNotBelow(v, cfg.Alerts.LosingStreakCount, "hard stop consecutive-losses threshold", "the losing streak alert"); err != nil {
+		if err := validateNotBelow(v, effA.LosingStreakCount, "hard stop consecutive-losses threshold", "the losing streak alert"); err != nil {
 			return err
 		}
 		cfg.Hardstop.ConsecutiveLosses = &v
@@ -1117,7 +1298,7 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotBelow(v, cfg.Alerts.DailyLossUSD, "hard stop daily loss threshold", "the daily loss alert"); err != nil {
+		if err := validateNotBelow(v, effA.DailyLossUSD, "hard stop daily loss threshold", "the daily loss alert"); err != nil {
 			return err
 		}
 		cfg.Hardstop.DailyLossUSD = &v
@@ -1126,7 +1307,7 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotBelow(v, cfg.Alerts.SpingoDailyLossUSD, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert"); err != nil {
+		if err := validateNotBelow(v, effA.SpingoDailyLossUSD, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert"); err != nil {
 			return err
 		}
 		cfg.Hardstop.SpingoDailyLossUSD = &v
@@ -1137,6 +1318,8 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		}
 		cfg.Hardstop.DurationHours = &v
 	}
+	// A freshly set or changed value is on (a no-op for Duration, which has no flag).
+	setThresholdEnabled(cfg, "hardstop", key, true)
 	return nil
 }
 
