@@ -41,7 +41,7 @@ Once installed, talk to your bot on Telegram. Every command also has detailed he
 <details>
 <summary><code>/menu</code> — the full menu</summary>
 
-One place to reach everything, drilled into and back out of like BotFather — no Done button, just Back. Groups: **Setup** (paths, schedule, screen name, storage, and — on the Google Sheets backend — sheet and credentials), **Notifications** (the `/notify` summaries and alerts), **Hard stop**, **Info** (status, last session, stats, export), **Money** (deposit, withdraw), and **Help**. Every item is also its own command, so you can skip the menu whenever you like.
+One place to reach everything, drilled into and back out of like BotFather — Back steps out one level, ✓ Done closes the menu. Groups: **Setup** (paths, schedule, screen name, storage, and — on the Google Sheets backend — sheet and credentials), **Notifications** (the `/notify` summaries and alerts), **Hard stop**, **Info** (status, last session, stats, export), **Money** (deposit, withdraw), and **Help**. Every item is also its own command, so you can skip the menu whenever you like.
 
 Usage example: `/menu`
 </details>

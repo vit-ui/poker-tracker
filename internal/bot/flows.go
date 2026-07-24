@@ -7,7 +7,7 @@ package bot
 // Menu model: every config screen is one message edited in place as the player
 // drills in and out (BotFather-style), dispatched by a single router
 // (handleMenuCallback) on a "menu:"-prefixed callback path. A screen opened at
-// the top (via its command) shows ✖ Cancel; a screen drilled into shows
+// the top (via its command) shows ✓ Done (close the menu); a screen drilled into shows
 // ‹ Back to its parent (parent = the path with its last ":" segment removed).
 // There is no Done button — a threshold field is turned off from its own
 // screen, paths restart the watcher on save, and the hard-stop duration guard
@@ -184,7 +184,7 @@ func (b *Bot) handleScreenNameReply(chatID int64, text string) {
 
 // parentPath returns path with its last ":" segment removed, or "" if path is
 // a single top-level segment. Back navigation targets this; an empty parent
-// means the screen is a root and shows Cancel instead of Back.
+// means the screen is a root and shows Done instead of Back.
 func parentPath(path string) string {
 	if i := strings.LastIndex(path, ":"); i >= 0 {
 		return path[:i]
@@ -196,13 +196,13 @@ func menuRow(label, data string) []tgbotapi.InlineKeyboardButton {
 	return tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, data))
 }
 
-// navButton returns a screen's footer: ‹ Back to its parent, or ✖ Cancel when
-// it's a root.
+// navButton returns a screen's footer: ‹ Back to its parent, or ✓ Done (close
+// the menu) when it's a root.
 func navButton(path string) []tgbotapi.InlineKeyboardButton {
 	if parent := parentPath(path); parent != "" {
 		return menuRow("‹ Back", "menu:"+parent)
 	}
-	return menuRow("✖ Cancel", "menu:cancel")
+	return menuRow("✓ Done", "menu:cancel")
 }
 
 // showMenu sends a fresh keyboard message when messageID is 0 (a command
@@ -572,7 +572,7 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	}
 	// The footer routes through the leave guard rather than navigating
 	// directly, so backing out with a rule set but no duration warns and stays.
-	label := "✖ Cancel"
+	label := "✓ Done"
 	if parentPath(path) != "" {
 		label = "‹ Back"
 	}
@@ -618,8 +618,8 @@ func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 	default: // set but off
 		text += " (off)"
 		rows = append(rows,
-			menuRow("Turn on", "menu:"+path+":on"),
-			menuRow("Change value", "menu:"+path+":set"))
+			menuRow("Change value", "menu:"+path+":set"),
+			menuRow("Turn on", "menu:"+path+":on"))
 	}
 	rows = append(rows, navButton(path))
 	b.showMenu(chatID, messageID, text, rows)
