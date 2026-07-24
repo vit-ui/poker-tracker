@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged
 `vX.Y`, and each GitHub Release pulls its notes from the matching section below.
 
+## Unreleased
+
+### Changed
+- Release workflow's `build` job now runs on `ubuntu-latest` instead of
+  `windows-latest`. The `go build GOOS=windows` cross-compile step never
+  needed a Windows host; this removes one of the two slow Windows-runner
+  boots from the release pipeline. The `installer` job stays on
+  `windows-latest` since Inno Setup requires it.
+
 ## v3.1 - 2026-07-23
 
 ### Changed
