@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format follows
   remembers the value, so you can switch it back on from the menu without
   retyping. A set-but-off threshold shows **Turn on**; turning a hard stop off
   asks for confirmation first (it's a safety rule) and explains what it protects.
+- Menu polish: the button to close a menu now reads **Done** (was Cancel), and
+  a threshold's screen keeps a stable button order (Change value, then the
+  on/off toggle) instead of the two swapping places between states.
 - Release workflow's `build` job now runs on `ubuntu-latest` instead of
   `windows-latest`. The `go build GOOS=windows` cross-compile step never
   needed a Windows host; this removes one of the two slow Windows-runner
