@@ -608,3 +608,31 @@ func TestScheduleCashSessionSummary_IndependentPerTable(t *testing.T) {
 		t.Errorf("expected summaries from both tables, got %v", seen)
 	}
 }
+
+// TestSyncedMessage covers the pure decision behind the "queued writes just
+// synced" Telegram notice: a message only when the sheets write-ahead
+// fallback queue (PendingWrites) shrank between two snapshots taken around a
+// successful write, naming exactly how many resolved. An unchanged or grown
+// count (the latter possible if another goroutine queues an entry between the
+// two snapshots — see syncedMessage's doc comment) sends nothing.
+func TestSyncedMessage(t *testing.T) {
+	cases := []struct {
+		name          string
+		before, after int
+		want          string
+	}{
+		{"no pending writes at all", 0, 0, ""},
+		{"still pending, unchanged", 2, 2, ""},
+		{"one resolved", 1, 0, "✅ Synced 1 queued write(s) to Sheets"},
+		{"several resolved", 3, 1, "✅ Synced 2 queued write(s) to Sheets"},
+		{"grew instead of shrinking", 0, 1, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := syncedMessage(c.before, c.after)
+			if got != c.want {
+				t.Errorf("syncedMessage(%d, %d) = %q, want %q", c.before, c.after, got, c.want)
+			}
+		})
+	}
+}

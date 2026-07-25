@@ -136,20 +136,20 @@ func TestCashSessionID(t *testing.T) {
 	d1, _ := time.Parse(dateFormat, "2026-07-01 20:00")
 	d2, _ := time.Parse(dateFormat, "2026-07-01 20:01")
 
-	id1a := cashSessionID(d1, "200000000001")
-	id1b := cashSessionID(d1, "200000000001")
+	id1a := CashSessionID(d1, "200000000001")
+	id1b := CashSessionID(d1, "200000000001")
 	if id1a != id1b {
-		t.Errorf("cashSessionID not stable across identical inputs: %q vs %q", id1a, id1b)
+		t.Errorf("CashSessionID not stable across identical inputs: %q vs %q", id1a, id1b)
 	}
 
-	diffHandID := cashSessionID(d1, "200000000002")
+	diffHandID := CashSessionID(d1, "200000000002")
 	if diffHandID == id1a {
-		t.Error("cashSessionID collided for two different first-hand IDs on the same date")
+		t.Error("CashSessionID collided for two different first-hand IDs on the same date")
 	}
 
-	diffDate := cashSessionID(d2, "200000000001")
+	diffDate := CashSessionID(d2, "200000000001")
 	if diffDate == id1a {
-		t.Error("cashSessionID collided for two different dates with the same first-hand ID")
+		t.Error("CashSessionID collided for two different dates with the same first-hand ID")
 	}
 }
 
@@ -367,7 +367,7 @@ func TestFallbackRoundTrip(t *testing.T) {
 
 	date := time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
 	cash := parsers.CashSession{Date: date, Stake: "NL10", Hands: 42, NetUSD: -3.5, FirstHandID: "H1"}
-	cashKey := fallbackKindCash + ":" + cashSessionID(cash.Date, cash.FirstHandID)
+	cashKey := fallbackKindCash + ":" + CashSessionID(cash.Date, cash.FirstHandID)
 	c.cacheFailed(cashKey, fallbackEntry{Kind: fallbackKindCash, Cash: &cash})
 
 	tid := "T999"

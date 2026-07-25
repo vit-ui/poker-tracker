@@ -250,14 +250,19 @@ func (c *Client) getLastRunningTotal() (float64, error) {
 	return parseFloat(last[0]), nil
 }
 
-// cashSessionID derives a stable identifier for a cash session from its
+// CashSessionID derives a stable identifier for a cash session from its
 // first hand's timestamp and PokerStars Hand ID. Both are fixed the moment
 // the first hand in the file is parsed and never change as PokerStars keeps
 // appending later hands to the same file, so re-parsing the growing file on
 // every hand always yields the same ID — the same role TournamentID plays
 // for tournaments, but cash hand histories carry no single-field session
-// identifier of their own to key off of directly.
-func cashSessionID(date time.Time, firstHandID string) string {
+// identifier of their own to key off of directly. Exported so cmd/tracker can
+// attach the same Session ID shown in the sheet to a Telegram error about a
+// specific session; on a sqlite-backend install this value won't match the
+// stored session_id (sqlitestore.cashSessionID uses its own, independent
+// formula) — it's still a stable per-session fingerprint there, just not a
+// literal lookup key.
+func CashSessionID(date time.Time, firstHandID string) string {
 	sum := sha256.Sum256([]byte(date.Format(dateFormat) + "|" + firstHandID))
 	return hex.EncodeToString(sum[:])[:12]
 }
@@ -285,12 +290,12 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 
 // AppendCashSession upserts one row in Cash Sessions, one row in Time
 // Analysis, and one row in Bankroll Ledger — all three keyed by the same
-// cashSessionID, so a cash hand history file that's re-parsed after every
+// CashSessionID, so a cash hand history file that's re-parsed after every
 // hand corrects its existing rows in place instead of appending a new set
 // each time. Mirrors AppendTournament's find-or-append pattern, applied to
 // all three tabs a cash session touches rather than just one.
 func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
-	id := cashSessionID(session.Date, session.FirstHandID)
+	id := CashSessionID(session.Date, session.FirstHandID)
 
 	if err := c.upsertCashSessionsRow(id, session); err != nil {
 		return err
@@ -802,7 +807,7 @@ type handStatsArgs struct {
 // calls raw* directly) can never recurse back through here.
 func (c *Client) AppendCashSession(session parsers.CashSession) error {
 	if err := c.rawAppendCashSession(session); err != nil {
-		key := fallbackKindCash + ":" + cashSessionID(session.Date, session.FirstHandID)
+		key := fallbackKindCash + ":" + CashSessionID(session.Date, session.FirstHandID)
 		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindCash, Cash: &session})
 		return err
 	}
@@ -936,7 +941,7 @@ func (c *Client) flush() {
 func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 	switch entry.Kind {
 	case fallbackKindCash:
-		sheetHands, exists, err := c.cashSheetHandCount(cashSessionID(entry.Cash.Date, entry.Cash.FirstHandID))
+		sheetHands, exists, err := c.cashSheetHandCount(CashSessionID(entry.Cash.Date, entry.Cash.FirstHandID))
 		if err != nil {
 			return false
 		}
@@ -1478,6 +1483,15 @@ func intCell(p *int) interface{} {
 		return ""
 	}
 	return *p
+}
+
+// Health reports whether the Sheets API is currently reachable, based on the
+// most recent call through any endpoint (see restService.doJSON). down is
+// true if that call failed; since is when the outage began (zero if
+// healthy); err is nil if healthy. Sheets-only surface, reached by type
+// assertion — see PendingWrites.
+func (c *Client) Health() (down bool, since time.Time, err error) {
+	return c.svc.health()
 }
 
 // PendingWrites reports how many failed writes are queued in the write-ahead

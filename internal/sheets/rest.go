@@ -19,6 +19,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
 
 	"golang.org/x/oauth2/google"
 )
@@ -42,6 +44,14 @@ type restService struct {
 	hc       *http.Client
 	baseURL  string
 	driveURL string
+
+	// healthMu guards lastErr/downSince, updated by doJSON on every call —
+	// the single choke point every endpoint below goes through — so Health
+	// (see sheets.go) reflects the outcome of the most recent API call
+	// regardless of which endpoint made it.
+	healthMu  sync.Mutex
+	lastErr   error     // nil when the most recent doJSON call succeeded
+	downSince time.Time // zero when healthy; set once, on the nil→non-nil transition
 }
 
 // newRESTService builds a transport from the service account key JSON,
@@ -66,12 +76,26 @@ type valueRange struct {
 // responses return an error carrying the status and the start of the body —
 // enough to tell an unshared sheet (403) from a bad ID (404) from a
 // transient server error (5xx, which the write-ahead fallback catches).
-func (s *restService) doJSON(method, reqURL string, body, out interface{}) error {
+func (s *restService) doJSON(method, reqURL string, body, out interface{}) (err error) {
+	defer func() {
+		s.healthMu.Lock()
+		if err != nil {
+			if s.lastErr == nil {
+				s.downSince = time.Now()
+			}
+			s.lastErr = err
+		} else {
+			s.lastErr = nil
+			s.downSince = time.Time{}
+		}
+		s.healthMu.Unlock()
+	}()
+
 	var reqBody io.Reader
 	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("encoding request: %w", err)
+		data, merr := json.Marshal(body)
+		if merr != nil {
+			return fmt.Errorf("encoding request: %w", merr)
 		}
 		reqBody = bytes.NewReader(data)
 	}
@@ -97,6 +121,14 @@ func (s *restService) doJSON(method, reqURL string, body, out interface{}) error
 		}
 	}
 	return nil
+}
+
+// health reports whether the most recent doJSON call (through any endpoint)
+// failed. since is when the current outage began (zero if healthy).
+func (s *restService) health() (down bool, since time.Time, err error) {
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	return s.lastErr != nil, s.downSince, s.lastErr
 }
 
 // valuesURL builds the .../values/{range} URL. Ranges contain spaces (tab

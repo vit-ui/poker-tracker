@@ -510,8 +510,13 @@ func runWorker(
 				continue
 			}
 			if session != nil {
+				before := sheetsPending(sc)
 				if err := sc.AppendCashSession(*session); err != nil {
-					slog.Error("appending cash session to sheets", "err", err)
+					slog.Error("appending cash session to sheets", "err", err,
+						"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
+						"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
+				} else if msg := syncedMessage(before, sheetsPending(sc)); msg != "" {
+					alertChan <- msg
 				}
 				// Fetched after the write so the shared data includes the
 				// session just recorded — the same state each evaluator saw
@@ -526,7 +531,9 @@ func runWorker(
 				sessionKey := "cash:" + session.FirstHandID
 				if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
 					if err := bot.EvaluateStakeChangeAlert(*session, sc, alertChan); err != nil {
-						slog.Error("evaluating stake change alert", "err", err)
+						slog.Error("evaluating stake change alert", "err", err,
+							"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
+							"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
 					} else {
 						// Marked fired whether or not it sent — the previous
 						// stake can't change mid-session, so one evaluation
@@ -549,8 +556,11 @@ func runWorker(
 					return cashSessionSummaryText(*session, bankroll)
 				})
 			} else if tourneyStats != nil {
+				before := sheetsPending(sc)
 				if err := sc.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
-					slog.Error("updating tournament hand stats", "err", err)
+					slog.Error("updating tournament hand stats", "err", err, "tournament_id", tourneyStats.TournamentID)
+				} else if msg := syncedMessage(before, sheetsPending(sc)); msg != "" {
+					alertChan <- msg
 				}
 			} else {
 				slog.Error("ParseCashFile returned no session and no tournament stats", "path", event.Path)
@@ -606,9 +616,13 @@ func runWorker(
 				continue
 			}
 
+			before := sheetsPending(sc)
 			netUSD, err := sc.AppendTournament(t)
 			if err != nil {
-				slog.Error("appending tournament to sheets", "err", err)
+				slog.Error("appending tournament to sheets", "err", err,
+					"date", t.Date.Format("2006-01-02 15:04"), "tournament_id", t.TournamentID)
+			} else if msg := syncedMessage(before, sheetsPending(sc)); msg != "" {
+				alertChan <- msg
 			}
 			// Fetched after the write, like the cash branch — and always
 			// including the ledger here, since the post-tournament alert
@@ -626,6 +640,37 @@ func runWorker(
 			}
 		}
 	}
+}
+
+// sheetsPending returns the sheets backend's current write-ahead fallback
+// queue length (internal/sheets/sheets_fallback.json), or 0 on the sqlite
+// backend, which has no such queue. Same *sheets.Client type assertion
+// internal/bot/storage.go already uses around PendingWrites.
+func sheetsPending(sc storage.Store) int {
+	if c, ok := sc.(*sheets.Client); ok {
+		return c.PendingWrites()
+	}
+	return 0
+}
+
+// syncedMessage reports how many previously-failed Sheets writes just
+// resolved, as a Telegram-ready message, or "" if none did. before/after are
+// sheetsPending snapshots taken immediately around one of the three sheets
+// write calls in runWorker — each of those calls flushes the fallback queue
+// internally on success, so a drop in the count means queued entries from an
+// earlier outage just synced.
+//
+// Known limitation, accepted rather than synchronized against: satellite.go's
+// resolveSatellite also calls AppendTournament, from the bot goroutine. Its
+// flush is safely serialized under the client's own fallbackMu, but a
+// before/after diff taken here could in principle straddle that concurrent
+// flush and mis-size (never corrupt) the reported count — a cosmetic edge
+// case for a single-user tool, not worth new synchronization.
+func syncedMessage(before, after int) string {
+	if n := before - after; n > 0 {
+		return fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", n)
+	}
+	return ""
 }
 
 // evaluateOncePerKeyAlerts runs the three threshold alerts whose condition,

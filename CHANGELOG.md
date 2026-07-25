@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged
 `vX.Y`, and each GitHub Release pulls its notes from the matching section below.
 
+## Unreleased
+
+### Added
+- Sheets connectivity heartbeat: on a Sheets-backed install, going unreachable now
+  sends a Telegram message ("💔 Sheets unreachable since HH:MM"), repeated every
+  30 minutes while still down, with one "💓 Sheets reachable again" message on
+  recovery. Silent while healthy — no message unless something's actually wrong.
+- Sync confirmation: once a write that failed and got queued locally
+  (`sheets_fallback.json`) successfully replays, a "✅ Synced N queued write(s) to
+  Sheets" message confirms it — previously that queue drained silently with no way
+  to tell it had recovered.
+
+### Changed
+- Telegram error messages for a failed cash session write, tournament write, hand
+  stats update, or stake-change check now include the date, stake, and session ID
+  (or tournament ID) of the specific record affected, instead of just the raw API
+  error.
+
 ## v3.1 - 2026-07-23
 
 ### Changed

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
@@ -135,6 +136,41 @@ func TestFallbackCacheAndReplay(t *testing.T) {
 	}
 }
 
+// TestHealth covers restService.doJSON's health tracking (surfaced through
+// Client.Health, the heartbeat's sheets-only data source): a successful call
+// reports healthy, a failing call reports down with the error and a since
+// timestamp no earlier than the call, and recovery reports healthy again with
+// since reset to zero.
+func TestHealth(t *testing.T) {
+	fake := &fakeSheets{}
+	c := newTestClient(t, fake)
+	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetUSD: -3, FirstHandID: "h1"}
+
+	if err := c.AppendCashSession(session); err != nil {
+		t.Fatalf("AppendCashSession = %v, want success", err)
+	}
+	if down, since, herr := c.Health(); down || !since.IsZero() || herr != nil {
+		t.Errorf("Health after a successful call = (down=%v, since=%v, err=%v), want (false, zero, nil)", down, since, herr)
+	}
+
+	fake.setFailWrites(true)
+	before := time.Now()
+	if err := c.AppendCashSession(session); err == nil {
+		t.Fatal("AppendCashSession = nil error while the API is failing, want an error")
+	}
+	if down, since, herr := c.Health(); !down || herr == nil || since.Before(before) {
+		t.Errorf("Health after a failed call = (down=%v, since=%v, err=%v), want (true, >= %v, non-nil)", down, since, herr, before)
+	}
+
+	fake.setFailWrites(false)
+	if err := c.AppendCashSession(session); err != nil {
+		t.Fatalf("AppendCashSession after recovery = %v, want success", err)
+	}
+	if down, since, herr := c.Health(); down || !since.IsZero() || herr != nil {
+		t.Errorf("Health after recovery = (down=%v, since=%v, err=%v), want (false, zero, nil)", down, since, herr)
+	}
+}
+
 // TestFallbackSupersededByNewerHandCount covers flushDecision's supersede
 // guard: a queued cash write is discarded rather than replayed when the sheet
 // already holds a strictly higher hand count for the same session (a later
@@ -156,7 +192,7 @@ func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 	// The sheet now reports a 50-hand row for this session (a later direct
 	// write superseded the queued snapshot). Column J holds the session ID at
 	// row 2; column C holds its hand count.
-	id := cashSessionID(session.Date, session.FirstHandID)
+	id := CashSessionID(session.Date, session.FirstHandID)
 	fake.mu.Lock()
 	fake.getBody = func(rng string) valueRange {
 		switch {

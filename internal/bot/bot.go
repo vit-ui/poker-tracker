@@ -20,6 +20,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
@@ -102,13 +103,25 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		restartWatcher:     restartWatcher,
 	}
 
-	var lastWeeklySent, lastMonthlySent time.Time
+	var lastWeeklySent, lastMonthlySent, lastHeartbeatCheck time.Time
+	var sheetsDown bool
 
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			now := time.Now()
+			if now.Sub(lastHeartbeatCheck) >= 30*time.Minute {
+				lastHeartbeatCheck = now
+				if sheetsSrc, ok := b.store.(*sheets.Client); ok {
+					down, since, herr := sheetsSrc.Health()
+					msg, nowDown := heartbeatEvent(down, since, herr, sheetsDown)
+					sheetsDown = nowDown
+					if msg != "" {
+						b.sendMessage(msg)
+					}
+				}
+			}
 			if now.Weekday() == time.Monday && inSummaryWindow(now) && !sameDay(lastWeeklySent, now) {
 				summary, net, err := buildWeeklySummary(b.store, now)
 				if err != nil {
@@ -141,6 +154,22 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		b.sendMessage(msg)
 	}
 	return nil
+}
+
+// heartbeatEvent decides what (if anything) to send given the latest
+// Health() reading and whether Sheets was already known down. Every 30-min
+// check while still down re-sends the down message (a persistent reminder,
+// matching the caller's check cadence); one recovery message fires on the
+// down→healthy transition; an already-healthy check stays silent.
+func heartbeatEvent(down bool, since time.Time, err error, wasDown bool) (msg string, nowDown bool) {
+	switch {
+	case down:
+		return fmt.Sprintf("💔 Sheets unreachable since %s (err: %v)", since.Local().Format("2006-01-02 15:04"), err), true
+	case wasDown:
+		return "💓 Sheets reachable again", false
+	default:
+		return "", false
+	}
 }
 
 // configuredChatID reads the configured Telegram chat ID from config.json.

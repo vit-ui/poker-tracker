@@ -1,10 +1,49 @@
 package bot
 
 import (
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 )
+
+// TestHeartbeatEvent covers the pure decision behind the Sheets connectivity
+// heartbeat: a down reading sends (and re-sends, on every 30-min check while
+// still down) the same "unreachable" message; the down-to-healthy transition
+// sends one recovery message; an already-healthy reading stays silent.
+func TestHeartbeatEvent(t *testing.T) {
+	since := time.Date(2026, 7, 24, 22, 16, 0, 0, time.UTC)
+	errDown := errors.New("dial tcp: lookup sheets.googleapis.com: no such host")
+	downMsg := fmt.Sprintf("💔 Sheets unreachable since %s (err: %v)", since.Local().Format("2006-01-02 15:04"), errDown)
+
+	cases := []struct {
+		name        string
+		down        bool
+		wasDown     bool
+		wantMsg     string
+		wantNowDown bool
+	}{
+		{"healthy and was healthy sends nothing", false, false, "", false},
+		{"newly down sends the down message", true, false, downMsg, true},
+		{"still down re-sends the same down message", true, true, downMsg, true},
+		{"recovered sends one recovery message", false, true, "💓 Sheets reachable again", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var err error
+			if c.down {
+				err = errDown
+			}
+			msg, nowDown := heartbeatEvent(c.down, since, err, c.wasDown)
+			if msg != c.wantMsg || nowDown != c.wantNowDown {
+				t.Errorf("heartbeatEvent(%v, since, err, %v) = (%q, %v), want (%q, %v)",
+					c.down, c.wasDown, msg, nowDown, c.wantMsg, c.wantNowDown)
+			}
+		})
+	}
+}
 
 func TestNormalizeWindowsPath(t *testing.T) {
 	cases := []struct {
