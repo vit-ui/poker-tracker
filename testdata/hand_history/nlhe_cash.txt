@@ -1,0 +1,131 @@
+﻿PokerStars Hand #261427127186:  Hold'em No Limit ($0.01/$0.02 USD) - 2026/07/13 15:52:15 BRT [2026/07/13 14:52:15 ET]
+Table 'Andraimon VIII' 6-max Seat #4 is the button
+Seat 1: Player2 ($3.81 in chips) 
+Seat 2: Player3 ($2 in chips) 
+Seat 3: Player4 ($1.97 in chips) 
+Seat 4: Player5 ($2.05 in chips) 
+Seat 5: Player6 ($2.13 in chips) 
+Seat 6: AnonHero01 ($2 in chips) 
+Player6: posts small blind $0.01
+AnonHero01: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonHero01 [5h 7s]
+Player2: folds 
+Player3: folds 
+Player4: folds 
+Player5: folds 
+Player6: raises $0.04 to $0.06
+AnonHero01: folds 
+Uncalled bet ($0.04) returned to Player6
+Player6 collected $0.04 from pot
+Player6: doesn't show hand 
+*** SUMMARY ***
+Total pot $0.04 | Rake $0 
+Seat 1: Player2 folded before Flop (didn't bet)
+Seat 2: Player3 folded before Flop (didn't bet)
+Seat 3: Player4 folded before Flop (didn't bet)
+Seat 4: Player5 (button) folded before Flop (didn't bet)
+Seat 5: Player6 (small blind) collected ($0.04)
+Seat 6: AnonHero01 (big blind) folded before Flop
+
+
+
+PokerStars Hand #261427131209:  Hold'em No Limit ($0.01/$0.02 USD) - 2026/07/13 15:52:36 BRT [2026/07/13 14:52:36 ET]
+Table 'Andraimon VIII' 6-max Seat #5 is the button
+Seat 1: Player2 ($3.81 in chips) 
+Seat 2: Player3 ($2 in chips) 
+Seat 3: Player4 ($1.97 in chips) 
+Seat 4: Player5 ($2.05 in chips) 
+Seat 5: Player6 ($2.15 in chips) 
+Seat 6: AnonHero01 ($1.98 in chips) 
+AnonHero01: posts small blind $0.01
+Player2: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonHero01 [4d Tc]
+Player3: folds 
+Player4: folds 
+Player5: calls $0.02
+Player6: folds 
+AnonHero01: folds 
+Player2: checks 
+*** FLOP *** [Jh 5s 6d]
+Player2: bets $0.05
+Player5: raises $0.05 to $0.10
+Player2: raises $3.69 to $3.79 and is all-in
+Player5: folds 
+Uncalled bet ($3.69) returned to Player2
+Player2 collected $0.24 from pot
+*** SUMMARY ***
+Total pot $0.25 | Rake $0.01 
+Board [Jh 5s 6d]
+Seat 1: Player2 (big blind) collected ($0.24)
+Seat 2: Player3 folded before Flop (didn't bet)
+Seat 3: Player4 folded before Flop (didn't bet)
+Seat 4: Player5 folded on the Flop
+Seat 5: Player6 (button) folded before Flop (didn't bet)
+Seat 6: AnonHero01 (small blind) folded before Flop
+
+
+
+PokerStars Hand #261427138711:  Hold'em No Limit ($0.01/$0.02 USD) - 2026/07/13 15:53:15 BRT [2026/07/13 14:53:15 ET]
+Table 'Andraimon VIII' 6-max Seat #6 is the button
+Seat 2: Player3 ($2 in chips) is sitting out
+Seat 1: Player2 ($3.93 in chips) 
+Seat 3: Player4 ($1.97 in chips) 
+Seat 4: Player5 ($1.93 in chips) 
+Seat 5: Player6 ($2.15 in chips) 
+Seat 6: AnonHero01 ($1.97 in chips) 
+Player2: posts small blind $0.01
+Player3: is sitting out 
+Player4: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Jh 4s]
+Player5: folds 
+Player3 leaves the table
+Player6: raises $0.04 to $0.06
+AnonHero01: folds 
+Player2: folds 
+Player4: folds 
+Uncalled bet ($0.04) returned to Player6
+Player6 collected $0.05 from pot
+Player6: doesn't show hand 
+*** SUMMARY ***
+Total pot $0.05 | Rake $0 
+Seat 2: Player3
+Seat 1: Player2 (small blind) folded before Flop
+Seat 3: Player4 (big blind) folded before Flop
+Seat 4: Player5 folded before Flop (didn't bet)
+Seat 5: Player6 collected ($0.05)
+Seat 6: AnonHero01 (button) folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261427141070:  Hold'em No Limit ($0.01/$0.02 USD) - 2026/07/13 15:53:27 BRT [2026/07/13 14:53:27 ET]
+Table 'Andraimon VIII' 6-max Seat #1 is the button
+Seat 1: Player2 ($3.92 in chips) 
+Seat 3: Player4 ($1.95 in chips) 
+Seat 4: Player5 ($1.93 in chips) 
+Seat 5: Player6 ($2.18 in chips) 
+Seat 6: AnonHero01 ($1.97 in chips) 
+Player4: posts small blind $0.01
+Player5: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Qd 6c]
+skybear joins the table at seat #2 
+Player6: folds 
+AnonHero01: folds 
+Player2: folds 
+Player4: folds 
+Uncalled bet ($0.01) returned to Player5
+Player5 collected $0.02 from pot
+Player5: doesn't show hand 
+*** SUMMARY ***
+Total pot $0.02 | Rake $0 
+Seat 1: Player2 (button) folded before Flop (didn't bet)
+Seat 3: Player4 (small blind) folded before Flop
+Seat 4: Player5 (big blind) collected ($0.02)
+Seat 5: Player6 folded before Flop (didn't bet)
+Seat 6: AnonHero01 folded before Flop (didn't bet)
+
+
+

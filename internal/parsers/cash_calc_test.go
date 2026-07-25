@@ -559,7 +559,7 @@ Total pot 150 | Rake 0
 // these can differ by a cent on an odd bounty, since PokerStars splits the
 // eliminated player's bounty 50/50 (half cash to the eliminator, half stays
 // on their own head) and rounds each half independently, confirmed against
-// a real hand history: "Milbak703 wins $0.68 for eliminating ChaboDER and
+// a real hand history: "<eliminator> wins $0.68 for eliminating <victim> and
 // their own bounty increases by $0.67 to $1.03".
 func TestParseCashFile_KnockoutBounty_OddCentRounding(t *testing.T) {
 	contents := `PokerStars Hand #300000000011: Tournament #987654328, $0.49+$0.06 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET

@@ -12,6 +12,7 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 - **Sheets connectivity awareness** (Google Sheets backend only): if the tracker can't reach Sheets, you get a Telegram heads-up naming which session or tournament failed, a heartbeat reminder every 30 minutes while it's still down, and a confirmation once queued writes have synced back — no silent data gaps to discover later.
 - **Automatic hard stop.** When a limit you set is breached (a session loss, a rolling 30-day drawdown, a losing streak, or a daily-loss cap), it closes the PokerStars client and keeps it locked for a set duration.
 - **Satellite / ticket detection** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never counts as a cash buy-in against your bankroll.
+- **Freeroll / Kick-Off handling.** Tournaments with no buy-in in the summary (freerolls, Kick-Off ladders) still pay real knockout-bounty cash, so instead of dropping them the tracker asks whether you entered for free or paid — and records the bounty either way, so it always reaches your bankroll.
 - **One running ledger** for deposits, withdrawals, and every session net, so your true P&L stays correct through reloads.
 - **CSV export** on both backends, in identical format, so your data stays portable whichever storage you chose.
 - **Switch storage anytime** with `/storage`, which migrates your whole history between Google Sheets and the local file and verifies the copy before flipping over.

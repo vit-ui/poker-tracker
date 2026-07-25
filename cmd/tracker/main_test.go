@@ -92,7 +92,7 @@ func TestIsDuplicateTournament(t *testing.T) {
 	}
 
 	// The first bust of a re-entry MTT, as already recorded (buy-in $1.10,
-	// busted 50th of 126) — see data/ TS…T4016700037.
+	// busted 50th of 126).
 	firstBust := tourney("111", 1.10, 50, 126)
 	// A satellite the player answered "used a ticket" for: RecoverTicketPayout
 	// zeroed the recorded buy-in, but a re-parse of the unchanged file still
@@ -129,6 +129,15 @@ func TestIsDuplicateTournament(t *testing.T) {
 		// re-entry sum (1.10+2.20) is not exactly 3.30 in float64, and the
 		// sheets backend's number round-trip may not preserve the last bit.
 		{"float-noise buy-in difference still matches", tourney("111", 1.10+2.20, 43, 162), nil, tourney("111", 3.30, 43, 162), true, true, -1},
+		// Freeroll/Kick-Off: the summary never carries a buy-in, so a parse is
+		// always $0. After the player answers "paid $X" the recorded buy-in is
+		// X > 0; a stray re-trigger re-parses $0 and must still be a duplicate
+		// on finish + field, or the entry-cost question gets re-asked and a
+		// wrong second answer overwrites the recorded row.
+		{"freeroll answered paid, unchanged file re-parse is a duplicate", tourney("111", 0, 3, 4), nil, tourney("111", 1.00, 3, 4), true, true, -1},
+		{"freeroll answered free, unchanged file re-parse is a duplicate", tourney("111", 0, 3, 4), nil, tourney("111", 0, 3, 4), true, true, -1},
+		{"freeroll re-entry with a new finish is not a duplicate", tourney("111", 0, 2, 4), nil, tourney("111", 1.00, 3, 4), true, false, -1},
+		{"freeroll still awaiting its buy-in answer, unchanged content", tourney("111", 0, 3, 4), pendingOf(tourney("111", 0, 3, 4)), none, false, true, -1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

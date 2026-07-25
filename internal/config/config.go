@@ -187,10 +187,26 @@ type LockFile struct {
 	DurationHours int       `json:"duration_hours"`
 }
 
-// PendingTournament is one tournament awaiting a satellite/ticket answer from
-// the player, held in pending_tournaments.json.
+// Pending-tournament queue reasons — why a tournament is held awaiting a
+// player answer before it's recorded. An empty Reason on an existing queue
+// file means the original satellite question, so no migration is needed.
+const (
+	// PendingSatellite: a LikelySatellite tournament awaiting the
+	// ticket-vs-cash entry question.
+	PendingSatellite = "satellite"
+	// PendingFreerollBuyin: a zero-buy-in freeroll/Kick-Off awaiting the
+	// free-vs-paid entry-cost question — PokerStars records no buy-in and no
+	// entry method, so the player supplies the cost.
+	PendingFreerollBuyin = "freeroll_buyin"
+)
+
+// PendingTournament is one tournament awaiting a player answer before it's
+// recorded, held in pending_tournaments.json. Reason (see the Pending*
+// constants) selects which question the bot asks; empty means the original
+// satellite question.
 type PendingTournament struct {
 	Tournament     parsers.Tournament `json:"tournament"`
+	Reason         string             `json:"reason,omitempty"`
 	FirstQueuedAt  time.Time          `json:"first_queued_at"`
 	LastRemindedAt time.Time          `json:"last_reminded_at"`
 }

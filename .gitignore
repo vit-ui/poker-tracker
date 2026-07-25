@@ -6,8 +6,6 @@ sheets_fallback.json
 tracker.db
 credentials/
 /tracker.exe
-testdata/cash/
-testdata/tournaments/
 /tracker
 /self-tracker
 *.png

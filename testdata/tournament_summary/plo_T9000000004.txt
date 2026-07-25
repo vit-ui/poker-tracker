@@ -1,0 +1,192 @@
+PokerStars Tournament #9000000004, Pot Limit Omaha
+Buy-In: $0.98/$0.12 USD
+183 players
+Total Prize Pool: $87.84 USD 
+Tournament started 2026/07/13 23:21:00 BRT [2026/07/13 22:21:00 ET]
+
+  1: Player2 (Belgium), still playing
+  2: Player3 (Brazil), still playing
+  3: Player4 (Brazil), still playing
+  4: Player5 [2] (Brazil), still playing
+  5: Player6 [4] (Canada), still playing
+  6: Player7 [2] (New Zealand), still playing
+  7: Player8 (Canada), still playing
+  8: Player9 [3] (Brazil), still playing
+  9: Player10 (Brazil), still playing
+  10: Player11 (Canada), still playing
+  11: Player12 (United Kingdom), still playing
+  12: Player13 (Bulgaria), still playing
+  13: Player14 [2] (Greece), still playing
+  14: Player15 (Costa Rica), still playing
+  15: Player16 (Brazil), still playing
+  16: Player17 [3] (Chile), still playing
+  17: Player18 (Canada), still playing
+  18: Player19 [2] (Brazil), still playing
+  19: Player20 (Canada), still playing
+  20: Player21 [2] (Brazil), still playing
+  21: Player22 [2] (Brazil), still playing
+  22: Player23 (Canada), still playing
+  23: Player24 (Germany), still playing
+  24: Player25 (Canada), still playing
+  25: Player26 (United Kingdom), still playing
+  26: Player27 (Mexico), still playing
+  27: Player28 (Brazil), still playing
+  28: Player29 (Canada), still playing
+  29: Player30 (Brazil), still playing
+  30: Player31 (Brazil), still playing
+  31: Player32 [2] (Greece), still playing
+  32: Player33 (United Kingdom), still playing
+  33: Player34 [2] (Brazil), still playing
+  34: Player35 [2] (Brazil), still playing
+  35: Player36 (Brazil), still playing
+  36: Player37 (Canada), still playing
+  37: Player38 (Canada), still playing
+  38: Player39 (Vietnam), still playing
+  39: Player40 (Brazil), still playing
+  40: Player41 [2] (Brazil), still playing
+  41: Player42 [3] (Ireland), still playing
+  42: Player43 (Canada), still playing
+  43: Player44 (Argentina), still playing
+  44: Player45 (Brazil), still playing
+  45: Player46 (Canada), still playing
+  46: Player47 (Brazil), still playing
+  47: Player48 (New Zealand), still playing
+  48: Player49 (Argentina), still playing
+  49: Player50 (Ecuador), still playing
+  50: Player51 (Brazil), still playing
+  51: Player52 (Brazil), still playing
+  52: Player53 [2] (Philippines), still playing
+  53: Player54 (Canada), still playing
+  54: Player55 [2] (Canada), still playing
+  55: Player56 (Brazil), still playing
+  56: Player57 (United Kingdom), still playing
+  57: Player58 [2] (Canada), still playing
+  58: Player59 (Germany), still playing
+  59: AnonHero01 (Brazil), 
+  60: Player60 [3] (Brazil), 
+  61: Player61 (New Zealand), 
+  62: Player62 (New Zealand), 
+  63: Player63 (Chile), 
+  64: Player64 (Canada), 
+  65: Player7 (New Zealand), 
+  66: Player9 [2] (Brazil), 
+  67: Player65 [4] (Chile), 
+  68: Player66 (Brazil), 
+  69: Player34 (Brazil), 
+  70: Player67 [3] (Brazil), 
+  71: Player68 [3] (Brazil), 
+  72: Player55 (Canada), 
+  73: Player69 [3] (Switzerland), 
+  74: Player70 [2] (Brazil), 
+  75: Player71 [3] (Brazil), 
+  76: Player72 (Chile), 
+  77: Player60 [2] (Brazil), 
+  78: Player53 (Philippines), 
+  79: Player73 (Finland), 
+  80: Player69 [2] (Switzerland), 
+  81: Player74 [2] (Canada), 
+  82: Player14 (Greece), 
+  83: Player75 [2] (Uzbekistan), 
+  84: Player74 (Canada), 
+  85: Player76 (Canada), 
+  86: Player77 (Germany), 
+  87: Player78 (Slovenia), 
+  88: Player9 (Brazil), 
+  89: Player79 [2] (Canada), 
+  90: Player60 (Brazil), 
+  91: Player80 (Mexico), 
+  92: Player81 [4] (Brazil), 
+  93: Player70 (Brazil), 
+  94: Player82 (Brazil), 
+  95: Player83 [4] (Brazil), 
+  96: Player84 (Canada), 
+  97: Player81 [3] (Brazil), 
+  98: Player85 [2] (Brazil), 
+  99: Player17 [2] (Chile), 
+  100: Player86 (Brazil), 
+  101: Player87 [2] (Canada), 
+  102: Player88 [2] (Canada), 
+  103: Player67 [2] (Brazil), 
+  104: Player85 (Brazil), 
+  105: Player89 (Mexico), 
+  106: Player90 [2] (Brazil), 
+  107: Player91 (Canada), 
+  108: Player92 (Canada), 
+  109: Player93 [4] (Brazil), 
+  110: Player90 (Brazil), 
+  111: Player6 [3] (Canada), 
+  112: Player94 [3] (Brazil), 
+  113: Player95 [3] (New Zealand), 
+  114: Player96 [2] (Brazil), 
+  115: Player97 (Brazil), 
+  116: Player93 [3] (Brazil), 
+  117: Player83 [3] (Brazil), 
+  118: Player98 (Argentina), 
+  119: Player68 [2] (Brazil), 
+  120: Player99 [2] (Brazil), 
+  121: Player5 (Brazil), 
+  122: Player100 (Canada), 
+  123: Player93 [2] (Brazil), 
+  124: Player101 (Uruguay), 
+  125: Player99 (Brazil), 
+  126: Player102 [4] (Germany), 
+  127: Player6 [2] (Canada), 
+  128: Player103 (Argentina), 
+  129: Player71 [2] (Brazil), 
+  130: Player58 (Canada), 
+  131: Player104 [2] (Canada), 
+  132: Player87 (Canada), 
+  133: Player81 [2] (Brazil), 
+  134: Player79 (Canada), 
+  135: Player17 (Chile), 
+  136: Player83 [2] (Brazil), 
+  137: Player19 (Brazil), 
+  138: Player21 (Brazil), 
+  139: Player105 (Brazil), 
+  140: Player69 (Switzerland), 
+  141: Player95 [2] (New Zealand), 
+  142: Player6 (Canada), 
+  143: Player83 (Brazil), 
+  144: Player106 [2] (Canada), 
+  145: Player67 (Brazil), 
+  146: Player95 (New Zealand), 
+  147: Player68 (Brazil), 
+  148: Player107 (Canada), 
+  149: Player81 (Brazil), 
+  150: Player108 (Hungary), 
+  151: Player104 (Canada), 
+  152: Player94 [2] (Brazil), 
+  153: Player88 (Canada), 
+  154: Player32 (Greece), 
+  155: Player94 (Brazil), 
+  156: Player109 (Brazil), 
+  157: Player42 [2] (Ireland), 
+  158: Player93 (Brazil), 
+  159: Player110 (Brazil), 
+  160: Player111 (Brazil), 
+  161: Player35 (Brazil), 
+  162: Player112 [2] (Brazil), 
+  163: Player113 (Brazil), 
+  164: Player102 [3] (Germany), 
+  165: Player114 (United Kingdom), 
+  166: Player42 (Ireland), 
+  167: Player65 [3] (Chile), 
+  168: Player41 (Brazil), 
+  169: Player115 (New Zealand), 
+  170: Player106 (Canada), 
+  171: Player65 [2] (Chile), 
+  172: Player112 (Brazil), 
+  173: Player116 (Brazil), 
+  174: Player71 (Brazil), 
+  175: Player22 (Brazil), 
+  176: Player117 (Belgium), 
+  177: Player102 [2] (Germany), 
+  178: Player118 (Brazil), 
+  179: Player119 (Brazil), 
+  180: Player65 (Chile), 
+  181: Player75 (Uzbekistan), 
+  182: Player102 (Germany), 
+  183: Player96 (Brazil), 
+You finished the tournament (eliminated at hand #261431732020).
+
+

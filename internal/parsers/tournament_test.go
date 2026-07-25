@@ -1,30 +1,29 @@
 package parsers
 
 import (
-	"errors"
 	"math"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-// reEntrySummary is a real PokerStars MTT summary where screenName (Mayor2003)
-// re-entered once: they appear on row 5 ("[2]", cashed $2.07) and row 32 (the
-// busted first entry). "You made 1 re-entries for a total of $1.00" is the
-// extra cost. Correct result: finished 5th, buy-in $2.00 total, net +$0.07.
-const reEntrySummary = `PokerStars Tournament #4017504585, No Limit Hold'em
+// reEntrySummary is an MTT summary (anonymized, adapted from a real one) where
+// the hero re-entered once: they appear on row 5 ("[2]", cashed $2.07) and row
+// 32 (the busted first entry). "You made 1 re-entries for a total of $1.00" is
+// the extra cost. Correct result: finished 5th, buy-in $2.00 total, net +$0.07.
+const reEntrySummary = `PokerStars Tournament #9000000011, No Limit Hold'em
 Buy-In: $0.90/$0.10 USD
 32 players
 Total Prize Pool: $28.80 USD
 Tournament started 2026/07/20 16:31:04 BRT [2026/07/20 15:31:04 ET]
 
-  1: ADLBAL (Brazil), still playing
-  2: GAOLBO52 (Brazil), still playing
-  3: RobertWa1860 (Germany), still playing
-  4: nilisss17 (Brazil), still playing
-  5: Mayor2003 [2] (Brazil), $2.07 (7.187%)
-  6: Guigz_CS (Brazil),
- 32: Mayor2003 (Brazil),
+  1: Player2 (Brazil), still playing
+  2: Player3 (Brazil), still playing
+  3: Player4 (Germany), still playing
+  4: Player5 (Brazil), still playing
+  5: AnonHero01 [2] (Brazil), $2.07 (7.187%)
+  6: Player6 (Brazil),
+ 32: AnonHero01 (Brazil),
 
 You finished in 5th place (eliminated at hand #261494486121).You finished the tournament.
 
@@ -34,14 +33,14 @@ You made 1 re-entries for a total of $1.00.
 
 // singleEntrySummary is a plain single-entry MTT (no "You made" line): the
 // re-entry handling must be a no-op. Buy-in $1.00, cashed $3.00 → net +$2.00.
-const singleEntrySummary = `PokerStars Tournament #4017504999, No Limit Hold'em
+const singleEntrySummary = `PokerStars Tournament #9000000012, No Limit Hold'em
 Buy-In: $0.90/$0.10 USD
 32 players
 Total Prize Pool: $28.80 USD
 Tournament started 2026/07/20 16:31:04 BRT [2026/07/20 15:31:04 ET]
 
   1: SomeoneElse (Brazil), still playing
-  3: Mayor2003 (Brazil), $3.00 (10.41%)
+  3: AnonHero01 (Brazil), $3.00 (10.41%)
 
 You finished in 3rd place.You finished the tournament.
 `
@@ -56,7 +55,7 @@ func writeTempSummary(t *testing.T, contents string) string {
 }
 
 func TestParseTournamentFileReEntry(t *testing.T) {
-	got, err := ParseTournamentFile(writeTempSummary(t, reEntrySummary), "Mayor2003")
+	got, err := ParseTournamentFile(writeTempSummary(t, reEntrySummary), testScreenName)
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
@@ -81,7 +80,7 @@ func TestParseTournamentFileReEntry(t *testing.T) {
 }
 
 func TestParseTournamentFileSingleEntryUnchanged(t *testing.T) {
-	got, err := ParseTournamentFile(writeTempSummary(t, singleEntrySummary), "Mayor2003")
+	got, err := ParseTournamentFile(writeTempSummary(t, singleEntrySummary), testScreenName)
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
@@ -99,74 +98,58 @@ func TestParseTournamentFileSingleEntryUnchanged(t *testing.T) {
 	}
 }
 
-// satelliteBustedSummary is the real #4017575047 Power Path satellite where
-// Mayor2003 busted 3rd. PokerStars wrote the file mid-tournament, so the other
-// two rows read "still playing" and Mayor2003's own row is empty — the only
-// satellite signal left is the ticket-denominated "Total Prize Pool" line.
+// satelliteBustedSummary (anonymized, adapted from a real Power Path satellite)
+// is one the hero busted 3rd. PokerStars wrote the file mid-tournament, so the
+// other two rows read "still playing" and the hero's own row is empty — the
+// only satellite signal left is the ticket-denominated "Total Prize Pool" line.
 // This is the regression guard for that case.
-const satelliteBustedSummary = `PokerStars Tournament #4017575047, No Limit Hold'em
+const satelliteBustedSummary = `PokerStars Tournament #9000000013, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
 3 players
 Total Prize Pool: $1.00 Power Path Step 2 Ticket
 Tournament started 2026/07/20 21:16:34 BRT [2026/07/20 20:16:34 ET]
 
-  1: CuspedeGelo (Brazil), still playing
-  2: HeimaS (Ukraine), still playing
-  3: Mayor2003 (Brazil),
+  1: Player2 (Brazil), still playing
+  2: Player3 (Ukraine), still playing
+  3: AnonHero01 (Brazil),
 
 You finished in 3rd place.
 `
 
-// satelliteWonSummary is adapted from the real #4017575075 Power Path
-// satellite where Mayor2003 won the ticket outright — position 1's row shows
-// it, so the row scan flags LikelySatellite and derives
-// WinnerPrizeDescription from that row. The post-loop prize-pool guard must
-// not clobber that. The pool line's text is deliberately altered to DIFFER
-// from the row payout text: with identical strings (as in the real file) the
-// clobber assertion is unfalsifiable — the guard could overwrite the
-// row-derived value with the same bytes and the test would still pass.
-const satelliteWonSummary = `PokerStars Tournament #4017575075, No Limit Hold'em
+// satelliteWonSummary (anonymized, adapted from a real Power Path satellite the
+// hero won outright) — position 1's row shows the ticket, so the row scan flags
+// LikelySatellite and derives WinnerPrizeDescription from that row. The
+// post-loop prize-pool guard must not clobber that. The pool line's text is
+// deliberately altered to DIFFER from the row payout text: with identical
+// strings the clobber assertion is unfalsifiable — the guard could overwrite
+// the row-derived value with the same bytes and the test would still pass.
+const satelliteWonSummary = `PokerStars Tournament #9000000014, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
 3 players
 Total Prize Pool: $2.00 in Power Path Step 2 Tickets
 Tournament started 2026/07/20 21:16:47 BRT [2026/07/20 20:16:47 ET]
 Tournament finished 2026/07/20 21:18:24 BRT [2026/07/20 20:18:24 ET]
-  1: Mayor2003 (Brazil), $1.00 Power Path Step 2 Ticket
-  2: TomasStark (Brazil),
-  3: bugaAA634 (Brazil),
+  1: AnonHero01 (Brazil), $1.00 Power Path Step 2 Ticket
+  2: Player2 (Brazil),
+  3: Player3 (Brazil),
 
 You finished in 1st place (eliminated at hand #261496886217).
-`
-
-// freerollSummary is the real #4017348137 freeroll (no "Buy-In: $" line) —
-// ParseTournamentFile must return ErrFreeroll so the caller skips it.
-const freerollSummary = `PokerStars Tournament #4017348137, No Limit Hold'em
-Freeroll
-4 players
-Tournament started 2026/07/19 21:53:39 BRT [2026/07/19 20:53:39 ET]
-
-  1: AAkriss (Panama), still playing
-  2: lukitasrione (Argentina), still playing
-  3: Mayor2003 (Brazil),
-  4: BigDegs99 (United Kingdom),
-
-You finished in 3rd place (eliminated at hand #261487659541).
 `
 
 // rebuyAddonSummary exercises the extra-spend accumulation across MULTIPLE
 // "You made … for a total of $" lines — the case arm is deliberately anchored
 // on the money phrase so re-entries, rebuys, and add-ons all fold into
 // BuyInUSD uniformly, and ReEntries sums every line's leading count. Only the
-// single-line re-entry form exists in committed fixtures otherwise, so the
-// += accumulation path had no CI coverage.
-const rebuyAddonSummary = `PokerStars Tournament #4017600001, No Limit Hold'em
+// single-line re-entry form exists in the file fixtures otherwise, so the
+// += accumulation path had no other coverage.
+const rebuyAddonSummary = `PokerStars Tournament #9000000015, No Limit Hold'em
 Buy-In: $0.90/$0.10 USD
 40 players
 Total Prize Pool: $60.00 USD
 Tournament started 2026/07/21 20:00:00 BRT [2026/07/21 19:00:00 ET]
 
   1: SomeoneElse (Brazil), still playing
-  9: Mayor2003 (Brazil),
+  9: AnonHero01 (Brazil),
 
 You finished in 9th place.You finished the tournament.
 
@@ -176,7 +159,7 @@ You made 1 addons for a total of $1.00.
 `
 
 func TestParseTournamentFileRebuyAddonAccumulation(t *testing.T) {
-	got, err := ParseTournamentFile(writeTempSummary(t, rebuyAddonSummary), "Mayor2003")
+	got, err := ParseTournamentFile(writeTempSummary(t, rebuyAddonSummary), testScreenName)
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
@@ -192,7 +175,7 @@ func TestParseTournamentFileRebuyAddonAccumulation(t *testing.T) {
 }
 
 func TestParseTournamentFileSatelliteBustedPrizePool(t *testing.T) {
-	got, err := ParseTournamentFile(writeTempSummary(t, satelliteBustedSummary), "Mayor2003")
+	got, err := ParseTournamentFile(writeTempSummary(t, satelliteBustedSummary), testScreenName)
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
@@ -223,7 +206,7 @@ func TestParseTournamentFileSatelliteBustedPrizePool(t *testing.T) {
 }
 
 func TestParseTournamentFileSatelliteWonPrizePool(t *testing.T) {
-	got, err := ParseTournamentFile(writeTempSummary(t, satelliteWonSummary), "Mayor2003")
+	got, err := ParseTournamentFile(writeTempSummary(t, satelliteWonSummary), testScreenName)
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
@@ -247,26 +230,52 @@ func TestParseTournamentFileSatelliteWonPrizePool(t *testing.T) {
 	}
 }
 
+// TestParseTournamentFileFreeroll reads the committed anonymized freeroll
+// fixture (no "Buy-In: $" line) and confirms it parses to a zero-buy-in
+// tournament so the worker can ask the player for the real entry cost rather
+// than dropping the bounty cash.
 func TestParseTournamentFileFreeroll(t *testing.T) {
-	_, err := ParseTournamentFile(writeTempSummary(t, freerollSummary), "Mayor2003")
-	if !errors.Is(err, ErrFreeroll) {
-		t.Errorf("err = %v, want ErrFreeroll", err)
+	path := filepath.Join("..", "..", "testdata", "tournament_summary", "freeroll_zero_T9000000002.txt")
+	got, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (freeroll parses to a zero-buy-in tournament)", err)
+	}
+	if got.BuyInUSD != 0 {
+		t.Errorf("BuyInUSD = %v, want 0", got.BuyInUSD)
+	}
+	if got.NetUSD != 0 {
+		t.Errorf("NetUSD = %v, want 0 (no buy-in, no cash payout row)", got.NetUSD)
+	}
+	if got.TournamentID != "9000000002" {
+		t.Errorf("TournamentID = %q, want 9000000002", got.TournamentID)
+	}
+	if got.FinishPos != 3 {
+		t.Errorf("FinishPos = %d, want 3", got.FinishPos)
+	}
+	if got.TotalPlayers != 4 {
+		t.Errorf("TotalPlayers = %d, want 4", got.TotalPlayers)
+	}
+	if got.Type != "mtt" {
+		t.Errorf("Type = %q, want mtt (4 players)", got.Type)
+	}
+	if got.Multiplier != nil {
+		t.Errorf("Multiplier = %v, want nil (freeroll has no multiplier)", *got.Multiplier)
 	}
 }
 
+// TestParseTournamentFile parses every committed tournament-summary fixture in
+// testdata/tournament_summary/ (anonymized, derived from real files) and
+// asserts each parses without error.
 func TestParseTournamentFile(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "tournaments", "*.txt"))
+	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "tournament_summary", "*.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(files) == 0 {
-		t.Skip("no files found in testdata/tournaments/ — this directory is gitignored real player data, only present on a dev machine that's played tournaments; skipping on a checkout without it")
+		t.Fatal("no fixtures in testdata/tournament_summary/ — committed anonymized summaries are expected here")
 	}
 	for _, f := range files {
 		tournament, err := ParseTournamentFile(f, testScreenName)
-		if errors.Is(err, ErrFreeroll) {
-			continue
-		}
 		if err != nil {
 			t.Errorf("ParseTournamentFile(%s): %v", filepath.Base(f), err)
 			continue

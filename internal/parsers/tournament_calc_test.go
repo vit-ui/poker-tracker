@@ -97,14 +97,14 @@ Total Prize Pool: $45.00
 // reading "still playing" or blank because PokerStars wrote the summary the
 // moment hero busted while the field played on. The result-row scan finds no
 // non-cash payout — LikelySatellite must fire from the "Super Satellite" title
-// (confirmed against a real summary, Tournament #4014688191).
+// (confirmed against a real summary, Tournament #9000000020).
 func TestParseTournamentFile_SatelliteFromHeader(t *testing.T) {
-	contents := `PokerStars Tournament #4014688191, No Limit Hold'em
+	contents := `PokerStars Tournament #9000000020, No Limit Hold'em
 Super Satellite
 Buy-In: $1.40/$0.10 USD
 87 players
 Total Prize Pool: $330.00 USD
-Target Tournament #4014688078 Buy-In: $11.00 USD
+Target Tournament #9000000021 Buy-In: $11.00 USD
 Tournament started 2026/07/17 23:05:00 ET
   1: Villain1 (South Korea), still playing
   2: Villain2 (Canada), still playing
@@ -272,7 +272,7 @@ Tournament started 2025/02/01 14:05:00 ET
 // file. (TestParseTournamentFile_SpinGoWin covers the real-cash-pool case,
 // where PrizePoolUSD and Multiplier are populated normally.)
 func TestParseTournamentFile_TicketPrizePool(t *testing.T) {
-	contents := `PokerStars Tournament #4016076423, No Limit Hold'em
+	contents := `PokerStars Tournament #9000000022, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
 3 players
 Total Prize Pool: $1.00 Power Path Step 2 Ticket
@@ -308,7 +308,7 @@ Tournament started 2026/07/14 17:04:07 ET
 // parsed as a real cash payout: NetUSD should reflect only the lost buy-in,
 // the same as winning nothing at all, confirmed against a real hand history.
 func TestParseTournamentFile_HeroWinsTicket(t *testing.T) {
-	contents := `PokerStars Tournament #4016076423, No Limit Hold'em
+	contents := `PokerStars Tournament #9000000022, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
 3 players
 Total Prize Pool: $1.00 Power Path Step 2 Ticket
@@ -347,9 +347,9 @@ You finished in 1st place (eliminated at hand #261437820632).
 // other players) and hero themselves, not in 1st, wins a ticket. Relying on
 // finish position 1's payout alone misses this entirely — LikelySatellite
 // must also trigger from hero's own row, confirmed against a real summary
-// file (Tournament #4016109507).
+// file (Tournament #9000000023).
 func TestParseTournamentFile_HeroWinsTicket_Position1StillPlaying(t *testing.T) {
-	contents := `PokerStars Tournament #4016109507, No Limit Hold'em
+	contents := `PokerStars Tournament #9000000023, No Limit Hold'em
 Buy-In: $0.96/$0.04 USD
 16 players
 Total Prize Pool: $15.36 USD
@@ -414,7 +414,7 @@ Total Prize Pool: $18.00
 // is what catches this — position 1 and hero's own row alone would both
 // report LikelySatellite = false here.
 func TestParseTournamentFile_TicketAtOtherDecidedPosition(t *testing.T) {
-	contents := `PokerStars Tournament #4016109507, No Limit Hold'em
+	contents := `PokerStars Tournament #9000000023, No Limit Hold'em
 Buy-In: $0.96/$0.04 USD
 16 players
 Total Prize Pool: $15.36 USD
@@ -473,8 +473,11 @@ Tournament started 2025/03/10 20:00:00 ET
 	}
 }
 
-// TestParseTournamentFile_Freeroll covers the ErrFreeroll path: no "Buy-In: $"
-// line anywhere in the file leaves BuyInUSD at 0.
+// TestParseTournamentFile_Freeroll covers the zero-buy-in path: no "Buy-In: $"
+// line anywhere in the file leaves BuyInUSD at 0, and the file parses to a
+// normal Tournament (no error) so the worker can ask for the entry cost. A
+// 3-player freeroll classifies as spingo but must not divide by a zero buy-in
+// to compute a Multiplier.
 func TestParseTournamentFile_Freeroll(t *testing.T) {
 	contents := `PokerStars Tournament #333456789, Freeroll
 Hold'em No Limit
@@ -484,9 +487,18 @@ Tournament started 2025/03/01 10:00:00 ET
   1: AnonHero01 (Cyprus), $0.00
 `
 	path := writeTournamentSummary(t, contents)
-	_, err := ParseTournamentFile(path, testScreenName)
-	if !errors.Is(err, ErrFreeroll) {
-		t.Errorf("expected ErrFreeroll, got %v", err)
+	tourn, err := ParseTournamentFile(path, testScreenName)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if tourn.BuyInUSD != 0 {
+		t.Errorf("BuyInUSD = %v, want 0", tourn.BuyInUSD)
+	}
+	if tourn.Type != "spingo" {
+		t.Errorf("Type = %q, want spingo (3 players)", tourn.Type)
+	}
+	if tourn.Multiplier != nil {
+		t.Errorf("Multiplier = %v, want nil (no dividing by a zero buy-in)", *tourn.Multiplier)
 	}
 }
 

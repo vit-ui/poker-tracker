@@ -568,9 +568,6 @@ func runWorker(
 
 		case "tournament":
 			t, err := parsers.ParseTournamentFile(event.Path, screenName)
-			if errors.Is(err, parsers.ErrFreeroll) {
-				continue
-			}
 			if err != nil {
 				slog.Error("parsing tournament", "path", event.Path, "err", err)
 				continue
@@ -593,7 +590,22 @@ func runWorker(
 				continue
 			}
 
-			if t.LikelySatellite {
+			// Two kinds of tournament can't be recorded straight away because
+			// the summary file doesn't carry enough to know the real money
+			// movement: a LikelySatellite (ticket vs cash entry unknown) and a
+			// zero-buy-in freeroll/Kick-Off (entry cost unknown — a free
+			// level-up win, a ticket, or cash). Both queue here and the bot
+			// asks the player; only the answer records the row. Satellite is
+			// checked first so a satellite that also has no buy-in keeps the
+			// ticket-vs-cash question.
+			var reason string
+			switch {
+			case t.LikelySatellite:
+				reason = config.PendingSatellite
+			case t.BuyInUSD == 0:
+				reason = config.PendingFreerollBuyin
+			}
+			if reason != "" {
 				pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
 				pending, err := config.LoadPendingTournaments(pendingPath)
 				if err != nil {
@@ -602,6 +614,7 @@ func runWorker(
 				}
 				pending = append(pending, config.PendingTournament{
 					Tournament:    t,
+					Reason:        reason,
 					FirstQueuedAt: time.Now(),
 					// Zero value, not time.Now(): the ticker only sends once
 					// time.Since(LastRemindedAt) exceeds 30 minutes, and a
@@ -821,14 +834,20 @@ func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournam
 		}
 	}
 	if recordedFound {
-		// A recorded zero buy-in is a satellite answered "used a ticket" —
-		// RecoverTicketPayout zeroed it (freerolls never reach storage), so
-		// the parsed buy-in can never equal it again. Without this exemption
-		// every ticket-resolved tournament would fail the content match on
-		// any stray re-trigger of its unchanged file, be re-queued, and have
-		// the already-answered satellite question re-asked — with a wrong
-		// second answer overwriting the correct $0 row as a cash loss.
-		if recorded.BuyInUSD == 0 && t.BuyInUSD > 0 {
+		// The buy-in can't always be compared, because either side may hold a
+		// value that came from a player answer the summary file doesn't
+		// reproduce:
+		//   - recorded 0, parsed > 0: a satellite answered "used a ticket"
+		//     (RecoverTicketPayout zeroed it), whose file still reads a real
+		//     buy-in on any stray re-trigger.
+		//   - parsed 0: a freeroll/Kick-Off, whose file never carries a buy-in
+		//     at all — after the player answered "paid $X" the recorded buy-in
+		//     is X, so a plain content match (0 vs X) would fail forever and
+		//     re-ask the entry-cost question with each stray re-trigger.
+		// In either case fall back to finish + field size (ignore buy-in).
+		// Without this, an already-answered tournament would be re-queued and
+		// re-asked, and a wrong second answer would overwrite the correct row.
+		if recorded.BuyInUSD == 0 || t.BuyInUSD == 0 {
 			return t.FinishPos == recorded.FinishPos && t.TotalPlayers == recorded.TotalPlayers, -1
 		}
 		return sameTournamentContent(t, recorded), -1

@@ -1,17 +1,12 @@
 package parsers
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
-
-// ErrFreeroll is returned by ParseTournamentFile when the file has no buy-in.
-// The caller should skip freerolls — they have no monetary value.
-var ErrFreeroll = errors.New("freeroll")
 
 // KnockoutSuffix marks a knockout (bounty) tournament on Tournament.Type,
 // e.g. "mtt-ko" or "spingo-ko". Only ever appended by the storage layer once
@@ -28,6 +23,11 @@ type Tournament struct {
 	Date         time.Time
 	Type         string // "spingo" or "mtt", plus KnockoutSuffix if it's a knockout tournament
 	TournamentID string
+	// BuyInUSD is 0 for a freeroll/Kick-Off — a summary with no "Buy-In: $"
+	// line. PokerStars never records how such an entry was obtained (a free
+	// level-up win, a ticket, or cash), so the worker queues these to ask the
+	// player for the real entry cost rather than dropping them; the bounty
+	// cash a knockout freeroll pays out is real money.
 	BuyInUSD     float64
 	PrizePoolUSD float64 // 0 when the pool itself is non-cash-denominated — see PrizePoolDescription
 
@@ -266,10 +266,6 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		}
 	}
 
-	if t.BuyInUSD == 0 {
-		return Tournament{}, ErrFreeroll
-	}
-
 	// Re-entries make BuyInUSD the sum of every entry's buy-in, and NetUSD the
 	// payout minus that total (NetUSD was computed in-loop against the base
 	// buy-in only). Both are no-ops for a single-entry tournament.
@@ -283,8 +279,10 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		t.Type = "spingo"
 		// A ticket-denominated prize pool (PrizePoolDescription set) has no
 		// real dollar amount to divide by BuyInUSD — Multiplier stays nil,
-		// same as it already does for every MTT.
-		if t.PrizePoolDescription == "" {
+		// same as it already does for every MTT. A freeroll (BuyInUSD 0) has
+		// no meaningful multiplier and would divide by zero, so it stays nil
+		// too.
+		if t.PrizePoolDescription == "" && t.BuyInUSD != 0 {
 			m := t.PrizePoolUSD / t.BuyInUSD
 			t.Multiplier = &m
 		}

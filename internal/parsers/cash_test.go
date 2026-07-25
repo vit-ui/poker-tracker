@@ -28,13 +28,18 @@ func isCashGameFile(path string) bool {
 	return strings.HasPrefix(line, "PokerStars Hand #") && !strings.Contains(line, "Tournament #")
 }
 
+// TestParseCashFile parses every committed hand-history fixture in
+// testdata/hand_history/ (anonymized, derived from real files) and asserts each
+// yields exactly one of a cash session or tournament-hand stats — and that both
+// kinds are present, since the folder holds cash hands and tournament hands
+// alike (which is why "cash" was the wrong old name for it).
 func TestParseCashFile(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "cash", "*.txt"))
+	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "hand_history", "*.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(files) == 0 {
-		t.Skip("no files found in testdata/cash/ — this directory is gitignored real player data, only present on a dev machine that's played hands; skipping on a checkout without it")
+		t.Fatal("no fixtures in testdata/hand_history/ — committed anonymized hand histories are expected here")
 	}
 	cashParsed := 0
 	tourneyParsed := 0
@@ -55,9 +60,9 @@ func TestParseCashFile(t *testing.T) {
 		}
 	}
 	if cashParsed == 0 {
-		t.Fatal("no cash game files found in testdata/cash/")
+		t.Fatal("no cash game hand histories found in testdata/hand_history/")
 	}
 	if tourneyParsed == 0 {
-		t.Fatal("no tournament hand history files found in testdata/cash/")
+		t.Fatal("no tournament hand histories found in testdata/hand_history/")
 	}
 }

@@ -1,0 +1,520 @@
+﻿PokerStars Hand #261537255702: Tournament #9000000001,  Hold'em No Limit - Level I (25/50) - 2026/07/25 0:10:09 BRT [2026/07/24 23:10:09 ET]
+Table '9000000001 1' 4-max Seat #1 is the button
+Seat 1: Player2 (1000 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1000 in chips, $0.88 bounty) 
+Seat 3: Player3 (1000 in chips, $0.88 bounty) 
+Seat 4: Player4 (1000 in chips, $0.88 bounty) is sitting out
+AnonHero01: posts small blind 25
+Player3: posts big blind 50
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Qd 8h]
+Player4: folds 
+Player4 has returned
+Player2: folds 
+AnonHero01: raises 100 to 150
+Player3: folds 
+Uncalled bet (100) returned to AnonHero01
+AnonHero01 collected 100 from pot
+AnonHero01: doesn't show hand 
+*** SUMMARY ***
+Total pot 100 | Rake 0 
+Seat 1: Player2 (button) folded before Flop (didn't bet)
+Seat 2: AnonHero01 (small blind) collected (100)
+Seat 3: Player3 (big blind) folded before Flop
+Seat 4: Player4 folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261537257239: Tournament #9000000001,  Hold'em No Limit - Level I (25/50) - 2026/07/25 0:10:27 BRT [2026/07/24 23:10:27 ET]
+Table '9000000001 1' 4-max Seat #2 is the button
+Seat 1: Player2 (1000 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1050 in chips, $0.88 bounty) 
+Seat 3: Player3 (950 in chips, $0.88 bounty) 
+Seat 4: Player4 (1000 in chips, $0.88 bounty) 
+Player3: posts small blind 25
+Player4: posts big blind 50
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Th Kc]
+Player2: folds 
+AnonHero01: raises 1000 to 1050 and is all-in
+Player3: folds 
+Player4: folds 
+Uncalled bet (1000) returned to AnonHero01
+AnonHero01 collected 125 from pot
+AnonHero01: doesn't show hand 
+*** SUMMARY ***
+Total pot 125 | Rake 0 
+Seat 1: Player2 folded before Flop (didn't bet)
+Seat 2: AnonHero01 (button) collected (125)
+Seat 3: Player3 (small blind) folded before Flop
+Seat 4: Player4 (big blind) folded before Flop
+
+
+
+PokerStars Hand #261537258389: Tournament #9000000001,  Hold'em No Limit - Level I (25/50) - 2026/07/25 0:10:40 BRT [2026/07/24 23:10:40 ET]
+Table '9000000001 1' 4-max Seat #3 is the button
+Seat 1: Player2 (1000 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1125 in chips, $0.88 bounty) 
+Seat 3: Player3 (925 in chips, $0.88 bounty) 
+Seat 4: Player4 (950 in chips, $0.88 bounty) 
+Player4: posts small blind 25
+Player2: posts big blind 50
+*** HOLE CARDS ***
+Dealt to AnonHero01 [3h 9s]
+AnonHero01: folds 
+Player3: raises 50 to 100
+Player4: folds 
+Player2: folds 
+Uncalled bet (50) returned to Player3
+Player3 collected 125 from pot
+Player3: doesn't show hand 
+*** SUMMARY ***
+Total pot 125 | Rake 0 
+Seat 1: Player2 (big blind) folded before Flop
+Seat 2: AnonHero01 folded before Flop (didn't bet)
+Seat 3: Player3 (button) collected (125)
+Seat 4: Player4 (small blind) folded before Flop
+
+
+
+PokerStars Hand #261537259356: Tournament #9000000001,  Hold'em No Limit - Level I (25/50) - 2026/07/25 0:10:52 BRT [2026/07/24 23:10:52 ET]
+Table '9000000001 1' 4-max Seat #4 is the button
+Seat 1: Player2 (950 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1125 in chips, $0.88 bounty) 
+Seat 3: Player3 (1000 in chips, $0.88 bounty) 
+Seat 4: Player4 (925 in chips, $0.88 bounty) 
+Player2: posts small blind 25
+AnonHero01: posts big blind 50
+*** HOLE CARDS ***
+Dealt to AnonHero01 [2c Ac]
+Player3: folds 
+Player4: calls 50
+Player2: folds 
+AnonHero01: raises 1075 to 1125 and is all-in
+Player4: calls 875 and is all-in
+Uncalled bet (200) returned to AnonHero01
+*** FLOP *** [Kh Qc 6h]
+*** TURN *** [Kh Qc 6h] [4c]
+*** RIVER *** [Kh Qc 6h 4c] [Jh]
+*** SHOW DOWN ***
+AnonHero01: shows [2c Ac] (high card Ace)
+Player4: shows [5h Ad] (high card Ace)
+AnonHero01 collected 938 from pot
+Player4 collected 937 from pot
+*** SUMMARY ***
+Total pot 1875 | Rake 0 
+Board [Kh Qc 6h 4c Jh]
+Seat 1: Player2 (small blind) folded before Flop
+Seat 2: AnonHero01 (big blind) showed [2c Ac] and won (938) with high card Ace
+Seat 3: Player3 folded before Flop (didn't bet)
+Seat 4: Player4 (button) showed [5h Ad] and won (937) with high card Ace
+
+
+
+PokerStars Hand #261537261727: Tournament #9000000001,  Hold'em No Limit - Level II (30/60) - 2026/07/25 0:11:20 BRT [2026/07/24 23:11:20 ET]
+Table '9000000001 1' 4-max Seat #1 is the button
+Seat 1: Player2 (925 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1138 in chips, $0.88 bounty) 
+Seat 3: Player3 (1000 in chips, $0.88 bounty) 
+Seat 4: Player4 (937 in chips, $0.88 bounty) 
+AnonHero01: posts small blind 30
+Player3: posts big blind 60
+*** HOLE CARDS ***
+Dealt to AnonHero01 [9d Jh]
+Player4: folds 
+Player2: folds 
+AnonHero01: raises 60 to 120
+Player3: calls 60
+*** FLOP *** [9c 7s Jc]
+AnonHero01: bets 1018 and is all-in
+Player3: folds 
+Uncalled bet (1018) returned to AnonHero01
+AnonHero01 collected 240 from pot
+AnonHero01: doesn't show hand 
+*** SUMMARY ***
+Total pot 240 | Rake 0 
+Board [9c 7s Jc]
+Seat 1: Player2 (button) folded before Flop (didn't bet)
+Seat 2: AnonHero01 (small blind) collected (240)
+Seat 3: Player3 (big blind) folded on the Flop
+Seat 4: Player4 folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261537263519: Tournament #9000000001,  Hold'em No Limit - Level II (30/60) - 2026/07/25 0:11:41 BRT [2026/07/24 23:11:41 ET]
+Table '9000000001 1' 4-max Seat #2 is the button
+Seat 1: Player2 (925 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1258 in chips, $0.88 bounty) 
+Seat 3: Player3 (880 in chips, $0.88 bounty) 
+Seat 4: Player4 (937 in chips, $0.88 bounty) 
+Player3: posts small blind 30
+Player4: posts big blind 60
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Th 6s]
+Player2: folds 
+AnonHero01: folds 
+Player3: raises 60 to 120
+Player4: folds 
+Uncalled bet (60) returned to Player3
+Player3 collected 120 from pot
+Player3: doesn't show hand 
+*** SUMMARY ***
+Total pot 120 | Rake 0 
+Seat 1: Player2 folded before Flop (didn't bet)
+Seat 2: AnonHero01 (button) folded before Flop (didn't bet)
+Seat 3: Player3 (small blind) collected (120)
+Seat 4: Player4 (big blind) folded before Flop
+
+
+
+PokerStars Hand #261537265159: Tournament #9000000001,  Hold'em No Limit - Level II (30/60) - 2026/07/25 0:12:00 BRT [2026/07/24 23:12:00 ET]
+Table '9000000001 1' 4-max Seat #3 is the button
+Seat 1: Player2 (925 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1258 in chips, $0.88 bounty) 
+Seat 3: Player3 (940 in chips, $0.88 bounty) 
+Seat 4: Player4 (877 in chips, $0.88 bounty) 
+Player4: posts small blind 30
+Player2: posts big blind 60
+*** HOLE CARDS ***
+Dealt to AnonHero01 [2h 9h]
+AnonHero01: folds 
+Player3: folds 
+Player4: calls 30
+Player2: raises 865 to 925 and is all-in
+Player4: calls 817 and is all-in
+Uncalled bet (48) returned to Player2
+*** FLOP *** [Kh 4d Kc]
+*** TURN *** [Kh 4d Kc] [6c]
+*** RIVER *** [Kh 4d Kc 6c] [5d]
+*** SHOW DOWN ***
+Player4: shows [Ks Jd] (three of a kind, Kings)
+Player2: shows [7h As] (a pair of Kings)
+Player4 collected 1754 from pot
+*** SUMMARY ***
+Total pot 1754 | Rake 0 
+Board [Kh 4d Kc 6c 5d]
+Seat 1: Player2 (big blind) showed [7h As] and lost with a pair of Kings
+Seat 2: AnonHero01 folded before Flop (didn't bet)
+Seat 3: Player3 (button) folded before Flop (didn't bet)
+Seat 4: Player4 (small blind) showed [Ks Jd] and won (1754) with three of a kind, Kings
+
+
+
+PokerStars Hand #261537267439: Tournament #9000000001,  Hold'em No Limit - Level II (30/60) - 2026/07/25 0:12:26 BRT [2026/07/24 23:12:26 ET]
+Table '9000000001 1' 4-max Seat #4 is the button
+Seat 1: Player2 (48 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1258 in chips, $0.88 bounty) 
+Seat 3: Player3 (940 in chips, $0.88 bounty) 
+Seat 4: Player4 (1754 in chips, $0.88 bounty) 
+Player2: posts small blind 30
+AnonHero01: posts big blind 60
+*** HOLE CARDS ***
+Dealt to AnonHero01 [2c 3c]
+Player3: folds 
+Player4: calls 60
+Player2: calls 18 and is all-in
+AnonHero01: checks 
+*** FLOP *** [Js Kc Qh]
+AnonHero01: checks 
+Player4: checks 
+*** TURN *** [Js Kc Qh] [Qd]
+AnonHero01: checks 
+Player4: checks 
+*** RIVER *** [Js Kc Qh Qd] [7s]
+AnonHero01: checks 
+Player4: checks 
+*** SHOW DOWN ***
+AnonHero01: shows [2c 3c] (a pair of Queens)
+Player4: shows [8s 2d] (a pair of Queens - King+Jack+Eight kicker)
+Player4 collected 24 from side pot
+Player2: shows [Jh 5d] (two pair, Queens and Jacks)
+Player2 collected 144 from main pot
+*** SUMMARY ***
+Total pot 168 Main pot 144. Side pot 24. | Rake 0 
+Board [Js Kc Qh Qd 7s]
+Seat 1: Player2 (small blind) showed [Jh 5d] and won (144) with two pair, Queens and Jacks
+Seat 2: AnonHero01 (big blind) showed [2c 3c] and lost with a pair of Queens
+Seat 3: Player3 folded before Flop (didn't bet)
+Seat 4: Player4 (button) showed [8s 2d] and won (24) with a pair of Queens
+
+
+
+PokerStars Hand #261537271183: Tournament #9000000001,  Hold'em No Limit - Level III (50/100) - 2026/07/25 0:13:10 BRT [2026/07/24 23:13:10 ET]
+Table '9000000001 1' 4-max Seat #1 is the button
+Seat 1: Player2 (144 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1198 in chips, $0.88 bounty) 
+Seat 3: Player3 (940 in chips, $0.88 bounty) 
+Seat 4: Player4 (1718 in chips, $0.88 bounty) 
+AnonHero01: posts small blind 50
+Player3: posts big blind 100
+*** HOLE CARDS ***
+Dealt to AnonHero01 [4c 3d]
+Player4: calls 100
+Player2: raises 44 to 144 and is all-in
+AnonHero01: folds 
+Player3: raises 796 to 940 and is all-in
+Player4: folds 
+Uncalled bet (796) returned to Player3
+*** FLOP *** [Ad Td 7c]
+*** TURN *** [Ad Td 7c] [9d]
+*** RIVER *** [Ad Td 7c 9d] [Kd]
+*** SHOW DOWN ***
+Player3: shows [Ah Jh] (a pair of Aces)
+Player2: shows [As 7s] (two pair, Aces and Sevens)
+Player2 collected 438 from pot
+*** SUMMARY ***
+Total pot 438 | Rake 0 
+Board [Ad Td 7c 9d Kd]
+Seat 1: Player2 (button) showed [As 7s] and won (438) with two pair, Aces and Sevens
+Seat 2: AnonHero01 (small blind) folded before Flop
+Seat 3: Player3 (big blind) showed [Ah Jh] and lost with a pair of Aces
+Seat 4: Player4 folded before Flop
+
+
+
+PokerStars Hand #261537273359: Tournament #9000000001,  Hold'em No Limit - Level III (50/100) - 2026/07/25 0:13:36 BRT [2026/07/24 23:13:36 ET]
+Table '9000000001 1' 4-max Seat #2 is the button
+Seat 1: Player2 (438 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1148 in chips, $0.88 bounty) 
+Seat 3: Player3 (796 in chips, $0.88 bounty) 
+Seat 4: Player4 (1618 in chips, $0.88 bounty) 
+Player3: posts small blind 50
+Player4: posts big blind 100
+*** HOLE CARDS ***
+Dealt to AnonHero01 [2c 6s]
+Player2: folds 
+AnonHero01: folds 
+Player3: raises 696 to 796 and is all-in
+Player4: folds 
+Uncalled bet (696) returned to Player3
+Player3 collected 200 from pot
+Player3: doesn't show hand 
+*** SUMMARY ***
+Total pot 200 | Rake 0 
+Seat 1: Player2 folded before Flop (didn't bet)
+Seat 2: AnonHero01 (button) folded before Flop (didn't bet)
+Seat 3: Player3 (small blind) collected (200)
+Seat 4: Player4 (big blind) folded before Flop
+
+
+
+PokerStars Hand #261537274777: Tournament #9000000001,  Hold'em No Limit - Level III (50/100) - 2026/07/25 0:13:53 BRT [2026/07/24 23:13:53 ET]
+Table '9000000001 1' 4-max Seat #3 is the button
+Seat 1: Player2 (438 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1148 in chips, $0.88 bounty) 
+Seat 3: Player3 (896 in chips, $0.88 bounty) 
+Seat 4: Player4 (1518 in chips, $0.88 bounty) 
+Player4: posts small blind 50
+Player2: posts big blind 100
+*** HOLE CARDS ***
+Dealt to AnonHero01 [6d 8d]
+AnonHero01: folds 
+Player3: folds 
+Player4: calls 50
+Player2: raises 338 to 438 and is all-in
+Player4: folds 
+Uncalled bet (338) returned to Player2
+Player2 collected 200 from pot
+*** SUMMARY ***
+Total pot 200 | Rake 0 
+Seat 1: Player2 (big blind) collected (200)
+Seat 2: AnonHero01 folded before Flop (didn't bet)
+Seat 3: Player3 (button) folded before Flop (didn't bet)
+Seat 4: Player4 (small blind) folded before Flop
+
+
+
+PokerStars Hand #261537276287: Tournament #9000000001,  Hold'em No Limit - Level III (50/100) - 2026/07/25 0:14:12 BRT [2026/07/24 23:14:12 ET]
+Table '9000000001 1' 4-max Seat #4 is the button
+Seat 1: Player2 (538 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1148 in chips, $0.88 bounty) 
+Seat 3: Player3 (896 in chips, $0.88 bounty) 
+Seat 4: Player4 (1418 in chips, $0.88 bounty) 
+Player2: posts small blind 50
+AnonHero01: posts big blind 100
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Jh 6s]
+Player3: folds 
+Player4: calls 100
+Player2: folds 
+AnonHero01: checks 
+*** FLOP *** [2d Ac 2s]
+AnonHero01: checks 
+Player4: bets 100
+AnonHero01: folds 
+Uncalled bet (100) returned to Player4
+Player4 collected 250 from pot
+*** SUMMARY ***
+Total pot 250 | Rake 0 
+Board [2d Ac 2s]
+Seat 1: Player2 (small blind) folded before Flop
+Seat 2: AnonHero01 (big blind) folded on the Flop
+Seat 3: Player3 folded before Flop (didn't bet)
+Seat 4: Player4 (button) collected (250)
+
+
+
+PokerStars Hand #261537278589: Tournament #9000000001,  Hold'em No Limit - Level IV (75/150) - 2026/07/25 0:14:40 BRT [2026/07/24 23:14:40 ET]
+Table '9000000001 1' 4-max Seat #1 is the button
+Seat 1: Player2 (488 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (1048 in chips, $0.88 bounty) 
+Seat 3: Player3 (896 in chips, $0.88 bounty) 
+Seat 4: Player4 (1568 in chips, $0.88 bounty) 
+AnonHero01: posts small blind 75
+Player3: posts big blind 150
+*** HOLE CARDS ***
+Dealt to AnonHero01 [4d 9h]
+Player4: calls 150
+Player2: folds 
+AnonHero01: folds 
+Player3: checks 
+*** FLOP *** [8d 6s Th]
+Player3: checks 
+Player4: bets 150
+Player3: raises 596 to 746 and is all-in
+Player4: folds 
+Uncalled bet (596) returned to Player3
+Player3 collected 675 from pot
+Player3: doesn't show hand 
+*** SUMMARY ***
+Total pot 675 | Rake 0 
+Board [8d 6s Th]
+Seat 1: Player2 (button) folded before Flop (didn't bet)
+Seat 2: AnonHero01 (small blind) folded before Flop
+Seat 3: Player3 (big blind) collected (675)
+Seat 4: Player4 folded on the Flop
+
+
+
+PokerStars Hand #261537281525: Tournament #9000000001,  Hold'em No Limit - Level IV (75/150) - 2026/07/25 0:15:14 BRT [2026/07/24 23:15:14 ET]
+Table '9000000001 1' 4-max Seat #2 is the button
+Seat 1: Player2 (488 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (973 in chips, $0.88 bounty) 
+Seat 3: Player3 (1271 in chips, $0.88 bounty) 
+Seat 4: Player4 (1268 in chips, $0.88 bounty) 
+Player3: posts small blind 75
+Player4: posts big blind 150
+*** HOLE CARDS ***
+Dealt to AnonHero01 [7h 7d]
+Player2: folds 
+AnonHero01: raises 823 to 973 and is all-in
+Player3: raises 298 to 1271 and is all-in
+Player4: folds 
+Uncalled bet (298) returned to Player3
+*** FLOP *** [6c 9c 7s]
+*** TURN *** [6c 9c 7s] [2s]
+*** RIVER *** [6c 9c 7s 2s] [6h]
+*** SHOW DOWN ***
+Player3: shows [Kh Ts] (a pair of Sixes)
+AnonHero01: shows [7h 7d] (a full house, Sevens full of Sixes)
+AnonHero01 collected 2096 from pot
+*** SUMMARY ***
+Total pot 2096 | Rake 0 
+Board [6c 9c 7s 2s 6h]
+Seat 1: Player2 folded before Flop (didn't bet)
+Seat 2: AnonHero01 (button) showed [7h 7d] and won (2096) with a full house, Sevens full of Sixes
+Seat 3: Player3 (small blind) showed [Kh Ts] and lost with a pair of Sixes
+Seat 4: Player4 (big blind) folded before Flop
+
+
+
+PokerStars Hand #261537283203: Tournament #9000000001,  Hold'em No Limit - Level IV (75/150) - 2026/07/25 0:15:33 BRT [2026/07/24 23:15:33 ET]
+Table '9000000001 1' 4-max Seat #3 is the button
+Seat 1: Player2 (488 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (2096 in chips, $0.88 bounty) 
+Seat 3: Player3 (298 in chips, $0.88 bounty) 
+Seat 4: Player4 (1118 in chips, $0.88 bounty) 
+Player4: posts small blind 75
+Player2: posts big blind 150
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Ac 9d]
+AnonHero01: raises 1946 to 2096 and is all-in
+Player3: calls 298 and is all-in
+Player4: folds 
+Player2: folds 
+Uncalled bet (1798) returned to AnonHero01
+*** FLOP *** [9h As Qh]
+*** TURN *** [9h As Qh] [Kh]
+*** RIVER *** [9h As Qh Kh] [7d]
+*** SHOW DOWN ***
+AnonHero01: shows [Ac 9d] (two pair, Aces and Nines)
+Player3: shows [Ks 9c] (two pair, Kings and Nines)
+AnonHero01 collected 821 from pot
+AnonHero01 wins $0.33 for eliminating Player3 and their own bounty increases by $0.44 to $1.32
+Player3 finished the tournament in 4th place
+*** SUMMARY ***
+Total pot 821 | Rake 0 
+Board [9h As Qh Kh 7d]
+Seat 1: Player2 (big blind) folded before Flop
+Seat 2: AnonHero01 showed [Ac 9d] and won (821) with two pair, Aces and Nines
+Seat 3: Player3 (button) showed [Ks 9c] and lost with two pair, Kings and Nines
+Seat 4: Player4 (small blind) folded before Flop
+
+
+
+PokerStars Hand #261537285960: Tournament #9000000001,  Hold'em No Limit - Level IV (75/150) - 2026/07/25 0:16:06 BRT [2026/07/24 23:16:06 ET]
+Table '9000000001 1' 4-max Seat #4 is the button
+Seat 1: Player2 (338 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (2619 in chips, $1.32 bounty) 
+Seat 4: Player4 (1043 in chips, $0.88 bounty) 
+Player2: posts small blind 75
+AnonHero01: posts big blind 150
+*** HOLE CARDS ***
+Dealt to AnonHero01 [6d 6h]
+Player4: calls 150
+Player2: raises 188 to 338 and is all-in
+AnonHero01: raises 2281 to 2619 and is all-in
+Player4: folds 
+Uncalled bet (2281) returned to AnonHero01
+*** FLOP *** [2h As 7d]
+*** TURN *** [2h As 7d] [8h]
+*** RIVER *** [2h As 7d 8h] [Tc]
+*** SHOW DOWN ***
+Player2: shows [5c Ad] (a pair of Aces)
+AnonHero01: shows [6d 6h] (a pair of Sixes)
+Player2 collected 826 from pot
+*** SUMMARY ***
+Total pot 826 | Rake 0 
+Board [2h As 7d 8h Tc]
+Seat 1: Player2 (small blind) showed [5c Ad] and won (826) with a pair of Aces
+Seat 2: AnonHero01 (big blind) showed [6d 6h] and lost with a pair of Sixes
+Seat 4: Player4 (button) folded before Flop
+
+
+
+PokerStars Hand #261537288740: Tournament #9000000001,  Hold'em No Limit - Level V (100/200) - 2026/07/25 0:16:38 BRT [2026/07/24 23:16:38 ET]
+Table '9000000001 1' 4-max Seat #1 is the button
+Seat 1: Player2 (826 in chips, $0.88 bounty) 
+Seat 2: AnonHero01 (2281 in chips, $1.32 bounty) 
+Seat 4: Player4 (893 in chips, $0.88 bounty) 
+AnonHero01: posts small blind 100
+Player4: posts big blind 200
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Kd Tc]
+Player2: raises 626 to 826 and is all-in
+AnonHero01: raises 1455 to 2281 and is all-in
+Player4: calls 693 and is all-in
+Uncalled bet (1388) returned to AnonHero01
+*** FLOP *** [8s Th 4s]
+*** TURN *** [8s Th 4s] [Kh]
+*** RIVER *** [8s Th 4s Kh] [Jh]
+*** SHOW DOWN ***
+AnonHero01: shows [Kd Tc] (two pair, Kings and Tens)
+Player4: shows [Qs Kc] (a pair of Kings)
+AnonHero01 collected 134 from side pot
+Player2: shows [Ad Ks] (a pair of Kings)
+AnonHero01 collected 2478 from main pot
+AnonHero01 wins $0.22 for eliminating Player2 and their own bounty increases by $0.44 to $1.76
+AnonHero01 wins $0.33 for eliminating Player4 and their own bounty increases by $0.44 to $2.20
+Player4 finished the tournament in 2nd place
+Player2 finished the tournament in 3rd place
+AnonHero01 wins the tournament - congratulations!
+*** SUMMARY ***
+Total pot 2612 Main pot 2478. Side pot 134. | Rake 0 
+Board [8s Th 4s Kh Jh]
+Seat 1: Player2 (button) showed [Ad Ks] and lost with a pair of Kings
+Seat 2: AnonHero01 (small blind) showed [Kd Tc] and won (2612) with two pair, Kings and Tens
+Seat 4: Player4 (big blind) showed [Qs Kc] and lost with a pair of Kings
+
+
+

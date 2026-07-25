@@ -57,8 +57,8 @@ type Bot struct {
 // single configured chat. It is only ever touched from the
 // update-processing goroutine (pollUpdates), so no locking is needed.
 type conversation struct {
-	flow  string // "", "screen_name", "menu", "credentials"
-	field string // field awaiting a text reply within flow, "" if none
+	flow  string // "", "screen_name", "menu", "credentials", "storage_credentials", "freeroll_buyin"
+	field string // field awaiting a text reply within flow, "" if none (freeroll_buyin: the tournament ID)
 
 	// menuMessageID is the message a cascade config menu currently lives in,
 	// captured when a value prompt is issued (beginValueEntry) so the typed
@@ -352,6 +352,8 @@ func (b *Bot) handleFlowReply(msg *tgbotapi.Message) {
 		b.handleCredentialsTextReply(msg.Chat.ID, msg.Text)
 	case "storage_credentials":
 		b.handleStorageCredentialsText(msg.Chat.ID, msg.Text)
+	case "freeroll_buyin":
+		b.handleFreerollBuyInReply(msg.Chat.ID, msg.Text)
 	}
 }
 
@@ -369,6 +371,10 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.resolveSatellite(chatID, messageID, strings.TrimPrefix(data, "satellite_cash:"), true)
 	case strings.HasPrefix(data, "satellite_ticket:"):
 		b.resolveSatellite(chatID, messageID, strings.TrimPrefix(data, "satellite_ticket:"), false)
+	case strings.HasPrefix(data, "freeroll_free:"):
+		b.recordFreerollEntry(chatID, messageID, strings.TrimPrefix(data, "freeroll_free:"), 0)
+	case strings.HasPrefix(data, "freeroll_paid:"):
+		b.beginFreerollBuyInEntry(chatID, messageID, strings.TrimPrefix(data, "freeroll_paid:"))
 	case data == "storage:yes":
 		b.resolveStorageSwitch(chatID, messageID, true)
 	case data == "storage:no":

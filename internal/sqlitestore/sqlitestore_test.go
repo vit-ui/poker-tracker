@@ -575,7 +575,7 @@ func TestAppendTournament_ReEntryRewriteUpsertsInPlace(t *testing.T) {
 		return parsers.Tournament{
 			Date:         date,
 			Type:         "mtt",
-			TournamentID: "4016700037",
+			TournamentID: "T9000000006",
 			BuyInUSD:     buyIn,
 			PrizePoolUSD: 77.76,
 			FinishPos:    finishPos,
@@ -799,6 +799,100 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 	}
 	if ledgerRowCount != 1 {
 		t.Errorf("ledger row count = %d, want 1 (every reparse must upsert, never append)", ledgerRowCount)
+	}
+}
+
+// TestFreeroll_BuyInAnswer covers a zero-buy-in freeroll/Kick-Off recorded
+// once the player answers the entry-cost question. The knockout-bounty cash the
+// hand history recorded (B=0.88 — the hero's three KOs in the won-freeroll
+// fixture, $0.33+$0.22+$0.33) must land in the ledger for both a free (buy-in
+// $0) and a paid answer, and regardless of whether the hand file arrives before
+// or after the answer.
+//
+// The parser gives a freeroll BuyInUSD 0, NetUSD 0 (no cash payout row); the
+// bot's recordFreerollEntry then sets BuyInUSD = X and NetUSD -= X before
+// AppendTournament (mirrored here). Expected finals, both orders:
+//
+//	free (X=0):  net = 0 + B      = 0.88,  prize = 0.88
+//	paid (X=1):  net = -1 + B     = -0.12, prize = 0.88
+func TestFreeroll_BuyInAnswer(t *testing.T) {
+	const bounty = 0.88 // the hero's three KOs: $0.33 + $0.22 + $0.33
+	date := mustTime(t, "2026-07-25T00:10:09Z")
+	// A freeroll as parsed: 4-player MTT, no buy-in, no cash payout row.
+	parsed := parsers.Tournament{
+		Date: date, Type: "mtt", TournamentID: "T9000000001",
+		BuyInUSD: 0, FinishPos: 1, TotalPlayers: 4, NetUSD: 0,
+	}
+	// answered applies recordFreerollEntry's arithmetic for buy-in X.
+	answered := func(buyIn float64) parsers.Tournament {
+		t := parsed
+		t.NetUSD -= buyIn
+		t.BuyInUSD = buyIn
+		return t
+	}
+
+	cases := []struct {
+		name                 string
+		buyIn                float64
+		handStatsAfterAnswer bool
+		wantNet              float64
+	}{
+		{"free, hand file first", 0, false, 0.88},
+		{"free, answer first", 0, true, 0.88},
+		{"paid $1, hand file first", 1.00, false, -0.12},
+		{"paid $1, answer first", 1.00, true, -0.12},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newTestStore(t)
+			record := func() {
+				if _, err := s.AppendTournament(answered(c.buyIn)); err != nil {
+					t.Fatalf("AppendTournament: %v", err)
+				}
+			}
+			handStats := func() {
+				if err := s.UpdateTournamentHandStats(parsed.TournamentID, 20, 10, 20, bounty, true); err != nil {
+					t.Fatalf("UpdateTournamentHandStats: %v", err)
+				}
+			}
+			if c.handStatsAfterAnswer {
+				record()
+				handStats()
+			} else {
+				handStats()
+				record()
+			}
+
+			var typeVal string
+			var netUSD, prizeWon float64
+			if err := s.db.QueryRow(`SELECT type, net_usd, prize_won_usd FROM tournaments WHERE tournament_id = ?`,
+				parsed.TournamentID).Scan(&typeVal, &netUSD, &prizeWon); err != nil {
+				t.Fatalf("reading tournament row: %v", err)
+			}
+			if typeVal != "mtt-ko" {
+				t.Errorf("Type = %q, want mtt-ko", typeVal)
+			}
+			if !closeEnough(netUSD, c.wantNet) {
+				t.Errorf("NetUSD = %v, want %v", netUSD, c.wantNet)
+			}
+			if !closeEnough(prizeWon, bounty) {
+				t.Errorf("PrizeWon = %v, want %v (bounty, buy-in netted out)", prizeWon, bounty)
+			}
+			bankroll, err := s.GetCurrentBankroll()
+			if err != nil {
+				t.Fatalf("GetCurrentBankroll: %v", err)
+			}
+			if !closeEnough(bankroll, c.wantNet) {
+				t.Errorf("bankroll = %v, want %v (ledger must reconcile)", bankroll, c.wantNet)
+			}
+			var ledgerRows int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM bankroll_ledger`).Scan(&ledgerRows); err != nil {
+				t.Fatalf("counting ledger rows: %v", err)
+			}
+			if ledgerRows != 1 {
+				t.Errorf("ledger row count = %d, want 1 (one row, corrected in place)", ledgerRows)
+			}
+		})
 	}
 }
 

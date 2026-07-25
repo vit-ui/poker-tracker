@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+- Freeroll / Kick-Off tournaments (no buy-in line in the summary) were silently
+  dropped — including the real knockout-bounty cash they pay out, which never
+  reached your bankroll, `/status`, `/stats`, or `/export`. They're now recorded:
+  the tracker asks, per tournament, whether you entered **🆓 Free** (won your way
+  in) or **💵 paid** (enter the amount), then logs the row with the bounty folded
+  in. The question re-sends every 30 minutes until answered, like the
+  satellite/ticket prompt.
+
 ### Added
 - Sheets connectivity heartbeat: on a Sheets-backed install, going unreachable now
   sends a Telegram message ("💔 Sheets unreachable since HH:MM"), repeated every
@@ -21,6 +30,13 @@ All notable changes to this project are documented here. The format follows
   stats update, or stake-change check now include the date, stake, and session ID
   (or tournament ID) of the specific record affected, instead of just the raw API
   error.
+
+### Internal
+- Test suite hardened against silent regressions: added an end-to-end suite that
+  drives the real file-watcher → worker → local database with committed sample
+  hand-history/summary files and checks the resulting bankroll, ledger, and
+  alerts. Test fixtures are now committed (anonymized) so the suite runs on any
+  checkout, and no real screen name or tournament ID remains in the source.
 
 ## v3.1 - 2026-07-23
 

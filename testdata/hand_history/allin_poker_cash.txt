@@ -1,0 +1,149 @@
+﻿PokerStars Hand #261497833159:  All-In Poker No Limit ($0.10/$0.20 - $5 Cap -  USD) - 2026/07/20 23:55:13 BRT [2026/07/20 22:55:13 ET]
+Table 'Gase' 6-max Seat #2 is the button
+Seat 1: Player2 ($3.64 in chips) 
+Seat 2: Player3 ($0.70 in chips) 
+Seat 3: Player4 ($2.06 in chips) 
+Seat 4: AnonHero01 ($1 in chips) 
+Seat 5: Player5 ($1 in chips) 
+Seat 6: Player6 ($2.73 in chips) 
+Player4: posts small blind $0.10
+AnonHero01: posts big blind $0.20
+*** HOLE CARDS ***
+Dealt to AnonHero01 [2d Js]
+Player5: folds 
+Player6: folds 
+Player2: folds 
+Player3: raises $0.50 to $0.70 and is all-in
+Player4: raises $1.36 to $2.06 and is all-in
+AnonHero01: folds 
+Uncalled bet ($1.36) returned to Player4
+*** FLOP *** [3h 7s 3s]
+*** TURN *** [3h 7s 3s] [6d]
+*** RIVER *** [3h 7s 3s 6d] [4h]
+*** SHOW DOWN ***
+Player4: shows [4d Qd] (two pair, Fours and Threes)
+Player3: shows [Ah 9s] (a pair of Threes)
+Player4 collected $1.53 from pot
+*** SUMMARY ***
+Total pot $1.60 | Rake $0.07 
+Board [3h 7s 3s 6d 4h]
+Seat 1: Player2 folded before Flop (didn't bet)
+Seat 2: Player3 (button) showed [Ah 9s] and lost with a pair of Threes
+Seat 3: Player4 (small blind) showed [4d Qd] and won ($1.53) with two pair, Fours and Threes
+Seat 4: AnonHero01 (big blind) folded before Flop
+Seat 5: Player5 folded before Flop (didn't bet)
+Seat 6: Player6 folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261497834932:  All-In Poker No Limit ($0.10/$0.20 - $5 Cap -  USD) - 2026/07/20 23:55:41 BRT [2026/07/20 22:55:41 ET]
+Table 'Gase' 6-max Seat #3 is the button
+Seat 2: Player3 ($0 in chips) is sitting out
+Seat 1: Player2 ($3.64 in chips) 
+Seat 3: Player4 ($2.89 in chips) 
+Seat 4: AnonHero01 ($0.80 in chips) 
+Seat 5: Player5 ($1 in chips) 
+Seat 6: Player6 ($2.73 in chips) 
+AnonHero01: posts small blind $0.10
+Player5: posts big blind $0.20
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Js Jd]
+Player6: folds 
+Player2: folds 
+Player4: raises $2.69 to $2.89 and is all-in
+AnonHero01: calls $0.70 and is all-in
+Player5: calls $0.80 and is all-in
+Uncalled bet ($1.89) returned to Player4
+*** FLOP *** [4c Kh 9d]
+*** TURN *** [4c Kh 9d] [6h]
+*** RIVER *** [4c Kh 9d 6h] [6d]
+*** SHOW DOWN ***
+Player5: shows [Kd 8h] (two pair, Kings and Sixes)
+Player4: shows [Kc Td] (two pair, Kings and Sixes - Ten kicker)
+Player4 collected $0.38 from side pot
+AnonHero01: shows [Js Jd] (two pair, Jacks and Sixes)
+Player4 collected $2.29 from main pot
+*** SUMMARY ***
+Total pot $2.80 Main pot $2.29. Side pot $0.38. | Rake $0.13 
+Board [4c Kh 9d 6h 6d]
+Seat 2: Player3
+Seat 1: Player2 folded before Flop (didn't bet)
+Seat 3: Player4 (button) showed [Kc Td] and won ($2.67) with two pair, Kings and Sixes
+Seat 4: AnonHero01 (small blind) showed [Js Jd] and lost with two pair, Jacks and Sixes
+Seat 5: Player5 (big blind) showed [Kd 8h] and lost with two pair, Kings and Sixes
+Seat 6: Player6 folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261497837687:  All-In Poker No Limit ($0.10/$0.20 - $5 Cap -  USD) - 2026/07/20 23:56:26 BRT [2026/07/20 22:56:26 ET]
+Table 'Gase' 6-max Seat #1 is the button
+Seat 1: Player2 ($3.84 in chips) 
+Seat 2: Player3 ($0.80 in chips) 
+Seat 3: Player4 ($4.56 in chips) 
+Seat 4: AnonHero01 ($1 in chips) 
+Seat 5: Player5 ($1 in chips) 
+Seat 6: Player6 ($2.73 in chips) 
+Player3: posts small blind $0.10
+Player4: posts big blind $0.20
+*** HOLE CARDS ***
+Dealt to AnonHero01 [6h Jc]
+AnonHero01: folds 
+Player5: raises $0.80 to $1 and is all-in
+Player6: folds 
+Player2: folds 
+Player3: folds 
+Player4: folds 
+Uncalled bet ($0.80) returned to Player5
+Player5 collected $0.50 from pot
+Player5: doesn't show hand 
+*** SUMMARY ***
+Total pot $0.50 | Rake $0 
+Seat 1: Player2 (button) folded before Flop (didn't bet)
+Seat 2: Player3 (small blind) folded before Flop
+Seat 3: Player4 (big blind) folded before Flop
+Seat 4: AnonHero01 folded before Flop (didn't bet)
+Seat 5: Player5 collected ($0.50)
+Seat 6: Player6 folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261497838398:  All-In Poker No Limit ($0.10/$0.20 - $5 Cap -  USD) - 2026/07/20 23:56:37 BRT [2026/07/20 22:56:37 ET]
+Table 'Gase' 6-max Seat #2 is the button
+Seat 1: Player2 ($3.84 in chips) 
+Seat 2: Player3 ($0.70 in chips) 
+Seat 3: Player4 ($4.36 in chips) 
+Seat 4: AnonHero01 ($1 in chips) 
+Seat 5: Player5 ($1.30 in chips) 
+Seat 6: Player6 ($2.73 in chips) 
+Player4: posts small blind $0.10
+AnonHero01: posts big blind $0.20
+*** HOLE CARDS ***
+Dealt to AnonHero01 [Td Jh]
+Player5: folds 
+Player6: folds 
+Player2: raises $3.64 to $3.84 and is all-in
+Player3: calls $0.70 and is all-in
+Player4: folds 
+AnonHero01: calls $0.80 and is all-in
+Uncalled bet ($2.84) returned to Player2
+*** FLOP *** [Kh 7c 4s]
+*** TURN *** [Kh 7c 4s] [9d]
+*** RIVER *** [Kh 7c 4s 9d] [Qs]
+*** SHOW DOWN ***
+AnonHero01: shows [Td Jh] (a straight, Nine to King)
+Player2: shows [8s 8h] (a pair of Eights)
+AnonHero01 collected $0.57 from side pot
+Player3: shows [5s 5c] (a pair of Fives)
+AnonHero01 collected $2.10 from main pot
+*** SUMMARY ***
+Total pot $2.80 Main pot $2.10. Side pot $0.57. | Rake $0.13 
+Board [Kh 7c 4s 9d Qs]
+Seat 1: Player2 showed [8s 8h] and lost with a pair of Eights
+Seat 2: Player3 (button) showed [5s 5c] and lost with a pair of Fives
+Seat 3: Player4 (small blind) folded before Flop
+Seat 4: AnonHero01 (big blind) showed [Td Jh] and won ($2.67) with a straight, Nine to King
+Seat 5: Player5 folded before Flop (didn't bet)
+Seat 6: Player6 folded before Flop (didn't bet)
+
+
+

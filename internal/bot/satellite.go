@@ -33,7 +33,14 @@ func (b *Bot) checkPendingTournaments(now time.Time) {
 		if now.Sub(pending[i].LastRemindedAt) <= 30*time.Minute {
 			continue
 		}
-		b.sendSatelliteMenu(pending[i].Tournament)
+		// Reason selects the question; empty means the original satellite one,
+		// so a pending file written before this field existed still asks
+		// ticket-vs-cash.
+		if pending[i].Reason == config.PendingFreerollBuyin {
+			b.sendFreerollBuyInMenu(pending[i].Tournament)
+		} else {
+			b.sendSatelliteMenu(pending[i].Tournament)
+		}
 		pending[i].LastRemindedAt = now
 		changed = true
 	}

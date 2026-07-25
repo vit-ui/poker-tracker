@@ -78,7 +78,7 @@ func TestCascadeRunningTotals(t *testing.T) {
 // here pins that both backends' re-entry arithmetic agrees — the "backends
 // never diverge" invariant for this path — without live-sheets I/O.
 func TestReEntryRewriteSequenceMath(t *testing.T) {
-	// The real T4016700037 sequence: three busts, no cashes, no bounties.
+	// A re-entry sequence (anonymized T9000000006): three busts, no cashes, no bounties.
 	busts := []struct{ buyIn, summaryNet float64 }{
 		{1.10, -1.10},
 		{2.20, -2.20},

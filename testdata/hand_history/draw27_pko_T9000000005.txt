@@ -1,0 +1,186 @@
+﻿PokerStars Hand #261495756617: Tournament #9000000005, $1.44+$1.50+$0.36 USD Single Draw 2-7 Lowball No Limit - Level V (40/80) - 2026/07/20 19:10:45 BRT [2026/07/20 18:10:45 ET]
+Table '9000000005 2' 7-max Seat #2 is the button
+Seat 1: AnonHero01 (3000 in chips, $1.50 bounty) 
+Seat 2: Player2 (1873 in chips, $1.50 bounty) is sitting out
+Seat 3: Player3 (2493 in chips, $1.50 bounty) 
+Seat 4: Player4 (4874 in chips, $1.50 bounty) 
+Seat 6: Player5 (16172 in chips, $5.25 bounty) 
+Seat 7: Player6 (3769 in chips, $1.50 bounty) 
+AnonHero01: posts the ante 20
+Player2: posts the ante 20
+Player3: posts the ante 20
+Player4: posts the ante 20
+Player5: posts the ante 20
+Player6: posts the ante 20
+Player3: posts small blind 40
+Player4: posts big blind 80
+*** DEALING HANDS ***
+Dealt to AnonHero01 [Jd 9s 9d Ah 7c]
+Player7 is disconnected 
+Player5: raises 120 to 200
+Player6: folds 
+AnonHero01: folds 
+Player2: folds 
+Player3: folds 
+Player4: calls 120
+Player4: discards 1 card
+Player5: discards 1 card
+Player4: checks 
+Player5: bets 5600
+Player4: folds 
+Uncalled bet (5600) returned to Player5
+Player5 collected 560 from pot
+Player5: doesn't show hand 
+*** SUMMARY ***
+Total pot 560 | Rake 0 
+Seat 1: AnonHero01 folded before Flop (didn't bet)
+Seat 2: Player2 (button) folded before Flop (didn't bet)
+Seat 3: Player3 (small blind) folded before Flop
+Seat 4: Player4 (big blind) folded on the Flop
+Seat 6: Player5 collected (560)
+Seat 7: Player6 folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261495765556: Tournament #9000000005, $1.44+$1.50+$0.36 USD Single Draw 2-7 Lowball No Limit - Level V (40/80) - 2026/07/20 19:11:34 BRT [2026/07/20 18:11:34 ET]
+Table '9000000005 2' 7-max Seat #3 is the button
+Seat 1: AnonHero01 (2980 in chips, $1.50 bounty) 
+Seat 2: Player2 (1853 in chips, $1.50 bounty) is sitting out
+Seat 3: Player3 (2433 in chips, $1.50 bounty) 
+Seat 4: Player4 (4654 in chips, $1.50 bounty) 
+Seat 5: Player7 (3000 in chips, $1.50 bounty) 
+Seat 6: Player5 (16512 in chips, $5.25 bounty) 
+Seat 7: Player6 (3749 in chips, $1.50 bounty) 
+AnonHero01: posts the ante 20
+Player2: posts the ante 20
+Player3: posts the ante 20
+Player4: posts the ante 20
+Player7: posts the ante 20
+Player5: posts the ante 20
+Player6: posts the ante 20
+Player4: posts small blind 40
+Player7: posts big blind 80
+*** DEALING HANDS ***
+Dealt to AnonHero01 [3c 8c Ah 6h 7d]
+Player5: folds 
+Player6: raises 160 to 240
+AnonHero01: calls 240
+Player2: folds 
+Player3: folds 
+Player4: folds 
+Player7: calls 160
+Player7: stands pat 
+Player6: discards 1 card
+AnonHero01: discards 1 card [Ah]
+Dealt to AnonHero01 [3c 8c 6h 7d] [7c]
+Player7: checks 
+Player6: checks 
+AnonHero01: checks 
+*** SHOW DOWN ***
+Player7: shows [8d Jh 2d 3s 6d] (Lo: J,8,6,3,2)
+Player6: mucks hand 
+AnonHero01: mucks hand 
+Player7 collected 900 from pot
+*** SUMMARY ***
+Total pot 900 | Rake 0 
+Seat 1: AnonHero01 mucked [3c 8c 6h 7d 7c]
+Seat 2: Player2 folded before Flop (didn't bet)
+Seat 3: Player3 (button) folded before Flop (didn't bet)
+Seat 4: Player4 (small blind) folded before Flop
+Seat 5: Player7 (big blind) showed [8d Jh 2d 3s 6d] and won (900) with Lo: J,8,6,3,2
+Seat 6: Player5 folded before Flop (didn't bet)
+Seat 7: Player6 mucked [3h 5d 2h 4s Kh]
+
+
+
+PokerStars Hand #261495771722: Tournament #9000000005, $1.44+$1.50+$0.36 USD Single Draw 2-7 Lowball No Limit - Level V (40/80) - 2026/07/20 19:12:07 BRT [2026/07/20 18:12:07 ET]
+Table '9000000005 2' 7-max Seat #4 is the button
+Seat 1: AnonHero01 (2720 in chips, $1.50 bounty) 
+Seat 2: Player2 (1833 in chips, $1.50 bounty) is sitting out
+Seat 3: Player3 (2413 in chips, $1.50 bounty) 
+Seat 4: Player4 (4594 in chips, $1.50 bounty) 
+Seat 5: Player7 (3640 in chips, $1.50 bounty) 
+Seat 6: Player5 (16492 in chips, $5.25 bounty) 
+Seat 7: Player6 (3489 in chips, $1.50 bounty) 
+AnonHero01: posts the ante 20
+Player2: posts the ante 20
+Player3: posts the ante 20
+Player4: posts the ante 20
+Player7: posts the ante 20
+Player5: posts the ante 20
+Player6: posts the ante 20
+Player7: posts small blind 40
+Player5: posts big blind 80
+*** DEALING HANDS ***
+Dealt to AnonHero01 [6s 2h 7c Qh 5s]
+Player6: folds 
+AnonHero01: raises 80 to 160
+Player2: folds 
+Player3: folds 
+Player4: folds 
+Player7: folds 
+Player5: folds 
+Uncalled bet (80) returned to AnonHero01
+AnonHero01 collected 340 from pot
+AnonHero01: doesn't show hand 
+*** SUMMARY ***
+Total pot 340 | Rake 0 
+Seat 1: AnonHero01 collected (340)
+Seat 2: Player2 folded before Flop (didn't bet)
+Seat 3: Player3 folded before Flop (didn't bet)
+Seat 4: Player4 (button) folded before Flop (didn't bet)
+Seat 5: Player7 (small blind) folded before Flop
+Seat 6: Player5 (big blind) folded before Flop
+Seat 7: Player6 folded before Flop (didn't bet)
+
+
+
+PokerStars Hand #261495777390: Tournament #9000000005, $1.44+$1.50+$0.36 USD Single Draw 2-7 Lowball No Limit - Level V (40/80) - 2026/07/20 19:12:38 BRT [2026/07/20 18:12:38 ET]
+Table '9000000005 2' 7-max Seat #5 is the button
+Seat 1: AnonHero01 (2960 in chips, $1.50 bounty) 
+Seat 2: Player2 (1813 in chips, $1.50 bounty) is sitting out
+Seat 3: Player3 (2393 in chips, $1.50 bounty) 
+Seat 4: Player4 (4574 in chips, $1.50 bounty) 
+Seat 5: Player7 (3580 in chips, $1.50 bounty) 
+Seat 6: Player5 (16392 in chips, $5.25 bounty) 
+Seat 7: Player6 (3469 in chips, $1.50 bounty) 
+AnonHero01: posts the ante 20
+Player2: posts the ante 20
+Player3: posts the ante 20
+Player4: posts the ante 20
+Player7: posts the ante 20
+Player5: posts the ante 20
+Player6: posts the ante 20
+Player5: posts small blind 40
+Player6: posts big blind 80
+*** DEALING HANDS ***
+Dealt to AnonHero01 [4d Qc 7s 6h 8h]
+AnonHero01: calls 80
+Player2: folds 
+Player3: folds 
+Player4: folds 
+Player7: folds 
+Player5: folds 
+Player6: checks 
+Player6: discards 3 cards
+AnonHero01: discards 1 card [Qc]
+Dealt to AnonHero01 [4d 7s 6h 8h] [Qs]
+Player6: checks 
+AnonHero01: bets 255
+Player6: calls 255
+*** SHOW DOWN ***
+AnonHero01: shows [4d 7s 6h 8h Qs] (Lo: Q,8,7,6,4)
+Player6: shows [8c 7d 9h 4h 5s] (Lo: 9,8,7,5,4)
+Player6 collected 850 from pot
+*** SUMMARY ***
+Total pot 850 | Rake 0 
+Seat 1: AnonHero01 showed [4d 7s 6h 8h Qs] and lost with Lo: Q,8,7,6,4
+Seat 2: Player2 folded before Flop (didn't bet)
+Seat 3: Player3 folded before Flop (didn't bet)
+Seat 4: Player4 folded before Flop (didn't bet)
+Seat 5: Player7 (button) folded before Flop (didn't bet)
+Seat 6: Player5 (small blind) folded before Flop
+Seat 7: Player6 (big blind) showed [8c 7d 9h 4h 5s] and won (850) with Lo: 9,8,7,5,4
+
+
+
