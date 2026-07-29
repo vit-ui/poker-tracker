@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
@@ -350,5 +351,76 @@ func TestPipeline_HardStopSessionLoss(t *testing.T) {
 	p.waitFor("hard stop alert", func() bool { return p.countAlerts("🛑 Hard Stop triggered") >= 1 })
 	if n := p.countAlerts("🛑 Hard Stop triggered"); n != 1 {
 		t.Errorf("got %d hard-stop alerts, want 1; alerts=%v", n, p.alertSnapshot())
+	}
+}
+
+// TestPipeline_IncrementalGrowingFile drives a hand-history file that grows
+// across two separate watcher events — the real per-hand append pattern — so it
+// exercises runWorker's incremental parse-state map end-to-end: event 1 records
+// the first hands with no prior state, event 2 appends more and is parsed with
+// the carried state (resume from a non-zero byte offset). The final recorded
+// session must equal a whole-file parse regardless, which also guards the
+// self-healing fallback: a wiring bug can't corrupt the data, only lose the
+// speedup, and this asserts the data is right.
+func TestPipeline_IncrementalGrowingFile(t *testing.T) {
+	full, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Split after the first two hands so event 2 resumes from offset > 0.
+	sep := "PokerStars Hand #"
+	text := string(full)
+	var offs []int
+	first := true // the file's first header may sit just past a BOM, not a newline
+	for start := 0; ; {
+		idx := strings.Index(text[start:], sep)
+		if idx < 0 {
+			break
+		}
+		abs := start + idx
+		if first || text[abs-1] == '\n' {
+			offs = append(offs, abs)
+			first = false
+		}
+		start = abs + len(sep)
+	}
+	if len(offs) < 3 {
+		t.Fatalf("need >=3 hands in nlhe_cash.txt, found %d", len(offs))
+	}
+	prefix := full[:offs[2]] // hands 1..2
+
+	p := newPipeline(t, &config.Config{})
+
+	p.writeHH("nlhe_cash.txt", prefix)
+	p.waitFor("first two hands recorded", func() bool {
+		s, err := p.store.GetAllCashSessions()
+		return err == nil && len(s) == 1 && s[0].Hands == 2
+	})
+
+	p.writeHH("nlhe_cash.txt", full)
+	p.waitFor("all four hands recorded, bankroll consistent", func() bool {
+		s, err := p.store.GetAllCashSessions()
+		return err == nil && len(s) == 1 && s[0].Hands == 4 && closeEnough(p.bankroll(), s[0].NetUSD)
+	})
+
+	// The grown-across-two-events session must match a whole-file parse.
+	want, _, err := parsers.ParseCashFile(filepath.Join(p.hhDir, "nlhe_cash.txt"), e2eHero)
+	if err != nil {
+		t.Fatalf("whole-file parse: %v", err)
+	}
+	got, _ := p.store.GetAllCashSessions()
+	if got[0].Hands != want.Hands || !closeEnough(got[0].NetUSD, want.NetUSD) || !closeEnough(got[0].RakeUSD, want.RakeUSD) {
+		t.Errorf("grown session = {hands %d, net %.4f, rake %.4f}, whole-file = {hands %d, net %.4f, rake %.4f}",
+			got[0].Hands, got[0].NetUSD, got[0].RakeUSD, want.Hands, want.NetUSD, want.RakeUSD)
+	}
+}
+
+// writeHH creates or grows a hand-history file in the watched folder; the real
+// watcher then debounces and delivers it, exactly as PokerStars appending a hand
+// would.
+func (p *pipeline) writeHH(name string, data []byte) {
+	p.t.Helper()
+	if err := os.WriteFile(filepath.Join(p.hhDir, name), data, 0644); err != nil {
+		p.t.Fatal(err)
 	}
 }

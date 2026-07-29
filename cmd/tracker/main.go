@@ -435,6 +435,25 @@ func resolvePaths(cfg *config.Config) (string, string) {
 // the next quiet period).
 const cashSessionSummaryQuietPeriod = 5 * time.Minute
 
+// parseEntry is one file's carried incremental-parse state plus when it was
+// last touched, so idle entries can be evicted (see parseStateCap/TTL).
+type parseEntry struct {
+	state    *parsers.ParseState
+	lastSeen time.Time
+}
+
+// parseStateCap and parseStateTTL bound the per-file parse-state map runWorker
+// keeps for the incremental parser. A long-lived --serve watching a folder that
+// accumulates a new hand-history file per table per day would otherwise grow the
+// map without limit; when it exceeds the cap, entries not touched within the TTL
+// (finished sessions) are dropped. An actively-growing file keeps a recent
+// lastSeen and is never evicted; a wrongly-evicted file just full-reparses once
+// on its next event (always correct), so the bound can be aggressive.
+const (
+	parseStateCap = 128
+	parseStateTTL = 12 * time.Hour
+)
+
 func runWorker(
 	sessionChan <-chan watcher.FileEvent,
 	alertChan chan<- string,
@@ -459,6 +478,12 @@ func runWorker(
 	// Sent at most once per run: a missing screen name skips every file, so
 	// without this a folder of unparsed files would fire one prompt each.
 	screenNameWarned := false
+
+	// parseStates carries per-file incremental parse state so a growing session
+	// file is resumed from its last byte offset instead of re-parsed from zero
+	// on every hand event (parsers.ParseCashFileFrom). Local to this goroutine —
+	// no global state — and bounded (parseStateCap/TTL).
+	parseStates := make(map[string]*parseEntry)
 
 	for event := range sessionChan {
 		// Re-read on every event rather than capturing once at startup —
@@ -490,11 +515,25 @@ func runWorker(
 
 		switch event.Type {
 		case "cash":
-			session, tourneyStats, err := parsers.ParseCashFile(event.Path, screenName)
+			now := time.Now()
+			if len(parseStates) > parseStateCap {
+				for p, e := range parseStates {
+					if now.Sub(e.lastSeen) > parseStateTTL {
+						delete(parseStates, p)
+					}
+				}
+			}
+			var prior *parsers.ParseState
+			if e := parseStates[event.Path]; e != nil {
+				prior = e.state
+			}
+			session, tourneyStats, newState, err := parsers.ParseCashFileFrom(event.Path, screenName, prior)
 			if err != nil {
 				slog.Error("parsing cash file", "path", event.Path, "err", err)
 				continue
 			}
+			// newState is always non-nil on the no-error path.
+			parseStates[event.Path] = &parseEntry{state: newState, lastSeen: now}
 			if session != nil {
 				before := sheetsPending(sc)
 				if err := sc.AppendCashSession(*session); err != nil {
