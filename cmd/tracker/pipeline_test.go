@@ -27,9 +27,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
+	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
+	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
@@ -89,7 +92,21 @@ func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 			t.Logf("watcher stopped: %v", err)
 		}
 	}()
-	go runWorker(sessionChan, alertChan, store, configPath, lockfilePath)
+
+	// Drive the real split pipeline: watcher -> collector -> in-process link ->
+	// server -> store, with the server's lock commands flowing back to the
+	// collector's enforcement (which writes the lockfile the hard-stop scenario
+	// asserts). The Telegram send is still the only manual boundary.
+	link := transport.NewLink()
+	srv, err := server.NewServer(store, configPath, link, alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go srv.Run()
+	collector := client.NewCollector(link, lockfilePath)
+	go collector.Run(sessionChan, configPath)
+	go client.RunEnforcementLoop(lockfilePath, done)
+
 	go func() {
 		for m := range alertChan {
 			p.mu.Lock()

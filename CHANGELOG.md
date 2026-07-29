@@ -4,7 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## v3.5 - 2026-07-29
+## Unreleased
+
+### Changed
+
+- Internal restructuring toward the upcoming client/server split — no user-visible change. The one process
+  is now organized into two roles connected by an in-process link: a **collector** (`internal/client`) that
+  watches the PokerStars folders and sends each file's new bytes up, and a **server** (`internal/server`)
+  that reconstructs the file, parses it, writes storage, evaluates the hard stop and alerts, and runs the
+  Telegram bot. Message types live in `internal/transport`. The hard stop is now split too: `internal/hardstop`
+  only *decides*, and enforcement (killing PokerStars, writing the lockfile) is carried out by the collector.
+  All behavior — stored data, alerts, hard-stop locking, `/export` — is unchanged, verified by the existing
+  end-to-end pipeline suite driving the real watcher → collector → server → sqlite path with no assertion
+  changes.
 
 ### Changed
 
