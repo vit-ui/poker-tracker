@@ -20,9 +20,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 )
@@ -1413,12 +1415,17 @@ func (b *Bot) startScheduleFlow(chatID int64) {
 // stop; anything else opens the hard-stop menu.
 func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 	if strings.TrimSpace(args) == "trigger" {
-		manualAlert := make(chan string, 1)
-		if err := hardstop.ManualTrigger(b.configPath, b.lockfilePath, manualAlert); err != nil {
+		var alertText string
+		err := hardstop.ManualTrigger(b.configPath, func(reason string, durationHours int) {
+			lock, text := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
+			client.Enforce(b.lockfilePath, lock)
+			alertText = text
+		})
+		if err != nil {
 			send(b.tg, chatID, "Configure duration first with /hardstop")
 			return
 		}
-		send(b.tg, chatID, <-manualAlert)
+		send(b.tg, chatID, alertText)
 		return
 	}
 	b.startHardstopFlow(chatID)

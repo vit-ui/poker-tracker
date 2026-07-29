@@ -16,6 +16,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/vit-ui/self-tracker/internal/bot"
+	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/parsers"
@@ -377,7 +378,7 @@ func runServe() {
 	// Runs for the life of this process — the done channel is never closed,
 	// since RunEnforcementLoop is only meant to stop when --serve itself
 	// exits.
-	go hardstop.RunEnforcementLoop(lockfilePath, make(chan struct{}))
+	go client.RunEnforcementLoop(lockfilePath, make(chan struct{}))
 
 	go func() {
 		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher)
@@ -485,6 +486,15 @@ func runWorker(
 	// no global state — and bounded (parseStateCap/TTL).
 	parseStates := make(map[string]*parseEntry)
 
+	// enforce turns a hard-stop decision into its two effects: the collector
+	// kills PokerStars and writes the lockfile (client.Enforce), and the alert
+	// goes to Telegram. hardstop only decides; this callback carries it out.
+	enforce := func(reason string, durationHours int) {
+		lock, alert := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
+		client.Enforce(lockfilePath, lock)
+		alertChan <- alert
+	}
+
 	for event := range sessionChan {
 		// Re-read on every event rather than capturing once at startup —
 		// the startup guard no longer requires pokerstars_screen_name to be
@@ -551,7 +561,7 @@ func runWorker(
 				// back when it did its own fetch.
 				ledger, dayTournaments := fetchEvalData(sc, &evalCfg, false)
 				bankroll := ledgerBankroll(ledger)
-				if err := hardstop.Evaluate(*session, &evalCfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
+				if err := hardstop.Evaluate(*session, &evalCfg, ledger, dayTournaments, enforce); err != nil {
 					slog.Error("evaluating hard stop", "err", err)
 				}
 				bot.EvaluateSessionLossAlert(*session, &evalCfg, bankroll, alertChan)
@@ -677,7 +687,7 @@ func runWorker(
 			// of what's configured.
 			ledger, dayTournaments := fetchEvalData(sc, &evalCfg, true)
 			bankroll := ledgerBankroll(ledger)
-			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, lockfilePath, alertChan); err != nil {
+			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, enforce); err != nil {
 				slog.Error("evaluating hard stop", "err", err)
 			}
 			bot.EvaluateDownswingAlert(t.BuyInUSD, &evalCfg, ledger, bankroll, alertChan)

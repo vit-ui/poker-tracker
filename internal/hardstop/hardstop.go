@@ -1,12 +1,15 @@
-// Package hardstop implements the hard stop trigger: detecting loss conditions,
-// killing PokerStars, and writing/reading the lockfile.
+// Package hardstop implements the hard stop decision: detecting loss
+// conditions and deciding when to trigger. Deciding is all this package does —
+// the enforcement half (killing PokerStars, writing the lockfile) lives with
+// the collector in internal/client, because only the machine PokerStars runs
+// on can carry it out. A decision here is signalled through an onTrigger
+// callback the caller supplies; the caller turns it into the alert plus the
+// lock command the client enforces.
 package hardstop
 
 import (
 	"fmt"
-	"log/slog"
 	"math"
-	"os/exec"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -14,13 +17,13 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// Evaluate checks hard stop conditions after a cash session and triggers a
-// hard stop if any condition is met. ledger is the full Bankroll Ledger and
-// dayTournaments the current poker day's tournaments, both fetched once per
-// file event by the worker (main.runWorker) and shared with the alert
-// evaluators — no function on this path fetches from the store itself, so a
-// hand that runs every check costs one ledger read, not six.
-func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, lockfilePath string, alertChan chan<- string) error {
+// Evaluate checks hard stop conditions after a cash session and calls onTrigger
+// (reason, durationHours) for the first condition met, if any. ledger is the
+// full Bankroll Ledger and dayTournaments the current poker day's tournaments,
+// both fetched once per file event by the worker (internal/server) and shared
+// with the alert evaluators — no function on this path fetches from the store
+// itself, so a hand that runs every check costs one ledger read, not six.
+func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, onTrigger func(reason string, durationHours int)) error {
 	h := cfg.Hardstop
 	if h.SessionLossBuyins == nil && h.ConsecutiveLosses == nil && h.DailyLossUSD == nil &&
 		h.SpingoDailyLossUSD == nil && h.DownswingBuyins == nil && h.DurationHours == nil {
@@ -32,7 +35,7 @@ func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.
 		if h.DurationHours == nil {
 			return fmt.Errorf("session_loss_buyins configured without duration_hours")
 		}
-		trigger("session_loss_buyins", *h.DurationHours, lockfilePath, alertChan)
+		onTrigger("session_loss_buyins", *h.DurationHours)
 		return nil
 	}
 
@@ -40,17 +43,17 @@ func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.
 		if h.DurationHours == nil {
 			return fmt.Errorf("consecutive_losses configured without duration_hours")
 		}
-		trigger("consecutive_losses", *h.DurationHours, lockfilePath, alertChan)
+		onTrigger("consecutive_losses", *h.DurationHours)
 		return nil
 	}
 
-	if triggered, err := evaluateDownswing(cfg, ledger, session.BuyInUSD, lockfilePath, alertChan); err != nil {
+	if triggered, err := evaluateDownswing(cfg, ledger, session.BuyInUSD, onTrigger); err != nil {
 		return err
 	} else if triggered {
 		return nil
 	}
 
-	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, lockfilePath, alertChan)
+	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, onTrigger)
 	return err
 }
 
@@ -232,11 +235,11 @@ func DownswingExceeds(peak, current, buyInUSD, thresholdBuyins float64) bool {
 
 // evaluateDownswing checks whether the rolling 30-day results-only equity
 // curve has dropped from its peak by more than DownswingBuyins ×
-// buyInUSD, and triggers a hard stop if so. buyInUSD of 0 (nil buy-in, or a
+// buyInUSD, and calls onTrigger if so. buyInUSD of 0 (nil buy-in, or a
 // satellite entry corrected to a ticket — see RecoverTicketPayout in
 // bot.go) skips the check entirely: a 0 buy-in would make the threshold 0,
 // so any downswing at all would trigger it.
-func evaluateDownswing(cfg *config.Config, ledger []storage.LedgerEntry, buyInUSD float64, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
+func evaluateDownswing(cfg *config.Config, ledger []storage.LedgerEntry, buyInUSD float64, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.DownswingBuyins == nil || buyInUSD == 0 {
 		return false, nil
@@ -247,7 +250,7 @@ func evaluateDownswing(cfg *config.Config, ledger []storage.LedgerEntry, buyInUS
 		if h.DurationHours == nil {
 			return false, fmt.Errorf("downswing_buyins configured without duration_hours")
 		}
-		trigger("downswing_buyins", *h.DurationHours, lockfilePath, alertChan)
+		onTrigger("downswing_buyins", *h.DurationHours)
 		return true, nil
 	}
 	return false, nil
@@ -283,11 +286,11 @@ func SpingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdUSD float
 
 // evaluateDailyLoss runs two independent daily-loss checks for the current
 // poker day — a Spin & Go-specific one and a unified one across all game
-// types — and triggers a hard stop if either has fallen below its
-// configured threshold. Either check firing is sufficient; they are not
-// mutually exclusive, but only the first one to fire actually triggers —
-// triggered reports whether one did.
-func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, lockfilePath string, alertChan chan<- string) (triggered bool, err error) {
+// types — and calls onTrigger if either has fallen below its configured
+// threshold. Either check firing is sufficient; they are not mutually
+// exclusive, but only the first one to fire actually triggers — triggered
+// reports whether one did.
+func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.SpingoDailyLossUSD == nil && h.DailyLossUSD == nil {
 		return false, nil
@@ -298,7 +301,7 @@ func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTour
 			if h.DurationHours == nil {
 				return false, fmt.Errorf("spingo_daily_loss_usd configured without duration_hours")
 			}
-			trigger("spingo_daily_loss_usd", *h.DurationHours, lockfilePath, alertChan)
+			onTrigger("spingo_daily_loss_usd", *h.DurationHours)
 			return true, nil
 		}
 	}
@@ -308,7 +311,7 @@ func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTour
 			if h.DurationHours == nil {
 				return false, fmt.Errorf("daily_loss_usd configured without duration_hours")
 			}
-			trigger("daily_loss_usd", *h.DurationHours, lockfilePath, alertChan)
+			onTrigger("daily_loss_usd", *h.DurationHours)
 			return true, nil
 		}
 	}
@@ -320,19 +323,21 @@ func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTour
 // Spin & Go). The downswing and daily loss checks re-evaluate against the
 // whole account rather than filtering by t's type. ledger and dayTournaments
 // carry the same worker-fetched, once-per-event data Evaluate documents.
-func EvaluateTournament(t parsers.Tournament, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, lockfilePath string, alertChan chan<- string) error {
-	if triggered, err := evaluateDownswing(cfg, ledger, t.BuyInUSD, lockfilePath, alertChan); err != nil {
+func EvaluateTournament(t parsers.Tournament, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, onTrigger func(reason string, durationHours int)) error {
+	if triggered, err := evaluateDownswing(cfg, ledger, t.BuyInUSD, onTrigger); err != nil {
 		return err
 	} else if triggered {
 		return nil
 	}
 
-	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, lockfilePath, alertChan)
+	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, onTrigger)
 	return err
 }
 
-// ManualTrigger activates a hard stop on demand, for /hardstop trigger.
-func ManualTrigger(configPath, lockfilePath string, alertChan chan<- string) error {
+// ManualTrigger decides a hard stop on demand, for /hardstop trigger: it loads
+// the configured duration and, if set, calls onTrigger("manual", duration).
+// Errors if duration_hours is unset.
+func ManualTrigger(configPath string, onTrigger func(reason string, durationHours int)) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -340,73 +345,26 @@ func ManualTrigger(configPath, lockfilePath string, alertChan chan<- string) err
 	if cfg.Hardstop.DurationHours == nil {
 		return fmt.Errorf("duration_hours is not configured, run /hardstop first")
 	}
-	trigger("manual", *cfg.Hardstop.DurationHours, lockfilePath, alertChan)
+	onTrigger("manual", *cfg.Hardstop.DurationHours)
 	return nil
 }
 
-// lockfileActiveAt reports whether the lockfile at lockfilePath exists and
-// hasn't expired as of now. Goes through config.LoadLock rather than reading
-// the file directly — config.go documents that no other package touches
-// config.json/lockfile.json directly. Never deletes the file even when
-// expired; that stays --check-lock's responsibility (see runCheckLock in
-// main.go).
-func lockfileActiveAt(lockfilePath string, now time.Time) bool {
-	lock, err := config.LoadLock(lockfilePath)
-	if err != nil || lock == nil {
-		return false
-	}
-	return now.Before(lock.ExpiresAt)
-}
-
-// RunEnforcementLoop re-kills PokerStars every 30 seconds for as long as the
-// lockfile at lockfilePath is active, so a player who relaunches PokerStars
-// mid-lockout gets killed again rather than slipping through until the next
-// hand-history file triggers a check. Runs for the life of the --serve
-// process; stops when done is closed. Because it checks lockfile state on
-// every tick from the moment it starts, restarting --serve (e.g. Task
-// Scheduler after a reboot) automatically resumes enforcement if a lockfile
-// written before the restart is still active.
-func RunEnforcementLoop(lockfilePath string, done <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			if !lockfileActiveAt(lockfilePath, time.Now()) {
-				continue
-			}
-			lock, err := config.LoadLock(lockfilePath)
-			if err != nil || lock == nil {
-				continue
-			}
-			slog.Info("hard stop lock active, killing PokerStars", "expires_at", lock.ExpiresAt)
-			_ = exec.Command("taskkill.exe", "/IM", "PokerStars.exe", "/F").Run()
-		}
-	}
-}
-
-// trigger kills PokerStars, writes the lockfile, and sends the hard stop
-// alert.
-func trigger(reason string, durationHours int, lockfilePath string, alertChan chan<- string) {
-	_ = exec.Command("taskkill.exe", "/IM", "PokerStars.exe", "/F").Run()
-
-	now := time.Now().UTC()
+// BuildTrigger constructs the lockfile and the user-facing alert text for a
+// hard stop of the given reason and duration, as of now. The caller (the
+// worker's or the bot's onTrigger) sends the alert to Telegram and hands the
+// lockfile to the client, which kills PokerStars and writes it. Splitting the
+// build out from enforcement is what lets the decision stay on the server
+// while the taskkill and lockfile write happen on the collector.
+func BuildTrigger(reason string, durationHours int, now time.Time) (config.LockFile, string) {
 	expiresAt := now.Add(time.Duration(durationHours) * time.Hour)
-	lock := &config.LockFile{
+	lock := config.LockFile{
 		TriggeredAt:   now,
 		ExpiresAt:     expiresAt,
 		Reason:        reason,
 		DurationHours: durationHours,
 	}
-	if err := config.SaveLock(lockfilePath, lock); err != nil {
-		slog.Error("saving lockfile", "error", err)
-	}
-
-	slog.Info("hard stop triggered", "reason", reason, "expires_at", expiresAt.Format(time.RFC3339))
-
-	alertChan <- fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reasonPhrase(reason), expiresAt.Local().Format("2006-01-02 15:04"))
+	alert := fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reasonPhrase(reason), expiresAt.Local().Format("2006-01-02 15:04"))
+	return lock, alert
 }
 
 // reasonPhrase turns a lockfile reason key into the plain-language line the

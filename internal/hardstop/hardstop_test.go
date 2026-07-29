@@ -1,7 +1,6 @@
 package hardstop
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -389,13 +388,25 @@ func TestInRollingWindow(t *testing.T) {
 	}
 }
 
-// TestEvaluateTriggers drives the full trigger path — Evaluate through
-// trigger to the lockfile and alert — for each hard stop reason, against a
-// real temp lockfile. The taskkill.exe call inside trigger fails harmlessly
-// on a non-Windows test machine and its error is ignored by design, so the
-// observable outcomes are exactly the lockfile contents and the alert
-// message. Ledger dates are recent stored-clock instants so the downswing
-// window and poker-day filters see them.
+// lockWriter returns an onTrigger callback matching what the real callers do:
+// build the lockfile + alert (hardstop.BuildTrigger), write the lockfile, and
+// send the alert. It lets these decision tests assert the same observable
+// outcomes — lockfile contents and alert text — they did when Evaluate wrote
+// the lockfile itself, now that writing has moved to the enforcement side.
+func lockWriter(lockPath string, ch chan string) func(reason string, durationHours int) {
+	return func(reason string, durationHours int) {
+		lock, msg := BuildTrigger(reason, durationHours, time.Now().UTC())
+		_ = config.SaveLock(lockPath, &lock)
+		if ch != nil {
+			ch <- msg
+		}
+	}
+}
+
+// TestEvaluateTriggers drives the full decision path — Evaluate through the
+// onTrigger callback to the lockfile and alert (via lockWriter) — for each hard
+// stop reason, against a real temp lockfile. Ledger dates are recent
+// stored-clock instants so the downswing window and poker-day filters see them.
 func TestEvaluateTriggers(t *testing.T) {
 	duration := 12
 	stored := storage.AsStoredClock(time.Now())
@@ -500,7 +511,7 @@ func TestEvaluateTriggers(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			lockPath := filepath.Join(t.TempDir(), "lockfile.json")
 			ch := make(chan string, 2)
-			if err := Evaluate(c.session, c.cfg, c.ledger, c.dayTournaments, lockPath, ch); err != nil {
+			if err := Evaluate(c.session, c.cfg, c.ledger, c.dayTournaments, lockWriter(lockPath, ch)); err != nil {
 				t.Fatalf("Evaluate: %v", err)
 			}
 			if c.wantReason == "" {
@@ -521,7 +532,7 @@ func TestEvaluateTriggers(t *testing.T) {
 		ch := make(chan string, 2)
 		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2), DurationHours: pi(duration)}}
 		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
-		if err := EvaluateTournament(parsers.Tournament{BuyInUSD: 5}, cfg, ledger, nil, lockPath, ch); err != nil {
+		if err := EvaluateTournament(parsers.Tournament{BuyInUSD: 5}, cfg, ledger, nil, lockWriter(lockPath, ch)); err != nil {
 			t.Fatalf("EvaluateTournament: %v", err)
 		}
 		assertLocked(t, lockPath, "downswing_buyins", ch)
@@ -532,7 +543,7 @@ func TestEvaluateTriggers(t *testing.T) {
 		ch := make(chan string, 2)
 		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2)}}
 		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
-		err := Evaluate(calmSession, cfg, ledger, nil, lockPath, ch)
+		err := Evaluate(calmSession, cfg, ledger, nil, lockWriter(lockPath, ch))
 		if err == nil {
 			t.Fatal("Evaluate = nil error, want the missing-duration error")
 		}
@@ -555,7 +566,7 @@ func TestManualTrigger(t *testing.T) {
 		}
 
 		ch := make(chan string, 1)
-		if err := ManualTrigger(configPath, lockPath, ch); err != nil {
+		if err := ManualTrigger(configPath, lockWriter(lockPath, ch)); err != nil {
 			t.Fatalf("ManualTrigger: %v", err)
 		}
 		lock, err := config.LoadLock(lockPath)
@@ -575,7 +586,7 @@ func TestManualTrigger(t *testing.T) {
 			t.Fatalf("SaveConfig: %v", err)
 		}
 
-		if err := ManualTrigger(configPath, lockPath, make(chan string, 1)); err == nil {
+		if err := ManualTrigger(configPath, lockWriter(lockPath, make(chan string, 1))); err == nil {
 			t.Fatal("ManualTrigger = nil error, want the not-configured error")
 		}
 		if lock, _ := config.LoadLock(lockPath); lock != nil {
@@ -584,55 +595,26 @@ func TestManualTrigger(t *testing.T) {
 	})
 }
 
-func TestLockfileActiveAt(t *testing.T) {
+// TestBuildTrigger pins the lockfile fields and alert text BuildTrigger
+// assembles from a reason + duration + now: TriggeredAt is now, ExpiresAt is
+// now + duration, the raw reason key is kept in the lockfile, and the alert
+// names the hard stop and the humanized reason phrase.
+func TestBuildTrigger(t *testing.T) {
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	lock, alert := BuildTrigger("session_loss_buyins", 12, now)
 
-	writeLockfile := func(t *testing.T, contents string) string {
-		t.Helper()
-		path := filepath.Join(t.TempDir(), "lockfile.json")
-		if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
-			t.Fatalf("writing lockfile: %v", err)
-		}
-		return path
+	if lock.Reason != "session_loss_buyins" || lock.DurationHours != 12 {
+		t.Errorf("lock = reason %q / %dh, want session_loss_buyins / 12h", lock.Reason, lock.DurationHours)
 	}
-
-	t.Run("absent file", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "lockfile.json")
-		if got := lockfileActiveAt(path, now); got != false {
-			t.Errorf("lockfileActiveAt(absent) = %v, want false", got)
-		}
-	})
-
-	t.Run("expires in the future", func(t *testing.T) {
-		path := writeLockfile(t, `{
-			"triggered_at": "2026-07-13T11:00:00Z",
-			"expires_at": "2026-07-13T13:00:00Z",
-			"reason": "manual",
-			"duration_hours": 2
-		}`)
-		if got := lockfileActiveAt(path, now); got != true {
-			t.Errorf("lockfileActiveAt(future expiry) = %v, want true", got)
-		}
-	})
-
-	t.Run("expires in the past", func(t *testing.T) {
-		path := writeLockfile(t, `{
-			"triggered_at": "2026-07-13T09:00:00Z",
-			"expires_at": "2026-07-13T11:00:00Z",
-			"reason": "manual",
-			"duration_hours": 2
-		}`)
-		if got := lockfileActiveAt(path, now); got != false {
-			t.Errorf("lockfileActiveAt(past expiry) = %v, want false", got)
-		}
-	})
-
-	t.Run("malformed JSON", func(t *testing.T) {
-		path := writeLockfile(t, `{not valid json`)
-		if got := lockfileActiveAt(path, now); got != false {
-			t.Errorf("lockfileActiveAt(malformed) = %v, want false", got)
-		}
-	})
+	if !lock.TriggeredAt.Equal(now) {
+		t.Errorf("TriggeredAt = %v, want %v", lock.TriggeredAt, now)
+	}
+	if want := now.Add(12 * time.Hour); !lock.ExpiresAt.Equal(want) {
+		t.Errorf("ExpiresAt = %v, want %v", lock.ExpiresAt, want)
+	}
+	if !strings.Contains(alert, "Hard Stop triggered") || !strings.Contains(alert, reasonPhrase("session_loss_buyins")) {
+		t.Errorf("alert = %q, want it to name the hard stop and the reason phrase", alert)
+	}
 }
 
 // TestReasonPhrase pins the lockfile-key → user-facing phrase mapping used in
