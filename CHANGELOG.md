@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## Unreleased
+## v3.5 - 2026-07-29
 
 ### Changed
 
@@ -18,6 +18,8 @@ pulls its notes from the matching section below.
   transparently falls back to a full re-parse. No change to any stored value, alert, or the tournament
   summary parser. (Foundation for the upcoming client/server split, where the same offset lets the collector
   send only new bytes over the network.)
+
+## v3.4 - 2026-07-29
 
 ### Changed
 
