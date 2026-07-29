@@ -164,6 +164,7 @@ func (b *Bot) handleScreenNameReply(chatID int64, text string) {
 		return
 	}
 
+	slog.Info("screen name set at runtime", "screen_name", name)
 	send(b.tg, chatID, fmt.Sprintf("✅ Screen name saved: %s", name))
 
 	resumeFlow := b.resumeFlow

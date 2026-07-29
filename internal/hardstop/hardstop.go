@@ -404,5 +404,7 @@ func trigger(reason string, durationHours int, lockfilePath string, alertChan ch
 		slog.Error("saving lockfile", "error", err)
 	}
 
+	slog.Info("hard stop triggered", "reason", reason, "expires_at", expiresAt.Format(time.RFC3339))
+
 	alertChan <- fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reason, expiresAt.Local().Format("2006-01-02 15:04"))
 }

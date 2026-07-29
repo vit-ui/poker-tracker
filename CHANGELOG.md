@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v3.3 - 2026-07-29
+
+### Added
+
+- Local log file. The background service now writes to `tracker.log` (next to `config.json`), so you can
+  see the actual errors and what the tracker was doing — previously the only window into failures was
+  Telegram, and everything below error level was discarded entirely. The log captures every error in full
+  technical detail plus a handful of milestones (service start, watcher start/restart, hard stop triggered,
+  backend migration, screen-name set at runtime). It's size-capped at 5 MB with a single `tracker.log.old`
+  rollover, so it never grows without bound and survives restarts. Telegram behaviour is unchanged in this
+  release — errors still go there as before, now also on disk.
+
 ## v3.2 - 2026-07-25
 
 ### Fixed

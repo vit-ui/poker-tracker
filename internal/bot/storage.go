@@ -271,6 +271,7 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 	}
 
 	send(b.tg, chatID, "Migrating… this can take a moment.")
+	slog.Info("backend migration starting", "target", ps.target)
 
 	migrated, err := storage.Migrate(b.store, ps.dst)
 	if err != nil {
@@ -298,6 +299,9 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 		send(b.tg, chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
 		return
 	}
+
+	slog.Info("backend migration complete", "target", ps.target,
+		"cash_sessions", len(migrated.CashSessions), "tournaments", len(migrated.Tournaments), "ledger", len(migrated.Ledger))
 
 	// The restarted process opens the new backend fresh; close our sqlite
 	// handle so the file isn't held open across the restart.

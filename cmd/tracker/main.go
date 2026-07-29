@@ -49,6 +49,7 @@ var (
 	lockfilePath       string
 	dbPath             string
 	fallbackPath       string
+	logPath            string
 )
 
 func init() {
@@ -62,6 +63,7 @@ func init() {
 	lockfilePath = filepath.Join(dir, "lockfile.json")
 	dbPath = filepath.Join(dir, "tracker.db")
 	fallbackPath = filepath.Join(dir, "sheets_fallback.json")
+	logPath = filepath.Join(dir, "tracker.log")
 }
 
 func main() {
@@ -295,12 +297,19 @@ func runServe() {
 	// watcher/worker/bot goroutines are ever launched (the "--serve
 	// starts but never responds" bug). runSetup never hits this because
 	// it never calls hideConsole — its console handle, whatever it is,
-	// is never invalidated out from under it. Route the default handler
-	// to io.Discard before hideConsole runs so no log write ever touches
-	// that handle afterward. Error-level records still reach Telegram
-	// once telegramErrorHandler wraps this default further down — only
-	// the dead local destination underneath it is removed.
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// is never invalidated out from under it. So the log must never touch
+	// stderr: route it to a real file (tracker.log, anchored to the exe
+	// dir, size-capped with one .old rollover), which is a valid handle
+	// hideConsole never invalidates. Error records also reach Telegram once
+	// telegramErrorHandler wraps this default further down; Info-level
+	// transition records stay in the file only. If the file can't be
+	// opened, fall back to io.Discard — never stderr, which reintroduces
+	// the hang.
+	if w, err := newRotatingWriter(logPath, logMaxBytes); err != nil {
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	} else {
+		slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	}
 
 	// Belt-and-suspenders on top of -H=windowsgui — see hideConsole's doc
 	// comment for why the build flag alone wasn't enough in practice.
@@ -349,6 +358,8 @@ func runServe() {
 		panic("loading config: " + err.Error())
 	}
 
+	slog.Info("tracker service starting", "backend", backend)
+
 	sessionChan := make(chan watcher.FileEvent, 10)
 	alertChan := make(chan string, 20)
 
@@ -365,6 +376,7 @@ func runServe() {
 	var watcherDone chan struct{}
 	if cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil {
 		hhPath, tsPath := resolvePaths(cfg)
+		slog.Info("watcher starting", "hand_history", hhPath, "tournament_summary", tsPath)
 		watcherDone = make(chan struct{})
 		go func() {
 			if err := watcher.Watch(watcherDone, hhPath, tsPath, sessionChan); err != nil {
@@ -383,6 +395,7 @@ func runServe() {
 			return
 		}
 		hhPath, tsPath := resolvePaths(newCfg)
+		slog.Info("watcher restarting", "hand_history", hhPath, "tournament_summary", tsPath)
 		if watcherDone != nil {
 			close(watcherDone)
 		}
