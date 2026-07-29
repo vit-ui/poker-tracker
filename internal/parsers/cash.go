@@ -3,6 +3,7 @@ package parsers
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strconv"
@@ -67,33 +68,112 @@ type TournamentHandStats struct {
 	IsKnockout bool
 }
 
+// cashAgg holds the file-level accumulators a hand-history parse builds up as
+// it scans forward. Every field is monotonic across the strictly append-only
+// file (PokerStars only ever adds complete hands at the end), so a later parse
+// can resume from a byte offset carrying these values instead of rescanning
+// from zero — see ParseState / ParseCashFileFrom.
+type cashAgg struct {
+	firstTime, lastTime time.Time
+	bigBlind            float64
+	stake               string
+	firstHandID         string
+	hands               int
+	netUSD, rakeUSD     float64
+	vpipCount, pfrCount int
+
+	isTournament bool
+	tournamentID string
+	bountyUSD    float64
+	isKnockout   bool
+}
+
+// ParseState is the carry-forward state that lets ParseCashFileFrom resume a
+// growing hand-history file instead of re-parsing it from byte 0 on every
+// event. It holds the accumulators for every hand that starts strictly before
+// consumedOffset, and consumedOffset itself — the byte offset of the last hand
+// header seen, always a completed-hand boundary. The last hand is deliberately
+// left out of the carried aggregates and re-parsed on the next resume, so a
+// hand that was mid-write when first seen self-corrects. Callers treat it as
+// opaque: obtain it from ParseCashFileFrom and pass it back next time.
+type ParseState struct {
+	agg            cashAgg
+	consumedOffset int64
+}
+
 // ParseCashFile parses a PokerStars hand history file from the hand history
 // folder. Returns a CashSession for cash game files, or TournamentHandStats
 // for tournament hand history files. Exactly one of the two will be non-nil.
 func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats *TournamentHandStats, err error) {
+	session, tourneyStats, _, err = ParseCashFileFrom(path, screenName, nil)
+	return session, tourneyStats, err
+}
+
+// ParseCashFileFrom is ParseCashFile with an incremental fast path. With a nil
+// prior it parses the whole file from byte 0 (identical to ParseCashFile).
+// With a non-nil prior — the ParseState returned by the previous parse of the
+// same growing file — it seeks to prior.consumedOffset and scans only the new
+// bytes, folding them into the carried accumulators. The returned ParseState
+// must be passed back on the next parse of this file.
+//
+// The optimization never affects correctness: if the file is shorter than
+// prior.consumedOffset, or the resume point no longer begins with a hand
+// header (the file was rewritten, not appended to), it silently discards the
+// carried state and re-parses from byte 0. Because storage upserts by session
+// ID / TournamentID, a redundant full re-parse is always safe.
+func ParseCashFileFrom(path, screenName string, prior *ParseState) (*CashSession, *TournamentHandStats, *ParseState, error) {
+	if prior != nil {
+		session, stats, st, err, ok := parseCashFrom(path, screenName, prior)
+		if ok {
+			return session, stats, st, err
+		}
+		// Resume point invalid (file rewritten/truncated) — fall back to a
+		// full re-parse, which is always correct.
+	}
+	session, stats, st, err, _ := parseCashFrom(path, screenName, nil)
+	return session, stats, st, err
+}
+
+// parseCashFrom does the actual scan. ok is false only when a non-nil prior's
+// resume point is no longer valid, signalling ParseCashFileFrom to fall back to
+// a full parse; a nil prior always returns ok true.
+func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("opening %s: %w", path, err), true
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	var (
+		startOffset int64
+		base        cashAgg
+	)
+	if prior != nil {
+		info, err := f.Stat()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("stat %s: %w", path, err), true
+		}
+		if prior.consumedOffset > info.Size() {
+			return nil, nil, nil, nil, false // file shrank — fall back
+		}
+		if _, err := f.Seek(prior.consumedOffset, io.SeekStart); err != nil {
+			return nil, nil, nil, nil, false
+		}
+		startOffset = prior.consumedOffset
+		base = prior.agg
+	}
+
+	r := bufio.NewReader(f)
+
+	// st is the working aggregate (includes every hand finalized so far);
+	// committed is a snapshot taken at each hand header, so it always excludes
+	// the hand starting at newConsumedOffset. The returned ParseState carries
+	// committed + newConsumedOffset; the returned result is built from st.
+	st := base
+	committed := base
+	newConsumedOffset := startOffset
 
 	var (
-		firstTime, lastTime time.Time
-		bigBlind            float64
-		stake               string
-		firstHandID         string
-		hands               int
-		netUSD, rakeUSD     float64
-		vpipCount, pfrCount int
-
-		isTournament bool
-		tournamentID string
-		bountyUSD    float64
-		isKnockout   bool
-
 		handActive    bool
 		inPreflop     bool
 		playerDealt   bool
@@ -119,14 +199,14 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 			return
 		}
 		if playerDealt {
-			hands++
-			netUSD += handCollected + handUncalled - handInvested
-			rakeUSD += handRake
+			st.hands++
+			st.netUSD += handCollected + handUncalled - handInvested
+			st.rakeUSD += handRake
 			if playerVPIP {
-				vpipCount++
+				st.vpipCount++
 			}
 			if playerPFR {
-				pfrCount++
+				st.pfrCount++
 			}
 		}
 		handActive = false
@@ -141,238 +221,274 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 		handRake = 0
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) >= 3 && line[0] == '\xef' && line[1] == '\xbb' && line[2] == '\xbf' {
-			line = line[3:]
-		}
+	offset := startOffset
+	firstLine := true
+	for {
+		raw, readErr := r.ReadString('\n')
+		if len(raw) > 0 {
+			lineStart := offset
+			offset += int64(len(raw))
+			line := trimLineEnding(raw)
+			if len(line) >= 3 && line[0] == '\xef' && line[1] == '\xbb' && line[2] == '\xbf' {
+				line = line[3:]
+			}
 
-		switch {
-		case strings.HasPrefix(line, "PokerStars Hand #") || strings.HasPrefix(line, "PokerStars Zoom Hand #"):
-			if strings.Contains(line, "Tournament #") {
-				if !isTournament {
-					isTournament = true
-					if tidx := strings.Index(line, "Tournament #"); tidx >= 0 {
-						rest := line[tidx+len("Tournament #"):]
-						if end := strings.Index(rest, ","); end > 0 {
-							tournamentID = rest[:end]
+			// A non-nil prior stores the byte offset of a hand header; if the
+			// first line we read there isn't one, the file was rewritten in
+			// place, so bail to the full-parse fallback.
+			if firstLine && prior != nil && !isHandHeader(line) {
+				return nil, nil, nil, nil, false
+			}
+			firstLine = false
+
+			switch {
+			case isHandHeader(line):
+				finalizeHand()
+				committed = st
+				newConsumedOffset = lineStart
+
+				if strings.Contains(line, "Tournament #") {
+					if !st.isTournament {
+						st.isTournament = true
+						if tidx := strings.Index(line, "Tournament #"); tidx >= 0 {
+							rest := line[tidx+len("Tournament #"):]
+							if end := strings.Index(rest, ","); end > 0 {
+								st.tournamentID = rest[:end]
+							}
+						}
+					}
+				} else {
+					if st.bigBlind == 0 {
+						st.firstHandID = extractHandID(line)
+
+						parenIdx := strings.Index(line, "($")
+						if parenIdx == -1 {
+							return nil, nil, nil, fmt.Errorf("no blinds in header: %s", line), true
+						}
+						afterParen := line[parenIdx+2:]
+						slashIdx := strings.Index(afterParen, "/")
+						if slashIdx == -1 {
+							return nil, nil, nil, fmt.Errorf("no / in blinds: %s", line), true
+						}
+						bbStr := afterParen[slashIdx+1:]
+						if len(bbStr) > 0 && bbStr[0] == '$' {
+							bbStr = bbStr[1:]
+						}
+						bb, ok := parseLeadingAmount(bbStr)
+						if !ok {
+							return nil, nil, nil, fmt.Errorf("bad BB in header: %s", line), true
+						}
+						st.bigBlind = bb
+						st.stake = "NL" + strconv.Itoa(int(math.Round(bb*100)))
+					}
+
+					// Timestamp is after the last " - " in the header.
+					tsPart := line
+					for {
+						idx := strings.Index(tsPart, " - ")
+						if idx == -1 {
+							break
+						}
+						tsPart = tsPart[idx+3:]
+					}
+					ts := tsPart
+					// PokerStars sometimes emits single-digit hours ("1:01:07" not "01:01:07").
+					if len(ts) >= 18 && ts[12] == ':' {
+						ts = ts[:11] + "0" + ts[11:]
+					}
+					if len(ts) >= 19 {
+						t, err := time.Parse("2006/01/02 15:04:05", ts[:19])
+						if err == nil {
+							if st.firstTime.IsZero() {
+								st.firstTime = t
+							}
+							st.lastTime = t
 						}
 					}
 				}
-				finalizeHand()
-				handActive = true
-			} else {
-				finalizeHand()
-
-				if bigBlind == 0 {
-					firstHandID = extractHandID(line)
-
-					parenIdx := strings.Index(line, "($")
-					if parenIdx == -1 {
-						return nil, nil, fmt.Errorf("no blinds in header: %s", line)
-					}
-					afterParen := line[parenIdx+2:]
-					slashIdx := strings.Index(afterParen, "/")
-					if slashIdx == -1 {
-						return nil, nil, fmt.Errorf("no / in blinds: %s", line)
-					}
-					bbStr := afterParen[slashIdx+1:]
-					if len(bbStr) > 0 && bbStr[0] == '$' {
-						bbStr = bbStr[1:]
-					}
-					bb, ok := parseLeadingAmount(bbStr)
-					if !ok {
-						return nil, nil, fmt.Errorf("bad BB in header: %s", line)
-					}
-					bigBlind = bb
-					stake = "NL" + strconv.Itoa(int(math.Round(bb*100)))
-				}
-
-				// Timestamp is after the last " - " in the header.
-				tsPart := line
-				for {
-					idx := strings.Index(tsPart, " - ")
-					if idx == -1 {
-						break
-					}
-					tsPart = tsPart[idx+3:]
-				}
-				ts := tsPart
-				// PokerStars sometimes emits single-digit hours ("1:01:07" not "01:01:07").
-				if len(ts) >= 18 && ts[12] == ':' {
-					ts = ts[:11] + "0" + ts[11:]
-				}
-				if len(ts) >= 19 {
-					t, err := time.Parse("2006/01/02 15:04:05", ts[:19])
-					if err == nil {
-						if firstTime.IsZero() {
-							firstTime = t
-						}
-						lastTime = t
-					}
-				}
 
 				handActive = true
-			}
 
-		case line == "*** HOLE CARDS ***":
-			// Only Hold'em/Omaha deal via "*** HOLE CARDS ***", so VPIP/PFR
-			// (preflop concepts) are only counted for those games. Stud/draw
-			// rounds in a mixed game (HORSE, 8-Game) open with "*** 3rd STREET
-			// ***" / "*** DEALING HANDS ***" instead and never set inPreflop,
-			// so their hands land in the denominator (playerDealt still fires
-			// on "Dealt to") but never register a VPIP/PFR action — VPIP/PFR
-			// are deliberately Hold'em/Omaha-only and read as diluted (or 0
-			// for an all-stud/draw sample) on mixed formats. Money fields are
-			// unaffected: tournament net comes from the summary plus folded
-			// bounty, not from these streets.
-			inPreflop = true
+			case line == "*** HOLE CARDS ***":
+				// Only Hold'em/Omaha deal via "*** HOLE CARDS ***", so VPIP/PFR
+				// (preflop concepts) are only counted for those games. Stud/draw
+				// rounds in a mixed game (HORSE, 8-Game) open with "*** 3rd STREET
+				// ***" / "*** DEALING HANDS ***" instead and never set inPreflop,
+				// so their hands land in the denominator (playerDealt still fires
+				// on "Dealt to") but never register a VPIP/PFR action — VPIP/PFR
+				// are deliberately Hold'em/Omaha-only and read as diluted (or 0
+				// for an all-stud/draw sample) on mixed formats. Money fields are
+				// unaffected: tournament net comes from the summary plus folded
+				// bounty, not from these streets.
+				inPreflop = true
 
-		case strings.HasPrefix(line, dealtPfx):
-			playerDealt = true
+			case strings.HasPrefix(line, dealtPfx):
+				playerDealt = true
 
-		case strings.HasPrefix(line, "Seat ") && strings.Contains(line, bountySeatMarker):
-			// Every seat in a knockout tournament shows a bounty in its
-			// pre-hand listing ("Seat 2: Name (5000 in chips, $0.36
-			// bounty)"), repeated on every hand — checked regardless of
-			// screenName, since screenName can finish a knockout tournament
-			// without ever scoring a KO themselves (bountyUSD would then
-			// stay 0, but it's still a knockout tournament).
-			isKnockout = true
+			case strings.HasPrefix(line, "Seat ") && strings.Contains(line, bountySeatMarker):
+				// Every seat in a knockout tournament shows a bounty in its
+				// pre-hand listing ("Seat 2: Name (5000 in chips, $0.36
+				// bounty)"), repeated on every hand — checked regardless of
+				// screenName, since screenName can finish a knockout tournament
+				// without ever scoring a KO themselves (bountyUSD would then
+				// stay 0, but it's still a knockout tournament).
+				st.isKnockout = true
 
-		case strings.HasPrefix(line, bountyWinPfx):
-			// "<screenName> wins $X.XX for eliminating <Name> and their own
-			// bounty increases by $Y.YY to $Z.ZZ" — the summary file has no
-			// concept of bounties at all, so this is the only source for
-			// knockout winnings (why two files: plan §Why Tournaments Need
-			// Two Files). The amount right after "wins $" is the real cash
-			// credited, which can differ by a cent from the "increases by"
-			// figure due to the 50/50 split-and-round on an odd bounty.
-			if amt, ok := parseLeadingAmount(line[len(bountyWinPfx):]); ok {
-				bountyUSD += amt
-			}
+			case strings.HasPrefix(line, bountyWinPfx):
+				// "<screenName> wins $X.XX for eliminating <Name> and their own
+				// bounty increases by $Y.YY to $Z.ZZ" — the summary file has no
+				// concept of bounties at all, so this is the only source for
+				// knockout winnings (why two files: plan §Why Tournaments Need
+				// Two Files). The amount right after "wins $" is the real cash
+				// credited, which can differ by a cent from the "increases by"
+				// figure due to the 50/50 split-and-round on an odd bounty.
+				if amt, ok := parseLeadingAmount(line[len(bountyWinPfx):]); ok {
+					st.bountyUSD += amt
+				}
 
-		case strings.HasPrefix(line, "*** FLOP ***"):
-			inPreflop = false
-			streetTotal = 0
+			case strings.HasPrefix(line, "*** FLOP ***"):
+				inPreflop = false
+				streetTotal = 0
 
-		case strings.HasPrefix(line, "*** TURN ***"):
-			streetTotal = 0
+			case strings.HasPrefix(line, "*** TURN ***"):
+				streetTotal = 0
 
-		case strings.HasPrefix(line, "*** RIVER ***"):
-			streetTotal = 0
+			case strings.HasPrefix(line, "*** RIVER ***"):
+				streetTotal = 0
 
-		case line == "*** SHOW DOWN ***", line == "*** SUMMARY ***":
-			inPreflop = false
+			case line == "*** SHOW DOWN ***", line == "*** SUMMARY ***":
+				inPreflop = false
 
-		case strings.HasPrefix(line, ap+"posts "):
-			rest := line[len(ap+"posts "):]
-			dollarIdx := strings.Index(rest, "$")
-			if dollarIdx >= 0 {
-				if amt, ok := parseLeadingAmount(rest[dollarIdx+1:]); ok {
+			case strings.HasPrefix(line, ap+"posts "):
+				rest := line[len(ap+"posts "):]
+				dollarIdx := strings.Index(rest, "$")
+				if dollarIdx >= 0 {
+					if amt, ok := parseLeadingAmount(rest[dollarIdx+1:]); ok {
+						handInvested += amt
+						streetTotal += amt
+					}
+				}
+
+			case strings.HasPrefix(line, ap+"calls "):
+				// Both cash ($X) and tournament (X chips) use this prefix.
+				if amt, ok := parseLeadingAmount(line[len(ap+"calls "):]); ok {
+					handInvested += amt
+					streetTotal += amt
+					if inPreflop {
+						playerVPIP = true
+					}
+				}
+
+			case strings.HasPrefix(line, ap+"bets "):
+				if amt, ok := parseLeadingAmount(line[len(ap+"bets "):]); ok {
 					handInvested += amt
 					streetTotal += amt
 				}
-			}
 
-		case strings.HasPrefix(line, ap+"calls "):
-			// Both cash ($X) and tournament (X chips) use this prefix.
-			if amt, ok := parseLeadingAmount(line[len(ap+"calls "):]); ok {
-				handInvested += amt
-				streetTotal += amt
-				if inPreflop {
-					playerVPIP = true
-				}
-			}
-
-		case strings.HasPrefix(line, ap+"bets "):
-			if amt, ok := parseLeadingAmount(line[len(ap+"bets "):]); ok {
-				handInvested += amt
-				streetTotal += amt
-			}
-
-		case strings.HasPrefix(line, ap+"raises "):
-			// Cash: "raises $X to $Y"; tournament: "raises X to Y [and is all-in]"
-			toIdx := strings.Index(line, " to ")
-			if toIdx >= 0 {
-				if total, ok := parseLeadingAmount(line[toIdx+4:]); ok {
-					increment := total - streetTotal
-					if increment < 0 {
-						increment = 0
-					}
-					handInvested += increment
-					streetTotal = total
-					if inPreflop {
-						playerVPIP = true
-						playerPFR = true
+			case strings.HasPrefix(line, ap+"raises "):
+				// Cash: "raises $X to $Y"; tournament: "raises X to Y [and is all-in]"
+				toIdx := strings.Index(line, " to ")
+				if toIdx >= 0 {
+					if total, ok := parseLeadingAmount(line[toIdx+4:]); ok {
+						increment := total - streetTotal
+						if increment < 0 {
+							increment = 0
+						}
+						handInvested += increment
+						streetTotal = total
+						if inPreflop {
+							playerVPIP = true
+							playerPFR = true
+						}
 					}
 				}
-			}
 
-		case strings.HasPrefix(line, uncalledPfx) && strings.HasSuffix(line, uncalledSfx):
-			closeIdx := strings.Index(line, ")")
-			if closeIdx > len(uncalledPfx) {
-				if amt, ok := parseLeadingAmount(line[len(uncalledPfx):closeIdx]); ok {
-					handUncalled += amt
+			case strings.HasPrefix(line, uncalledPfx) && strings.HasSuffix(line, uncalledSfx):
+				closeIdx := strings.Index(line, ")")
+				if closeIdx > len(uncalledPfx) {
+					if amt, ok := parseLeadingAmount(line[len(uncalledPfx):closeIdx]); ok {
+						handUncalled += amt
+					}
+				}
+
+			case strings.HasPrefix(line, collectedPfx):
+				if amt, ok := parseLeadingAmount(line[len(collectedPfx):]); ok {
+					handCollected += amt
+				}
+
+			case strings.HasPrefix(line, "Total pot ") && strings.Contains(line, "| Rake $"):
+				rakeIdx := strings.Index(line, "| Rake $")
+				if rake, ok := parseLeadingAmount(line[rakeIdx+8:]); ok {
+					handRake = rake
 				}
 			}
+		}
 
-		case strings.HasPrefix(line, collectedPfx):
-			if amt, ok := parseLeadingAmount(line[len(collectedPfx):]); ok {
-				handCollected += amt
+		if readErr != nil {
+			if readErr != io.EOF {
+				return nil, nil, nil, fmt.Errorf("scanning %s: %w", path, readErr), true
 			}
-
-		case strings.HasPrefix(line, "Total pot ") && strings.Contains(line, "| Rake $"):
-			rakeIdx := strings.Index(line, "| Rake $")
-			if rake, ok := parseLeadingAmount(line[rakeIdx+8:]); ok {
-				handRake = rake
-			}
+			break
 		}
 	}
 
 	finalizeHand()
 
-	if err := scanner.Err(); err != nil {
-		return nil, nil, fmt.Errorf("scanning %s: %w", path, err)
-	}
-	if hands == 0 {
-		return nil, nil, fmt.Errorf("no dealt hands found in %s", path)
+	if st.hands == 0 {
+		return nil, nil, nil, fmt.Errorf("no dealt hands found in %s", path), true
 	}
 
-	if isTournament {
-		if tournamentID == "" {
-			return nil, nil, fmt.Errorf("could not extract tournament ID from %s", path)
+	newState := &ParseState{agg: committed, consumedOffset: newConsumedOffset}
+
+	if st.isTournament {
+		if st.tournamentID == "" {
+			return nil, nil, nil, fmt.Errorf("could not extract tournament ID from %s", path), true
 		}
 		return nil, &TournamentHandStats{
-			TournamentID: tournamentID,
-			VPIP:         float64(vpipCount) / float64(hands) * 100,
-			PFR:          float64(pfrCount) / float64(hands) * 100,
-			Hands:        hands,
-			BountyUSD:    bountyUSD,
-			IsKnockout:   isKnockout,
-		}, nil
+			TournamentID: st.tournamentID,
+			VPIP:         float64(st.vpipCount) / float64(st.hands) * 100,
+			PFR:          float64(st.pfrCount) / float64(st.hands) * 100,
+			Hands:        st.hands,
+			BountyUSD:    st.bountyUSD,
+			IsKnockout:   st.isKnockout,
+		}, newState, nil, true
 	}
 
-	dur := int(lastTime.Sub(firstTime).Minutes())
+	dur := int(st.lastTime.Sub(st.firstTime).Minutes())
 
 	var bb100 float64
-	if bigBlind > 0 {
-		bb100 = (netUSD / bigBlind) / float64(hands) * 100
+	if st.bigBlind > 0 {
+		bb100 = (st.netUSD / st.bigBlind) / float64(st.hands) * 100
 	}
 
 	return &CashSession{
-		Date:        firstTime,
-		Stake:       stake,
-		BuyInUSD:    bigBlind * 100,
-		Hands:       hands,
+		Date:        st.firstTime,
+		Stake:       st.stake,
+		BuyInUSD:    st.bigBlind * 100,
+		Hands:       st.hands,
 		DurationMin: dur,
-		NetUSD:      netUSD,
-		RakeUSD:     rakeUSD,
+		NetUSD:      st.netUSD,
+		RakeUSD:     st.rakeUSD,
 		BB100:       bb100,
-		VPIP:        float64(vpipCount) / float64(hands) * 100,
-		PFR:         float64(pfrCount) / float64(hands) * 100,
-		FirstHandID: firstHandID,
-	}, nil, nil
+		VPIP:        float64(st.vpipCount) / float64(st.hands) * 100,
+		PFR:         float64(st.pfrCount) / float64(st.hands) * 100,
+		FirstHandID: st.firstHandID,
+	}, nil, newState, nil, true
+}
+
+// isHandHeader reports whether line is a PokerStars hand header (cash or Zoom
+// or tournament — all start with one of these two prefixes).
+func isHandHeader(line string) bool {
+	return strings.HasPrefix(line, "PokerStars Hand #") || strings.HasPrefix(line, "PokerStars Zoom Hand #")
+}
+
+// trimLineEnding strips the trailing "\n" and a single preceding "\r" from a
+// raw line, matching bufio.Scanner's ScanLines so byte-offset-tracked reads
+// produce the same line text the previous Scanner-based parser saw.
+func trimLineEnding(s string) string {
+	s = strings.TrimSuffix(s, "\n")
+	s = strings.TrimSuffix(s, "\r")
+	return s
 }
 
 // extractHandID returns the digits between "Hand #" and the following ":" in

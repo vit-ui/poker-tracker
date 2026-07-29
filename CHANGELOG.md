@@ -4,7 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## v3.4 - 2026-07-29
+## Unreleased
+
+### Changed
+
+- Hand-history files are now parsed **incrementally**. PokerStars appends one hand at a time and the
+  watcher fires an event per hand, so the parser used to re-scan the entire growing file from the start on
+  every hand — O(n²) work over a long session. The parser now carries per-file state (last byte offset plus
+  the running aggregates) and, on each event, reads only the newly-appended bytes. Results are byte-for-byte
+  identical to a full parse — verified by a test that grows every fixture one hand at a time and compares
+  each step to a from-scratch parse, plus a dev-only sweep over 158 real hand histories (cash, PLO, HORSE,
+  tournaments). The optimization is self-healing: if a file is ever rewritten rather than appended to, it
+  transparently falls back to a full re-parse. No change to any stored value, alert, or the tournament
+  summary parser. (Foundation for the upcoming client/server split, where the same offset lets the collector
+  send only new bytes over the network.)
 
 ### Changed
 
