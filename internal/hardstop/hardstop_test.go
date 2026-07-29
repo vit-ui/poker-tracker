@@ -420,8 +420,11 @@ func TestEvaluateTriggers(t *testing.T) {
 		}
 		select {
 		case msg := <-ch:
-			if !strings.Contains(msg, "Hard Stop triggered") || !strings.Contains(msg, wantReason) {
-				t.Errorf("alert = %q, want it to name the hard stop and reason %q", msg, wantReason)
+			// The lockfile keeps the raw reason key; the alert shows its
+			// humanized phrase (reasonPhrase).
+			wantPhrase := reasonPhrase(wantReason)
+			if !strings.Contains(msg, "Hard Stop triggered") || !strings.Contains(msg, wantPhrase) {
+				t.Errorf("alert = %q, want it to name the hard stop and reason %q", msg, wantPhrase)
 			}
 		default:
 			t.Error("no alert sent for the hard stop")
@@ -630,4 +633,29 @@ func TestLockfileActiveAt(t *testing.T) {
 			t.Errorf("lockfileActiveAt(malformed) = %v, want false", got)
 		}
 	})
+}
+
+// TestReasonPhrase pins the lockfile-key → user-facing phrase mapping used in
+// the hard stop alert. Every trigger reason must map to a phrase, and an
+// unknown key must fall back to itself (never blank).
+func TestReasonPhrase(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   string
+	}{
+		{"session_loss_buyins", "Session loss limit reached"},
+		{"consecutive_losses", "Too many losing sessions in a row"},
+		{"downswing_buyins", "30-day downswing limit reached"},
+		{"daily_loss_usd", "Daily loss limit reached"},
+		{"spingo_daily_loss_usd", "Spin & Go daily loss limit reached"},
+		{"manual", "Triggered manually"},
+		{"some_future_reason", "some_future_reason"},
+	}
+	for _, c := range cases {
+		t.Run(c.reason, func(t *testing.T) {
+			if got := reasonPhrase(c.reason); got != c.want {
+				t.Errorf("reasonPhrase(%q) = %q, want %q", c.reason, got, c.want)
+			}
+		})
+	}
 }

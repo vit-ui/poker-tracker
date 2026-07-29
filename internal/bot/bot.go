@@ -160,11 +160,14 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 // Health() reading and whether Sheets was already known down. Every 30-min
 // check while still down re-sends the down message (a persistent reminder,
 // matching the caller's check cadence); one recovery message fires on the
-// down→healthy transition; an already-healthy check stays silent.
+// down→healthy transition; an already-healthy check stays silent. The raw
+// Health() error is deliberately not shown to the user — it's a developer
+// string, and the failing operation already logged it at its call site; the
+// user-facing message carries only the outage's start time.
 func heartbeatEvent(down bool, since time.Time, err error, wasDown bool) (msg string, nowDown bool) {
 	switch {
 	case down:
-		return fmt.Sprintf("💔 Sheets unreachable since %s (err: %v)", since.Local().Format("2006-01-02 15:04"), err), true
+		return fmt.Sprintf("💔 Sheets unreachable since %s", since.Local().Format("2006-01-02 15:04")), true
 	case wasDown:
 		return "💓 Sheets reachable again", false
 	default:

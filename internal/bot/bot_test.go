@@ -16,7 +16,7 @@ import (
 func TestHeartbeatEvent(t *testing.T) {
 	since := time.Date(2026, 7, 24, 22, 16, 0, 0, time.UTC)
 	errDown := errors.New("dial tcp: lookup sheets.googleapis.com: no such host")
-	downMsg := fmt.Sprintf("💔 Sheets unreachable since %s (err: %v)", since.Local().Format("2006-01-02 15:04"), errDown)
+	downMsg := fmt.Sprintf("💔 Sheets unreachable since %s", since.Local().Format("2006-01-02 15:04"))
 
 	cases := []struct {
 		name        string

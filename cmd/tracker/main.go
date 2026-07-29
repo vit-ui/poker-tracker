@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf16"
@@ -248,31 +246,6 @@ const taskSchedulerXML = `<?xml version="1.0" encoding="UTF-16"?>
 </Task>
 `
 
-// telegramErrorHandler wraps the default slog handler and additionally
-// forwards Error-level records to alertChan, so operational failures stay
-// visible via Telegram now that release builds use -H=windowsgui (no
-// console window is ever created, so a Task-Scheduler-launched --serve
-// has nowhere else to show them — see the release build command). Records
-// below Error still go through the wrapped handler unchanged; this never
-// suppresses anything, only adds a second destination for the ones that
-// matter operationally.
-type telegramErrorHandler struct {
-	slog.Handler
-	alertChan chan<- string
-}
-
-func (h *telegramErrorHandler) Handle(ctx context.Context, r slog.Record) error {
-	if r.Level >= slog.LevelError {
-		var attrs strings.Builder
-		r.Attrs(func(a slog.Attr) bool {
-			fmt.Fprintf(&attrs, " %s=%v", a.Key, a.Value)
-			return true
-		})
-		h.alertChan <- fmt.Sprintf("⚠️ %s%s", r.Message, attrs.String())
-	}
-	return h.Handler.Handle(ctx, r)
-}
-
 func runServe() {
 	// Keep this idle background service's footprint bounded. Despite the
 	// package name, runtime/debug is where Go's production runtime knobs
@@ -300,11 +273,11 @@ func runServe() {
 	// is never invalidated out from under it. So the log must never touch
 	// stderr: route it to a real file (tracker.log, anchored to the exe
 	// dir, size-capped with one .old rollover), which is a valid handle
-	// hideConsole never invalidates. Error records also reach Telegram once
-	// telegramErrorHandler wraps this default further down; Info-level
-	// transition records stay in the file only. If the file can't be
-	// opened, fall back to io.Discard — never stderr, which reintroduces
-	// the hang.
+	// hideConsole never invalidates. This is the only log destination —
+	// errors and Info-level transition records both land here; nothing is
+	// auto-forwarded to Telegram (the worker sends the few user-actionable
+	// notices explicitly). If the file can't be opened, fall back to
+	// io.Discard — never stderr, which reintroduces the hang.
 	if w, err := newRotatingWriter(logPath, logMaxBytes); err != nil {
 		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	} else {
@@ -363,16 +336,6 @@ func runServe() {
 	sessionChan := make(chan watcher.FileEvent, 10)
 	alertChan := make(chan string, 20)
 
-	// From here on, an slog.Error anywhere in this process also reaches
-	// Telegram via alertChan (see telegramErrorHandler) — the bot goroutine
-	// started below is the only thing that ever reads alertChan and sends
-	// to Telegram, so this doesn't violate that rule, it just adds a
-	// second producer.
-	slog.SetDefault(slog.New(&telegramErrorHandler{
-		Handler:   slog.Default().Handler(),
-		alertChan: alertChan,
-	}))
-
 	var watcherDone chan struct{}
 	if cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil {
 		hhPath, tsPath := resolvePaths(cfg)
@@ -381,6 +344,7 @@ func runServe() {
 		go func() {
 			if err := watcher.Watch(watcherDone, hhPath, tsPath, sessionChan); err != nil {
 				slog.Error("watcher stopped", "err", err)
+				alertChan <- "⚠️ File watching stopped unexpectedly — I'm no longer seeing new poker sessions. Restart the tracker (or your PC) to recover."
 			}
 		}()
 	}
@@ -403,6 +367,7 @@ func runServe() {
 		go func() {
 			if err := watcher.Watch(watcherDone, hhPath, tsPath, sessionChan); err != nil {
 				slog.Error("watcher stopped", "err", err)
+				alertChan <- "⚠️ File watching stopped unexpectedly — I'm no longer seeing new poker sessions. Restart the tracker (or your PC) to recover."
 			}
 		}()
 	}
@@ -491,6 +456,10 @@ func runWorker(
 	// changing number and are safety-relevant.
 	firedAlerts := make(map[string]bool)
 
+	// Sent at most once per run: a missing screen name skips every file, so
+	// without this a folder of unparsed files would fire one prompt each.
+	screenNameWarned := false
+
 	for event := range sessionChan {
 		// Re-read on every event rather than capturing once at startup —
 		// the startup guard no longer requires pokerstars_screen_name to be
@@ -503,6 +472,10 @@ func runWorker(
 		}
 		if cfg.Setup.PokerStarsScreenName == nil {
 			slog.Error("pokerstars screen name not configured, skipping file", "path", event.Path)
+			if !screenNameWarned {
+				alertChan <- "🔧 I found a poker file but don't know your PokerStars screen name yet — I can't track anything until it's set. Open /menu → Setup → Screen name."
+				screenNameWarned = true
+			}
 			continue
 		}
 		screenName := *cfg.Setup.PokerStarsScreenName
@@ -528,6 +501,9 @@ func runWorker(
 					slog.Error("appending cash session to sheets", "err", err,
 						"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
 						"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
+					if msg := blipMessage(before, sheetsPending(sc)); msg != "" {
+						alertChan <- msg
+					}
 				} else if msg := syncedMessage(before, sheetsPending(sc)); msg != "" {
 					alertChan <- msg
 				}
@@ -572,6 +548,9 @@ func runWorker(
 				before := sheetsPending(sc)
 				if err := sc.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
 					slog.Error("updating tournament hand stats", "err", err, "tournament_id", tourneyStats.TournamentID)
+					if msg := blipMessage(before, sheetsPending(sc)); msg != "" {
+						alertChan <- msg
+					}
 				} else if msg := syncedMessage(before, sheetsPending(sc)); msg != "" {
 					alertChan <- msg
 				}
@@ -647,6 +626,9 @@ func runWorker(
 			if err != nil {
 				slog.Error("appending tournament to sheets", "err", err,
 					"date", t.Date.Format("2006-01-02 15:04"), "tournament_id", t.TournamentID)
+				if msg := blipMessage(before, sheetsPending(sc)); msg != "" {
+					alertChan <- msg
+				}
 			} else if msg := syncedMessage(before, sheetsPending(sc)); msg != "" {
 				alertChan <- msg
 			}
@@ -695,6 +677,21 @@ func sheetsPending(sc storage.Store) int {
 func syncedMessage(before, after int) string {
 	if n := before - after; n > 0 {
 		return fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", n)
+	}
+	return ""
+}
+
+// blipMessage is syncedMessage's counterpart for the failure side: a Sheets
+// write that fails is cached to the fallback queue, so sheetsPending rises.
+// Fired only on the 0→nonzero transition (before/after taken around the same
+// write call as syncedMessage) — the start of an outage — so a burst of failed
+// hands during one outage sends a single notice, not one per hand. The 30-min
+// heartbeat covers a *sustained* outage; this covers a short blip the sampler
+// would miss entirely, and "✅ Synced N" then confirms the recovery. Returns ""
+// on sqlite (sheetsPending is always 0) and mid-outage (before already > 0).
+func blipMessage(before, after int) string {
+	if before == 0 && after > 0 {
+		return "💔 Sheets briefly unreachable — your results are saved locally and I'll sync them automatically when it's back."
 	}
 	return ""
 }

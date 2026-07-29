@@ -645,3 +645,31 @@ func TestSyncedMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestBlipMessage covers syncedMessage's failure-side counterpart: a Sheets
+// write failure caches to the fallback queue, so PendingWrites rises. A message
+// fires only on the 0→nonzero transition (the start of an outage), so a burst
+// of failed hands during one outage notifies once, not per hand; sqlite (always
+// 0) and mid-outage (before already nonzero) stay silent.
+func TestBlipMessage(t *testing.T) {
+	const want = "💔 Sheets briefly unreachable — your results are saved locally and I'll sync them automatically when it's back."
+	cases := []struct {
+		name          string
+		before, after int
+		want          string
+	}{
+		{"sqlite or healthy — no queue movement", 0, 0, ""},
+		{"outage starts (first failed write)", 0, 1, want},
+		{"already mid-outage, another failure", 1, 2, ""},
+		{"already mid-outage, count unchanged", 2, 2, ""},
+		{"queue shrank (a recovery, not a blip)", 2, 1, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := blipMessage(c.before, c.after)
+			if got != c.want {
+				t.Errorf("blipMessage(%d, %d) = %q, want %q", c.before, c.after, got, c.want)
+			}
+		})
+	}
+}

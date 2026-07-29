@@ -406,5 +406,28 @@ func trigger(reason string, durationHours int, lockfilePath string, alertChan ch
 
 	slog.Info("hard stop triggered", "reason", reason, "expires_at", expiresAt.Format(time.RFC3339))
 
-	alertChan <- fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reason, expiresAt.Local().Format("2006-01-02 15:04"))
+	alertChan <- fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reasonPhrase(reason), expiresAt.Local().Format("2006-01-02 15:04"))
+}
+
+// reasonPhrase turns a lockfile reason key into the plain-language line the
+// Telegram alert shows. The raw key stays in the lockfile and the Info log;
+// only the user-facing message is humanized. An unrecognized key falls back to
+// itself, so a future reason never renders blank.
+func reasonPhrase(reason string) string {
+	switch reason {
+	case "session_loss_buyins":
+		return "Session loss limit reached"
+	case "consecutive_losses":
+		return "Too many losing sessions in a row"
+	case "downswing_buyins":
+		return "30-day downswing limit reached"
+	case "daily_loss_usd":
+		return "Daily loss limit reached"
+	case "spingo_daily_loss_usd":
+		return "Spin & Go daily loss limit reached"
+	case "manual":
+		return "Triggered manually"
+	default:
+		return reason
+	}
 }

@@ -225,16 +225,20 @@ func TestPipeline_WonFreeroll(t *testing.T) {
 func TestPipeline_CashSession(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("hand_history", "nlhe_cash.txt")
-	p.waitFor("cash session recorded", func() bool {
+	// The worker upserts the session on every hand, so its net keeps growing
+	// until the file is fully processed. Waiting only for the row to exist
+	// (after hand 1) and then sampling net and bankroll separately let a hand
+	// land between the two reads — they'd straddle a mid-file upsert and differ
+	// by ~one hand. Poll the invariant itself in a single consistent snapshot:
+	// bankroll equals the recorded net, which becomes and stays true once the
+	// last hand settles.
+	p.waitFor("bankroll matches recorded session net", func() bool {
 		s, err := p.store.GetAllCashSessions()
-		return err == nil && len(s) == 1
+		return err == nil && len(s) == 1 && closeEnough(p.bankroll(), s[0].NetUSD)
 	})
 	sessions, _ := p.store.GetAllCashSessions()
 	if sessions[0].Stake != "NL2" {
 		t.Errorf("stake = %q, want NL2", sessions[0].Stake)
-	}
-	if !closeEnough(p.bankroll(), sessions[0].NetUSD) {
-		t.Errorf("bankroll = %.2f, want %.2f (the session net in the ledger)", p.bankroll(), sessions[0].NetUSD)
 	}
 }
 

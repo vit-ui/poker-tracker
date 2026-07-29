@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v3.4 - 2026-07-29
+
+### Changed
+
+- Telegram error messages are now plain-language and no longer flood. Previously every internal failure
+  was force-forwarded to Telegram as a raw developer log line (`⚠️ updating tournament hand stats err=…`),
+  so a brief network hiccup could spray a dozen cryptic messages. Errors now go to `tracker.log` (added in
+  v3.3); Telegram gets only the few things you can actually act on, in readable form:
+  - A short Sheets outage now sends **one** "💔 Sheets briefly unreachable — your results are saved
+    locally and I'll sync them automatically when it's back," instead of one raw error per hand. The
+    existing "✅ Synced N" still confirms recovery. (The 30-minute heartbeat only catches outages that are
+    still going when it samples; this covers the short blips it would miss.)
+  - The connectivity heartbeat no longer tacks a raw Go error string onto its "💔 Sheets unreachable"
+    message.
+  - Hard stop alerts name the reason in words ("Session loss limit reached") instead of the internal key
+    (`session_loss_buyins`).
+  - If a poker file shows up before your screen name is configured, you get one clear prompt to set it
+    (via /menu → Setup → Screen name) rather than a repeated raw skip message.
+  - If file watching stops unexpectedly, you get one plain notice to restart.
+
 ## v3.3 - 2026-07-29
 
 ### Added
