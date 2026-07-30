@@ -77,7 +77,7 @@ type Store interface {
 	AppendCashSession(session parsers.CashSession) error
 	AppendTournament(t parsers.Tournament) (float64, error)
 	UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error
-	AppendLedgerEntry(entryType string, amountUSD float64) error
+	AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error
 	GetCurrentBankroll() (float64, error)
 	GetSheetURL() string
 	GetLedgerEntriesSince(t time.Time) ([]LedgerEntry, error)

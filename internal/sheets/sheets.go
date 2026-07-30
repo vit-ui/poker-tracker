@@ -1035,13 +1035,13 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 // would put deposits in a date coordinate system shifted from every session
 // row's by the machine's UTC offset, and window queries would misplace them
 // near day boundaries.
-func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64) error {
+func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
 	prev, err := c.getLastRunningTotal()
 	if err != nil {
 		return err
 	}
 	return c.appendRow("Bankroll Ledger", []interface{}{
-		time.Now().Format(dateFormat),
+		now.Format(dateFormat),
 		entryType,
 		amountUSD,
 		prev + amountUSD,

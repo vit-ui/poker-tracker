@@ -85,7 +85,7 @@ func TestNewStore_ReopenExistingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first NewStore: %v", err)
 	}
-	if err := s1.AppendLedgerEntry("deposit", 100); err != nil {
+	if err := s1.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 	s1.Close()
@@ -385,7 +385,7 @@ func TestLedgerCascade_InterleavedTables(t *testing.T) {
 	tableA := mustTime(t, "2026-07-10T20:00:00Z")
 	tableB := mustTime(t, "2026-07-10T20:05:00Z")
 
-	if err := s.AppendLedgerEntry("deposit", 100); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
 	if err := s.AppendCashSession(buildCashSession(tableA, "A0001", 5, -5)); err != nil {
@@ -440,7 +440,7 @@ func TestGetCashSessionsSince_DateFiltering(t *testing.T) {
 		t.Errorf("sessions = %+v, want exactly the late session", sessions)
 	}
 
-	if err := s.AppendLedgerEntry("deposit", 0); err != nil { // no-op sanity: ledger untouched by the date filter
+	if err := s.AppendLedgerEntry("deposit", 0, time.Now()); err != nil { // no-op sanity: ledger untouched by the date filter
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1047,10 +1047,10 @@ func TestGetTournamentsSince_DateFiltering(t *testing.T) {
 
 func TestAppendLedgerEntry_DepositAndWithdrawalAccumulate(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendLedgerEntry("deposit", 100); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendLedgerEntry("withdrawal", -30); err != nil {
+	if err := s.AppendLedgerEntry("withdrawal", -30, time.Now()); err != nil {
 		t.Fatalf("withdrawal: %v", err)
 	}
 	bankroll, err := s.GetCurrentBankroll()
@@ -1068,10 +1068,10 @@ func TestAppendLedgerEntry_DepositAndWithdrawalAccumulate(t *testing.T) {
 // ledger must reflect that honestly rather than clamping.
 func TestAppendLedgerEntry_RunningTotalCanGoNegative(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendLedgerEntry("deposit", 20); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 20, time.Now()); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendLedgerEntry("withdrawal", -50); err != nil {
+	if err := s.AppendLedgerEntry("withdrawal", -50, time.Now()); err != nil {
 		t.Fatalf("withdrawal: %v", err)
 	}
 	bankroll, err := s.GetCurrentBankroll()
@@ -1104,10 +1104,10 @@ func TestGetCurrentBankroll_EmptyLedger(t *testing.T) {
 
 func TestGetLedgerEntriesSince_ZeroTimeReturnsWholeLedger(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendLedgerEntry("deposit", 50); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 50, time.Now()); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendLedgerEntry("deposit", 25); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 25, time.Now()); err != nil {
 		t.Fatalf("deposit 2: %v", err)
 	}
 	entries, err := s.GetLedgerEntriesSince(time.Time{})
@@ -1152,7 +1152,7 @@ func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 	if err := s.AppendCashSession(buildCashSession(date, "M0001", 5, -2)); err != nil {
 		t.Fatalf("cash session hand 1: %v", err)
 	}
-	if err := s.AppendLedgerEntry("deposit", 50); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 50, time.Now()); err != nil {
 		t.Fatalf("mid-session deposit: %v", err)
 	}
 	// The session keeps playing and its net changes.
@@ -1352,7 +1352,7 @@ func floatPtr(f float64) *float64 { return &f }
 func populateStore(t *testing.T, s *Store) {
 	t.Helper()
 
-	if err := s.AppendLedgerEntry("deposit", 100); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
 	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-10T20:00:00Z"), "200000000001", 50, -5.25)); err != nil {
@@ -1361,7 +1361,7 @@ func populateStore(t *testing.T, s *Store) {
 	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-11T21:30:00Z"), "200000000002", 80, 12.40)); err != nil {
 		t.Fatalf("cash B: %v", err)
 	}
-	if err := s.AppendLedgerEntry("withdrawal", -20); err != nil {
+	if err := s.AppendLedgerEntry("withdrawal", -20, time.Now()); err != nil {
 		t.Fatalf("withdrawal: %v", err)
 	}
 
@@ -1564,7 +1564,7 @@ func TestMigrate_RefusesNonEmptyDestination(t *testing.T) {
 	populateStore(t, src)
 
 	dst := newTestStore(t)
-	if err := dst.AppendLedgerEntry("deposit", 50); err != nil {
+	if err := dst.AppendLedgerEntry("deposit", 50, time.Now()); err != nil {
 		t.Fatalf("seeding dst: %v", err)
 	}
 

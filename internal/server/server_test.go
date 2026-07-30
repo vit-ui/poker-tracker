@@ -319,7 +319,7 @@ func TestLedgerBankroll(t *testing.T) {
 		}
 		defer store.Close()
 
-		if err := store.AppendLedgerEntry("deposit", 100); err != nil {
+		if err := store.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
 			t.Fatalf("AppendLedgerEntry: %v", err)
 		}
 		session := parsers.CashSession{Date: storage.AsStoredClock(time.Now()), Stake: "NL5", NetUSD: -6, FirstHandID: "h1"}
@@ -394,7 +394,7 @@ func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 		}
 	}
 
-	if err := store.AppendLedgerEntry("deposit", 100); err != nil {
+	if err := store.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 

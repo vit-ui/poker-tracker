@@ -74,8 +74,17 @@ type Server struct {
 	// Absolute-time uses (lock expiry, parse-state TTL, pending reminders) keep
 	// the server's real clock. Guarded because ClientNow is read from the bot
 	// goroutine too.
-	clockMu     sync.Mutex
-	clockOffset time.Duration
+	//
+	// It's the collector's timezone (its *time.Location), not a duration: the
+	// two machines' clocks agree on the absolute instant (both keep real time),
+	// so what differs is the wall-clock *calendar* — the timezone. A duration
+	// offset from clientClock.Sub(now) would capture only clock skew (≈0 with
+	// NTP) and do nothing for the timezone, which is the whole point. Taken from
+	// Upload.ClientClock.Location(): over the network the client's UTC offset
+	// survives the RFC3339 JSON round-trip as a fixed zone; in-process it's the
+	// client's actual time.Local.
+	clockMu   sync.Mutex
+	clientLoc *time.Location
 }
 
 // NewServer creates a Server with a fresh working directory for reconstructed
@@ -89,28 +98,32 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	return &Server{store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir}, nil
 }
 
-// updateClock records the offset between the collector's clock (from an
-// upload's ClientClock) and this server's, so ClientNow can report the player's
-// current wall-clock time. A zero ClientClock (e.g. an internally-generated
-// event) is ignored.
+// updateClock records the collector's timezone (from an upload's ClientClock)
+// so ClientNow can express the current instant on the player's wall clock. A
+// zero ClientClock (e.g. an internally-generated event) is ignored.
 func (s *Server) updateClock(clientClock time.Time) {
 	if clientClock.IsZero() {
 		return
 	}
 	s.clockMu.Lock()
-	s.clockOffset = clientClock.Sub(time.Now())
+	s.clientLoc = clientClock.Location()
 	s.clockMu.Unlock()
 }
 
-// ClientNow returns the current time on the collector's clock (this server's
-// clock plus the last-known offset). Used for every poker-day / date-window
-// computation, including the bot's read-side (/status, /stats, the weekly and
-// monthly tickers), so windows follow the player's local day. Before any upload
-// the offset is zero, so it returns this server's clock.
+// ClientNow returns the current instant expressed in the collector's timezone,
+// so AsStoredClock reads the player's local wall-clock digits. Used for every
+// poker-day / date-window computation, including the bot's read-side (/status,
+// /stats, the weekly and monthly tickers), so windows follow the player's local
+// day. Before any upload the timezone is unknown, so it falls back to this
+// server's local clock.
 func (s *Server) ClientNow() time.Time {
 	s.clockMu.Lock()
-	defer s.clockMu.Unlock()
-	return time.Now().Add(s.clockOffset)
+	loc := s.clientLoc
+	s.clockMu.Unlock()
+	if loc == nil {
+		return time.Now()
+	}
+	return time.Now().In(loc)
 }
 
 // reconstruct writes an upload's bytes into the working file for its FileID and

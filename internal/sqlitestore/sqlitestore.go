@@ -555,14 +555,14 @@ func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64
 // UTC instant — so deposit/withdrawal rows live in the same date coordinate
 // system as session rows (whose dates come from PokerStars' zone-less local
 // timestamps) and window queries treat both alike.
-func (s *Store) AppendLedgerEntry(entryType string, amountUSD float64) error {
+func (s *Store) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
 	prev, err := s.lastRunningTotal()
 	if err != nil {
 		return err
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO bankroll_ledger (date, type, amount_usd, running_total) VALUES (?, ?, ?, ?)
-	`, storage.AsStoredClock(time.Now()).Format(dateFormat), entryType, amountUSD, prev+amountUSD)
+	`, storage.AsStoredClock(now).Format(dateFormat), entryType, amountUSD, prev+amountUSD)
 	if err != nil {
 		return fmt.Errorf("appending ledger entry: %w", err)
 	}

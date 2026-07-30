@@ -106,7 +106,7 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 		label = "Withdrawal"
 	}
 
-	if err := b.store.AppendLedgerEntry(kind, ledgerAmount); err != nil {
+	if err := b.store.AppendLedgerEntry(kind, ledgerAmount, b.now()); err != nil {
 		slog.Error("appending ledger entry", "kind", kind, "err", err)
 		send(b.tg, chatID, "Something went wrong. Check logs.")
 		return
