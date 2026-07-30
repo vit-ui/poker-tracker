@@ -404,13 +404,13 @@ func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 		t.Fatalf("AppendCashSession(session1): %v", err)
 	}
 
-	ledger, dayTournaments := fetchEvalData(store, cfg, false)
+	ledger, dayTournaments := fetchEvalData(store, cfg, time.Now(), false)
 	bankroll := ledgerBankroll(ledger)
 	if bankroll != 94 {
 		t.Fatalf("bankroll after session 1 = %v, want 94", bankroll)
 	}
 	bot.EvaluateSessionLossAlert(session1, cfg, bankroll, alertChan)
-	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "cash:h1")
+	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, time.Now(), alertChan, firedAlerts, "cash:h1")
 	assertMsgs("session 1", []string{
 		"⚠️ Session loss alert\nLost 1.2 buy-ins this session ($6.00)\nBankroll: $94.00",
 		"⚠️ Daily loss alert\nDown $6.00 across all games this poker day\nBankroll: $94.00",
@@ -421,13 +421,13 @@ func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 		t.Fatalf("AppendCashSession(session2): %v", err)
 	}
 
-	ledger, dayTournaments = fetchEvalData(store, cfg, false)
+	ledger, dayTournaments = fetchEvalData(store, cfg, time.Now(), false)
 	bankroll = ledgerBankroll(ledger)
 	if bankroll != 90 {
 		t.Fatalf("bankroll after session 2 = %v, want 90", bankroll)
 	}
 	bot.EvaluateSessionLossAlert(session2, cfg, bankroll, alertChan)
-	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, alertChan, firedAlerts, "cash:h2")
+	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, time.Now(), alertChan, firedAlerts, "cash:h2")
 	assertMsgs("session 2", []string{
 		"⚠️ Losing streak alert\n2 losing sessions in a row\nBankroll: $90.00",
 	})

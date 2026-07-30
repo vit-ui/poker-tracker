@@ -56,12 +56,12 @@ func EvaluateSessionLossAlert(session parsers.CashSession, cfg *config.Config, b
 // downswing hard stop; since cross-validation enforces alert ≤ hardstop for
 // this field, the alert always fires at or before the hard stop's own
 // threshold, never after.
-func EvaluateDownswingAlert(buyInUSD float64, cfg *config.Config, ledger []storage.LedgerEntry, bankroll float64, alertChan chan<- string) {
+func EvaluateDownswingAlert(buyInUSD float64, cfg *config.Config, ledger []storage.LedgerEntry, bankroll float64, now time.Time, alertChan chan<- string) {
 	if cfg.Alerts.DownswingBuyins == nil || buyInUSD == 0 {
 		return
 	}
 
-	peak, current := hardstop.DownswingEquityCurve(ledger, time.Now())
+	peak, current := hardstop.DownswingEquityCurve(ledger, now)
 	if !hardstop.DownswingExceeds(peak, current, buyInUSD, *cfg.Alerts.DownswingBuyins) {
 		return
 	}
@@ -93,12 +93,12 @@ func EvaluateLosingStreakAlert(cfg *config.Config, ledger []storage.LedgerEntry,
 // -Alerts.DailyLossUSD — the same window, filtering, and comparison as the
 // daily-loss hard stop (hardstop.PokerDaySessionEntries /
 // hardstop.DailyLossExceeds), just against the alert's own threshold.
-func EvaluateDailyLossAlert(cfg *config.Config, ledger []storage.LedgerEntry, bankroll float64, alertChan chan<- string) (fired bool) {
+func EvaluateDailyLossAlert(cfg *config.Config, ledger []storage.LedgerEntry, bankroll float64, now time.Time, alertChan chan<- string) (fired bool) {
 	if cfg.Alerts.DailyLossUSD == nil {
 		return false
 	}
 
-	entries := hardstop.PokerDaySessionEntries(ledger, cfg, time.Now())
+	entries := hardstop.PokerDaySessionEntries(ledger, cfg, now)
 	if !hardstop.DailyLossExceeds(entries, *cfg.Alerts.DailyLossUSD) {
 		return false
 	}

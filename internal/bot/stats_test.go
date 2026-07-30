@@ -415,7 +415,7 @@ func TestInSummaryWindow(t *testing.T) {
 func TestStatsSince(t *testing.T) {
 	t.Run("today truncates to midnight of the current day", func(t *testing.T) {
 		now := time.Now()
-		got := statsSince("today")
+		got := statsSince("today", now)
 		if got.Hour() != 0 || got.Minute() != 0 || got.Second() != 0 {
 			t.Errorf("statsSince(today) = %v, want midnight", got)
 		}
@@ -426,7 +426,7 @@ func TestStatsSince(t *testing.T) {
 
 	t.Run("month truncates to the 1st of the current month", func(t *testing.T) {
 		now := time.Now()
-		got := statsSince("month")
+		got := statsSince("month", now)
 		if got.Day() != 1 {
 			t.Errorf("statsSince(month).Day() = %d, want 1", got.Day())
 		}
@@ -441,7 +441,7 @@ func TestStatsSince(t *testing.T) {
 		// converted the same way — comparing against a real local-zone
 		// instant would be off by the machine's UTC offset.
 		now := storage.AsStoredClock(time.Now())
-		got := statsSince("week")
+		got := statsSince("week", time.Now())
 		want := now.AddDate(0, 0, -7)
 		if diff := got.Sub(want); diff < -5*time.Second || diff > 5*time.Second {
 			t.Errorf("statsSince(week) = %v, want approximately %v", got, want)
@@ -449,13 +449,13 @@ func TestStatsSince(t *testing.T) {
 	})
 
 	t.Run("all-time (empty period) returns the zero time", func(t *testing.T) {
-		if got := statsSince(""); !got.IsZero() {
+		if got := statsSince("", time.Now()); !got.IsZero() {
 			t.Errorf("statsSince(\"\") = %v, want zero time", got)
 		}
 	})
 
 	t.Run("unrecognized period returns the zero time", func(t *testing.T) {
-		if got := statsSince("bogus"); !got.IsZero() {
+		if got := statsSince("bogus", time.Now()); !got.IsZero() {
 			t.Errorf("statsSince(bogus) = %v, want zero time", got)
 		}
 	})

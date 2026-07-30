@@ -48,6 +48,12 @@ type Bot struct {
 	// remote collector. The bot only builds the lock and hands it over.
 	sendLock func(config.LockFile)
 
+	// now returns the time the read-side date windows (/status, /stats, weekly
+	// and monthly summaries) anchor to. The all-local build passes time.Now; the
+	// split server passes its client-anchored clock so windows follow the
+	// player's local day even when the server is in another timezone.
+	now func() time.Time
+
 	// pendingSwitch holds a /storage migration awaiting the player's
 	// confirmation tap. Touched only from pollUpdates, like conversation.
 	pendingSwitch *pendingBackendSwitch
@@ -94,7 +100,7 @@ func (c *conversation) reset() {
 // serviceAccountPath is only used by /sheet, /credentials, and /storage
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile)) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), now func() time.Time) error {
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -109,6 +115,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		dbPath:             dbPath,
 		restartWatcher:     restartWatcher,
 		sendLock:           sendLock,
+		now:                now,
 	}
 
 	var lastWeeklySent, lastMonthlySent, lastHeartbeatCheck time.Time
@@ -118,9 +125,14 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			now := time.Now()
-			if now.Sub(lastHeartbeatCheck) >= 30*time.Minute {
-				lastHeartbeatCheck = now
+			// realNow drives real-elapsed timing (the 30-min heartbeat, pending
+			// reminders); now is the player-anchored clock the weekly/monthly
+			// day windows fire on, so "Monday 09:00" is the player's, not the
+			// server host's.
+			realNow := time.Now()
+			now := b.now()
+			if realNow.Sub(lastHeartbeatCheck) >= 30*time.Minute {
+				lastHeartbeatCheck = realNow
 				if sheetsSrc, ok := b.store.(*sheets.Client); ok {
 					down, since, herr := sheetsSrc.Health()
 					msg, nowDown := heartbeatEvent(down, since, herr, sheetsDown)
@@ -152,7 +164,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 					lastMonthlySent = now
 				}
 			}
-			b.checkPendingTournaments(now)
+			b.checkPendingTournaments(realNow)
 		}
 	}()
 

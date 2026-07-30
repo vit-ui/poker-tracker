@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"time"
 	"unicode/utf16"
 
 	"github.com/vit-ui/self-tracker/internal/backend"
@@ -366,7 +367,9 @@ func runServe() {
 	sendLock := func(lock config.LockFile) { client.Enforce(lockfilePath, lock) }
 
 	go func() {
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock)
+		// All-local: server and collector share this machine's clock, so the
+		// read-side date windows anchor to time.Now — unchanged behavior.
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, time.Now)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit

@@ -23,7 +23,7 @@ import (
 // both fetched once per file event by the worker (internal/server) and shared
 // with the alert evaluators — no function on this path fetches from the store
 // itself, so a hand that runs every check costs one ledger read, not six.
-func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, onTrigger func(reason string, durationHours int)) error {
+func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) error {
 	h := cfg.Hardstop
 	if h.SessionLossBuyins == nil && h.ConsecutiveLosses == nil && h.DailyLossUSD == nil &&
 		h.SpingoDailyLossUSD == nil && h.DownswingBuyins == nil && h.DurationHours == nil {
@@ -47,13 +47,13 @@ func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.
 		return nil
 	}
 
-	if triggered, err := evaluateDownswing(cfg, ledger, session.BuyInUSD, onTrigger); err != nil {
+	if triggered, err := evaluateDownswing(cfg, ledger, session.BuyInUSD, now, onTrigger); err != nil {
 		return err
 	} else if triggered {
 		return nil
 	}
 
-	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, onTrigger)
+	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, now, onTrigger)
 	return err
 }
 
@@ -239,13 +239,13 @@ func DownswingExceeds(peak, current, buyInUSD, thresholdBuyins float64) bool {
 // satellite entry corrected to a ticket — see RecoverTicketPayout in
 // bot.go) skips the check entirely: a 0 buy-in would make the threshold 0,
 // so any downswing at all would trigger it.
-func evaluateDownswing(cfg *config.Config, ledger []storage.LedgerEntry, buyInUSD float64, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
+func evaluateDownswing(cfg *config.Config, ledger []storage.LedgerEntry, buyInUSD float64, now time.Time, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.DownswingBuyins == nil || buyInUSD == 0 {
 		return false, nil
 	}
 
-	peak, current := DownswingEquityCurve(ledger, time.Now())
+	peak, current := DownswingEquityCurve(ledger, now)
 	if DownswingExceeds(peak, current, buyInUSD, *h.DownswingBuyins) {
 		if h.DurationHours == nil {
 			return false, fmt.Errorf("downswing_buyins configured without duration_hours")
@@ -290,7 +290,7 @@ func SpingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdUSD float
 // threshold. Either check firing is sufficient; they are not mutually
 // exclusive, but only the first one to fire actually triggers — triggered
 // reports whether one did.
-func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
+func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.SpingoDailyLossUSD == nil && h.DailyLossUSD == nil {
 		return false, nil
@@ -307,7 +307,7 @@ func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTour
 	}
 
 	if h.DailyLossUSD != nil {
-		if DailyLossExceeds(PokerDaySessionEntries(ledger, cfg, time.Now()), *h.DailyLossUSD) {
+		if DailyLossExceeds(PokerDaySessionEntries(ledger, cfg, now), *h.DailyLossUSD) {
 			if h.DurationHours == nil {
 				return false, fmt.Errorf("daily_loss_usd configured without duration_hours")
 			}
@@ -323,14 +323,14 @@ func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTour
 // Spin & Go). The downswing and daily loss checks re-evaluate against the
 // whole account rather than filtering by t's type. ledger and dayTournaments
 // carry the same worker-fetched, once-per-event data Evaluate documents.
-func EvaluateTournament(t parsers.Tournament, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, onTrigger func(reason string, durationHours int)) error {
-	if triggered, err := evaluateDownswing(cfg, ledger, t.BuyInUSD, onTrigger); err != nil {
+func EvaluateTournament(t parsers.Tournament, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) error {
+	if triggered, err := evaluateDownswing(cfg, ledger, t.BuyInUSD, now, onTrigger); err != nil {
 		return err
 	} else if triggered {
 		return nil
 	}
 
-	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, onTrigger)
+	_, err := evaluateDailyLoss(cfg, ledger, dayTournaments, now, onTrigger)
 	return err
 }
 

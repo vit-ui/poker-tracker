@@ -511,7 +511,7 @@ func TestEvaluateTriggers(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			lockPath := filepath.Join(t.TempDir(), "lockfile.json")
 			ch := make(chan string, 2)
-			if err := Evaluate(c.session, c.cfg, c.ledger, c.dayTournaments, lockWriter(lockPath, ch)); err != nil {
+			if err := Evaluate(c.session, c.cfg, c.ledger, c.dayTournaments, time.Now(), lockWriter(lockPath, ch)); err != nil {
 				t.Fatalf("Evaluate: %v", err)
 			}
 			if c.wantReason == "" {
@@ -532,7 +532,7 @@ func TestEvaluateTriggers(t *testing.T) {
 		ch := make(chan string, 2)
 		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2), DurationHours: pi(duration)}}
 		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
-		if err := EvaluateTournament(parsers.Tournament{BuyInUSD: 5}, cfg, ledger, nil, lockWriter(lockPath, ch)); err != nil {
+		if err := EvaluateTournament(parsers.Tournament{BuyInUSD: 5}, cfg, ledger, nil, time.Now(), lockWriter(lockPath, ch)); err != nil {
 			t.Fatalf("EvaluateTournament: %v", err)
 		}
 		assertLocked(t, lockPath, "downswing_buyins", ch)
@@ -543,7 +543,7 @@ func TestEvaluateTriggers(t *testing.T) {
 		ch := make(chan string, 2)
 		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2)}}
 		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
-		err := Evaluate(calmSession, cfg, ledger, nil, lockWriter(lockPath, ch))
+		err := Evaluate(calmSession, cfg, ledger, nil, time.Now(), lockWriter(lockPath, ch))
 		if err == nil {
 			t.Fatal("Evaluate = nil error, want the missing-duration error")
 		}

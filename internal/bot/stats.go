@@ -325,7 +325,7 @@ func (b *Bot) handleStatus(chatID int64) {
 		return
 	}
 
-	now := storage.AsStoredClock(time.Now())
+	now := storage.AsStoredClock(b.now())
 	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	startOfWeek := now.AddDate(0, 0, -7)
 	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -443,7 +443,7 @@ func (b *Bot) handleLastSession(chatID int64) {
 // handleStats implements /stats.
 func (b *Bot) handleStats(chatID int64, args string) {
 	gameType, period := ParseStatsArgs(args)
-	since := statsSince(period)
+	since := statsSince(period, b.now())
 	periodLabel := period
 	if periodLabel == "" {
 		periodLabel = "all"
@@ -492,9 +492,10 @@ func ParseStatsArgs(args string) (gameType, period string) {
 }
 
 // statsSince computes the window start for a /stats period, in the
-// stored-date coordinate system (see the file comment above).
-func statsSince(period string) time.Time {
-	now := storage.AsStoredClock(time.Now())
+// stored-date coordinate system (see the file comment above). now is the
+// player-anchored current time.
+func statsSince(period string, now time.Time) time.Time {
+	now = storage.AsStoredClock(now)
 	switch period {
 	case "today":
 		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)

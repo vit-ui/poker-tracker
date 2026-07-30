@@ -65,6 +65,17 @@ type Server struct {
 	link       *transport.Link
 	alertChan  chan<- string
 	workDir    string
+
+	// clockOffset is the difference between the collector's clock and this
+	// server's, updated from each upload's ClientClock. Every date-window
+	// computation ("today", the poker day, the rolling-30-day downswing) uses
+	// ClientNow() instead of the server's own clock, so a server in a different
+	// timezone than the poker PC still windows against the player's local day.
+	// Absolute-time uses (lock expiry, parse-state TTL, pending reminders) keep
+	// the server's real clock. Guarded because ClientNow is read from the bot
+	// goroutine too.
+	clockMu     sync.Mutex
+	clockOffset time.Duration
 }
 
 // NewServer creates a Server with a fresh working directory for reconstructed
@@ -76,6 +87,30 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
 	return &Server{store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir}, nil
+}
+
+// updateClock records the offset between the collector's clock (from an
+// upload's ClientClock) and this server's, so ClientNow can report the player's
+// current wall-clock time. A zero ClientClock (e.g. an internally-generated
+// event) is ignored.
+func (s *Server) updateClock(clientClock time.Time) {
+	if clientClock.IsZero() {
+		return
+	}
+	s.clockMu.Lock()
+	s.clockOffset = clientClock.Sub(time.Now())
+	s.clockMu.Unlock()
+}
+
+// ClientNow returns the current time on the collector's clock (this server's
+// clock plus the last-known offset). Used for every poker-day / date-window
+// computation, including the bot's read-side (/status, /stats, the weekly and
+// monthly tickers), so windows follow the player's local day. Before any upload
+// the offset is zero, so it returns this server's clock.
+func (s *Server) ClientNow() time.Time {
+	s.clockMu.Lock()
+	defer s.clockMu.Unlock()
+	return time.Now().Add(s.clockOffset)
 }
 
 // reconstruct writes an upload's bytes into the working file for its FileID and
@@ -182,6 +217,12 @@ func (s *Server) Run() {
 		evalCfg.Alerts = config.EffectiveAlerts(cfg.Alerts)
 		evalCfg.Hardstop = config.EffectiveHardstop(cfg.Hardstop)
 
+		// Anchor every date-window computation to the collector's clock, so a
+		// server in a different timezone than the poker PC still windows against
+		// the player's local poker day.
+		s.updateClock(up.ClientClock)
+		evalNow := s.ClientNow()
+
 		switch up.Type {
 		case "cash":
 			now := time.Now()
@@ -218,13 +259,13 @@ func (s *Server) Run() {
 				// Fetched after the write so the shared data includes the
 				// session just recorded — the same state each evaluator saw
 				// back when it did its own fetch.
-				ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, false)
+				ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, false)
 				bankroll := ledgerBankroll(ledger)
-				if err := hardstop.Evaluate(*session, &evalCfg, ledger, dayTournaments, enforce); err != nil {
+				if err := hardstop.Evaluate(*session, &evalCfg, ledger, dayTournaments, evalNow, enforce); err != nil {
 					slog.Error("evaluating hard stop", "err", err)
 				}
 				bot.EvaluateSessionLossAlert(*session, &evalCfg, bankroll, s.alertChan)
-				bot.EvaluateDownswingAlert(session.BuyInUSD, &evalCfg, ledger, bankroll, s.alertChan)
+				bot.EvaluateDownswingAlert(session.BuyInUSD, &evalCfg, ledger, bankroll, evalNow, s.alertChan)
 				sessionKey := "cash:" + session.FirstHandID
 				if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
 					if err := bot.EvaluateStakeChangeAlert(*session, s.store, s.alertChan); err != nil {
@@ -238,7 +279,7 @@ func (s *Server) Run() {
 						firedAlerts["stake:"+sessionKey] = true
 					}
 				}
-				evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, s.alertChan, firedAlerts, sessionKey)
+				evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, evalNow, s.alertChan, firedAlerts, sessionKey)
 				scheduleCashSessionSummary(&summaryMu, summaryTimers, up.FileID, cashSessionSummaryQuietPeriod, s.alertChan, func() string {
 					// Re-read config at fire time: the mode may have changed
 					// during the quiet period, and the session net is only
@@ -342,13 +383,13 @@ func (s *Server) Run() {
 			// including the ledger here, since the post-tournament alert below
 			// needs the bankroll (its last running total) regardless of what's
 			// configured.
-			ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, true)
+			ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
 			bankroll := ledgerBankroll(ledger)
-			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, enforce); err != nil {
+			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, evalNow, enforce); err != nil {
 				slog.Error("evaluating hard stop", "err", err)
 			}
-			bot.EvaluateDownswingAlert(t.BuyInUSD, &evalCfg, ledger, bankroll, s.alertChan)
-			evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, s.alertChan, firedAlerts, "tournament:"+t.TournamentID)
+			bot.EvaluateDownswingAlert(t.BuyInUSD, &evalCfg, ledger, bankroll, evalNow, s.alertChan)
+			evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, evalNow, s.alertChan, firedAlerts, "tournament:"+t.TournamentID)
 			if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.TournamentSummary), netUSD) {
 				s.alertChan <- tournamentAlertText(t, netUSD, bankroll)
 			}
@@ -393,16 +434,16 @@ func blipMessage(before, after int) string {
 // daily-loss alert evaluators, each deduped via firedAlerts (per session for the
 // streak, per poker day for the two daily checks) since a cash file fires an
 // event per hand.
-func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, bankroll float64, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
+func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, bankroll float64, now time.Time, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
 	if !firedAlerts["streak:"+sessionKey] {
 		if bot.EvaluateLosingStreakAlert(cfg, ledger, bankroll, alertChan) {
 			firedAlerts["streak:"+sessionKey] = true
 		}
 	}
 
-	dayKey := hardstop.PokerDayStart(cfg, time.Now()).Format(time.RFC3339)
+	dayKey := hardstop.PokerDayStart(cfg, now).Format(time.RFC3339)
 	if !firedAlerts["daily:"+dayKey] {
-		if bot.EvaluateDailyLossAlert(cfg, ledger, bankroll, alertChan) {
+		if bot.EvaluateDailyLossAlert(cfg, ledger, bankroll, now, alertChan) {
 			firedAlerts["daily:"+dayKey] = true
 		}
 	}
@@ -420,7 +461,7 @@ func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, 
 // needs it; forTournament forces the ledger fetch because the post-tournament
 // alert needs the bankroll regardless of config. A failed fetch is logged and
 // returns nil for that data set — every consumer treats nil as "no rows".
-func fetchEvalData(sc storage.Store, cfg *config.Config, forTournament bool) (ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament) {
+func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forTournament bool) (ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament) {
 	a, h := cfg.Alerts, cfg.Hardstop
 	needLedger := forTournament ||
 		a.SessionLossBuyins != nil || a.DownswingBuyins != nil || a.LosingStreakCount != nil ||
@@ -435,7 +476,7 @@ func fetchEvalData(sc storage.Store, cfg *config.Config, forTournament bool) (le
 	}
 	if a.SpingoDailyLossUSD != nil || h.SpingoDailyLossUSD != nil {
 		var err error
-		dayTournaments, err = sc.GetTournamentsSince(hardstop.PokerDayStart(cfg, time.Now()))
+		dayTournaments, err = sc.GetTournamentsSince(hardstop.PokerDayStart(cfg, now))
 		if err != nil {
 			slog.Error("reading tournaments for daily loss evaluation", "err", err)
 		}

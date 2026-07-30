@@ -118,8 +118,10 @@ func runServe() {
 
 	go func() {
 		// No watcher on the server (the collector watches), so /paths' watcher
-		// restart is a no-op here.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock)
+		// restart is a no-op here. The bot's read-side date windows anchor to
+		// the server's client-anchored clock, so /status and /stats follow the
+		// player's local day.
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock, srv.ClientNow)
 		slog.Error("bot.Run returned — the bot is no longer listening", "err", err)
 	}()
 
