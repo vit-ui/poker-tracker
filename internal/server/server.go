@@ -143,6 +143,20 @@ func (s *Server) Run() {
 	}
 
 	for up := range s.link.Uploads {
+		// Reconstruct FIRST, before any guard that might skip this event. The
+		// collector advances its per-file sent offset unconditionally, so the
+		// working file must absorb every upload's bytes even when we skip
+		// parsing below (e.g. the screen name isn't set yet, or config failed to
+		// load). Otherwise a later delta would land at an offset past a
+		// never-written working file and corrupt it — and when the skip
+		// condition clears, a full parse of the now-complete working file
+		// records everything, matching the pre-split whole-file re-read.
+		path, err := s.reconstruct(up)
+		if err != nil {
+			slog.Error("reconstructing uploaded file", "err", err, "file", up.FileID)
+			continue
+		}
+
 		// Re-read on every event rather than capturing once at startup — config
 		// can change at runtime (e.g. the screen name filled in via the bot).
 		cfg, err := config.LoadConfig(s.configPath)
@@ -167,12 +181,6 @@ func (s *Server) Run() {
 		evalCfg := *cfg
 		evalCfg.Alerts = config.EffectiveAlerts(cfg.Alerts)
 		evalCfg.Hardstop = config.EffectiveHardstop(cfg.Hardstop)
-
-		path, err := s.reconstruct(up)
-		if err != nil {
-			slog.Error("reconstructing uploaded file", "err", err, "file", up.FileID)
-			continue
-		}
 
 		switch up.Type {
 		case "cash":

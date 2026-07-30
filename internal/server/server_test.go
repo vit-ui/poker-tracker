@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
+	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
 // TestIsDuplicateTournament exercises the single choke point guarding
@@ -92,6 +94,81 @@ func TestIsDuplicateTournament(t *testing.T) {
 				t.Errorf("isDuplicateTournament(%q, ...) = (%v, %d), want (%v, %d)", c.t.TournamentID, got, gotRefresh, c.want, c.wantRefresh)
 			}
 		})
+	}
+}
+
+// TestServer_ScreenNameRecovery is the regression for the collector/server
+// offset desync: the collector advances its per-file sent offset on every
+// upload, so a file that arrives while the screen name is empty (config wiped
+// mid-session) must still be reconstructed on the server, or the next delta
+// lands past a never-written working file and corrupts it. When the screen name
+// returns, a full parse of the now-complete working file must record every
+// hand — matching the pre-split whole-file re-read.
+func TestServer_ScreenNameRecovery(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Split after the first two hands (offset of the 3rd header). The first
+	// header may sit just past a BOM, not a newline.
+	sep := "PokerStars Hand #"
+	text := string(data)
+	var offs []int
+	firstHeader := true
+	for start := 0; ; {
+		idx := strings.Index(text[start:], sep)
+		if idx < 0 {
+			break
+		}
+		abs := start + idx
+		if firstHeader || text[abs-1] == '\n' {
+			offs = append(offs, abs)
+			firstHeader = false
+		}
+		start = abs + len(sep)
+	}
+	if len(offs) < 3 {
+		t.Fatalf("need >=3 hands in nlhe_cash.txt, got %d", len(offs))
+	}
+	split := offs[2]
+
+	dir := t.TempDir()
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	link := transport.NewLink()
+	alertChan := make(chan string, 10)
+	srv, err := NewServer(store, filepath.Join(dir, "config.json"), link, alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go srv.Run()
+	go func() { // drain alerts so the screen-name warning never blocks
+		for range alertChan {
+		}
+	}()
+
+	const fileID = `C:\hh\nlhe_cash.txt`
+	// Event 1: the first two hands, screen name not yet known — skipped for
+	// parsing but must still be reconstructed on the server.
+	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: 0, Bytes: data[:split], ScreenName: ""}
+	// Event 2: the appended remainder, screen name now recovered.
+	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: int64(split), Bytes: data[split:], ScreenName: "AnonHero01"}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		sessions, err := store.GetAllCashSessions()
+		if err == nil && len(sessions) == 1 && sessions[0].Hands == 4 {
+			return
+		}
+		if time.Now().After(deadline) {
+			sessions, _ := store.GetAllCashSessions()
+			t.Fatalf("session not fully recorded after screen-name recovery: %+v", sessions)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
