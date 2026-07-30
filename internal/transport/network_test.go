@@ -81,6 +81,43 @@ func TestNetworkRoundTrip(t *testing.T) {
 	}
 }
 
+// TestNetworkReconnectReplacesConnection is the regression for the command
+// single-consumer race: when a second collector connects (a service-manager
+// restart after an ungraceful drop), it must replace and close the first, and a
+// command issued afterward must reach the reconnected collector — never be won
+// by a stale connection and lost.
+func TestNetworkReconnectReplacesConnection(t *testing.T) {
+	serverLink, info := startServer(t, "tok")
+
+	link1, dead1, err := DialServer(info)
+	if err != nil {
+		t.Fatalf("DialServer (first): %v", err)
+	}
+	link1.Uploads <- Upload{FileID: "a", Type: "cash", Bytes: []byte("1")}
+	recvUpload(t, serverLink) // the server has read past the token: conn1 is current
+
+	link2, _, err := DialServer(info)
+	if err != nil {
+		t.Fatalf("DialServer (reconnect): %v", err)
+	}
+	link2.Uploads <- Upload{FileID: "a", Type: "cash", Bytes: []byte("2")}
+	recvUpload(t, serverLink) // conn2 is now current; conn1 was replaced
+
+	// The first connection must have been closed when the second connected.
+	select {
+	case <-dead1:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first connection was not closed when the second connected")
+	}
+
+	// A command issued after the reconnect must reach the current collector.
+	serverLink.Commands <- Command{Kind: CommandLock, Lock: &config.LockFile{Reason: "manual", DurationHours: 1}}
+	cmd := recvCommand(t, link2)
+	if cmd.Kind != CommandLock || cmd.Lock == nil || cmd.Lock.Reason != "manual" {
+		t.Fatalf("reconnected collector received %+v, want the lock command", cmd)
+	}
+}
+
 // TestNetworkRejectsBadToken confirms a client presenting the wrong token is
 // dropped: its uploads never reach the server.
 func TestNetworkRejectsBadToken(t *testing.T) {

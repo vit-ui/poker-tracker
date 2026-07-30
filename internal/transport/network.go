@@ -13,11 +13,13 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -257,50 +259,98 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 }
 
 // Serve accepts client connections on ln and bridges each to link after the
-// client presents the matching token. One client is served at a time (v3.7
-// scope); a new connection's pumps attach to the same link. Blocks until ln is
-// closed. A connection presenting the wrong token, or whose first frame isn't
-// the token handshake, is dropped.
+// client presents the matching token. Only one collector is served at a time
+// (v3.7 scope): a new connection replaces and closes the previous one, and a
+// single goroutine is the sole consumer of link.Commands, writing each command
+// to whichever collector is current. This is what keeps a hard-stop lock from
+// being split between a live and a stale connection — the bug otherwise is that
+// after an ungraceful drop + service-manager reconnect, two per-connection
+// writers would both drain link.Commands and one could write a lock into the
+// dead socket's buffer (no error), silently losing enforcement. Blocks until ln
+// is closed.
 func Serve(ln net.Listener, token string, link *Link) {
+	var mu sync.Mutex
+	var current net.Conn
+
+	getCurrent := func() net.Conn {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+
+	// The sole command writer: one consumer of link.Commands, targeting the
+	// current collector. A command arriving with no collector connected is
+	// dropped (logged) — a lock with no poker PC to enforce can't be delivered
+	// in real time, and the collector re-enforces from its own lockfile on
+	// reconnect.
+	go func() {
+		for cmd := range link.Commands {
+			conn := getCurrent()
+			if conn == nil {
+				slog.Warn("no collector connected — dropping command", "kind", cmd.Kind)
+				continue
+			}
+			if err := writeFrame(conn, frame{Command: &cmd}); err != nil {
+				slog.Error("sending command to collector", "err", err)
+			}
+		}
+	}()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go serveConn(conn, token, link)
+		enableKeepAlive(conn)
+		go serveConn(conn, token, link, &mu, &current)
 	}
 }
 
-func serveConn(conn net.Conn, token string, link *Link) {
+func serveConn(conn net.Conn, token string, link *Link, mu *sync.Mutex, current *net.Conn) {
 	first, err := readFrame(conn)
 	if err != nil || first.Token != token {
 		conn.Close()
 		return
 	}
-	done := make(chan struct{})
-	go func() { // command writer: the only writer to conn on the server side
-		for {
-			select {
-			case <-done:
-				return
-			case cmd := <-link.Commands:
-				if err := writeFrame(conn, frame{Command: &cmd}); err != nil {
-					conn.Close()
-					return
-				}
-			}
+	// Become the active collector, closing any previous one so its reader exits
+	// and it stops being a target for commands.
+	mu.Lock()
+	old := *current
+	*current = conn
+	mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	defer func() {
+		mu.Lock()
+		if *current == conn {
+			*current = nil
 		}
+		mu.Unlock()
+		conn.Close()
 	}()
-	// upload reader
 	for {
 		f, err := readFrame(conn)
 		if err != nil {
-			close(done)
-			conn.Close()
 			return
 		}
 		if f.Upload != nil {
 			link.Uploads <- *f.Upload
 		}
+	}
+}
+
+// enableKeepAlive turns on TCP keepalive so a collector that drops ungracefully
+// (power loss, Wi-Fi cut, reboot — no FIN) is detected in seconds rather than
+// the OS default of minutes, so its reader errors out and it stops being the
+// current connection promptly.
+func enableKeepAlive(conn net.Conn) {
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return
+	}
+	if tcp, ok := tlsConn.NetConn().(*net.TCPConn); ok {
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(15 * time.Second)
 	}
 }
