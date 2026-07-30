@@ -36,6 +36,20 @@ Either way, the service registers itself in Task Scheduler and starts automatica
 - **Only if you choose the Google Sheets backend:** a Google Cloud service account with access to the Sheets and Drive APIs, and a blank Google Sheet shared with it (Editor access). The local-file backend needs none of this.
 - A Telegram bot token (create one via [@BotFather](https://t.me/BotFather)) — only if you're building from source; the official release has one built in.
 
+## Running on two machines (optional)
+
+By default everything runs on your poker PC, so `/stats`, `/export`, and the rest only work while that PC is on. If you'd rather keep your data and commands available when it's off, you can split the tracker across two machines:
+
+- **Server** (`tracker-server`) — runs on any always-on machine (a home server, a Raspberry Pi, a VPS; Windows or Linux). It stores your data, runs the Telegram bot, and enforces your rules.
+- **Client** (`tracker-client`) — runs on the poker PC (Windows). It watches PokerStars, streams file changes to the server, and enforces hard-stop locks.
+
+Setup:
+
+1. On the always-on machine, set up the server. **Linux:** extract `tracker-server-linux-<arch>.tar.gz` and run `./install.sh`. **Windows:** run `tracker-server.exe --setup`, then `tracker-server.exe --install` (as Administrator). Either way it prints a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
+2. On the poker PC, run the Windows installer and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
+
+They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired. The all-local install above is unchanged; this is only if you want the split.
+
 ## Using it
 
 Once installed, talk to your bot on Telegram. Every command also has detailed help via `/help <command>`. Expand any entry below for the details:

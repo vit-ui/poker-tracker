@@ -16,19 +16,34 @@ interfaces are avoided by default.
 
 ## Building
 
+Three binaries share the `internal/` packages: `cmd/tracker` (all-local, both roles in one process), `cmd/server` (split brain — storage + bot), `cmd/client` (split collector — watcher + enforcement). The bot token is injected only into the Telegram-talking builds (`tracker` and `server`); the client never carries it.
+
 ```bash
-# Local build for the host platform
+# Local build for the host platform (all three binaries).
 go build ./...
 
-# Release build (Windows, both architectures), as CI does it.
+# Release builds, as CI (release.yml) does them.
 # TELEGRAM_BOT_TOKEN is injected at build time — never stored in the repo.
+
+# All-local (combined) — Windows GUI, with the bot token.
 GOOS=windows GOARCH=amd64 go build -trimpath \
   -ldflags "-s -w -H=windowsgui -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
   -o tracker-amd64.exe ./cmd/tracker
-GOOS=windows GOARCH=arm64 go build -trimpath \
-  -ldflags "-s -w -H=windowsgui -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
-  -o tracker-arm64.exe ./cmd/tracker
+
+# Split client — Windows console app, NO bot token.
+GOOS=windows GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w" -o tracker-client-amd64.exe ./cmd/client
+
+# Split server — Windows and Linux, amd64 and arm64, with the bot token.
+GOOS=windows GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
+  -o tracker-server-windows-amd64.exe ./cmd/server
+GOOS=linux GOARCH=arm64 go build -trimpath \
+  -ldflags "-s -w -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
+  -o tracker-server-linux-arm64 ./cmd/server
 ```
+
+The Linux server is shipped as a `.tar.gz` (binary + `packaging/install.sh`); the server registers its own boot service with `tracker-server --install` (systemd on Linux, Task Scheduler on Windows). The release attaches the combined installers plus the server windows exes and linux tarballs.
 
 ## Tests
 
