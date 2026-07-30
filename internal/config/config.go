@@ -22,6 +22,14 @@ type Setup struct {
 	GoogleSheetID        *string `json:"google_sheet_id"`
 	GoogleSheetName      *string `json:"google_sheet_name"`
 	PokerStarsScreenName *string `json:"pokerstars_screen_name"`
+
+	// ConnectionString and PairToken exist only for the split build (v3.7+) and
+	// stay null in an all-local install. ConnectionString is set on the client
+	// (the tracker://host:port/token#fp=... its server printed); PairToken is
+	// the shared secret generated on the server at setup. Both null = all-local,
+	// so an existing combined config is unaffected.
+	ConnectionString *string `json:"connection_string"`
+	PairToken        *string `json:"pair_token"`
 }
 
 // Paths holds the PokerStars folder locations configured via /paths.

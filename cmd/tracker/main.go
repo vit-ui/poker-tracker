@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,13 +11,11 @@ import (
 	"runtime/debug"
 	"unicode/utf16"
 
+	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/server"
-	"github.com/vit-ui/self-tracker/internal/sheets"
-	"github.com/vit-ui/self-tracker/internal/sqlitestore"
-	"github.com/vit-ui/self-tracker/internal/storage"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
@@ -286,50 +283,23 @@ func runServe() {
 	// comment for why the build flag alone wasn't enough in practice.
 	hideConsole()
 
+	// Construct the storage backend (shared with the split server via
+	// internal/backend). On the sheets path this blocks in EnsureSheetID until a
+	// sheet is configured; the watcher/server/bot goroutines can't run without a
+	// store, so it resolves first.
+	sc, backendName, err := backend.Open(BotToken, configPath, serviceAccountPath, dbPath, fallbackPath)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	// Reload — EnsureSheetID inside Open may have written telegram_chat_id
+	// and/or google_sheet_id back to config.json.
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		panic("loading config: " + err.Error())
 	}
 
-	backend, err := resolveStorageBackend(cfg, configPath)
-	if err != nil {
-		panic(err.Error())
-	}
-
-	var sc storage.Store
-	switch backend {
-	case "sheets":
-		// Blocks and asks via Telegram if google_sheet_id isn't set yet,
-		// rather than refusing to start — nothing else here can run without
-		// a sheets client, so this has to resolve before the
-		// watcher/worker/bot goroutines exist. Only called on the sheets
-		// path — a sqlite install must never need Google credentials on
-		// disk.
-		sheetID, err := bot.EnsureSheetID(BotToken, configPath, serviceAccountPath)
-		if err != nil {
-			panic("resolving google sheet: " + err.Error())
-		}
-		sheetsClient, err := sheets.NewClient(serviceAccountPath, sheetID, fallbackPath)
-		if err != nil {
-			panic("initializing sheets client: " + err.Error())
-		}
-		sc = sheetsClient
-	case "sqlite":
-		store, err := sqlitestore.NewStore(dbPath)
-		if err != nil {
-			panic("initializing sqlite store: " + err.Error())
-		}
-		sc = store
-	}
-
-	// Reload — EnsureSheetID above may have written telegram_chat_id and/or
-	// google_sheet_id back to config.json.
-	cfg, err = config.LoadConfig(configPath)
-	if err != nil {
-		panic("loading config: " + err.Error())
-	}
-
-	slog.Info("tracker service starting", "backend", backend)
+	slog.Info("tracker service starting", "backend", backendName)
 
 	sessionChan := make(chan watcher.FileEvent, 10)
 	alertChan := make(chan string, 20)
@@ -409,27 +379,6 @@ func runServe() {
 	}()
 
 	select {}
-}
-
-// resolveStorageBackend returns which storage backend runServe should
-// construct: "sheets" or "sqlite". storage_backend already set is the normal
-// case and is returned as-is. storage_backend unset but google_sheet_id
-// already set is a v1.0 install predating this field — it's silently
-// migrated to "sheets" and written back so this check only ever runs once
-// per install. Both unset means --setup has never run.
-func resolveStorageBackend(cfg *config.Config, configPath string) (string, error) {
-	if cfg.Setup.StorageBackend != nil {
-		return *cfg.Setup.StorageBackend, nil
-	}
-	if cfg.Setup.GoogleSheetID != nil {
-		backend := "sheets"
-		cfg.Setup.StorageBackend = &backend
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			return "", fmt.Errorf("saving config: %w", err)
-		}
-		return backend, nil
-	}
-	return "", errors.New("Run setup first: use the installer or tracker.exe --setup")
 }
 
 // resolvePaths joins the base hand history and tournament summary paths with
