@@ -52,14 +52,22 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; this repo) hardcodes C:\poker-tracker\tracker.exe, and main.go's
 ; self-taskkill, the Task Scheduler XML, and CurUninstallStepChanged's
 ; taskkill all also assume that fixed name.
-Source: "tracker-{#Arch}.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion
+; All-local (combined) build — installed unless the player chose
+; connect-to-server (the split client) on the role page.
+Source: "tracker-{#Arch}.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: IsCombinedMode
 ; Second copy, flagged dontcopy, exists only so ExtractTemporaryFile can pull
 ; tracker.exe's bytes out during the wizard (Telegram setup), before the
 ; real install step above has copied anything to {app} yet. PreInstallFiles
 ; then copies this {tmp} extraction onward to {app} and runs it from there
 ; — not from {tmp} directly — since tracker.exe resolves its own config/
-; credentials paths from its own executable location.
-Source: "tracker-{#Arch}.exe"; DestDir: "{tmp}"; Flags: dontcopy
+; credentials paths from its own executable location. All-local only (the
+; Telegram setup path doesn't run in client mode).
+Source: "tracker-{#Arch}.exe"; DestDir: "{tmp}"; Flags: dontcopy; Check: IsCombinedMode
+; Split client build — installed as the same fixed tracker.exe name (the .bat
+; launcher, Task Scheduler task, and taskkill all assume it) when the player
+; chose connect-to-server. It provides --serve and --check-lock; the server
+; owns storage and the bot.
+Source: "tracker-client-{#Arch}.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: IsClientMode
 
 [UninstallDelete]
 ; tracker.exe itself is removed automatically (tracked via [Files] above).
@@ -95,6 +103,11 @@ var
   PageScreenName: TInputQueryWizardPage;
   PageHandHistoryDir: TInputDirWizardPage;
   PageTournamentDir: TInputDirWizardPage;
+  // Split (v3.7+): the role choice (all-local vs connect-to-server) and the
+  // connection-string page shown only in connect-to-server mode. All the
+  // pages above are the all-local flow, unchanged.
+  PageRole: TInputOptionWizardPage;
+  PageConnection: TInputQueryWizardPage;
   UsingTelegram: Boolean;
   // Storage backend choice (PageBackend, first page of the wizard, shown
   // regardless of Telegram vs manual). False = Google Sheets (default,
@@ -133,6 +146,22 @@ var
   // nothing left to configure either way. Drives skipping PageMethod
   // itself; see InitializeWizard and ShouldSkipPage.
   AllFieldsAlreadySet: Boolean;
+
+// IsClientMode reports whether the player chose "Connect to a server" on the
+// role page (PageRole index 1) — install the split client instead of the
+// all-local combined build. Guarded with Assigned so it's safe to call from a
+// [Files] Check before the page exists (it never actually is — files copy
+// after the wizard — but the guard keeps it total).
+function IsClientMode(): Boolean;
+begin
+  Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = 1);
+end;
+
+// IsCombinedMode is the inverse, for the all-local [Files] Check entries.
+function IsCombinedMode(): Boolean;
+begin
+  Result := not IsClientMode();
+end;
 
 // ReadFileAsString loads Path into a single raw String, or returns '' if
 // the file doesn't exist (the normal case on a fresh install — not an
@@ -418,6 +447,27 @@ begin
   // PageCredentials/PageSheetName pages are shown at all (ShouldSkipPage).
   // PageMethod anchors off PageBackend.ID rather than wpSelectDir directly,
   // so it inherits the same {app}-validity position one page later.
+  // Role choice, shown first: all-local (both roles in one process, the
+  // default, everything below) vs connect-to-server (this PC is the poker PC
+  // and a separate always-on machine runs the server). Anchored at wpWelcome —
+  // it collects no {app}-dependent value, so it needn't sit past wpSelectDir
+  // like the pages below. In client mode ShouldSkipPage hides every all-local /
+  // Google / Telegram page and shows PageConnection + screen name + folders.
+  PageRole := CreateInputOptionPage(wpWelcome,
+    'Setup Type',
+    'How will you run Poker Tracker?',
+    'Choose "Run everything on this PC" unless you have already set up a separate always-on server to connect to.',
+    True, False);
+  PageRole.Add('Run everything on this PC (recommended)');
+  PageRole.Add('Connect to a server (this PC is the poker PC)');
+  PageRole.SelectedValueIndex := 0;
+
+  PageConnection := CreateInputQueryPage(PageRole.ID,
+    'Connect to a Server',
+    'Paste the connection string your server printed',
+    'Your server printed a line starting with tracker:// when you ran its setup. Paste the whole line.');
+  PageConnection.Add('Connection string:', False);
+
   PageBackend := CreateInputOptionPage(wpSelectDir,
     'Storage Backend',
     'How do you want to store your tracked poker sessions?',
@@ -479,6 +529,21 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  // Connect-to-server mode shows only the connection string, screen name, and
+  // the two folder pages; every all-local / Google / Telegram page is skipped.
+  if IsClientMode() then
+  begin
+    Result := (PageID = PageBackend.ID) or (PageID = PageMethod.ID) or
+              (PageID = PageCredentials.ID) or (PageID = PageWaiting.ID) or
+              (PageID = PageSheetName.ID);
+    Exit;
+  end;
+  // All-local mode never shows the connection-string page.
+  if PageID = PageConnection.ID then
+  begin
+    Result := True;
+    Exit;
+  end;
   // Checked first and unconditionally — the backend choice doesn't depend
   // on Telegram vs manual (UsingTelegram isn't set yet at this point
   // anyway), only on whether a prior install already recorded one.
@@ -659,6 +724,34 @@ begin
     '{' + #13#10 +
     '    "day_start_hour": null' + #13#10 +
     '  }';
+end;
+
+// BuildClientConfigJSON writes the split client's config.json: the connection
+// string, screen name, and the two base folders it needs, with everything the
+// server owns (telegram, storage backend, sheet, pair token) left null. Alerts,
+// hard stop, and schedule are the same all-null default blocks — the client
+// enforces the locks the server decides but configures none of them itself.
+function BuildClientConfigJSON(const ConnectionStringRaw, ScreenNameRaw, HandHistoryRaw, TournamentRaw: String): String;
+begin
+  Result :=
+    '{' + #13#10 +
+    '  "setup": {' + #13#10 +
+    '    "telegram_chat_id": null,' + #13#10 +
+    '    "storage_backend": null,' + #13#10 +
+    '    "google_sheet_id": null,' + #13#10 +
+    '    "google_sheet_name": null,' + #13#10 +
+    '    "pokerstars_screen_name": ' + ScreenNameRaw + ',' + #13#10 +
+    '    "connection_string": ' + ConnectionStringRaw + ',' + #13#10 +
+    '    "pair_token": null' + #13#10 +
+    '  },' + #13#10 +
+    '  "paths": {' + #13#10 +
+    '    "hand_history": ' + HandHistoryRaw + ',' + #13#10 +
+    '    "tournament_summary": ' + TournamentRaw + #13#10 +
+    '  },' + #13#10 +
+    '  "alerts": ' + DefaultAlertsBlock() + ',' + #13#10 +
+    '  "hardstop": ' + DefaultHardstopBlock() + ',' + #13#10 +
+    '  "schedule": ' + DefaultScheduleBlock() + #13#10 +
+    '}' + #13#10;
 end;
 
 // UTF16Bytes converts S to raw UTF-16LE bytes with a leading byte-order
@@ -972,6 +1065,16 @@ begin
     // tracker.exe.
     Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
 
+  else if CurPageID = PageConnection.ID then
+  begin
+    PageConnection.Values[0] := Trim(PageConnection.Values[0]);
+    if (PageConnection.Values[0] = '') or (Copy(PageConnection.Values[0], 1, 10) <> 'tracker://') then
+    begin
+      MsgBox('Paste the full connection string your server printed — it starts with tracker://', mbError, MB_OK);
+      Result := False;
+    end;
+  end
+
   else if CurPageID = PageCredentials.ID then
   begin
     if not FileExists(PageCredentials.Values[0]) then
@@ -1060,6 +1163,24 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
+    // Connect-to-server: the client binary is already installed as tracker.exe
+    // ([Files] Check: IsClientMode). Write its config (connection string +
+    // paths + screen name; everything the server owns stays null) and register
+    // the same scheduled task, which runs the client's own --serve. No
+    // PreInstallFiles (no combined binary to extract, no credentials) and no
+    // Telegram setup.
+    if IsClientMode() then
+    begin
+      SaveStringToFile(ExpandConstant('{app}\config.json'),
+        BuildClientConfigJSON(
+          '"' + JSONEscape(PageConnection.Values[0]) + '"',
+          '"' + JSONEscape(PageScreenName.Values[0]) + '"',
+          '"' + JSONEscape(PageHandHistoryDir.Values[0]) + '"',
+          '"' + JSONEscape(PageTournamentDir.Values[0]) + '"'),
+        False);
+      RegisterScheduledTask();
+      Exit;
+    end;
     // Idempotent for the Telegram path (already done once in
     // RunTelegramSetup); the only time it matters is manual setup, where
     // this is the first and only time it runs.
