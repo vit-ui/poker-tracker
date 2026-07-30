@@ -6,6 +6,19 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+### Added
+
+- **Optional split deployment (build-to-green; not yet released).** Two new binaries let you run collection
+  and storage on separate machines: `tracker-server` (stores data, runs the Telegram bot, enforces the
+  rules; Windows or Linux) and `tracker-client` (watches the PokerStars folders, streams file changes to the
+  server, enforces hard-stop locks; Windows). They connect over one TLS connection the client dials out to
+  the server, authenticated by a pinned self-signed certificate and a shared token bundled in a
+  `tracker://host:port/token#fp=...` connection string the server prints at setup. Date windows on the
+  server anchor to the poker PC's clock, so a server in another timezone still reports the player's local
+  poker day. **The all-local build (`tracker`) is unchanged** — it's the same two roles wired in one process
+  over an in-process link. Cross-machine networking and installers are still being verified; this entry
+  covers the code landing, not a released feature.
+
 ### Changed
 
 - The collector's per-file sent-offset map is now bounded the same way the server's parse-state map is
