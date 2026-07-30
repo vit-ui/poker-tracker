@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Changed
+
+- The collector's per-file sent-offset map is now bounded the same way the server's parse-state map is
+  (evict entries idle past a TTL once the map exceeds a cap), so a collector running for months without a
+  restart can't grow it without limit. Internal only — no user-visible change; a wrongly-evicted file just
+  re-sends whole once, which the server rebuilds from scratch.
+
 ## v3.6 - 2026-07-29
 
 ### Changed

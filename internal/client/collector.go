@@ -26,15 +26,45 @@ func NewCollector(link *transport.Link, lockfilePath string) *Collector {
 	return &Collector{link: link, lockfilePath: lockfilePath}
 }
 
+// sentEntry is a file's last-sent byte offset plus when it was last touched, so
+// idle entries can be evicted (see sentStateCap/TTL). Mirrors the server's
+// parseEntry bookkeeping so both sides of the link bound their per-file maps the
+// same way.
+type sentEntry struct {
+	offset   int64
+	lastSeen time.Time
+}
+
+// sentStateCap and sentStateTTL bound the per-file sent-offset map. A long-lived
+// collector watching a folder that accumulates a new hand-history file per table
+// per day would otherwise grow the map without limit; when it exceeds the cap,
+// entries not touched within the TTL (finished sessions) are dropped. An
+// actively-growing file keeps a recent lastSeen and is never evicted; a
+// wrongly-evicted file just re-sends whole once (the server rebuilds it from
+// offset 0, always correct), so the bound can be aggressive. Same shape as the
+// server's parseStateCap/TTL.
+const (
+	sentStateCap = 128
+	sentStateTTL = 12 * time.Hour
+)
+
 // Run consumes file events from sessionChan, sends an Upload for each, and (in a
 // background goroutine) applies incoming lock commands. configPath is read per
 // event for the screen name the server needs to score results. Blocks until
 // sessionChan is closed.
 func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string) {
 	go c.applyCommands()
-	sent := make(map[string]int64)
+	sent := make(map[string]*sentEntry)
 	for event := range sessionChan {
-		if up, ok := readUpload(event, sent, configPath); ok {
+		now := time.Now()
+		if len(sent) > sentStateCap {
+			for p, e := range sent {
+				if now.Sub(e.lastSeen) > sentStateTTL {
+					delete(sent, p)
+				}
+			}
+		}
+		if up, ok := readUpload(event, sent, now, configPath); ok {
 			c.link.Uploads <- up
 		}
 	}
@@ -55,7 +85,7 @@ func (c *Collector) applyCommands() {
 // is rewritten wholesale on each bust, so it is always sent whole (offset 0).
 // The screen name is read fresh from config each event so a value filled in at
 // runtime isn't missed.
-func readUpload(event watcher.FileEvent, sent map[string]int64, configPath string) (transport.Upload, bool) {
+func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Time, configPath string) (transport.Upload, bool) {
 	screenName := ""
 	if cfg, err := config.LoadConfig(configPath); err == nil && cfg.Setup.PokerStarsScreenName != nil {
 		screenName = *cfg.Setup.PokerStarsScreenName
@@ -76,7 +106,10 @@ func readUpload(event watcher.FileEvent, sent map[string]int64, configPath strin
 
 	var offset int64
 	if event.Type == "cash" {
-		last := sent[event.Path]
+		var last int64
+		if e := sent[event.Path]; e != nil {
+			last = e.offset
+		}
 		if size >= last {
 			offset = last // append case: send only the new bytes
 		}
@@ -97,7 +130,7 @@ func readUpload(event watcher.FileEvent, sent map[string]int64, configPath strin
 		slog.Error("reading file for upload", "path", event.Path, "err", err)
 		return transport.Upload{}, false
 	}
-	sent[event.Path] = size
+	sent[event.Path] = &sentEntry{offset: size, lastSeen: now}
 
 	return transport.Upload{
 		FileID:      event.Path,
