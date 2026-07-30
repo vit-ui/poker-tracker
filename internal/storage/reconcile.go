@@ -89,16 +89,25 @@ func CascadeRunningTotals(amounts []float64, newAmount, base float64) []float64 
 	return totals
 }
 
-// AsStoredClock reinterprets t's local wall-clock reading as a UTC instant —
-// the coordinate system every stored date lives in. Both backends store
-// dates without a real zone offset (the sheets backend's "2006-01-02 15:04"
-// cells and the sqlite backend's Z-suffixed RFC3339 strings both hold local
-// wall-clock digits, matching the zone-less timestamps PokerStars writes),
-// so a stored "20:00" always reads back as the instant 20:00 UTC regardless
-// of the machine's real zone. Any window boundary compared against stored
-// dates must be computed from this, never from a real local-zone instant —
-// otherwise every boundary shifts by the machine's UTC offset.
+// AsStoredClock reinterprets t's own wall-clock reading — the digits in
+// whatever zone t already carries — as a UTC instant, the coordinate system
+// every stored date lives in. Both backends store dates without a real zone
+// offset (the sheets backend's "2006-01-02 15:04" cells and the sqlite
+// backend's Z-suffixed RFC3339 strings both hold local wall-clock digits,
+// matching the zone-less timestamps PokerStars writes), so a stored "20:00"
+// always reads back as the instant 20:00 UTC regardless of the machine's real
+// zone. Any window boundary compared against stored dates must be computed
+// from this, never from a real local-zone instant — otherwise every boundary
+// shifts by the machine's UTC offset.
+//
+// It must NOT re-localize t to the process's zone (an earlier version called
+// t.Local() first): the split server passes Server.ClientNow() — the current
+// instant expressed in the *collector's* timezone, so its digits are the poker
+// PC's wall clock. t.Local() would overwrite that with the server's zone
+// (x.In(clientLoc).Local() == x.Local()), silently shifting every split-mode
+// window by the server↔collector offset and defeating client-clock anchoring
+// entirely. Reading t's own digits keeps all-local unchanged (there t is
+// already a time.Local instant) while making the anchored split correct.
 func AsStoredClock(t time.Time) time.Time {
-	l := t.Local()
-	return time.Date(l.Year(), l.Month(), l.Day(), l.Hour(), l.Minute(), l.Second(), l.Nanosecond(), time.UTC)
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
 }

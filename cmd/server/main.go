@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 
 	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/bot"
@@ -89,6 +90,24 @@ func runInstall() {
 }
 
 func runServe() {
+	// Keep the idle footprint small without starving the read spikes. GOGC=50
+	// (vs the default 100) halves the heap growth ratio, so the idle heap floor
+	// stays low and freed pages are scavenged back to the OS sooner — this is
+	// the lever that matters, since the server is idle almost all the time.
+	//
+	// The soft memory limit is deliberately generous (not the combined build's
+	// 32 MiB): unlike the poker PC, the server is the query endpoint — /export
+	// and /stats materialize whole storage tabs — and a limit sized near that
+	// working set would make the GC burn CPU and overshoot anyway under a big
+	// read, on a machine where memory isn't the scarce resource. 128 MiB is far
+	// above any single user's read spike yet still caps a runaway. (On Linux the
+	// systemd unit could set GOMEMLIMIT/GOGC or a cgroup cap instead; the
+	// Windows server has no such hook, so set a portable default in code.) These
+	// are runtime knobs only — stored data, alerts, and enforcement are
+	// unaffected.
+	debug.SetGCPercent(50)
+	debug.SetMemoryLimit(128 << 20)
+
 	sc, backendName, err := backend.Open(BotToken, configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
 		slog.Error("opening storage backend", "err", err)

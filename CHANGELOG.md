@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v4.0 - 2026-07-30
+
+First public release of the optional split deployment. The pieces landed green across the
+v3.5–v3.7 work; v4.0 is the release that ships them, plus the fixes and polish below.
+
+### Added
+
+- **Optional split deployment.** Run collection and storage on separate machines:
+  `tracker-server` (stores your data, runs the Telegram bot, enforces the rules; Windows or
+  Linux) and `tracker-client` (watches the PokerStars folders, streams file changes to the
+  server, enforces hard-stop locks; Windows). They connect over one TLS connection the client
+  dials to the server, authenticated by a pinned self-signed certificate and a shared token
+  carried in a `tracker://host:port/token#fp=...` connection string the server prints at
+  setup. The installer now opens with a role page — **"Run everything on this PC"** (the
+  default, all-local, unchanged for existing users) vs **"Connect to a server"**. The server
+  registers its own boot service with `tracker-server --install` (systemd on Linux, Task
+  Scheduler on Windows). **The all-local build (`tracker`) is unchanged** — it's the same two
+  roles wired together in one process.
+- Faster hand-history parsing: a growing session file resumes from where the last parse left
+  off instead of re-reading it from the top on every hand. The result is identical to a full
+  parse; a rewritten or shortened file transparently re-parses from scratch.
+
+### Fixed
+
+- **Cross-timezone date windows in split mode.** The server now computes every date boundary
+  (poker day, `/status`, `/stats`, the 30-day downswing, weekly/monthly summaries, and
+  deposit/withdrawal timestamps) on the poker PC's wall clock, so a server running in another
+  timezone reports the player's local poker day correctly and both storage backends timestamp
+  transfers identically. The all-local build is unaffected.
+- **Hard-stop lock delivery across reconnects.** A lock decided while the poker PC is briefly
+  disconnected is now held and delivered when it reconnects, instead of being dropped
+  (re-delivery is idempotent; an already-expired lock is not re-sent).
+
+### Changed
+
+- The split `tracker-server` and `tracker-client` keep their idle memory footprint small like
+  the all-local build: the client caps tightly (it only watches files and enforces locks),
+  the server keeps a lean idle floor with headroom for whole-tab `/export` and `/stats` reads.
+  Runtime tuning only — no change to stored data, alerts, or enforcement.
+
 ## v3.7 - 2026-07-30
 
 ### Added

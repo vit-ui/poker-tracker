@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/vit-ui/self-tracker/internal/client"
@@ -56,6 +57,15 @@ func main() {
 }
 
 func runServe() {
+	// Bound this idle background service's footprint. Same knobs, and the same
+	// reasoning, as cmd/tracker's runServe (see its long comment): the scheduled
+	// task can't set GOMEMLIMIT/GOGC env vars, so set the in-code equivalents.
+	// The collector is the lightest role — it only watches files, streams bytes,
+	// and enforces locks; it never parses or stores — so the combined build's
+	// 32 MiB soft limit is ample here too.
+	debug.SetMemoryLimit(32 << 20)
+	debug.SetGCPercent(50)
+
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)

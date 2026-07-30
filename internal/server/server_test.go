@@ -630,6 +630,234 @@ func TestSyncedMessage(t *testing.T) {
 	}
 }
 
+// startTestServer builds a Server over a temp sqlite store, starts its Run
+// loop, and drains alertChan so nothing blocks. It returns the store (to assert
+// the final persisted state), the link (to feed uploads), and the Server (for
+// white-box access to the clock helpers). Teardown stops Run (by closing the
+// Uploads channel) and waits for it to return before closing the store, so no
+// write lands on a closed database and no worker goroutine leaks past the test.
+func startTestServer(t *testing.T) (*sqlitestore.Store, *transport.Link, *Server) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	link := transport.NewLink()
+	alertChan := make(chan string, 100)
+	srv, err := NewServer(store, filepath.Join(dir, "config.json"), link, alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { srv.Run(); close(done) }()
+	go func() {
+		for range alertChan {
+		}
+	}()
+	t.Cleanup(func() {
+		close(link.Uploads) // ends Run's range over Uploads
+		<-done              // wait until no more store writes can happen
+		close(alertChan)    // now safe: Run (the only writer) has stopped
+		store.Close()
+	})
+	return store, link, srv
+}
+
+// waitForCashSession polls until exactly one cash session with wantHands is
+// stored, or the deadline passes, and returns it. A generous deadline covers
+// the asynchronous worker loop.
+func waitForCashSession(t *testing.T, store *sqlitestore.Store, wantHands int) storage.CashSessionRecord {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		sessions, err := store.GetAllCashSessions()
+		if err == nil && len(sessions) == 1 && sessions[0].Hands == wantHands {
+			return sessions[0]
+		}
+		if time.Now().After(deadline) {
+			got, _ := store.GetAllCashSessions()
+			t.Fatalf("no single cash session with %d hands within deadline; got %+v", wantHands, got)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+}
+
+// TestServer_ClientClockAnchoring pins the split-mode client-clock anchoring at
+// the composed layer, without mutating any process global (time.Local is shared
+// with every other test's goroutines). After an upload carrying a collector
+// clock, ClientNow() must express the current instant in the collector's zone,
+// and storage.AsStoredClock(ClientNow()) must read the collector's *own*
+// wall-clock digits — never re-localize to the server's zone.
+//
+// The collector's zone is built to differ from the test host's real zone by a
+// fixed 5h, so the pre-fix t.Local() bug (which re-localizes to the host) is
+// always caught regardless of where the test runs: under the bug AsStoredClock
+// would yield the host's digits, which differ from the collector's by 5h; under
+// the fix it yields the collector's own digits. The value is captured from a
+// single ClientNow() read, so the comparison is exact — no clock-skew tolerance.
+//
+// All-local behavior is unchanged: before any upload ClientNow falls back to the
+// server's own clock (time.Local), which the fallback assertion pins.
+func TestServer_ClientClockAnchoring(t *testing.T) {
+	_, _, srv := startTestServer(t)
+
+	// Before any upload the collector's zone is unknown: ClientNow falls back to
+	// the server's own local clock.
+	if loc := srv.ClientNow().Location(); loc != time.Local {
+		t.Fatalf("pre-upload ClientNow location = %v, want the server's time.Local fallback", loc)
+	}
+
+	// A collector in a zone 5h off the test host (guaranteed distinct) sends an
+	// upload; the server adopts its zone from ClientClock.
+	_, hostOff := time.Now().Zone()
+	collectorZone := time.FixedZone("COLLECTOR", hostOff+5*60*60)
+	srv.updateClock(time.Now().In(collectorZone))
+
+	cn := srv.ClientNow()
+	if cn.Location() != collectorZone {
+		t.Fatalf("ClientNow location = %v, want the collector's zone", cn.Location())
+	}
+	// The stored-clock coordinate must be the collector's own wall-clock digits
+	// relabelled UTC — i.e. AsStoredClock must read cn's fields, not re-localize.
+	stored := storage.AsStoredClock(cn)
+	want := time.Date(cn.Year(), cn.Month(), cn.Day(), cn.Hour(), cn.Minute(), cn.Second(), cn.Nanosecond(), time.UTC)
+	if !stored.Equal(want) {
+		t.Fatalf("AsStoredClock(ClientNow) = %v, want the collector's wall clock %v — anchoring re-localized to the server zone", stored, want)
+	}
+}
+
+// TestServer_StreamingChunksMatchWholeFile is the split's core parity guarantee:
+// a hand-history file streamed to the server as many small byte-delta uploads
+// (the collector's real behavior — reconstruct appends each delta, the parser
+// resumes) must persist byte-for-byte the same cash session as the identical
+// file delivered in one whole upload. Chunk boundaries are arbitrary byte
+// offsets (mid-hand and mid-line), the adversarial case the hand-boundary
+// equivalence unit test doesn't cover, exercised here through the real
+// reconstruct + incremental-parse path in Server.Run.
+func TestServer_StreamingChunksMatchWholeFile(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reference: the whole file in a single upload.
+	wholeStore, wholeLink, _ := startTestServer(t)
+	wholeLink.Uploads <- transport.Upload{FileID: `C:\hh\whole.txt`, Type: "cash", Offset: 0, Bytes: data, ScreenName: "AnonHero01"}
+	// nlhe_cash.txt has 4 dealt hands (see TestServer_ScreenNameRecovery).
+	want := waitForCashSession(t, wholeStore, 4)
+
+	// Streamed: the same bytes in 7 arbitrary-sized append deltas.
+	chunkStore, chunkLink, _ := startTestServer(t)
+	const fileID = `C:\hh\stream.txt`
+	const n = 7
+	step := len(data) / n
+	var off int
+	for i := 0; i < n; i++ {
+		end := off + step
+		if i == n-1 {
+			end = len(data)
+		}
+		if end <= off {
+			continue
+		}
+		chunkLink.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: int64(off), Bytes: data[off:end], ScreenName: "AnonHero01"}
+		off = end
+	}
+	got := waitForCashSession(t, chunkStore, 4)
+
+	// Session ID differs (it hashes FirstHandID+Date, identical here) — compare
+	// the money-and-stats payload, which must be identical.
+	got.SessionID = ""
+	want.SessionID = ""
+	if got != want {
+		t.Fatalf("streamed session != whole-file session:\n streamed=%+v\n whole   =%+v", got, want)
+	}
+}
+
+// TestServer_RewriteSelfHealsThroughServer confirms the reconstruct self-heal:
+// an offset-0 upload replaces the working file wholesale, and a subsequent parse
+// of a *shorter* rewritten file (fewer hands) discards the carried parse state
+// and re-parses from scratch, so the stored session reflects the new, smaller
+// content — never a stale merge of old and new. PokerStars only appends in
+// practice, but the split's reconstruct + parser must degrade correctly if a
+// file is ever replaced.
+func TestServer_RewriteSelfHealsThroughServer(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	offs := handHeaderOffsetsBytes(data)
+	if len(offs) < 3 {
+		t.Fatalf("need >=3 hands, got %d", len(offs))
+	}
+	twoHands := data[:offs[2]] // first two hands only
+
+	store, link, _ := startTestServer(t)
+	const fileID = `C:\hh\rewrite.txt`
+	// Full file first (4 hands).
+	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: 0, Bytes: data, ScreenName: "AnonHero01"}
+	waitForCashSession(t, store, 4)
+
+	// A shorter rewrite at offset 0 (2 hands) must replace, not append.
+	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: 0, Bytes: twoHands, ScreenName: "AnonHero01"}
+	got := waitForCashSession(t, store, 2)
+
+	// Independent expectation: a from-scratch parse of the two-hand prefix.
+	// (FirstHandID is not a persisted column — it only seeds the Session ID — so
+	// it reads back empty and isn't compared; the self-heal is proven by the
+	// hand count dropping 4→2 and the net matching the shorter parse.)
+	tmp := filepath.Join(t.TempDir(), "two.txt")
+	if err := os.WriteFile(tmp, twoHands, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want, _, err := parsers.ParseCashFile(tmp, "AnonHero01")
+	if err != nil {
+		t.Fatalf("reference parse: %v", err)
+	}
+	if got.Hands != want.Hands || got.NetUSD != want.NetUSD {
+		t.Fatalf("rewrite not self-healed: stored {hands:%d net:%.4f} want {hands:%d net:%.4f}",
+			got.Hands, got.NetUSD, want.Hands, want.NetUSD)
+	}
+	if got.SessionID == "" {
+		t.Fatal("self-healed session has no Session ID persisted")
+	}
+}
+
+// handHeaderOffsetsBytes returns the byte offset of every PokerStars hand header
+// line in data, for slicing the fixture at complete-hand boundaries.
+func handHeaderOffsetsBytes(data []byte) []int64 {
+	var offs []int64
+	var off int64
+	for _, raw := range splitKeepNL(data) {
+		line := strings.TrimRight(string(raw), "\r\n")
+		if len(line) >= 3 && line[0] == '\xef' && line[1] == '\xbb' && line[2] == '\xbf' {
+			line = line[3:]
+		}
+		if strings.HasPrefix(line, "PokerStars Hand #") || strings.HasPrefix(line, "PokerStars Zoom Hand #") {
+			offs = append(offs, off)
+		}
+		off += int64(len(raw))
+	}
+	return offs
+}
+
+// splitKeepNL splits data into lines, keeping each line's trailing newline.
+func splitKeepNL(data []byte) [][]byte {
+	var lines [][]byte
+	start := 0
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			lines = append(lines, data[start:i+1])
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		lines = append(lines, data[start:])
+	}
+	return lines
+}
+
 // TestBlipMessage covers syncedMessage's failure-side counterpart: a Sheets
 // write failure caches to the fallback queue, so PendingWrites rises. A message
 // fires only on the 0→nonzero transition (the start of an outage), so a burst

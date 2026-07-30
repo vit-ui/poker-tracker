@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vit-ui/self-tracker/internal/config"
 )
 
 // The network transport carries the same Upload/Command messages the in-process
@@ -258,6 +260,18 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 	return ln, nil
 }
 
+// serveState is Serve's shared per-listener state: the current collector
+// connection and the most recent hard-stop lock, both guarded by mu. Tracking
+// the active lock is what lets a lock survive a disconnected collector: it is
+// re-pushed when a collector (re)connects, so a lock decided while the poker PC
+// was offline — or lost to a socket that closed mid-write during a reconnect —
+// is still delivered.
+type serveState struct {
+	mu         sync.Mutex
+	current    net.Conn
+	activeLock *config.LockFile
+}
+
 // Serve accepts client connections on ln and bridges each to link after the
 // client presents the matching token. Only one collector is served at a time
 // (v3.7 scope): a new connection replaces and closes the previous one, and a
@@ -266,28 +280,34 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 // being split between a live and a stale connection — the bug otherwise is that
 // after an ungraceful drop + service-manager reconnect, two per-connection
 // writers would both drain link.Commands and one could write a lock into the
-// dead socket's buffer (no error), silently losing enforcement. Blocks until ln
-// is closed.
+// dead socket's buffer (no error), silently losing enforcement.
+//
+// A lock command is also remembered as the active lock and re-pushed to a
+// collector when it connects (see serveConn), so the two remaining gaps are
+// closed: (1) a lock decided while no collector is connected is no longer
+// dropped, and (2) a lock racing a reconnect can't be lost to the just-closed
+// old socket — storing the lock and reading current happen under the same mutex
+// as the connection swap and its re-push, so whichever orders first, the new
+// collector still receives it (a duplicate re-push is harmless: Enforce is
+// idempotent). Blocks until ln is closed.
 func Serve(ln net.Listener, token string, link *Link) {
-	var mu sync.Mutex
-	var current net.Conn
-
-	getCurrent := func() net.Conn {
-		mu.Lock()
-		defer mu.Unlock()
-		return current
-	}
+	st := &serveState{}
 
 	// The sole command writer: one consumer of link.Commands, targeting the
-	// current collector. A command arriving with no collector connected is
-	// dropped (logged) — a lock with no poker PC to enforce can't be delivered
-	// in real time, and the collector re-enforces from its own lockfile on
-	// reconnect.
+	// current collector. Storing the active lock and reading the current
+	// connection are one critical section, serialized against serveConn's
+	// connection swap + re-push (see the type doc), so a lock is never lost to a
+	// reconnect and is re-delivered to whoever connects next.
 	go func() {
 		for cmd := range link.Commands {
-			conn := getCurrent()
+			st.mu.Lock()
+			if cmd.Kind == CommandLock && cmd.Lock != nil {
+				st.activeLock = cmd.Lock
+			}
+			conn := st.current
+			st.mu.Unlock()
 			if conn == nil {
-				slog.Warn("no collector connected — dropping command", "kind", cmd.Kind)
+				slog.Warn("no collector connected — command held and will be re-sent on reconnect", "kind", cmd.Kind)
 				continue
 			}
 			if err := writeFrame(conn, frame{Command: &cmd}); err != nil {
@@ -302,31 +322,40 @@ func Serve(ln net.Listener, token string, link *Link) {
 			return
 		}
 		enableKeepAlive(conn)
-		go serveConn(conn, token, link, &mu, &current)
+		go serveConn(conn, token, link, st)
 	}
 }
 
-func serveConn(conn net.Conn, token string, link *Link, mu *sync.Mutex, current *net.Conn) {
+func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 	first, err := readFrame(conn)
 	if err != nil || first.Token != token {
 		conn.Close()
 		return
 	}
 	// Become the active collector, closing any previous one so its reader exits
-	// and it stops being a target for commands.
-	mu.Lock()
-	old := *current
-	*current = conn
-	mu.Unlock()
+	// and it stops being a target for commands. Under the same lock, snapshot
+	// any still-active lock so it can be re-pushed to this fresh connection —
+	// covering a lock decided while nothing was connected and a lock lost to a
+	// socket that closed mid-write during this very reconnect.
+	st.mu.Lock()
+	old := st.current
+	st.current = conn
+	lock := st.activeLock
+	st.mu.Unlock()
 	if old != nil {
 		old.Close()
 	}
-	defer func() {
-		mu.Lock()
-		if *current == conn {
-			*current = nil
+	if lock != nil && !config.IsLockExpired(lock) {
+		if err := writeFrame(conn, frame{Command: &Command{Kind: CommandLock, Lock: lock}}); err != nil {
+			slog.Error("re-pushing active lock to reconnected collector", "err", err)
 		}
-		mu.Unlock()
+	}
+	defer func() {
+		st.mu.Lock()
+		if st.current == conn {
+			st.current = nil
+		}
+		st.mu.Unlock()
 		conn.Close()
 	}()
 	for {

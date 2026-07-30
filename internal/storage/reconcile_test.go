@@ -201,16 +201,20 @@ func TestReconcileTournamentBounty(t *testing.T) {
 	}
 }
 
-// TestAsStoredClock checks the defining behavior: the result is a UTC
-// instant whose wall-clock digits equal the input instant's *local*
-// wall-clock reading — the coordinate system stored dates live in. The
-// machine zone is pinned to UTC-3 (Brazil, the player's zone) for the test
-// so the expected values are absolute rather than re-derived from the
-// implementation.
+// TestAsStoredClock checks the defining behavior: the result is a UTC instant
+// whose wall-clock digits equal the input's *own* wall-clock reading, in
+// whatever zone the input already carries — never re-localized to the process
+// zone. The process zone is pinned to UTC (an always-on server) and the inputs
+// deliberately carry a different zone (UTC-3, the poker PC), so the test proves
+// the split-mode anchoring: AsStoredClock(ClientNow()) must read the poker PC's
+// wall clock, not the server's. An earlier t.Local() implementation failed
+// exactly these cases.
 func TestAsStoredClock(t *testing.T) {
 	orig := time.Local
 	t.Cleanup(func() { time.Local = orig })
-	time.Local = time.FixedZone("BRT", -3*60*60)
+	time.Local = time.UTC // simulate a server running in UTC
+
+	brt := time.FixedZone("BRT", -3*60*60) // the poker PC's zone, distinct from the server's
 
 	cases := []struct {
 		name string
@@ -218,13 +222,21 @@ func TestAsStoredClock(t *testing.T) {
 		want time.Time
 	}{
 		{
-			"UTC instant reads back as its Brazil wall clock",
-			time.Date(2026, 7, 15, 23, 30, 45, 0, time.UTC), // 20:30:45 in UTC-3
+			// The anchoring guard: a poker-PC instant keeps its own digits and is
+			// NOT shifted to the server's 23:30. A regression here is the whole
+			// client-clock split silently reading the wrong day.
+			"collector-zone instant keeps its own wall clock, not the server's",
+			time.Date(2026, 7, 15, 20, 30, 45, 0, brt),
 			time.Date(2026, 7, 15, 20, 30, 45, 0, time.UTC),
 		},
 		{
-			"crossing midnight backwards — early-UTC instant is still the previous local day",
-			time.Date(2026, 7, 16, 1, 15, 0, 0, time.UTC), // 22:15 on the 15th in UTC-3
+			"a local (server-zone) instant keeps its digits too — the all-local path",
+			time.Date(2026, 7, 15, 20, 30, 45, 0, time.Local),
+			time.Date(2026, 7, 15, 20, 30, 45, 0, time.UTC),
+		},
+		{
+			"late collector-zone evening stays on its own day even as the server rolls past midnight",
+			time.Date(2026, 7, 15, 22, 15, 0, 0, brt), // 01:15 on the 16th at the UTC server
 			time.Date(2026, 7, 15, 22, 15, 0, 0, time.UTC),
 		},
 	}
