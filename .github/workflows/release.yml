@@ -13,21 +13,48 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-      - name: Build binaries (amd64 + arm64)
+      - name: Build all binaries
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          GOOS=windows GOARCH=amd64 go build -trimpath \
-            -ldflags "-s -w -H=windowsgui -X main.BotToken=${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            -o tracker-amd64.exe ./cmd/tracker
-          GOOS=windows GOARCH=arm64 go build -trimpath \
-            -ldflags "-s -w -H=windowsgui -X main.BotToken=${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            -o tracker-arm64.exe ./cmd/tracker
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            # All-local (combined) — Windows GUI, with the bot token.
+            GOOS=windows GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -H=windowsgui -X main.BotToken=$TOKEN" \
+              -o tracker-$arch.exe ./cmd/tracker
+            # Split client — Windows console app, NO bot token (never talks to Telegram).
+            GOOS=windows GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w" \
+              -o tracker-client-$arch.exe ./cmd/client
+            # Split server — Windows + Linux, with the bot token (the only Telegram-talking split role).
+            GOOS=windows GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.BotToken=$TOKEN" \
+              -o tracker-server-windows-$arch.exe ./cmd/server
+            GOOS=linux GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.BotToken=$TOKEN" \
+              -o tracker-server-linux-$arch ./cmd/server
+            # Package the Linux server as a tarball: binary (renamed tracker-server) + install.sh.
+            mkdir -p pkg/tracker-server
+            cp tracker-server-linux-$arch pkg/tracker-server/tracker-server
+            cp packaging/install.sh pkg/tracker-server/install.sh
+            chmod +x pkg/tracker-server/tracker-server pkg/tracker-server/install.sh
+            tar -C pkg -czf tracker-server-linux-$arch.tar.gz tracker-server
+            rm -rf pkg
+          done
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
-          name: tracker-exe
+          name: binaries
           path: |
             tracker-amd64.exe
             tracker-arm64.exe
+            tracker-client-amd64.exe
+            tracker-client-arm64.exe
+            tracker-server-windows-amd64.exe
+            tracker-server-windows-arm64.exe
+            tracker-server-linux-amd64.tar.gz
+            tracker-server-linux-arm64.tar.gz
 
   installer:
     needs: build
@@ -38,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: tracker-exe
+          name: binaries
       - name: Determine version
         id: version
         shell: bash
@@ -70,6 +97,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: Setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
       - name: Extract release notes from CHANGELOG
         shell: bash
         run: |
@@ -92,3 +122,7 @@ jobs:
           files: |
             PokerTracker-v${{ needs.installer.outputs.version }}-x64.exe
             PokerTracker-v${{ needs.installer.outputs.version }}-arm.exe
+            tracker-server-windows-amd64.exe
+            tracker-server-windows-arm64.exe
+            tracker-server-linux-amd64.tar.gz
+            tracker-server-linux-arm64.tar.gz
