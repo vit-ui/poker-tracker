@@ -353,7 +353,7 @@ func runServe() {
 	go srv.Run()
 
 	collector := client.NewCollector(link, lockfilePath)
-	go collector.Run(sessionChan, configPath)
+	go collector.Run(sessionChan, configPath, nil) // nil dead: the in-process link never drops
 
 	// Runs for the life of this process — the done channel is never closed,
 	// since RunEnforcementLoop is only meant to stop when --serve itself

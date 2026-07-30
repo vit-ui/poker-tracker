@@ -61,11 +61,10 @@ func recvCommand(t *testing.T, link *Link) Command {
 func TestNetworkRoundTrip(t *testing.T) {
 	serverLink, info := startServer(t, "s3cr3t")
 
-	clientLink, conn, err := DialServer(info)
+	clientLink, _, err := DialServer(info)
 	if err != nil {
 		t.Fatalf("DialServer: %v", err)
 	}
-	defer conn.Close()
 
 	// Up: client -> server.
 	clientLink.Uploads <- Upload{FileID: "f1", Type: "cash", Offset: 0, Bytes: []byte("hello"), ScreenName: "Hero", ClientClock: time.Unix(1700000000, 0).UTC()}
@@ -88,11 +87,10 @@ func TestNetworkRejectsBadToken(t *testing.T) {
 	serverLink, info := startServer(t, "correct-token")
 	info.Token = "wrong-token"
 
-	clientLink, conn, err := DialServer(info)
+	clientLink, _, err := DialServer(info)
 	if err != nil {
 		t.Fatalf("DialServer: %v", err)
 	}
-	defer conn.Close()
 
 	clientLink.Uploads <- Upload{FileID: "f1", Type: "cash", Bytes: []byte("x")}
 	select {
@@ -109,8 +107,7 @@ func TestNetworkRejectsBadFingerprint(t *testing.T) {
 	_, info := startServer(t, "tok")
 	info.Fingerprint = "0000000000000000000000000000000000000000000000000000000000000000"
 
-	if _, conn, err := DialServer(info); err == nil {
-		conn.Close()
+	if _, _, err := DialServer(info); err == nil {
 		t.Fatal("DialServer succeeded despite a fingerprint mismatch, want an error")
 	}
 }

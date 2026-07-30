@@ -171,12 +171,24 @@ func readFrame(r io.Reader) (frame, error) {
 	return f, nil
 }
 
+// FingerprintPEM returns the SHA-256 fingerprint (lowercase hex) of the first
+// certificate in a PEM block — the value pinned in a connection string.
+func FingerprintPEM(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", fmt.Errorf("no PEM certificate found")
+	}
+	sum := sha256.Sum256(block.Bytes)
+	return fmt.Sprintf("%x", sum), nil
+}
+
 // DialServer connects to a server described by info over TLS, pinning the
 // server's certificate to info.Fingerprint (no CA), presents the token, and
 // returns a *Link whose channels are bridged to the connection: Uploads written
 // to link.Uploads go up, Commands from the server arrive on link.Commands. The
-// returned conn is closed when the read pump ends; close it to stop the client.
-func DialServer(info ConnInfo) (*Link, net.Conn, error) {
+// returned dead channel is closed when the connection drops, so the caller can
+// stop and let its service manager restart it.
+func DialServer(info ConnInfo) (*Link, <-chan struct{}, error) {
 	cfg := &tls.Config{
 		InsecureSkipVerify: true, // we pin the exact cert below instead of a CA chain
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
@@ -200,15 +212,22 @@ func DialServer(info ConnInfo) (*Link, net.Conn, error) {
 	}
 
 	link := NewLink()
+	dead := make(chan struct{})
 	go func() { // upload writer: the only writer to conn on the client side
-		for up := range link.Uploads {
-			if err := writeFrame(conn, frame{Upload: &up}); err != nil {
-				conn.Close()
+		for {
+			select {
+			case <-dead:
 				return
+			case up := <-link.Uploads:
+				if err := writeFrame(conn, frame{Upload: &up}); err != nil {
+					conn.Close()
+					return
+				}
 			}
 		}
 	}()
-	go func() { // command reader
+	go func() { // command reader; closing dead on exit signals the drop
+		defer close(dead)
 		defer conn.Close()
 		for {
 			f, err := readFrame(conn)
@@ -220,7 +239,7 @@ func DialServer(info ConnInfo) (*Link, net.Conn, error) {
 			}
 		}
 	}()
-	return link, conn, nil
+	return link, dead, nil
 }
 
 // Listen starts a TLS listener on addr with the given PEM cert/key. addr is a

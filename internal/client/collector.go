@@ -50,31 +50,54 @@ const (
 
 // Run consumes file events from sessionChan, sends an Upload for each, and (in a
 // background goroutine) applies incoming lock commands. configPath is read per
-// event for the screen name the server needs to score results. Blocks until
-// sessionChan is closed.
-func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string) {
-	go c.applyCommands()
+// event for the screen name the server needs to score results. dead is closed
+// by the network transport when the connection to the server drops; Run returns
+// then so the caller can exit and let its service manager restart it. In the
+// all-local build the link never drops, so a nil dead is passed and Run blocks
+// until sessionChan is closed.
+func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string, dead <-chan struct{}) {
+	go c.applyCommands(dead)
 	sent := make(map[string]*sentEntry)
-	for event := range sessionChan {
-		now := time.Now()
-		if len(sent) > sentStateCap {
-			for p, e := range sent {
-				if now.Sub(e.lastSeen) > sentStateTTL {
-					delete(sent, p)
+	for {
+		select {
+		case <-dead:
+			return
+		case event, ok := <-sessionChan:
+			if !ok {
+				return
+			}
+			now := time.Now()
+			if len(sent) > sentStateCap {
+				for p, e := range sent {
+					if now.Sub(e.lastSeen) > sentStateTTL {
+						delete(sent, p)
+					}
 				}
 			}
-		}
-		if up, ok := readUpload(event, sent, now, configPath); ok {
-			c.link.Uploads <- up
+			if up, ok := readUpload(event, sent, now, configPath); ok {
+				select {
+				case c.link.Uploads <- up:
+				case <-dead:
+					return // link died mid-send; don't block
+				}
+			}
 		}
 	}
 }
 
-// applyCommands enforces lock commands from the server for the life of the link.
-func (c *Collector) applyCommands() {
-	for cmd := range c.link.Commands {
-		if cmd.Kind == transport.CommandLock && cmd.Lock != nil {
-			Enforce(c.lockfilePath, *cmd.Lock)
+// applyCommands enforces lock commands from the server until the link dies.
+func (c *Collector) applyCommands(dead <-chan struct{}) {
+	for {
+		select {
+		case <-dead:
+			return
+		case cmd, ok := <-c.link.Commands:
+			if !ok {
+				return
+			}
+			if cmd.Kind == transport.CommandLock && cmd.Lock != nil {
+				Enforce(c.lockfilePath, *cmd.Lock)
+			}
 		}
 	}
 }

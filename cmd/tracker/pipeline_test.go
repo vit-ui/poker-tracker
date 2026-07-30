@@ -104,7 +104,7 @@ func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 	}
 	go srv.Run()
 	collector := client.NewCollector(link, lockfilePath)
-	go collector.Run(sessionChan, configPath)
+	go collector.Run(sessionChan, configPath, nil)
 	go client.RunEnforcementLoop(lockfilePath, done)
 
 	go func() {
