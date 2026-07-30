@@ -41,6 +41,13 @@ type Bot struct {
 	dbPath             string
 	restartWatcher     func()
 
+	// sendLock carries out a manual /hardstop trigger's lock. The caller
+	// supplies it so the bot doesn't care where enforcement happens: the
+	// all-local build passes the same inline client.Enforce it always used
+	// (unchanged behavior), the split server passes a send down the link to the
+	// remote collector. The bot only builds the lock and hands it over.
+	sendLock func(config.LockFile)
+
 	// pendingSwitch holds a /storage migration awaiting the player's
 	// confirmation tap. Touched only from pollUpdates, like conversation.
 	pendingSwitch *pendingBackendSwitch
@@ -87,7 +94,7 @@ func (c *conversation) reset() {
 // serviceAccountPath is only used by /sheet, /credentials, and /storage
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func()) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile)) error {
 	tgBot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -101,6 +108,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		serviceAccountPath: serviceAccountPath,
 		dbPath:             dbPath,
 		restartWatcher:     restartWatcher,
+		sendLock:           sendLock,
 	}
 
 	var lastWeeklySent, lastMonthlySent, lastHeartbeatCheck time.Time

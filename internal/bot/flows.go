@@ -24,7 +24,6 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 )
@@ -1418,7 +1417,7 @@ func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 		var alertText string
 		err := hardstop.ManualTrigger(b.configPath, func(reason string, durationHours int) {
 			lock, text := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
-			client.Enforce(b.lockfilePath, lock)
+			b.sendLock(lock)
 			alertText = text
 		})
 		if err != nil {

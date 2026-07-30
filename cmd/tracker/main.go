@@ -390,8 +390,13 @@ func runServe() {
 	// exits.
 	go client.RunEnforcementLoop(lockfilePath, make(chan struct{}))
 
+	// All-local: a manual /hardstop trigger enforces inline, exactly as before
+	// the split — same client.Enforce (taskkill + write the local lockfile), no
+	// change in behavior. The split server instead sends the lock down the link.
+	sendLock := func(lock config.LockFile) { client.Enforce(lockfilePath, lock) }
+
 	go func() {
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit
