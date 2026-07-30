@@ -60,6 +60,7 @@ func main() {
 	serve := flag.Bool("serve", false, "run the server")
 	setup := flag.Bool("setup", false, "generate credentials and print the connection string")
 	pair := flag.Bool("pair", false, "reprint the connection string to pair another collector")
+	install := flag.Bool("install", false, "register the server as a boot service (systemd on Linux, Task Scheduler on Windows)")
 	flag.Parse()
 
 	switch {
@@ -69,10 +70,22 @@ func main() {
 		runSetup()
 	case *pair:
 		runPair()
+	case *install:
+		runInstall()
 	default:
-		fmt.Fprintln(os.Stderr, "usage: tracker-server --serve | --setup | --pair")
+		fmt.Fprintln(os.Stderr, "usage: tracker-server --serve | --setup | --install | --pair")
 		os.Exit(2)
 	}
+}
+
+// runInstall registers the server as a boot service via the per-OS
+// installService, so it starts on boot and restarts on failure.
+func runInstall() {
+	if err := installService(); err != nil {
+		fmt.Fprintln(os.Stderr, "install failed:", err)
+		os.Exit(1)
+	}
+	fmt.Println("Installed as a service — it will start on boot and is starting now.")
 }
 
 func runServe() {
