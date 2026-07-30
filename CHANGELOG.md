@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## Unreleased
+## v3.6 - 2026-07-29
 
 ### Changed
 
@@ -17,6 +17,8 @@ pulls its notes from the matching section below.
   All behavior — stored data, alerts, hard-stop locking, `/export` — is unchanged, verified by the existing
   end-to-end pipeline suite driving the real watcher → collector → server → sqlite path with no assertion
   changes.
+
+## v3.5 - 2026-07-29
 
 ### Changed
 
