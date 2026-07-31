@@ -106,11 +106,20 @@ var
   PageScreenName: TInputQueryWizardPage;
   PageHandHistoryDir: TInputDirWizardPage;
   PageTournamentDir: TInputDirWizardPage;
-  // Split (v3.7+): the role choice (all-local vs connect-to-server) and the
-  // connection-string page shown only in connect-to-server mode. All the
-  // pages above are the all-local flow, unchanged.
+  // Split (v3.7+): the role choice (all-local vs connect-to-server vs
+  // run-a-server), the connection-string page (connect-to-server only), and the
+  // server storage-method page (run-a-server only). The all-local pages above
+  // are unchanged in identity; only their order relative to PageMethod moved.
   PageRole: TInputOptionWizardPage;
   PageConnection: TInputQueryWizardPage;
+  // PageServerMethod asks the run-a-server install the same thing the Linux
+  // server's chooseBackend does: configure storage from Telegram (recommended,
+  // defaults SQLite) vs set it here now. ServerUseTelegram is its answer, read
+  // by ShouldSkipPage (skip the storage pages when deferring to Telegram) and
+  // RunServerSetup (pass --backend sqlite when deferring). Shown only in server
+  // mode; false everywhere else.
+  PageServerMethod: TInputOptionWizardPage;
+  ServerUseTelegram: Boolean;
   UsingTelegram: Boolean;
   // Storage backend choice (PageBackend, first page of the wizard, shown
   // regardless of Telegram vs manual). False = Google Sheets (default,
@@ -489,19 +498,21 @@ begin
   // nothing changes: wpSelectDir is still never shown, so Welcome is still
   // immediately followed by this page either way.
   //
-  // PageBackend goes first — before PageMethod (Telegram vs manual) — since
-  // the choice applies identically to both paths: it decides whether the
-  // Telegram conversation's own backend question (bot.RunSetup) is
-  // pre-answered via WritePreSeedConfig, and whether the manual path's
-  // PageCredentials/PageSheetName pages are shown at all (ShouldSkipPage).
-  // PageMethod anchors off PageBackend.ID rather than wpSelectDir directly,
-  // so it inherits the same {app}-validity position one page later.
-  // Role choice, shown first: all-local (both roles in one process, the
-  // default, everything below) vs connect-to-server (this PC is the poker PC
-  // and a separate always-on machine runs the server). Anchored at wpWelcome —
-  // it collects no {app}-dependent value, so it needn't sit past wpSelectDir
-  // like the pages below. In client mode ShouldSkipPage hides every all-local /
-  // Google / Telegram page and shows PageConnection + screen name + folders.
+  // PageMethod (Telegram vs manual) now comes first — before PageBackend — so
+  // UsingTelegram is known by the time the wizard reaches the backend page. That
+  // is what lets ShouldSkipPage skip PageBackend in Telegram mode and hand the
+  // storage-backend question to bot.RunSetup (which asks it whenever the field
+  // is null); the manual path still answers it on PageBackend here. Both are
+  // anchored at/after wpSelectDir (PageMethod at wpSelectDir, PageBackend one
+  // page later) so ExpandConstant('{app}') is valid by the time either is
+  // reached — see the wpSelectDir note above. PageCredentials follows
+  // PageBackend (not PageMethod) so the storage pages stay contiguous.
+  //
+  // Role choice, shown first: all-local (both roles in one process, the default)
+  // vs connect-to-server (this PC is the poker PC) vs run-a-server (a separate
+  // always-on machine). Anchored at wpWelcome — it collects no {app}-dependent
+  // value, so it needn't sit past wpSelectDir like the pages below.
+  // ShouldSkipPage hides the pages that don't apply to the chosen role.
   PageRole := CreateInputOptionPage(wpWelcome,
     'Setup Type',
     'How will you run Poker Tracker?',
@@ -518,16 +529,20 @@ begin
     'Your server printed a line starting with tracker:// when you ran its setup. Paste the whole line.');
   PageConnection.Add('Connection string:', False);
 
-  PageBackend := CreateInputOptionPage(wpSelectDir,
-    'Storage Backend',
-    'How do you want to store your tracked poker sessions?',
-    BackendDescription,
+  // Run-a-server only (ShouldSkipPage): the same choice the Linux server offers
+  // in chooseBackend — defer storage/alerts/rules to Telegram (defaults SQLite,
+  // switchable later via /storage) or set the storage backend here now. Anchored
+  // after PageConnection so it sits early, before the wpSelectDir storage pages.
+  PageServerMethod := CreateInputOptionPage(PageConnection.ID,
+    'Server Setup',
+    'How do you want to configure storage, alerts, and rules?',
+    'Everything can be set from Telegram once your poker PC is paired — the simplest path. It stores data in a local file (SQLite) you can switch to Google Sheets anytime with /storage. Or set the storage backend here now.',
     True, False);
-  PageBackend.Add('Google Sheets');
-  PageBackend.Add('Local file (no Google account needed)');
-  PageBackend.SelectedValueIndex := 0;
+  PageServerMethod.Add('From Telegram on my phone (recommended)');
+  PageServerMethod.Add('Set storage here now');
+  PageServerMethod.SelectedValueIndex := 0;
 
-  PageMethod := CreateInputOptionPage(PageBackend.ID,
+  PageMethod := CreateInputOptionPage(wpSelectDir,
     'Setup Method',
     'Would you like to set up via Telegram? (Recommended)',
     MethodDescription,
@@ -536,9 +551,20 @@ begin
   PageMethod.Add('No, set up manually');
   PageMethod.SelectedValueIndex := 0;
 
+  PageBackend := CreateInputOptionPage(PageMethod.ID,
+    'Storage Backend',
+    'How do you want to store your tracked poker sessions?',
+    BackendDescription,
+    True, False);
+  PageBackend.Add('Google Sheets');
+  PageBackend.Add('Local file (no Google account needed)');
+  PageBackend.SelectedValueIndex := 0;
+
   // Manual setup only — skipped entirely for Telegram (see ShouldSkipPage),
   // since --setup has its own optional upload-or-skip step for this file.
-  PageCredentials := CreateInputFilePage(PageMethod.ID,
+  // Anchored after PageBackend (which now precedes it) so the storage pages
+  // stay contiguous: Method -> Backend -> Credentials -> ... -> SheetName.
+  PageCredentials := CreateInputFilePage(PageBackend.ID,
     'Google Service Account',
     'Locate your service account credentials file',
     'Poker Tracker needs this file to read and write your Google Sheet.');
@@ -579,27 +605,30 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  // Run-a-server mode asks the storage backend (and, for Sheets, the
-  // credentials file + sheet name) exactly like the all-local install — the
-  // certificate, pairing token, and connection string are handled by
+  // Run-a-server mode shows PageServerMethod (configure from Telegram vs set
+  // storage here) and, when the player sets storage here, the storage backend
+  // page (+ credentials + sheet name for Sheets) — exactly the all-local storage
+  // pages. The certificate, pairing token, and connection string are handled by
   // tracker-server --setup after install (RunServerSetup). It never asks the
-  // screen name, folders, Telegram-method, or connection-string pages: the
-  // collector owns the screen name/folders, and the server *generates* the
+  // screen name, folders, all-local Telegram-method, or connection-string pages:
+  // the collector owns the screen name/folders, and the server *generates* the
   // connection string rather than consuming one.
   if IsServerMode() then
   begin
     Result := (PageID = PageConnection.ID) or (PageID = PageMethod.ID) or
               (PageID = PageWaiting.ID) or (PageID = PageScreenName.ID) or
               (PageID = PageHandHistoryDir.ID) or (PageID = PageTournamentDir.ID);
-    // Backend page: skipped only when a prior install already recorded one
-    // (don't silently switch backends here — that's /storage's migration).
-    if (PageID = PageBackend.ID) and BackendAlreadySet then
+    // Storage pages: skipped when the player chose to configure from Telegram
+    // (ServerUseTelegram — RunServerSetup then records the SQLite default and the
+    // bot owns storage/alerts/rules), or when a prior install already recorded a
+    // backend (don't silently switch — that's /storage's migration).
+    if (PageID = PageBackend.ID) and (BackendAlreadySet or ServerUseTelegram) then
       Result := True;
-    // Sheets-only pages: shown only when Sheets is the choice and the value
-    // isn't already in place.
-    if (PageID = PageCredentials.ID) and (UsingSQLite or CredentialsAlreadySet) then
+    // Sheets-only pages: shown only when Sheets is the choice, storage is being
+    // set here (not deferred to Telegram), and the value isn't already in place.
+    if (PageID = PageCredentials.ID) and (UsingSQLite or CredentialsAlreadySet or ServerUseTelegram) then
       Result := True;
-    if (PageID = PageSheetName.ID) and (UsingSQLite or SheetAlreadySet) then
+    if (PageID = PageSheetName.ID) and (UsingSQLite or SheetAlreadySet or ServerUseTelegram) then
       Result := True;
     Exit;
   end;
@@ -609,19 +638,20 @@ begin
   begin
     Result := (PageID = PageBackend.ID) or (PageID = PageMethod.ID) or
               (PageID = PageCredentials.ID) or (PageID = PageWaiting.ID) or
-              (PageID = PageSheetName.ID);
+              (PageID = PageSheetName.ID) or (PageID = PageServerMethod.ID);
     Exit;
   end;
-  // All-local mode never shows the connection-string page.
-  if PageID = PageConnection.ID then
+  // All-local mode never shows the connection-string or run-a-server pages.
+  if (PageID = PageConnection.ID) or (PageID = PageServerMethod.ID) then
   begin
     Result := True;
     Exit;
   end;
-  // Checked first and unconditionally — the backend choice doesn't depend
-  // on Telegram vs manual (UsingTelegram isn't set yet at this point
-  // anyway), only on whether a prior install already recorded one.
-  if (PageID = PageBackend.ID) and BackendAlreadySet then
+  // Backend page: skipped when a prior install already recorded a backend, or
+  // when the player chose Telegram — PageMethod now precedes this page, so
+  // UsingTelegram is set, and bot.RunSetup owns the backend question in that
+  // path (asks it when the field is null). The manual path answers it here.
+  if (PageID = PageBackend.ID) and (BackendAlreadySet or UsingTelegram) then
   begin
     Result := True;
     Exit;
@@ -985,25 +1015,25 @@ begin
     MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
 end;
 
-// WritePreSeedConfig ensures {app}\config.json has setup.storage_backend
-// set to PageBackend's choice before --setup ever runs. This is what lets
-// bot.RunSetup's own backend question (internal/bot/bot.go, "Step 1.5") see
-// the field already set and skip its inline keyboard entirely — the player
-// answers the storage-backend question once, on this native page, not a
-// second time inside the Telegram conversation. Two cases:
+// WritePreSeedConfig runs on the Telegram path (RunTelegramSetup) right before
+// tracker.exe --setup. It deliberately does NOT force storage_backend: with
+// PageMethod now ahead of PageBackend, a Telegram install skips the native
+// backend page (ShouldSkipPage) and bot.RunSetup asks the backend itself — it
+// prompts whenever the field is null (internal/bot/setup.go). So this leaves
+// storage_backend null on a fresh config and preserves whatever is on disk for
+// an existing one. Two cases:
 //
-// - config.json doesn't exist yet (fresh install): write the same
-//   all-null-except-backend stub as before.
+// - config.json doesn't exist yet (fresh install): write an all-null stub so
+//   --setup has a file to start from; the bot fills in the backend and the rest.
 // - config.json already exists: rebuild it field by field via the same
 //   JSONFieldRaw/PreservedObjectOrDefault/BuildConfigJSON combination
-//   CurStepChanged's manual path uses, splicing every field back byte-for-
-//   byte except storage_backend, which is always set to Backend. Covers a
-//   real upgrade (a working v1.x sheet/screen-name/paths setup, or a v2.0
-//   config missing only the backend field) without touching anything the
-//   player already configured, and also a retried RunTelegramSetup
+//   CurStepChanged's manual path uses, splicing every field — including
+//   storage_backend — back byte-for-byte. Covers an upgrade (a working
+//   sheet/screen-name/paths setup) and a retried RunTelegramSetup
 //   (CurPageChanged's automatic attempt failed, the player clicks Next on
-//   PageWaiting again) — by then --setup's first, failed run may already
-//   have written real progress (chat ID, sheet, screen name).
+//   PageWaiting again) — by then --setup's first, failed run may already have
+//   written real progress (backend, chat ID, sheet, screen name) that must
+//   survive; a still-null backend stays null so the bot asks.
 //
 // Reads config.json fresh off disk (Existing) rather than the global
 // ExistingConfigJSON, which is a one-time snapshot taken before the wizard
@@ -1014,21 +1044,17 @@ var
   TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw: String;
   HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String;
 begin
-  if UsingSQLite then
-    Backend := '"sqlite"'
-  else
-    Backend := '"sheets"';
-
   Existing := ReadFileAsString(ExpandConstant('{app}\config.json'));
   if Existing = '' then
   begin
     SaveStringToFile(ExpandConstant('{app}\config.json'),
-      BuildConfigJSON('null', Backend, 'null', 'null', 'null', 'null', 'null',
+      BuildConfigJSON('null', 'null', 'null', 'null', 'null', 'null', 'null',
         DefaultAlertsBlock(), DefaultHardstopBlock(), DefaultScheduleBlock()),
       False);
     Exit;
   end;
 
+  Backend := JSONFieldRaw(Existing, 'storage_backend');
   TelegramChatIDRaw := JSONFieldRaw(Existing, 'telegram_chat_id');
   SheetNameRaw := JSONFieldRaw(Existing, 'google_sheet_name');
   SheetIDRaw := JSONFieldRaw(Existing, 'google_sheet_id');
@@ -1120,6 +1146,11 @@ begin
 
   if CurPageID = PageBackend.ID then
     UsingSQLite := (PageBackend.SelectedValueIndex = 1)
+
+  else if CurPageID = PageServerMethod.ID then
+    // Index 0 = "From Telegram (recommended)": defer storage to Telegram, so
+    // ShouldSkipPage hides the storage pages and RunServerSetup records SQLite.
+    ServerUseTelegram := (PageServerMethod.SelectedValueIndex = 0)
 
   else if CurPageID = PageMethod.ID then
     UsingTelegram := (PageMethod.SelectedValueIndex = 0)
@@ -1230,9 +1261,11 @@ end;
 
 // RunServerSetup finishes a run-a-server install: tracker-server.exe --setup
 // generates the TLS certificate + pairing token and records the storage backend
-// the wizard collected (passed as --backend/--sheet-name/--sheet-id, with the
-// service-account key copied for Sheets — the same choice the all-local install
-// makes, since the hidden-console --setup can't prompt for it); --install
+// (passed as --backend/--sheet-name/--sheet-id, with the service-account key
+// copied for Sheets, since the hidden-console --setup can't prompt). When the
+// player chose "Configure from Telegram" on PageServerMethod, that's --backend
+// sqlite — the working default they configure from Telegram after pairing; when
+// they chose "Set storage here", it's their PageBackend selection. --install
 // registers the PokerTrackerServer boot task; schtasks /Run starts it now; then
 // --pair's connection string (printed to stdout, captured via a cmd redirect) is
 // shown so the player can pair their poker PC. Alerts and rules are set later
@@ -1246,11 +1279,15 @@ begin
 
   // Pass the storage choice the wizard collected to --setup, which owns
   // config.json and preserves the pairing token. Only when this run actually
-  // asked — a re-install with a backend already recorded keeps it untouched.
+  // asked — a re-install with a backend already recorded keeps it untouched,
+  // regardless of the PageServerMethod answer.
   SetupArgs := '--setup';
   if not BackendAlreadySet then
   begin
-    if UsingSQLite then
+    if ServerUseTelegram or UsingSQLite then
+      // "Configure from Telegram" defers storage/alerts/rules to the bot and
+      // records the working SQLite default now (switchable later via /storage);
+      // an explicit "set storage here -> Local file" also lands on SQLite.
       SetupArgs := SetupArgs + ' --backend sqlite'
     else
     begin

@@ -19,16 +19,17 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 
 ## Installing
 
-Download **`PokerTracker-Setup.exe`** from [Releases](../../releases) and run it — one installer for every PC (it detects your CPU, Intel/AMD or ARM, and installs the right build; there's no separate download to pick). The installer walks you through two choices:
+Download **`PokerTracker-Setup.exe`** from [Releases](../../releases) and run it — one installer for every PC (it detects your CPU, Intel/AMD or ARM, and installs the right build; there's no separate download to pick). The installer first asks **how you'd like to set up**:
 
-- **Storage backend**
-  - **Google Sheets** — a live spreadsheet you can open in any browser. Requires a one-time Google Cloud service account.
-  - **Local file** — everything lives in a single `tracker.db` next to the program. No Google account, nothing to share, nothing to configure.
-- **Setup method**
-  - **Telegram (recommended)** — the installer launches the bot and you finish setup by chatting with it.
-  - **Manual** — enter the same details directly in the installer if you'd rather not use Telegram for the initial setup.
+- **Telegram (recommended)** — the installer launches the bot and you finish setup by chatting with it, **including choosing where your data lives**.
+- **Manual** — set everything up in the installer instead, starting with the storage backend.
 
-Either way, the service registers itself in Task Scheduler and starts automatically, including on every subsequent boot.
+Your **storage backend** — asked in the chat on the Telegram path, or on its own page on the manual path — is either:
+
+- **Google Sheets** — a live spreadsheet you can open in any browser. Requires a one-time Google Cloud service account.
+- **Local file** — everything lives in a single `tracker.db` next to the program. No Google account, nothing to share, nothing to configure.
+
+You can switch between them anytime later with `/storage`. Either way, the service registers itself in Task Scheduler and starts automatically, including on every subsequent boot.
 
 ### Requirements
 
@@ -48,7 +49,7 @@ Setup:
 1. On the always-on machine, set up the server — one file per OS, download and run:
    - **Linux:** download `PokerTracker-Server-linux.tar.gz`, extract it (double-click in your file manager, or `tar xzf PokerTracker-Server-linux.tar.gz`), and run the extracted **`PokerTracker-Server-linux`**. It detects your CPU and installs the right build into your home folder — no root. A setup window opens (a terminal prompt instead on a headless box). It asks for your password once, in a normal desktop dialog, only to enable start-on-boot; skip that and the server still runs while you're logged in.
      - The setup window uses your desktop's standard dialog tool — **zenity** on GNOME and other GTK desktops (Ubuntu, Fedora, Mint, Xfce, MATE, Cinnamon…), **kdialog** on KDE Plasma (Kubuntu, openSUSE KDE…). On a desktop that has neither installed, or a headless box, setup falls back to **terminal prompts** — so run it from a terminal there rather than double-clicking. You can reprint the connection string anytime with `~/.local/share/poker-tracker/tracker-server --pair`.
-   - **Windows:** run `PokerTracker-Setup.exe` and choose **"Run a server on this PC"**. It asks the same storage choice (Local file or Google Sheets) as the all-local install, then sets everything up.
+   - **Windows:** run `PokerTracker-Setup.exe` and choose **"Run a server on this PC"**. It asks whether to configure from Telegram (recommended — defaults to a local file, switch anytime with `/storage`) or set the storage backend here now — the same choice the Linux server offers — then sets everything up.
 
    Either way it shows a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
 2. On the poker PC, run `PokerTracker-Setup.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.

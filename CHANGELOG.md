@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v4.1 - 2026-07-31
+
+### Changed
+
+- **The installer asks "Use Telegram?" first, and the Telegram path now sets up storage too.**
+  Previously the installer asked your storage backend on its own page before the Telegram-or-manual
+  choice. Now it asks how you want to set up first: pick **Telegram** and you choose everything —
+  storage backend included — by chatting with the bot; pick **Manual** and the storage page (and the
+  rest) stay in the installer as before. One fewer installer page when you use Telegram, and the
+  storage question lives in one place per path instead of being asked on a native page you might not
+  expect.
+- **The Windows server installer now offers the same "configure from Telegram (recommended) vs set
+  storage here now" choice the Linux server already had.** Choosing *from Telegram* stores your data
+  in a local file to start (switch to Google Sheets anytime with `/storage`) and lets you configure
+  storage, alerts, and rules from your phone after pairing — no storage decision needed at install
+  time. The two server installers now behave the same.
+
 ## v4.0 - 2026-07-31
 
 ### Changed
