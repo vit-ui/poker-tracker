@@ -48,7 +48,7 @@ Setup:
 1. On the always-on machine, set up the server — one file per OS, download and run:
    - **Linux:** download `PokerTracker-Server-linux.tar.gz`, extract it (double-click in your file manager, or `tar xzf PokerTracker-Server-linux.tar.gz`), and run the extracted **`PokerTracker-Server-linux`**. It detects your CPU and installs the right build into your home folder — no root. A setup window opens (a terminal prompt instead on a headless box). It asks for your password once, in a normal desktop dialog, only to enable start-on-boot; skip that and the server still runs while you're logged in.
      - The setup window uses your desktop's standard dialog tool — **zenity** on GNOME and other GTK desktops (Ubuntu, Fedora, Mint, Xfce, MATE, Cinnamon…), **kdialog** on KDE Plasma (Kubuntu, openSUSE KDE…). On a desktop that has neither installed, or a headless box, setup falls back to **terminal prompts** — so run it from a terminal there rather than double-clicking. You can reprint the connection string anytime with `~/.local/share/poker-tracker/tracker-server --pair`.
-   - **Windows:** run `PokerTracker-Setup.exe` and choose **"Run a server on this PC"**.
+   - **Windows:** run `PokerTracker-Setup.exe` and choose **"Run a server on this PC"**. It asks the same storage choice (Local file or Google Sheets) as the all-local install, then sets everything up.
 
    Either way it shows a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
 2. On the poker PC, run `PokerTracker-Setup.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.

@@ -65,13 +65,20 @@ func main() {
 	setup := flag.Bool("setup", false, "generate credentials and print the connection string")
 	pair := flag.Bool("pair", false, "reprint the connection string to pair another collector")
 	install := flag.Bool("install", false, "register the server as a boot service (systemd on Linux, Task Scheduler on Windows)")
+	// The Windows installer collects the storage choice on its own wizard pages
+	// and passes it here, since it runs --setup in a hidden console that can't
+	// prompt. Empty --backend means ask (Linux desktop/terminal) or keep an
+	// existing/default backend. --sheet-name/--sheet-id preseed a Sheets install.
+	backend := flag.String("backend", "", `storage backend to preseed on --setup: "sqlite" or "sheets"`)
+	sheetName := flag.String("sheet-name", "", "Google Sheet name to preseed on --setup (sheets backend)")
+	sheetID := flag.String("sheet-id", "", "Google Sheet ID to preseed on --setup (sheets backend)")
 	flag.Parse()
 
 	switch {
 	case *serve:
 		runServe()
 	case *setup:
-		runSetup()
+		runSetup(*backend, *sheetName, *sheetID)
 	case *pair:
 		runPair()
 	case *install:
@@ -163,7 +170,7 @@ func runServe() {
 	select {}
 }
 
-func runSetup() {
+func runSetup(backend, sheetName, sheetID string) {
 	p := uiprompt.New()
 
 	// Generate the TLS cert/key once and keep them; the fingerprint the client
@@ -193,14 +200,39 @@ func runSetup() {
 		token := randomToken()
 		cfg.Setup.PairToken = &token
 	}
-	if cfg.Setup.StorageBackend == nil {
-		cfg.Setup.StorageBackend = chooseBackend(p)
-	}
+	applyStorageChoice(cfg, p, backend, sheetName, sheetID)
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "saving config:", err)
 		os.Exit(1)
 	}
 	showConnection(p, cfg)
+}
+
+// applyStorageChoice sets the storage backend for a new install. The Windows
+// installer collects it on its own wizard pages (like the all-local install)
+// and passes it as flags; on Linux with no flag it's asked via chooseBackend
+// (desktop dialog or terminal), defaulting SQLite. An install that already has a
+// backend keeps it — LoadConfig read the existing config, so a re-run preserves
+// the backend and the pairing token rather than resetting them.
+func applyStorageChoice(cfg *config.Config, p *uiprompt.Prompter, backend, sheetName, sheetID string) {
+	if backend == "sqlite" || backend == "sheets" {
+		b := backend
+		cfg.Setup.StorageBackend = &b
+		if backend == "sheets" {
+			if sheetName != "" {
+				n := sheetName
+				cfg.Setup.GoogleSheetName = &n
+			}
+			if sheetID != "" {
+				id := sheetID
+				cfg.Setup.GoogleSheetID = &id
+			}
+		}
+		return
+	}
+	if cfg.Setup.StorageBackend == nil {
+		cfg.Setup.StorageBackend = chooseBackend(p)
+	}
 }
 
 // chooseBackend asks how the player wants to configure the server. Everything

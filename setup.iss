@@ -579,16 +579,28 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  // Run-a-server mode asks nothing in the wizard — the certificate, pairing
-  // token, storage default, and the connection string are all handled by
-  // tracker-server --setup after install (CurStepChanged). Skip every page.
+  // Run-a-server mode asks the storage backend (and, for Sheets, the
+  // credentials file + sheet name) exactly like the all-local install — the
+  // certificate, pairing token, and connection string are handled by
+  // tracker-server --setup after install (RunServerSetup). It never asks the
+  // screen name, folders, Telegram-method, or connection-string pages: the
+  // collector owns the screen name/folders, and the server *generates* the
+  // connection string rather than consuming one.
   if IsServerMode() then
   begin
-    Result := (PageID = PageConnection.ID) or (PageID = PageBackend.ID) or
-              (PageID = PageMethod.ID) or (PageID = PageCredentials.ID) or
-              (PageID = PageWaiting.ID) or (PageID = PageSheetName.ID) or
-              (PageID = PageScreenName.ID) or (PageID = PageHandHistoryDir.ID) or
-              (PageID = PageTournamentDir.ID);
+    Result := (PageID = PageConnection.ID) or (PageID = PageMethod.ID) or
+              (PageID = PageWaiting.ID) or (PageID = PageScreenName.ID) or
+              (PageID = PageHandHistoryDir.ID) or (PageID = PageTournamentDir.ID);
+    // Backend page: skipped only when a prior install already recorded one
+    // (don't silently switch backends here — that's /storage's migration).
+    if (PageID = PageBackend.ID) and BackendAlreadySet then
+      Result := True;
+    // Sheets-only pages: shown only when Sheets is the choice and the value
+    // isn't already in place.
+    if (PageID = PageCredentials.ID) and (UsingSQLite or CredentialsAlreadySet) then
+      Result := True;
+    if (PageID = PageSheetName.ID) and (UsingSQLite or SheetAlreadySet) then
+      Result := True;
     Exit;
   end;
   // Connect-to-server mode shows only the connection string, screen name, and
@@ -1217,18 +1229,50 @@ begin
 end;
 
 // RunServerSetup finishes a run-a-server install: tracker-server.exe --setup
-// generates the TLS certificate + pairing token and writes a sqlite-default
-// config; --install registers the PokerTrackerServer boot task; schtasks /Run
-// starts it now; then --pair's connection string (printed to stdout, captured
-// via cmd redirect) is shown so the player can pair their poker PC. The server
-// takes no wizard input — storage, alerts, and rules are set later from Telegram.
+// generates the TLS certificate + pairing token and records the storage backend
+// the wizard collected (passed as --backend/--sheet-name/--sheet-id, with the
+// service-account key copied for Sheets — the same choice the all-local install
+// makes, since the hidden-console --setup can't prompt for it); --install
+// registers the PokerTrackerServer boot task; schtasks /Run starts it now; then
+// --pair's connection string (printed to stdout, captured via a cmd redirect) is
+// shown so the player can pair their poker PC. Alerts and rules are set later
+// from Telegram.
 procedure RunServerSetup();
 var
-  ExePath, ConnPath, Conn: String;
+  ExePath, ConnPath, Conn, SetupArgs, SheetInput, SheetName, SheetID: String;
   ResultCode: Integer;
 begin
   ExePath := ExpandConstant('{app}\tracker-server.exe');
-  if (not Exec(ExePath, '--setup', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+
+  // Pass the storage choice the wizard collected to --setup, which owns
+  // config.json and preserves the pairing token. Only when this run actually
+  // asked — a re-install with a backend already recorded keeps it untouched.
+  SetupArgs := '--setup';
+  if not BackendAlreadySet then
+  begin
+    if UsingSQLite then
+      SetupArgs := SetupArgs + ' --backend sqlite'
+    else
+    begin
+      SetupArgs := SetupArgs + ' --backend sheets';
+      SheetInput := PageSheetName.Values[0];
+      SheetID := ExtractSheetIDFromURL(SheetInput);
+      if SheetID <> '' then
+        SheetName := ''
+      else
+        SheetName := SheetInput;
+      if SheetName <> '' then
+        SetupArgs := SetupArgs + ' --sheet-name "' + SheetName + '"';
+      if SheetID <> '' then
+        SetupArgs := SetupArgs + ' --sheet-id "' + SheetID + '"';
+      // Copy the service-account key so the server can reach the sheet at runtime.
+      ForceDirectories(ExpandConstant('{app}\credentials'));
+      if PageCredentials.Values[0] <> '' then
+        FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
+    end;
+  end;
+
+  if (not Exec(ExePath, SetupArgs, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
   begin
     MsgBox('The server did not finish first-time setup. Open a command prompt in ' +
       ExpandConstant('{app}') + ' and run: tracker-server.exe --setup', mbError, MB_OK);
