@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 
@@ -209,12 +210,14 @@ func runSetup() {
 // finished from Telegram since it needs the sheet shared and the key uploaded.
 func chooseBackend(p *uiprompt.Prompter) *string {
 	sqlite, sheets := "sqlite", "sheets"
-	// Only prompt where a real dialog exists (a Linux desktop). On the Windows
-	// installer and on headless boxes there is no interactive console to read
-	// from — a terminal-mode prompt there could block the installer — so default
-	// to SQLite silently (switchable anytime from Telegram via /storage), which
-	// is exactly the recommended "configure from Telegram" path.
-	if !p.Graphical() {
+	// Skip the prompt only on Windows: there the server is set up by the Inno
+	// installer, which runs this in a hidden console with no interactive stdin,
+	// so a terminal-mode read could block the installer — default to SQLite
+	// silently (switchable anytime from Telegram via /storage). On Linux both
+	// the desktop dialog and a real terminal (SSH) can answer safely, and a
+	// non-interactive stdin (double-click with no terminal) just reads EOF and
+	// falls through to the default — so the window and terminal ask identically.
+	if runtime.GOOS == "windows" {
 		return &sqlite
 	}
 	mode, err := p.Choose("Poker Tracker server setup",
