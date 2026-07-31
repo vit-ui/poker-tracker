@@ -77,24 +77,18 @@ func (p *Prompter) Ask(title, prompt string) (string, error) {
 func (p *Prompter) Choose(title, prompt string, options []string) (string, error) {
 	switch p.tool {
 	case "zenity":
-		args := []string{"--list", "--radiolist", "--title", title, "--text", prompt, "--hide-header", "--column", "", "--column", "Option"}
-		for i, o := range options {
-			state := "FALSE"
-			if i == 0 {
-				state = "TRUE"
-			}
-			args = append(args, state, o)
-		}
+		// A plain single-column list: zenity --list prints the selected row's
+		// first (here only) column — the label — by default. A --radiolist would
+		// add a leading boolean column, which --print-column returns instead.
+		args := []string{"--list", "--title", title, "--text", prompt, "--hide-header", "--column", "Option"}
+		args = append(args, options...)
 		out, err := exec.Command("zenity", args...).Output()
 		return strings.TrimSpace(string(out)), err
 	case "kdialog":
-		args := []string{"--title", title, "--radiolist", prompt}
-		for i, o := range options {
-			state := "off"
-			if i == 0 {
-				state = "on"
-			}
-			args = append(args, o, o, state)
+		// kdialog --menu prints the selected item's tag; tag == label here.
+		args := []string{"--title", title, "--menu", prompt}
+		for _, o := range options {
+			args = append(args, o, o)
 		}
 		out, err := exec.Command("kdialog", args...).Output()
 		return strings.TrimSpace(string(out)), err
