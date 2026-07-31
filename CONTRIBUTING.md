@@ -43,7 +43,12 @@ GOOS=linux GOARCH=arm64 go build -trimpath \
   -o tracker-server-linux-arm64 ./cmd/server
 ```
 
-The Linux server is shipped as a `.tar.gz` (binary + `packaging/install.sh`); the server registers its own boot service with `tracker-server --install` (systemd on Linux, Task Scheduler on Windows). The release attaches the combined installers plus the server windows exes and linux tarballs.
+The release ships **two files**: one Windows installer and one Linux server bundle.
+
+- **Windows — one installer for everything.** CI runs `iscc` **once** (no `/DArch`), producing `PokerTracker-Setup-<version>.exe`. It carries all three roles' binaries for **both** CPU architectures; `ArchitecturesInstallIn64BitMode=x64 arm64` plus per-file `IsARM64` Check wrappers (`setup.iss`) install the matching one at runtime. The role page picks all-local / connect-to-a-server / run-a-server-here.
+- **Linux server — one self-extracting file.** CI packs both Linux server builds + `packaging/install.sh` into a `makeself` archive `PokerTracker-Server-linux`, shipped inside `PokerTracker-Server-linux.tar.gz` (the tarball preserves the execute bit a raw download would lose). Running it detects the CPU, installs the right build into the user's home, and registers a **per-user** systemd service (`~/.config/systemd/user`, no root) via `tracker-server --install`; enabling start-on-boot without login is the one privileged step (`loginctl enable-linger` through `pkexec`/`sudo`, and optional). The Windows server role registers a `PokerTrackerServer` Task Scheduler task the same way.
+
+Changing what `iscc`/makeself produce (output names, artifact list) requires a matching update to `.github/workflows/release.yml`.
 
 ## Tests
 

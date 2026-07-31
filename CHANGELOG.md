@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Changed
+
+- **One installer per OS, download-and-run — no CPU choice.** The Windows release
+  is now a single `PokerTracker-Setup.exe` that carries both Intel/AMD and ARM
+  builds and installs the matching one automatically (previously two separate
+  per-CPU installers). The installer's role page gains a third option, **"Run a
+  server on this PC"**, so a Windows server is set up from the same installer
+  (certificate, pairing token, boot task, and the connection string all handled
+  for you).
+- **One-file Linux server installer.** The Linux server ships as
+  `PokerTracker-Server-linux.tar.gz`; extract it (file manager or `tar xzf`) and
+  run the single `PokerTracker-Server-linux` — it detects your CPU, installs the
+  right build, and sets up the service. It opens a **setup window** on a desktop
+  (falling back to a terminal on a headless box), replacing the previous
+  extract-and-run-a-shell-script flow.
+- **The Linux server no longer needs root to install.** It installs into your
+  home folder and registers a per-user service (`systemctl --user`). The one step
+  that needs a password — starting on boot without logging in — is now a single
+  graphical prompt on a desktop (or one `sudo` in a terminal), and can be skipped
+  (the server then runs while you're logged in).
+
 ## v4.0 - 2026-07-30
 
 First public release of the optional split deployment. The pieces landed green across the

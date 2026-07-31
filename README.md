@@ -19,7 +19,7 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 
 ## Installing
 
-Download the installer for your machine from [Releases](../../releases) — `PokerTracker-v<version>-x64.exe` for Intel/AMD PCs, `PokerTracker-v<version>-arm.exe` for Windows on ARM — and run it. The installer walks you through two choices:
+Download **`PokerTracker-Setup.exe`** from [Releases](../../releases) and run it — one installer for every PC (it detects your CPU, Intel/AMD or ARM, and installs the right build; there's no separate download to pick). The installer walks you through two choices:
 
 - **Storage backend**
   - **Google Sheets** — a live spreadsheet you can open in any browser. Requires a one-time Google Cloud service account.
@@ -45,8 +45,12 @@ By default everything runs on your poker PC, so `/stats`, `/export`, and the res
 
 Setup:
 
-1. On the always-on machine, set up the server. **Linux:** extract `tracker-server-linux-<arch>.tar.gz` and run `./install.sh`. **Windows:** run `tracker-server.exe --setup`, then `tracker-server.exe --install` (as Administrator). Either way it prints a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
-2. On the poker PC, run the Windows installer and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
+1. On the always-on machine, set up the server — one file per OS, download and run:
+   - **Linux:** download `PokerTracker-Server-linux.tar.gz`, extract it (double-click in your file manager, or `tar xzf PokerTracker-Server-linux.tar.gz`), and run the extracted **`PokerTracker-Server-linux`**. It detects your CPU and installs the right build into your home folder — no root. A setup window opens (a terminal prompt instead on a headless box). It asks for your password once, in a normal desktop dialog, only to enable start-on-boot; skip that and the server still runs while you're logged in.
+   - **Windows:** run `PokerTracker-Setup.exe` and choose **"Run a server on this PC"**.
+
+   Either way it shows a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
+2. On the poker PC, run `PokerTracker-Setup.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
 
 They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired. The all-local install above is unchanged; this is only if you want the split.
 
