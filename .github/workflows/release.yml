@@ -19,7 +19,8 @@ jobs:
         run: |
           set -euo pipefail
           for arch in amd64 arm64; do
-            # All-local (combined) — Windows GUI, with the bot token.
+            # All-local (combined) — Windows GUI, with the bot token. The single
+            # installer packs both arches and installs the matching one.
             GOOS=windows GOARCH=$arch go build -trimpath \
               -ldflags "-s -w -H=windowsgui -X main.BotToken=$TOKEN" \
               -o tracker-$arch.exe ./cmd/tracker
@@ -34,14 +35,25 @@ jobs:
             GOOS=linux GOARCH=$arch go build -trimpath \
               -ldflags "-s -w -X main.BotToken=$TOKEN" \
               -o tracker-server-linux-$arch ./cmd/server
-            # Package the Linux server as a tarball: binary (renamed tracker-server) + install.sh.
-            mkdir -p pkg/tracker-server
-            cp tracker-server-linux-$arch pkg/tracker-server/tracker-server
-            cp packaging/install.sh pkg/tracker-server/install.sh
-            chmod +x pkg/tracker-server/tracker-server pkg/tracker-server/install.sh
-            tar -C pkg -czf tracker-server-linux-$arch.tar.gz tracker-server
-            rm -rf pkg
           done
+          # One self-extracting Linux server installer with BOTH CPU builds
+          # inside: run it and it detects the CPU (packaging/install.sh) and
+          # installs the right one — the Linux equivalent of the one Windows
+          # installer. Shipped inside a .tar.gz so a browser download keeps the
+          # execute bit (a raw download would lose it).
+          sudo apt-get update
+          sudo apt-get install -y makeself
+          # The package name is stable; the command it installs is makeself or
+          # makeself.sh depending on version — resolve whichever exists so the
+          # step never dies on a name mismatch.
+          MAKESELF="$(command -v makeself || command -v makeself.sh)"
+          mkdir -p pkg
+          cp tracker-server-linux-amd64 pkg/tracker-server-amd64
+          cp tracker-server-linux-arm64 pkg/tracker-server-arm64
+          cp packaging/install.sh pkg/install.sh
+          chmod +x pkg/tracker-server-amd64 pkg/tracker-server-arm64 pkg/install.sh
+          "$MAKESELF" --nox11 pkg PokerTracker-Server-linux "Poker Tracker Server installer" ./install.sh
+          tar -czf PokerTracker-Server-linux.tar.gz PokerTracker-Server-linux
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
@@ -53,8 +65,7 @@ jobs:
             tracker-client-arm64.exe
             tracker-server-windows-amd64.exe
             tracker-server-windows-arm64.exe
-            tracker-server-linux-amd64.tar.gz
-            tracker-server-linux-arm64.tar.gz
+            PokerTracker-Server-linux.tar.gz
 
   installer:
     needs: build
@@ -70,22 +81,15 @@ jobs:
         id: version
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - name: Build amd64 installer
+      - name: Build installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
         with:
           path: setup.iss
-          options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}" "/DArch=amd64" "/DPublishArch=x64"
-      - name: Build arm64 installer
-        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
-        with:
-          path: setup.iss
-          options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}" "/DArch=arm64" "/DPublishArch=arm"
+          options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}"
       - uses: actions/upload-artifact@v4
         with:
           name: Setup
-          path: |
-            Output/PokerTracker-v${{ steps.version.outputs.version }}-x64.exe
-            Output/PokerTracker-v${{ steps.version.outputs.version }}-arm.exe
+          path: Output/PokerTracker-Setup-${{ steps.version.outputs.version }}.exe
 
   release:
     needs: installer
@@ -120,9 +124,5 @@ jobs:
         with:
           body_path: RELEASE_NOTES.md
           files: |
-            PokerTracker-v${{ needs.installer.outputs.version }}-x64.exe
-            PokerTracker-v${{ needs.installer.outputs.version }}-arm.exe
-            tracker-server-windows-amd64.exe
-            tracker-server-windows-arm64.exe
-            tracker-server-linux-amd64.tar.gz
-            tracker-server-linux-arm64.tar.gz
+            PokerTracker-Setup-${{ needs.installer.outputs.version }}.exe
+            PokerTracker-Server-linux.tar.gz
