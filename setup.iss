@@ -1,29 +1,16 @@
-; Poker Tracker installer. Compiled by .github/workflows/release.yml, which
-; runs iscc twice per release — once with /DArch=amd64 /DPublishArch=x64,
-; once with /DArch=arm64 /DPublishArch=arm — producing two separate
-; installer files rather than one installer that auto-detects the
-; machine's architecture. This is a single-user tool (CLAUDE.md's own
-; "Code Must Be Lean" section), so the player already knows which
-; architecture their own machine is; a build-time #define is far simpler
-; than embedding both binaries and adding runtime Check:/DestName:
-; architecture-detection logic for one machine that only ever needs one of
-; them. Two separate defines, not one, because they name different things:
-; Arch matches the Go GOARCH value the release workflow actually built
-; (tracker-amd64.exe/tracker-arm64.exe — must stay GOARCH-spelled since
-; that's the real build artifact filename), while PublishArch is only the
-; consumer-facing label in the published installer's own filename ("amd64"
-; reads as Intel/AMD-only to a Windows user; "x64" is Microsoft's own term
-; for the same architecture). Also runs with /DAppVersion=<tag, "v"
-; stripped> — see the #ifndef fallbacks below for local/manual compiles
-; that don't pass these defines.
+; Poker Tracker installer. Compiled ONCE by .github/workflows/release.yml (a
+; single iscc run, no per-arch define) into ONE installer that carries every
+; role's binary for BOTH CPU architectures (x64 and ARM64) and installs the
+; matching one at runtime. ArchitecturesInstallIn64BitMode below covers x64 +
+; arm64 (native 64-bit Program Files / registry view on both), and each [Files]
+; entry is gated by an arch Check (IsARM64, via the Install*Amd64/Install*Arm64
+; wrappers in [Code]) combined with the role Check — so the player never picks
+; an architecture, the installer detects it. An x64 installer also runs on ARM64
+; Windows via the OS's built-in x64 emulation, so one build serves both.
+; Runs with /DAppVersion=<tag, "v" stripped>; the #ifndef lets a local manual
+; compile work without it.
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
-#endif
-#ifndef Arch
-  #define Arch "amd64"
-#endif
-#ifndef PublishArch
-  #define PublishArch "x64"
 #endif
 
 [Setup]
@@ -36,7 +23,9 @@ DefaultGroupName=Poker Tracker
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
 PrivilegesRequired=admin
-OutputBaseFilename=PokerTracker-v{#AppVersion}-{#PublishArch}
+ArchitecturesAllowed=x64 arm64
+ArchitecturesInstallIn64BitMode=x64 arm64
+OutputBaseFilename=PokerTracker-Setup-{#AppVersion}
 Compression=lzma
 SolidCompression=yes
 SetupIconFile=icon.ico
@@ -46,28 +35,37 @@ UninstallDisplayIcon={app}\tracker.exe
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; Source filename is the {#Arch}-specific binary this compile was invoked
-; with; DestName is always the fixed "tracker.exe" regardless of arch — an
-; external .bat launcher (documented in poker-tracker-plan.md, not part of
-; this repo) hardcodes C:\poker-tracker\tracker.exe, and main.go's
-; self-taskkill, the Task Scheduler XML, and CurUninstallStepChanged's
-; taskkill all also assume that fixed name.
-; All-local (combined) build — installed unless the player chose
-; connect-to-server (the split client) on the role page.
-Source: "tracker-{#Arch}.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: IsCombinedMode
+; Every entry is gated by role AND architecture: the six Install* Check wrappers
+; ([Code]) each combine one role (IsCombinedMode/IsClientMode/IsServerMode) with
+; IsARM64, so exactly one Source per role installs and it matches the machine's
+; CPU. DestName is the fixed "tracker.exe" for combined and client — an external
+; .bat launcher (poker-tracker-plan.md, not in this repo) hardcodes
+; C:\poker-tracker\tracker.exe, and main.go's self-taskkill, the Task Scheduler
+; XML, and CurUninstallStepChanged's taskkill all assume it. The server role runs
+; as its own tracker-server.exe (its own PokerTrackerServer task, see below).
+;
+; All-local (combined) build — installed unless the player chose connect-to-server
+; or run-a-server on the role page. Both arches; the matching one wins.
+Source: "tracker-amd64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallCombinedAmd64
+Source: "tracker-arm64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallCombinedArm64
 ; Second copy, flagged dontcopy, exists only so ExtractTemporaryFile can pull
-; tracker.exe's bytes out during the wizard (Telegram setup), before the
-; real install step above has copied anything to {app} yet. PreInstallFiles
-; then copies this {tmp} extraction onward to {app} and runs it from there
-; — not from {tmp} directly — since tracker.exe resolves its own config/
-; credentials paths from its own executable location. All-local only (the
-; Telegram setup path doesn't run in client mode).
-Source: "tracker-{#Arch}.exe"; DestDir: "{tmp}"; Flags: dontcopy; Check: IsCombinedMode
-; Split client build — installed as the same fixed tracker.exe name (the .bat
-; launcher, Task Scheduler task, and taskkill all assume it) when the player
-; chose connect-to-server. It provides --serve and --check-lock; the server
-; owns storage and the bot.
-Source: "tracker-client-{#Arch}.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: IsClientMode
+; tracker.exe's bytes out during the wizard (Telegram setup), before the real
+; install step above has copied anything to {app} yet. PreInstallFiles then
+; copies this {tmp} extraction onward to {app} (via CombinedExeName) and runs it
+; from there — not from {tmp} directly — since tracker.exe resolves its own
+; config/credentials paths from its own executable location. Combined only.
+Source: "tracker-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallCombinedAmd64
+Source: "tracker-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallCombinedArm64
+; Split client build — installed as the same fixed tracker.exe name when the
+; player chose connect-to-server. It provides --serve and --check-lock; the
+; server owns storage and the bot.
+Source: "tracker-client-amd64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallClientAmd64
+Source: "tracker-client-arm64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallClientArm64
+; Split server build — installed as tracker-server.exe when the player chose
+; run-a-server-on-this-PC. It stores data, runs the bot, and enforces the rules;
+; CurStepChanged runs its --setup/--install and shows the connection string.
+Source: "tracker-server-windows-amd64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerAmd64
+Source: "tracker-server-windows-arm64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerArm64
 
 [UninstallDelete]
 ; tracker.exe itself is removed automatically (tracked via [Files] above).
@@ -92,6 +90,11 @@ Type: dirifempty; Name: "{app}"
 ; within the section, so this only needs to be listed first.
 Filename: "taskkill.exe"; Parameters: "/IM tracker.exe /F"; Flags: runhidden; RunOnceId: "KillTracker"
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""Poker Tracker"" /F"; Flags: runhidden; RunOnceId: "DeleteTask"
+; Server-role cleanup — its own exe name and task. Harmless no-ops on a combined
+; or client install (nothing by that name exists); a failed schtasks /Delete is
+; ignored, same as the combined task's entry above.
+Filename: "taskkill.exe"; Parameters: "/IM tracker-server.exe /F"; Flags: runhidden; RunOnceId: "KillServer"
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""PokerTrackerServer"" /F"; Flags: runhidden; RunOnceId: "DeleteServerTask"
 
 [Code]
 var
@@ -157,10 +160,56 @@ begin
   Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = 1);
 end;
 
-// IsCombinedMode is the inverse, for the all-local [Files] Check entries.
+// IsServerMode reports whether the player chose "Run a server on this PC"
+// (PageRole index 2) — install the split server (tracker-server.exe).
+function IsServerMode(): Boolean;
+begin
+  Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = 2);
+end;
+
+// IsCombinedMode is the all-local default — neither of the split roles.
 function IsCombinedMode(): Boolean;
 begin
-  Result := not IsClientMode();
+  Result := not IsClientMode() and not IsServerMode();
+end;
+
+// The six role×arch Check wrappers gate the [Files] entries: each pairs one role
+// with IsARM64 (an Inno built-in) so exactly one Source per role installs and it
+// matches the machine's CPU. Kept as named functions (not inline Check
+// expressions) so each [Files] line reads as a single, self-describing Check.
+function InstallCombinedAmd64(): Boolean;
+begin
+  Result := IsCombinedMode() and not IsARM64;
+end;
+function InstallCombinedArm64(): Boolean;
+begin
+  Result := IsCombinedMode() and IsARM64;
+end;
+function InstallClientAmd64(): Boolean;
+begin
+  Result := IsClientMode() and not IsARM64;
+end;
+function InstallClientArm64(): Boolean;
+begin
+  Result := IsClientMode() and IsARM64;
+end;
+function InstallServerAmd64(): Boolean;
+begin
+  Result := IsServerMode() and not IsARM64;
+end;
+function InstallServerArm64(): Boolean;
+begin
+  Result := IsServerMode() and IsARM64;
+end;
+
+// CombinedExeName is the arch-matching combined binary's source filename, used
+// by PreInstallFiles to ExtractTemporaryFile / copy the right one to tracker.exe.
+function CombinedExeName(): String;
+begin
+  if IsARM64 then
+    Result := 'tracker-arm64.exe'
+  else
+    Result := 'tracker-amd64.exe';
 end;
 
 // ReadFileAsString loads Path into a single raw String, or returns '' if
@@ -456,10 +505,11 @@ begin
   PageRole := CreateInputOptionPage(wpWelcome,
     'Setup Type',
     'How will you run Poker Tracker?',
-    'Choose "Run everything on this PC" unless you have already set up a separate always-on server to connect to.',
+    'Run everything on this PC unless you are using the optional two-machine split. In the split, the poker PC runs "Connect to a server" and a separate always-on machine runs "Run a server on this PC".',
     True, False);
   PageRole.Add('Run everything on this PC (recommended)');
   PageRole.Add('Connect to a server (this PC is the poker PC)');
+  PageRole.Add('Run a server on this PC (stores data, runs the bot)');
   PageRole.SelectedValueIndex := 0;
 
   PageConnection := CreateInputQueryPage(PageRole.ID,
@@ -529,6 +579,18 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  // Run-a-server mode asks nothing in the wizard — the certificate, pairing
+  // token, storage default, and the connection string are all handled by
+  // tracker-server --setup after install (CurStepChanged). Skip every page.
+  if IsServerMode() then
+  begin
+    Result := (PageID = PageConnection.ID) or (PageID = PageBackend.ID) or
+              (PageID = PageMethod.ID) or (PageID = PageCredentials.ID) or
+              (PageID = PageWaiting.ID) or (PageID = PageSheetName.ID) or
+              (PageID = PageScreenName.ID) or (PageID = PageHandHistoryDir.ID) or
+              (PageID = PageTournamentDir.ID);
+    Exit;
+  end;
   // Connect-to-server mode shows only the connection string, screen name, and
   // the two folder pages; every all-local / Google / Telegram page is skipped.
   if IsClientMode() then
@@ -870,8 +932,8 @@ begin
       FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
   end;
 
-  ExtractTemporaryFile('tracker-{#Arch}.exe');
-  FileCopy(ExpandConstant('{tmp}\tracker-{#Arch}.exe'), ExpandConstant('{app}\tracker.exe'), True);
+  ExtractTemporaryFile(CombinedExeName());
+  FileCopy(ExpandConstant('{tmp}\' + CombinedExeName()), ExpandConstant('{app}\tracker.exe'), True);
 
   // Kill any previously-running tracker.exe before this install's task
   // gets (re)started below — MultipleInstancesPolicy=IgnoreNew
@@ -1154,6 +1216,45 @@ begin
   end;
 end;
 
+// RunServerSetup finishes a run-a-server install: tracker-server.exe --setup
+// generates the TLS certificate + pairing token and writes a sqlite-default
+// config; --install registers the PokerTrackerServer boot task; schtasks /Run
+// starts it now; then --pair's connection string (printed to stdout, captured
+// via cmd redirect) is shown so the player can pair their poker PC. The server
+// takes no wizard input — storage, alerts, and rules are set later from Telegram.
+procedure RunServerSetup();
+var
+  ExePath, ConnPath, Conn: String;
+  ResultCode: Integer;
+begin
+  ExePath := ExpandConstant('{app}\tracker-server.exe');
+  if (not Exec(ExePath, '--setup', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+  begin
+    MsgBox('The server did not finish first-time setup. Open a command prompt in ' +
+      ExpandConstant('{app}') + ' and run: tracker-server.exe --setup', mbError, MB_OK);
+    Exit;
+  end;
+  if (not Exec(ExePath, '--install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+    MsgBox('Could not register the server boot task. Run tracker-server.exe --install from an elevated prompt.', mbError, MB_OK)
+  else
+    Exec('schtasks.exe', '/Run /TN "PokerTrackerServer"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  ConnPath := ExpandConstant('{tmp}\server-conn.txt');
+  if Exec(ExpandConstant('{cmd}'), '/C ""' + ExePath + '" --pair > "' + ConnPath + '""',
+     ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Conn := ReadFileAsString(ConnPath);
+    DeleteFile(ConnPath);
+  end;
+  if Conn <> '' then
+    MsgBox('Your Poker Tracker server is installed and running.' + #13#10 + #13#10 +
+      'Pair your poker PC by choosing "Connect to a server" in its installer and pasting this:' +
+      #13#10 + #13#10 + Conn, mbInformation, MB_OK)
+  else
+    MsgBox('Your Poker Tracker server is installed and running. To get the pairing line, run ' +
+      'tracker-server.exe --pair in ' + ExpandConstant('{app}') + '.', mbInformation, MB_OK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   SheetInput, SheetName, SheetID: String;
@@ -1179,6 +1280,15 @@ begin
           '"' + JSONEscape(PageTournamentDir.Values[0]) + '"'),
         False);
       RegisterScheduledTask();
+      Exit;
+    end;
+    // Run-a-server: the server binary is installed as tracker-server.exe
+    // ([Files] Check: InstallServer*). Finish its setup, register + start its
+    // boot task, and show the connection string. No combined binary, no
+    // Telegram wizard, no credentials.
+    if IsServerMode() then
+    begin
+      RunServerSetup();
       Exit;
     end;
     // Idempotent for the Telegram path (already done once in
@@ -1297,10 +1407,15 @@ begin
   if (CurUninstallStep = usUninstall) and not UninstallSilent() then
   begin
     Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Also stop the server role's process (its own exe name); no-op otherwise.
+    Exec('taskkill.exe', '/F /IM tracker-server.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     DeleteFile(ExpandConstant('{app}\config.json'));
     DeleteFile(ExpandConstant('{app}\lockfile.json'));
     DeleteFile(ExpandConstant('{app}\pending_tournaments.json'));
     DeleteFile(ExpandConstant('{app}\sheets_fallback.json'));
     DeleteFile(ExpandConstant('{app}\tracker.db'));
+    // Server role's TLS material (absent on combined/client installs).
+    DeleteFile(ExpandConstant('{app}\server_cert.pem'));
+    DeleteFile(ExpandConstant('{app}\server_key.pem'));
   end;
 end;
