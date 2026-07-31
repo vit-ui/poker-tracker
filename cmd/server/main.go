@@ -15,12 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 
 	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/transport"
+	"github.com/vit-ui/self-tracker/internal/uiprompt"
 )
 
 // BotToken is injected at build time via -ldflags "-X main.BotToken=...", the
@@ -86,7 +88,7 @@ func runInstall() {
 		fmt.Fprintln(os.Stderr, "install failed:", err)
 		os.Exit(1)
 	}
-	fmt.Println("Installed as a service — it will start on boot and is starting now.")
+	fmt.Println("Installed as a service — it is running now.")
 }
 
 func runServe() {
@@ -161,6 +163,8 @@ func runServe() {
 }
 
 func runSetup() {
+	p := uiprompt.New()
+
 	// Generate the TLS cert/key once and keep them; the fingerprint the client
 	// pins is derived from the cert, so it must not change across restarts.
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
@@ -189,14 +193,46 @@ func runSetup() {
 		cfg.Setup.PairToken = &token
 	}
 	if cfg.Setup.StorageBackend == nil {
-		sqlite := "sqlite"
-		cfg.Setup.StorageBackend = &sqlite // sensible server default; switch via /storage
+		cfg.Setup.StorageBackend = chooseBackend(p)
 	}
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "saving config:", err)
 		os.Exit(1)
 	}
-	printConnectionString(cfg)
+	showConnection(p, cfg)
+}
+
+// chooseBackend asks how the player wants to configure the server. Everything
+// (storage, alerts, rules) can be set from Telegram once paired, so that's the
+// recommended default and lands on SQLite (switchable anytime via /storage). If
+// they'd rather set storage here, they pick SQLite or Google Sheets; Sheets is
+// finished from Telegram since it needs the sheet shared and the key uploaded.
+func chooseBackend(p *uiprompt.Prompter) *string {
+	sqlite, sheets := "sqlite", "sheets"
+	// Only prompt where a real dialog exists (a Linux desktop). On the Windows
+	// installer and on headless boxes there is no interactive console to read
+	// from — a terminal-mode prompt there could block the installer — so default
+	// to SQLite silently (switchable anytime from Telegram via /storage), which
+	// is exactly the recommended "configure from Telegram" path.
+	if !p.Graphical() {
+		return &sqlite
+	}
+	mode, err := p.Choose("Poker Tracker server setup",
+		"How do you want to configure storage, alerts, and rules?",
+		[]string{"From Telegram on my phone (recommended)", "Set storage here now"})
+	if err != nil || !strings.Contains(mode, "here") {
+		return &sqlite
+	}
+	pick, err := p.Choose("Storage backend", "Where should your poker data live?",
+		[]string{"A local file on this server (SQLite)", "Google Sheets"})
+	if err == nil && strings.Contains(pick, "Sheets") {
+		p.Info("Google Sheets",
+			"Storage set to Google Sheets. Finish connecting the sheet from Telegram: "+
+				"message your bot and send /storage — it walks you through sharing the "+
+				"sheet with the service account and uploading the key.")
+		return &sheets
+	}
+	return &sqlite
 }
 
 func runPair() {
@@ -205,29 +241,45 @@ func runPair() {
 		fmt.Fprintln(os.Stderr, "server is not set up — run: tracker-server --setup")
 		os.Exit(1)
 	}
-	printConnectionString(cfg)
+	showConnection(uiprompt.New(), cfg)
 }
 
-func printConnectionString(cfg *config.Config) {
+// showConnection surfaces the pairing connection string: always to stdout (so a
+// terminal/log run never loses it), plus a dialog window on a graphical desktop.
+func showConnection(p *uiprompt.Prompter, cfg *config.Config) {
+	msg, err := connectionMessage(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(msg)
+	if p.Graphical() {
+		p.Info("Poker Tracker server", msg)
+	}
+}
+
+// connectionMessage builds the explainer + the tracker:// connection string a
+// poker PC pastes into its installer to pair with this server.
+func connectionMessage(cfg *config.Config) (string, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "reading certificate:", err)
-		os.Exit(1)
+		return "", fmt.Errorf("reading certificate: %w", err)
 	}
 	fp, err := transport.FingerprintPEM(certPEM)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "reading certificate:", err)
-		os.Exit(1)
+		return "", fmt.Errorf("reading certificate: %w", err)
 	}
 	cs := transport.ConnectionString(localIP(), listenPort, *cfg.Setup.PairToken, fp)
-	fmt.Println("This is the tracker server. It stores your data, runs the Telegram bot,")
-	fmt.Println("and enforces your rules. Keep it running; your poker PC connects to it.")
-	fmt.Println("Configure storage/alerts/thresholds from Telegram once your poker PC is paired.")
-	fmt.Println()
-	fmt.Println("Pair your poker PC by pasting this line into its installer")
-	fmt.Println("(replace the address if the PC is on a different network than this server):")
-	fmt.Println()
-	fmt.Println("  " + cs)
+	return strings.Join([]string{
+		"This is the tracker server. It stores your data, runs the Telegram bot,",
+		"and enforces your rules. Keep it running; your poker PC connects to it.",
+		"Configure storage/alerts/thresholds from Telegram once your poker PC is paired.",
+		"",
+		"Pair your poker PC by pasting this line into its installer",
+		"(replace the address if the PC is on a different network than this server):",
+		"",
+		"  " + cs,
+	}, "\n"), nil
 }
 
 // randomToken returns a 128-bit hex token for the pairing secret.
