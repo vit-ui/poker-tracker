@@ -41,7 +41,7 @@ import (
 // question being asked, it's how this process learns who to talk to at all
 // for this run, regardless of whether a chat ID was already known.
 func RunSetup(token, configPath, serviceAccountPath string) {
-	tgBot, err := tgbotapi.NewBotAPI(token)
+	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(token, apiEndpoint)
 	if err != nil {
 		slog.Error("starting telegram bot", "err", err)
 		return
@@ -286,7 +286,7 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 		}
 	}
 
-	tgBot, err := tgbotapi.NewBotAPI(token)
+	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(token, apiEndpoint)
 	if err != nil {
 		return "", fmt.Errorf("starting telegram bot: %w", err)
 	}

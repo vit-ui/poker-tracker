@@ -24,6 +24,14 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
+// apiEndpoint is the Telegram Bot API root every bot connection dials. It is
+// always the real endpoint in any committed build; the only thing that ever
+// reassigns it is this package's own local, gitignored tests (*_local_test.go),
+// which point it at an httptest server so the setup wizard and the incoming-
+// command handlers can be driven without a real bot. This mirrors the sheets
+// REST transport's baseURL test seam — an inert var whose default is production.
+var apiEndpoint = tgbotapi.APIEndpoint
+
 // Bot bundles the dependencies every serve-mode handler needs — the
 // Telegram connection, the storage backend, the on-disk config/lockfile
 // paths, and the watcher-restart callback main.go provides — so they aren't
@@ -101,7 +109,7 @@ func (c *conversation) reset() {
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
 func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), now func() time.Time) error {
-	tgBot, err := tgbotapi.NewBotAPI(botToken)
+	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
 	}

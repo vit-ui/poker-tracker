@@ -3,12 +3,15 @@ credentials/
 /tracker.exe
 /tracker
 /self-tracker
+tracker-*.exe
 data/
 *.json
 *.db
 *.log
 *.log.old
 *.png
+*_local_test.go
+/localtest/
 *.md
 !README.md
 !LICENSE.md

@@ -430,6 +430,61 @@ begin
     Result := PageScreenName.Values[0];
 end;
 
+// ApplyTestAnswers presets the wizard's answers from command-line params so a
+// local, unattended /VERYSILENT run can drive the storage flow without a human
+// clicking through pages. It is inert in every real install: real installs
+// never pass TESTROLE/TESTSERVERMETHOD/TESTBACKEND, so the ExpandConstant
+// defaults ('') leave every SelectedValueIndex and derived var untouched.
+//
+// It sets both the page SelectedValueIndex (read by the [Files] Check wrappers
+// and RunServerSetup via IsServerMode) AND the booleans NextButtonClick would
+// normally derive (ServerUseTelegram/UsingSQLite/UsingTelegram) — silent mode
+// skips page display, so those page-transition handlers never fire and the
+// booleans must be set here to match. Exercised only by the gitignored
+// localtest/windows-installer-check.sh; see CLAUDE.md.
+procedure ApplyTestAnswers();
+var
+  Role, ServerMethod, Backend, Creds, Sheet: String;
+begin
+  Role := ExpandConstant('{param:TESTROLE|}');
+  if Role = 'client' then PageRole.SelectedValueIndex := 1
+  else if Role = 'server' then PageRole.SelectedValueIndex := 2
+  else if Role = 'combined' then PageRole.SelectedValueIndex := 0;
+
+  ServerMethod := ExpandConstant('{param:TESTSERVERMETHOD|}');
+  if ServerMethod = 'telegram' then
+  begin
+    PageServerMethod.SelectedValueIndex := 0;
+    ServerUseTelegram := True;
+  end
+  else if ServerMethod = 'here' then
+  begin
+    PageServerMethod.SelectedValueIndex := 1;
+    ServerUseTelegram := False;
+  end;
+
+  Backend := ExpandConstant('{param:TESTBACKEND|}');
+  if Backend = 'sheets' then
+  begin
+    PageBackend.SelectedValueIndex := 0;
+    UsingSQLite := False;
+  end
+  else if Backend = 'sqlite' then
+  begin
+    PageBackend.SelectedValueIndex := 1;
+    UsingSQLite := True;
+  end;
+
+  // For the "set storage here -> Sheets" path the credentials and sheet-name
+  // pages are shown and validated (FileExists + non-empty); a silent test must
+  // supply both or the wizard rightly refuses to proceed. TESTCREDS is a path
+  // to any existing file, TESTSHEET any non-empty name.
+  Creds := ExpandConstant('{param:TESTCREDS|}');
+  if Creds <> '' then PageCredentials.Values[0] := Creds;
+  Sheet := ExpandConstant('{param:TESTSHEET|}');
+  if Sheet <> '' then PageSheetName.Values[0] := Sheet;
+end;
+
 procedure InitializeWizard();
 var
   MethodDescription, BackendDescription: String;
@@ -600,6 +655,9 @@ begin
     'Do NOT browse into your screen name''s subfolder underneath it — that part is added automatically.',
     False, '');
   PageTournamentDir.Add('Parent TournamentSummaries folder:');
+
+  // Inert unless the local installer test passes TEST* params; see ApplyTestAnswers.
+  ApplyTestAnswers();
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -1329,8 +1387,8 @@ begin
   end;
   if Conn <> '' then
     MsgBox('Your Poker Tracker server is installed and running.' + #13#10 + #13#10 +
-      'Pair your poker PC by choosing "Connect to a server" in its installer and pasting this:' +
-      #13#10 + #13#10 + Conn, mbInformation, MB_OK)
+      'Pair your poker PC by choosing "Connect to a server" in its installer and pasting this:'
+      + #13#10 + #13#10 + Conn, mbInformation, MB_OK)
   else
     MsgBox('Your Poker Tracker server is installed and running. To get the pairing line, run ' +
       'tracker-server.exe --pair in ' + ExpandConstant('{app}') + '.', mbInformation, MB_OK);

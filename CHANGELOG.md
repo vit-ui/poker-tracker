@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## v4.1 - 2026-07-31
+## v4.1 - 2026-08-01
 
 ### Changed
 
@@ -20,6 +20,13 @@ pulls its notes from the matching section below.
   in a local file to start (switch to Google Sheets anytime with `/storage`) and lets you configure
   storage, alerts, and rules from your phone after pairing — no storage decision needed at install
   time. The two server installers now behave the same.
+
+### Fixed
+
+- **The Windows installer builds again.** A line in the installer script began with `#13#10`, which
+  Inno Setup reads as a preprocessor directive at the start of a line and rejects (`Unknown
+  preprocessor directive`), aborting compilation of `PokerTracker-Setup.exe`. The line is
+  rejoined so it no longer starts with `#`, and the installer compiles cleanly again.
 
 ## v4.0 - 2026-07-31
 
