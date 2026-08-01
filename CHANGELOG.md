@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v4.2 - 2026-08-01
+
+### Changed
+
+- **The client↔server connection drops a stalled, unauthenticated peer instead of
+  waiting on it forever.** The server now closes any connection that completes the
+  TLS handshake but fails to present its pairing token within a few seconds, so a
+  peer that opens a socket and then goes silent can no longer tie up server
+  resources. This matters most when the server runs on a public machine (a VPS):
+  reading and writing were always gated by the token and the pinned certificate —
+  a stranger still cannot read your data, inject sessions, or send commands — but
+  the mere act of connecting is now bounded too.
+- **The connection requires TLS 1.3.** Both ends are the tracker's own code, so the
+  link now refuses anything older than the newest TLS version — no possibility of
+  negotiating down to an older, weaker one.
+
 ## v4.1 - 2026-08-01
 
 ### Changed

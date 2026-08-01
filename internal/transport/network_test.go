@@ -1,7 +1,10 @@
 package transport
 
 import (
+	"crypto/tls"
+	"errors"
 	"net"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -183,6 +186,40 @@ func TestNetworkRejectsBadToken(t *testing.T) {
 		t.Fatalf("server accepted an upload from a bad-token client: %+v", up)
 	case <-time.After(500 * time.Millisecond):
 		// Correct: the server dropped the connection at the token check.
+	}
+}
+
+// TestNetworkDropsUnauthenticatedIdleConnection confirms the server closes a
+// connection that completes the TLS handshake but never presents a token,
+// rather than letting readFrame block a goroutine forever — the unauthenticated
+// resource-exhaustion vector handshakeTimeout closes. It distinguishes "the
+// server dropped us" from "our own read deadline fired", so it actually fails
+// if the server-side deadline is removed.
+func TestNetworkDropsUnauthenticatedIdleConnection(t *testing.T) {
+	old := handshakeTimeout
+	handshakeTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { handshakeTimeout = old })
+
+	_, info := startServer(t, "tok")
+
+	// Complete the handshake (InsecureSkipVerify: the client side isn't what's
+	// under test here) but send no token frame.
+	conn, err := tls.Dial("tcp", info.Address(), &tls.Config{InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("tls.Dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	// Our deadline is well past the server's, so a working server closes us
+	// first (Read returns EOF/reset); a broken one never does and our own
+	// deadline fires (ErrDeadlineExceeded) — the two are told apart below.
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expected the server to close the unauthenticated connection")
+	} else if errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatal("server did not drop the idle unauthenticated connection within handshakeTimeout")
 	}
 }
 

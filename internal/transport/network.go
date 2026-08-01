@@ -39,6 +39,19 @@ import (
 // tournament summary is far smaller than this.
 const maxFrameBytes = 16 << 20 // 16 MiB
 
+// handshakeTimeout bounds how long the server waits for a newly accepted
+// connection to complete the TLS handshake and present its token. The token is
+// only checked after the connection is accepted, so without this a peer that
+// opens a socket and then stays silent — which needs no token and no LAN/VPS
+// trust — would park a serveConn goroutine forever (readFrame blocks with no
+// deadline), an unauthenticated resource-exhaustion vector. This is a
+// deliberate, approved exception to the "no custom timeouts" rule (it is a
+// security control, not an operation timeout); it applies only to the pre-auth
+// window and is cleared once the token checks out, so an authenticated
+// collector may stay idle between uploads. A var, not a const, only so the
+// transport's own test can shorten it — never reassigned in any real build.
+var handshakeTimeout = 10 * time.Second
+
 // frame is one length-prefixed JSON message on the wire. Exactly one field is
 // set: Token on the client's first (handshake) frame, then Upload frames going
 // up or Command frames coming down.
@@ -194,7 +207,8 @@ func FingerprintPEM(certPEM []byte) (string, error) {
 // stop and let its service manager restart it.
 func DialServer(info ConnInfo) (*Link, <-chan struct{}, error) {
 	cfg := &tls.Config{
-		InsecureSkipVerify: true, // we pin the exact cert below instead of a CA chain
+		MinVersion:         tls.VersionTLS13, // both ends are our own code — require the newest TLS, no downgrade
+		InsecureSkipVerify: true,             // we pin the exact cert below instead of a CA chain
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			if len(rawCerts) == 0 {
 				return fmt.Errorf("server presented no certificate")
@@ -253,7 +267,10 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading server certificate: %w", err)
 	}
-	ln, err := tls.Listen("tcp", addr, &tls.Config{Certificates: []tls.Certificate{cert}})
+	ln, err := tls.Listen("tcp", addr, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13, // both ends are our own code — require the newest TLS, no downgrade
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listening on %s: %w", addr, err)
 	}
@@ -327,11 +344,18 @@ func Serve(ln net.Listener, token string, link *Link) {
 }
 
 func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
+	// Bound the pre-auth window: the TLS handshake happens on this first read,
+	// and the token frame must arrive within it, or the connection is dropped
+	// instead of blocking this goroutine indefinitely (see handshakeTimeout).
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	first, err := readFrame(conn)
 	if err != nil || first.Token != token {
 		conn.Close()
 		return
 	}
+	// Authenticated: clear the deadline so an idle-but-live collector (long gaps
+	// between uploads) isn't dropped; a real drop is caught by TCP keepalive.
+	_ = conn.SetReadDeadline(time.Time{})
 	// Become the active collector, closing any previous one so its reader exits
 	// and it stops being a target for commands. Under the same lock, snapshot
 	// any still-active lock so it can be re-pushed to this fresh connection —
