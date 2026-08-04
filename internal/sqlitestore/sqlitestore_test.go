@@ -66,15 +66,41 @@ func TestCashSessionID(t *testing.T) {
 // NewStore / schema
 // ---------------------------------------------------------------------------
 
-func TestNewStore_CreatesAllFourTables(t *testing.T) {
+func TestNewStore_CreatesAllTables(t *testing.T) {
 	s := newTestStore(t)
-	want := []string{"cash_sessions", "tournaments", "bankroll_ledger", "time_analysis"}
+	want := []string{"cash_sessions", "tournaments", "bankroll_ledger"}
 	for _, table := range want {
 		var name string
 		err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
 		if err != nil {
 			t.Errorf("table %q not found: %v", table, err)
 		}
+	}
+}
+
+// TestNewStore_DropsLegacyTimeAnalysis proves a database created by an older
+// binary (which had a time_analysis table) has it dropped on reopen.
+func TestNewStore_DropsLegacyTimeAnalysis(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tracker.db")
+	s1, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("first NewStore: %v", err)
+	}
+	// Recreate the legacy table the current schema no longer defines.
+	if _, err := s1.db.Exec(`CREATE TABLE time_analysis (id INTEGER PRIMARY KEY, date TEXT)`); err != nil {
+		t.Fatalf("recreating legacy table: %v", err)
+	}
+	s1.Close()
+
+	s2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen NewStore: %v", err)
+	}
+	defer s2.Close()
+	var name string
+	err = s2.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'time_analysis'`).Scan(&name)
+	if err != sql.ErrNoRows {
+		t.Errorf("time_analysis table still present after reopen (err=%v, name=%q)", err, name)
 	}
 }
 
@@ -275,22 +301,6 @@ func TestAppendCashSession_InsertsNewSession(t *testing.T) {
 	}
 	if !got.Date.Equal(date) {
 		t.Errorf("Date = %v, want %v", got.Date, date)
-	}
-
-	// The ledger and time analysis rows must exist too, keyed by the same
-	// session ID — verified directly since neither is fully exposed by the
-	// storage.Store interface.
-	id := cashSessionID(date, "200000000001")
-	var hour int
-	var dayOfWeek string
-	var netUSD float64
-	err = s.db.QueryRow(`SELECT hour, day_of_week, net_usd FROM time_analysis WHERE session_id = ?`, id).
-		Scan(&hour, &dayOfWeek, &netUSD)
-	if err != nil {
-		t.Fatalf("reading time_analysis row: %v", err)
-	}
-	if hour != date.Hour() || dayOfWeek != date.Weekday().String() || !closeEnough(netUSD, -5.25) {
-		t.Errorf("time_analysis row = (%d, %s, %v), want (%d, %s, -5.25)", hour, dayOfWeek, netUSD, date.Hour(), date.Weekday().String())
 	}
 
 	bankroll, err := s.GetCurrentBankroll()
@@ -1304,29 +1314,6 @@ func TestGetAllTournaments_VPIPPFRHandsNilBeforeHandFile(t *testing.T) {
 	}
 }
 
-func TestGetAllTimeAnalysis_IncludesSessionID(t *testing.T) {
-	s := newTestStore(t)
-	date := mustTime(t, "2026-07-10T20:00:00Z")
-	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 50, -5.25)); err != nil {
-		t.Fatalf("AppendCashSession: %v", err)
-	}
-
-	records, err := s.GetAllTimeAnalysis()
-	if err != nil {
-		t.Fatalf("GetAllTimeAnalysis: %v", err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("len(records) = %d, want 1", len(records))
-	}
-	want := cashSessionID(date, "200000000001")
-	if records[0].SessionID != want {
-		t.Errorf("SessionID = %q, want %q", records[0].SessionID, want)
-	}
-	if records[0].Hour != date.Hour() || records[0].DayOfWeek != date.Weekday().String() {
-		t.Errorf("record = %+v, unexpected", records[0])
-	}
-}
-
 func TestGetAllCashSessions_EmptyReturnsNoRowsNoError(t *testing.T) {
 	s := newTestStore(t)
 	records, err := s.GetAllCashSessions()
@@ -1417,11 +1404,10 @@ func assertSnapshotsEqual(t *testing.T, want, got storage.Snapshot) {
 	t.Helper()
 	if len(want.CashSessions) != len(got.CashSessions) ||
 		len(want.Tournaments) != len(got.Tournaments) ||
-		len(want.Ledger) != len(got.Ledger) ||
-		len(want.TimeAnalysis) != len(got.TimeAnalysis) {
-		t.Fatalf("snapshot lengths differ: want cash=%d tourn=%d ledger=%d time=%d, got cash=%d tourn=%d ledger=%d time=%d",
-			len(want.CashSessions), len(want.Tournaments), len(want.Ledger), len(want.TimeAnalysis),
-			len(got.CashSessions), len(got.Tournaments), len(got.Ledger), len(got.TimeAnalysis))
+		len(want.Ledger) != len(got.Ledger) {
+		t.Fatalf("snapshot lengths differ: want cash=%d tourn=%d ledger=%d, got cash=%d tourn=%d ledger=%d",
+			len(want.CashSessions), len(want.Tournaments), len(want.Ledger),
+			len(got.CashSessions), len(got.Tournaments), len(got.Ledger))
 	}
 	for i := range want.CashSessions {
 		if !reflect.DeepEqual(want.CashSessions[i], got.CashSessions[i]) {
@@ -1436,11 +1422,6 @@ func assertSnapshotsEqual(t *testing.T, want, got storage.Snapshot) {
 	for i := range want.Ledger {
 		if !reflect.DeepEqual(want.Ledger[i], got.Ledger[i]) {
 			t.Errorf("ledger entry %d differs:\n want %+v\n  got %+v", i, want.Ledger[i], got.Ledger[i])
-		}
-	}
-	for i := range want.TimeAnalysis {
-		if !reflect.DeepEqual(want.TimeAnalysis[i], got.TimeAnalysis[i]) {
-			t.Errorf("time analysis %d differs:\n want %+v\n  got %+v", i, want.TimeAnalysis[i], got.TimeAnalysis[i])
 		}
 	}
 }
@@ -1529,10 +1510,6 @@ func TestImportSnapshot_BlankSessionIDLegacyRows(t *testing.T) {
 		Ledger: []storage.LedgerEntry{
 			{Date: d1, Type: "cash_session", AmountUSD: -2, RunningTotal: -2},
 			{Date: d2, Type: "cash_session", AmountUSD: 3, RunningTotal: 1},
-		},
-		TimeAnalysis: []storage.TimeAnalysisRecord{
-			{Date: d1, Hour: 20, DayOfWeek: "Friday", NetUSD: -2},
-			{Date: d2, Hour: 21, DayOfWeek: "Saturday", NetUSD: 3},
 		},
 	}
 

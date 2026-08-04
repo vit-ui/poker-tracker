@@ -25,16 +25,18 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// cashSessionSummaryQuietPeriod is how long a cash table must go without a
-// new hand before its post-session summary is sent. A hand history file
-// gets a fresh event on every hand played at that table, so sending
-// immediately would fire the summary once per hand with a growing,
-// still-incomplete snapshot each time — this waits for the table to go
-// quiet and sends the final numbers once, the same time-gap technique
-// poker trackers use to detect a session boundary. 5 minutes trades a
-// faster summary after quitting against a higher chance of a mid-session
-// break tripping it early (a resumed table then sends an updated summary on
-// the next quiet period).
+// cashSessionSummaryQuietPeriod is the default Server.QuietPeriod: how long a
+// cash table must go without a new hand before its session is treated as over.
+// A hand history file gets a fresh event on every hand played at that table;
+// rather than write and evaluate on every hand (a growing, still-incomplete
+// snapshot each time), the tracker waits for the table to go quiet, then writes
+// the session once and runs the ledger-based hard stops, alerts, and summary —
+// the same time-gap technique poker trackers use to detect a session boundary.
+// (The session-loss hard stop and alert still run per hand, from the in-memory
+// session, so a bleeding session is stopped mid-play.) 5 minutes trades a
+// faster session record after quitting against a higher chance of a mid-session
+// break tripping it early (a resumed table then re-writes on the next quiet
+// period — an idempotent upsert).
 const cashSessionSummaryQuietPeriod = 5 * time.Minute
 
 // parseEntry is one file's carried incremental-parse state plus when it was
@@ -66,6 +68,13 @@ type Server struct {
 	alertChan  chan<- string
 	workDir    string
 
+	// QuietPeriod is how long a cash table must go without a new hand before
+	// its session is treated as over — the point the session is written to
+	// storage and the ledger-based hard stops/alerts/summary run (see the cash
+	// branch in Run). Defaults to cashSessionSummaryQuietPeriod; the end-to-end
+	// pipeline test overrides it to a few hundred ms so session-end fires fast.
+	QuietPeriod time.Duration
+
 	// clockOffset is the difference between the collector's clock and this
 	// server's, updated from each upload's ClientClock. Every date-window
 	// computation ("today", the poker day, the rolling-30-day downswing) uses
@@ -95,7 +104,7 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir}, nil
+	return &Server{store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -158,17 +167,23 @@ func (s *Server) reconstruct(up transport.Upload) (string, error) {
 // file, writes storage, and evaluates the hard stop and alerts. It blocks until
 // the link's Uploads channel is closed.
 func (s *Server) Run() {
-	var summaryMu sync.Mutex
+	// summaryTimers holds one quiet-period timer per cash table (FileID). A new
+	// hand resets its table's timer; when the table goes quiet the timer signals
+	// sessionEndChan, and the worker writes the session and runs the
+	// ledger-based evaluation (endCashSession). Both the map and pendingSessions
+	// are touched only on this goroutine — the timer callback merely sends on the
+	// channel — so no mutex is needed.
 	summaryTimers := make(map[string]*time.Timer)
+	pendingSessions := make(map[string]parsers.CashSession)
+	sessionEndChan := make(chan string)
 
-	// firedAlerts dedups the streak/daily/stake alert evaluations: a cash hand
-	// history file gets a fresh event on every hand played, and those
-	// conditions, once true, stay true for the rest of the session or poker
-	// day — without this, the same warning would re-send (and re-query the
-	// store) on every single hand. Keys are per session (FirstHandID /
-	// TournamentID) or per poker day (the day's start time); the map lives for
-	// the process and is rebuilt empty on restart, worst case repeating one
-	// already-sent warning.
+	// firedAlerts dedups the streak/daily/stake alert evaluations: multiple cash
+	// sessions in one poker day each reach endCashSession, and those conditions,
+	// once true, stay true for the rest of the session or poker day — without
+	// this, the same warning would re-send (and re-query the store). Keys are per
+	// session (FirstHandID / TournamentID) or per poker day (the day's start
+	// time); the map lives for the process and is rebuilt empty on restart, worst
+	// case repeating one already-sent warning.
 	firedAlerts := make(map[string]bool)
 
 	// Sent at most once per run: a missing screen name skips every file, so
@@ -190,7 +205,22 @@ func (s *Server) Run() {
 		s.alertChan <- alert
 	}
 
-	for up := range s.link.Uploads {
+	for {
+		var up transport.Upload
+		select {
+		case fileID := <-sessionEndChan:
+			// A cash table went quiet: write the now-complete session and run
+			// the ledger-based hard stops, alerts, and summary — all on this
+			// goroutine. The per-hand session-loss guard already ran below.
+			s.endCashSession(fileID, pendingSessions, firedAlerts, enforce)
+			continue
+		case u, ok := <-s.link.Uploads:
+			if !ok {
+				return // link closed → shut down
+			}
+			up = u
+		}
+
 		// Reconstruct FIRST, before any guard that might skip this event. The
 		// collector advances its per-file sent offset unconditionally, so the
 		// working file must absorb every upload's bytes even when we skip
@@ -258,54 +288,29 @@ func (s *Server) Run() {
 			// newState is always non-nil on the no-error path.
 			parseStates[up.FileID] = &parseEntry{state: newState, lastSeen: now}
 			if session != nil {
-				before := sheetsPending(s.store)
-				if err := s.store.AppendCashSession(*session); err != nil {
-					slog.Error("appending cash session to sheets", "err", err,
-						"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
-						"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
-					if msg := blipMessage(before, sheetsPending(s.store)); msg != "" {
-						s.alertChan <- msg
-					}
-				} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
-					s.alertChan <- msg
+				// Per hand, from the in-memory session only — no store write and
+				// no ledger read. The session-loss hard stop is the one guard
+				// that must fire mid-session, and the session-loss alert warns at
+				// its lower threshold before it. The write, the ledger-based hard
+				// stops/alerts, and the summary all run once the table goes quiet
+				// (endCashSession, via the sessionEndChan timer below).
+				if err := hardstop.EvaluateSessionLoss(*session, &evalCfg, enforce); err != nil {
+					slog.Error("evaluating session-loss hard stop", "err", err)
 				}
-				// Fetched after the write so the shared data includes the
-				// session just recorded — the same state each evaluator saw
-				// back when it did its own fetch.
-				ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, false)
-				bankroll := ledgerBankroll(ledger)
-				if err := hardstop.Evaluate(*session, &evalCfg, ledger, dayTournaments, evalNow, enforce); err != nil {
-					slog.Error("evaluating hard stop", "err", err)
-				}
-				bot.EvaluateSessionLossAlert(*session, &evalCfg, bankroll, s.alertChan)
-				bot.EvaluateDownswingAlert(session.BuyInUSD, &evalCfg, ledger, bankroll, evalNow, s.alertChan)
-				sessionKey := "cash:" + session.FirstHandID
-				if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
-					if err := bot.EvaluateStakeChangeAlert(*session, s.store, s.alertChan); err != nil {
-						slog.Error("evaluating stake change alert", "err", err,
-							"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
-							"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
-					} else {
-						// Marked fired whether or not it sent — the previous
-						// stake can't change mid-session, so one evaluation
-						// per session settles it either way.
-						firedAlerts["stake:"+sessionKey] = true
-					}
-				}
-				evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, evalNow, s.alertChan, firedAlerts, sessionKey)
-				scheduleCashSessionSummary(&summaryMu, summaryTimers, up.FileID, cashSessionSummaryQuietPeriod, s.alertChan, func() string {
-					// Re-read config at fire time: the mode may have changed
-					// during the quiet period, and the session net is only
-					// final now. A config read error falls through and sends
-					// (fail open); a muted/filtered-out result returns "".
-					if fireCfg, err := config.LoadConfig(s.configPath); err != nil {
-						slog.Error("loading config for cash summary gate", "err", err)
-					} else if !config.ShouldSendSummary(config.SummaryMode(fireCfg.Notifications.CashSessionSummary), session.NetUSD) {
-						return ""
-					}
-					bankroll, _ := s.store.GetCurrentBankroll()
-					return cashSessionSummaryText(*session, bankroll)
-				})
+				// The alert's bankroll is fetched lazily — only if it fires — so
+				// a hand that doesn't breach costs no store I/O. The session isn't
+				// written yet, so the live bankroll is the stored (prior) bankroll
+				// plus this session's in-memory net.
+				bot.EvaluateSessionLossAlert(*session, &evalCfg, func() float64 {
+					prior, _ := s.store.GetCurrentBankroll()
+					return prior + session.NetUSD
+				}, s.alertChan)
+
+				// Remember the latest parse for this table and (re)arm its
+				// quiet-period timer; the last hand's session is what gets
+				// written when the table falls quiet.
+				pendingSessions[up.FileID] = *session
+				armCashSessionEnd(summaryTimers, up.FileID, s.QuietPeriod, sessionEndChan)
 			} else if tourneyStats != nil {
 				before := sheetsPending(s.store)
 				if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
@@ -468,15 +473,16 @@ func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, 
 }
 
 // fetchEvalData reads the shared data every post-write evaluation runs on — the
-// full Bankroll Ledger and the current poker day's tournaments — at most once
-// per file event, replacing the six-per-hand identical fetches the evaluators
-// used to do themselves. Each fetch is skipped entirely when nothing configured
-// needs it; forTournament forces the ledger fetch because the post-tournament
-// alert needs the bankroll regardless of config. A failed fetch is logged and
-// returns nil for that data set — every consumer treats nil as "no rows".
-func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forTournament bool) (ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament) {
+// full Bankroll Ledger and the current poker day's tournaments — once per
+// evaluation, replacing the per-hand identical fetches the evaluators used to do
+// themselves. Each fetch is skipped entirely when nothing configured needs it;
+// forceLedger forces the ledger fetch because the post-session and
+// post-tournament summaries need the bankroll regardless of config. A failed
+// fetch is logged and returns nil for that data set — every consumer treats nil
+// as "no rows".
+func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forceLedger bool) (ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament) {
 	a, h := cfg.Alerts, cfg.Hardstop
-	needLedger := forTournament ||
+	needLedger := forceLedger ||
 		a.SessionLossBuyins != nil || a.DownswingBuyins != nil || a.LosingStreakCount != nil ||
 		a.DailyLossUSD != nil || a.SpingoDailyLossUSD != nil ||
 		h.ConsecutiveLosses != nil || h.DownswingBuyins != nil || h.DailyLossUSD != nil
@@ -594,28 +600,87 @@ func sameTournamentContent(a, b parsers.Tournament) bool {
 		a.TotalPlayers == b.TotalPlayers
 }
 
-// scheduleCashSessionSummary (re)starts a quietPeriod timer for key. A new hand
-// for the same table stops the pending timer and starts a fresh one, so an
-// actively-played table never fires early; the summary only goes out once
-// quietPeriod has passed with no new hand, built from whatever buildMessage
-// returns at that moment. Mirrors watcher.go's mutex-protected timer map, since
-// the timer callback runs on its own goroutine.
-func scheduleCashSessionSummary(mu *sync.Mutex, timers map[string]*time.Timer, key string, quietPeriod time.Duration, alertChan chan<- string, buildMessage func() string) {
-	mu.Lock()
-	defer mu.Unlock()
-	if t, ok := timers[key]; ok {
+// armCashSessionEnd (re)starts a quietPeriod timer for a cash table (keyed by
+// FileID). A new hand for the same table stops the pending timer and starts a
+// fresh one, so an actively-played table never fires early; once quietPeriod
+// passes with no new hand the timer signals sessionEndChan and the worker
+// writes the session (endCashSession). The map is touched only by the worker
+// goroutine (this function and endCashSession); the timer callback merely sends
+// on the channel, so no mutex is needed.
+func armCashSessionEnd(timers map[string]*time.Timer, fileID string, quietPeriod time.Duration, sessionEndChan chan<- string) {
+	if t, ok := timers[fileID]; ok {
 		t.Stop()
 	}
-	timers[key] = time.AfterFunc(quietPeriod, func() {
-		mu.Lock()
-		delete(timers, key)
-		mu.Unlock()
-		// An empty message means the caller's closure decided not to send
-		// (e.g. the cash summary is muted or filtered out by win/loss).
-		if msg := buildMessage(); msg != "" {
-			alertChan <- msg
-		}
+	timers[fileID] = time.AfterFunc(quietPeriod, func() {
+		sessionEndChan <- fileID
 	})
+}
+
+// endCashSession runs when a cash table has gone quiet: it writes the
+// now-complete session (Cash Sessions row + Bankroll Ledger row, one write —
+// like a tournament, not per hand), then runs the ledger-based hard stops and
+// alerts and sends the post-session summary. The per-hand session-loss guard
+// already ran in Run's cash branch. A missing pendingSessions entry means this
+// FileID was already flushed (a stale timer signal), so it's a no-op. Runs on
+// the worker goroutine, so pendingSessions/firedAlerts stay single-threaded.
+func (s *Server) endCashSession(fileID string, pendingSessions map[string]parsers.CashSession, firedAlerts map[string]bool, enforce func(reason string, durationHours int)) {
+	session, ok := pendingSessions[fileID]
+	if !ok {
+		return
+	}
+	delete(pendingSessions, fileID)
+
+	// Re-read config: it may have changed during the quiet period, and the
+	// notification gates below need the raw (flag-preserving) config while the
+	// evaluators need the effective one.
+	cfg, err := config.LoadConfig(s.configPath)
+	if err != nil {
+		slog.Error("loading config for cash session end", "err", err)
+		return
+	}
+	evalCfg := *cfg
+	evalCfg.Alerts = config.EffectiveAlerts(cfg.Alerts)
+	evalCfg.Hardstop = config.EffectiveHardstop(cfg.Hardstop)
+	evalNow := s.ClientNow()
+
+	before := sheetsPending(s.store)
+	if err := s.store.AppendCashSession(session); err != nil {
+		slog.Error("appending cash session to sheets", "err", err,
+			"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
+			"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
+		if msg := blipMessage(before, sheetsPending(s.store)); msg != "" {
+			s.alertChan <- msg
+		}
+	} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
+		s.alertChan <- msg
+	}
+
+	// Always fetch the ledger (forceLedger) — the summary below needs the
+	// bankroll regardless of what alerts/hard stops are configured. The fetch is
+	// after the write, so the ledger includes the session just recorded.
+	ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
+	bankroll := ledgerBankroll(ledger)
+	if err := hardstop.Evaluate(session, &evalCfg, ledger, dayTournaments, evalNow, enforce); err != nil {
+		slog.Error("evaluating hard stop", "err", err)
+	}
+	bot.EvaluateDownswingAlert(session.BuyInUSD, &evalCfg, ledger, bankroll, evalNow, s.alertChan)
+	sessionKey := "cash:" + session.FirstHandID
+	if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
+		if err := bot.EvaluateStakeChangeAlert(session, s.store, s.alertChan); err != nil {
+			slog.Error("evaluating stake change alert", "err", err,
+				"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
+				"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
+		} else {
+			firedAlerts["stake:"+sessionKey] = true
+		}
+	}
+	evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, evalNow, s.alertChan, firedAlerts, sessionKey)
+
+	// Post-session summary, gated by its notification mode against the final
+	// net (raw cfg — the effective copy blanks thresholds, not notifications).
+	if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.CashSessionSummary), session.NetUSD) {
+		s.alertChan <- cashSessionSummaryText(session, bankroll)
+	}
 }
 
 // tournamentAlertText formats the post-tournament summary alert. When the

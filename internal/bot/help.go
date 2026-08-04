@@ -95,9 +95,9 @@ var commandHelp = map[string]string{
 		"  /storage local — switch to the local file\n" +
 		"  /storage sheets <sheet name or URL> — switch to Google Sheets (an empty sheet shared with your service account; if this install has no credentials yet, you'll be prompted to upload the google_service_account.json right here and the migration continues)\n" +
 		"The target must be empty — there's no merge. You'll see a confirmation with row counts before anything is copied; close PokerStars first so no hand is played mid-switch. Nothing changes until the copy is verified.",
-	"export": "Exports all your data as CSV files: cash sessions, tournaments, bankroll ledger, time analysis.\n" +
+	"export": "Exports all your data as CSV files: cash sessions, tournaments, bankroll ledger.\n" +
 		"Usage: /export\n" +
-		"No arguments. Works on both storage backends and produces identical output either way. Sends four files, one per data set — an empty data set still sends a header-only file.",
+		"No arguments. Works on both storage backends and produces identical output either way. Sends three files, one per data set — an empty data set still sends a header-only file.",
 	"credentials": "Swaps the Google service account credentials file used to access Sheets/Drive.\n" +
 		"Usage: /credentials — then send the google_service_account.json file as an attachment, or type skip to cancel.\n" +
 		"If a sheet is already configured, it's re-checked against the new credentials — if it's no longer reachable (not shared with the new service account, or a different Google Cloud project entirely), the sheet is cleared from config and you'll need to run /sheet again.\n" +

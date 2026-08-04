@@ -159,7 +159,6 @@ func (c *Client) ensureTabs() error {
 		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}},
 		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}},
 		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
-		{"Time Analysis", []interface{}{"Date", "Hour", "Day of Week", "Net (USD)", "Session ID"}},
 	}
 
 	for _, tab := range tabs {
@@ -270,8 +269,8 @@ func CashSessionID(date time.Time, firstHandID string) string {
 // findRowByColumnValue searches column columnLetter of tab for a row whose
 // value equals want, starting after the header row. Returns the 1-based
 // sheet row index, or found=false if not present. Shared by every tab that
-// upserts on a stored ID column (Cash Sessions, Time Analysis, Bankroll
-// Ledger's cash_session rows, and — via findTournamentRow — Tournaments).
+// upserts on a stored ID column (Cash Sessions, Bankroll Ledger's
+// cash_session rows, and — via findTournamentRow — Tournaments).
 func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex int, found bool, err error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("%s!%s:%s", tab, columnLetter, columnLetter))
 	if err != nil {
@@ -288,19 +287,15 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 	return 0, false, nil
 }
 
-// AppendCashSession upserts one row in Cash Sessions, one row in Time
-// Analysis, and one row in Bankroll Ledger — all three keyed by the same
-// CashSessionID, so a cash hand history file that's re-parsed after every
-// hand corrects its existing rows in place instead of appending a new set
-// each time. Mirrors AppendTournament's find-or-append pattern, applied to
-// all three tabs a cash session touches rather than just one.
+// AppendCashSession upserts one row in Cash Sessions and one row in Bankroll
+// Ledger — both keyed by the same CashSessionID, so a re-processed cash
+// session corrects its existing rows in place instead of appending a new set.
+// Mirrors AppendTournament's find-or-append pattern, applied to both tabs a
+// cash session touches rather than just one.
 func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
 	id := CashSessionID(session.Date, session.FirstHandID)
 
 	if err := c.upsertCashSessionsRow(id, session); err != nil {
-		return err
-	}
-	if err := c.upsertTimeAnalysisRow(id, session); err != nil {
 		return err
 	}
 	return c.upsertLedgerCashSessionRow(id, session.Date, session.NetUSD)
@@ -333,35 +328,11 @@ func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession) e
 	return nil
 }
 
-func (c *Client) upsertTimeAnalysisRow(id string, session parsers.CashSession) error {
-	values := []interface{}{
-		session.Date.Format(dateFormat),
-		session.Date.Hour(),
-		session.Date.Weekday().String(),
-		session.NetUSD,
-		id,
-	}
-	rowIndex, found, err := c.findRowByColumnValue("Time Analysis", "E", id)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return c.appendRow("Time Analysis", values)
-	}
-	rangeStr := fmt.Sprintf("Time Analysis!A%d:E%d", rowIndex, rowIndex)
-	if err := c.svc.valuesUpdate(c.spreadsheetID, rangeStr, [][]interface{}{values}); err != nil {
-		return fmt.Errorf("updating time analysis row: %w", err)
-	}
-	return nil
-}
-
-// upsertLedgerCashSessionRow corrects the cash session's own Bankroll Ledger
-// row in place as its net changes hand-to-hand, rather than appending a new
-// transfer for every hand. This isn't a retroactive correction of settled
-// history — deposits, withdrawals, and tournament entries stay pure
-// appends, never touched again — it's the still-in-progress session's one
-// ledger entry catching up to the session's current state, the same way its
-// Cash Sessions and Time Analysis rows do.
+// upsertLedgerCashSessionRow writes (or corrects, if it already exists) the
+// cash session's own Bankroll Ledger row, keyed by the session ID. Deposits,
+// withdrawals, and tournament entries stay pure appends, never touched again;
+// this is the session's single ledger entry, the same upsert as its Cash
+// Sessions row.
 func (c *Client) upsertLedgerCashSessionRow(id string, date time.Time, netUSD float64) error {
 	rowIndex, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", id)
 	if err != nil {
@@ -1303,48 +1274,7 @@ func (c *Client) GetAllTournaments() ([]storage.TournamentRecord, error) {
 	return c.queryTournaments(time.Time{})
 }
 
-// GetAllTimeAnalysis returns every Time Analysis row. Used only by /export.
-func (c *Client) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
-	resp, err := c.svc.valuesGet(c.spreadsheetID, "Time Analysis!A:E")
-	if err != nil {
-		return nil, fmt.Errorf("reading time analysis: %w", err)
-	}
-	if len(resp.Values) <= 1 {
-		return nil, nil
-	}
-	var result []storage.TimeAnalysisRecord
-	for _, row := range resp.Values[1:] {
-		rec, ok := parseTimeRow(row)
-		if !ok {
-			continue
-		}
-		result = append(result, rec)
-	}
-	return result, nil
-}
-
-// parseTimeRow parses one Time Analysis row (columns A:E). ok is false when
-// the row is shorter than the 4 always-written columns (hand-edited or
-// malformed) or column A doesn't hold a valid date. Shared by
-// GetAllTimeAnalysis and the migration round-trip.
-func parseTimeRow(row []interface{}) (rec storage.TimeAnalysisRecord, ok bool) {
-	if len(row) < 4 {
-		return storage.TimeAnalysisRecord{}, false
-	}
-	date, err := parseSheetDate(cell(row, 0))
-	if err != nil {
-		return storage.TimeAnalysisRecord{}, false
-	}
-	return storage.TimeAnalysisRecord{
-		Date:      date,
-		Hour:      parseInt(cell(row, 1)),
-		DayOfWeek: fmt.Sprint(cell(row, 2)),
-		NetUSD:    parseFloat(cell(row, 3)),
-		SessionID: fmt.Sprint(cell(row, 4)),
-	}, true
-}
-
-// ExportSnapshot returns every row of all four tabs as full records, for a
+// ExportSnapshot returns every row of all three tabs as full records, for a
 // backend migration. Unlike GetAllTournaments its Tournaments slice keeps
 // partial rows (blank Date), read via allTournamentRows.
 func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
@@ -1360,20 +1290,15 @@ func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
 	if err != nil {
 		return storage.Snapshot{}, err
 	}
-	timeAnalysis, err := c.GetAllTimeAnalysis()
-	if err != nil {
-		return storage.Snapshot{}, err
-	}
 	return storage.Snapshot{
 		CashSessions: cash,
 		Tournaments:  tournaments,
 		Ledger:       ledger,
-		TimeAnalysis: timeAnalysis,
 	}, nil
 }
 
 // ImportSnapshot writes a whole snapshot into an empty spreadsheet, one
-// batched append per tab (four API calls, not one per row — a real history
+// batched append per tab (three API calls, not one per row — a real history
 // would otherwise stall against the Sheets write quota). Every value is
 // written verbatim: session IDs, dates (truncated to the tab's minute
 // precision), running totals, and each tournament's already-bounty-folded Net
@@ -1395,17 +1320,12 @@ func (c *Client) ImportSnapshot(snap storage.Snapshot) error {
 			return fmt.Errorf("importing bankroll ledger: %w", err)
 		}
 	}
-	if rows := buildTimeRows(snap.TimeAnalysis); len(rows) > 0 {
-		if err := c.svc.valuesAppend(c.spreadsheetID, "Time Analysis!A1", rows); err != nil {
-			return fmt.Errorf("importing time analysis: %w", err)
-		}
-	}
 	return nil
 }
 
-// buildCashRows / buildTournamentRows / buildLedgerRows / buildTimeRows map
-// records to the cell layout each tab's parse* counterpart reads back. They're
-// pure (no Client, no I/O) so a migration's column alignment is unit-tested by
+// buildCashRows / buildTournamentRows / buildLedgerRows map records to the
+// cell layout each tab's parse* counterpart reads back. They're pure (no
+// Client, no I/O) so a migration's column alignment is unit-tested by
 // round-tripping build → parse without a live sheet.
 func buildCashRows(sessions []storage.CashSessionRecord) [][]interface{} {
 	rows := make([][]interface{}, len(sessions))
@@ -1458,16 +1378,6 @@ func buildLedgerRows(entries []storage.LedgerEntry) [][]interface{} {
 	return rows
 }
 
-func buildTimeRows(records []storage.TimeAnalysisRecord) [][]interface{} {
-	rows := make([][]interface{}, len(records))
-	for i, r := range records {
-		rows[i] = []interface{}{
-			r.Date.UTC().Format(dateFormat), r.Hour, r.DayOfWeek, r.NetUSD, r.SessionID,
-		}
-	}
-	return rows
-}
-
 // floatCell / intCell write an optional numeric field as its value, or an
 // empty cell when unset (nil) — VPIP/PFR/Hands on a tournament that has no hand
 // data yet, which must read back as a nil pointer, not 0.
@@ -1504,11 +1414,11 @@ func (c *Client) PendingWrites() int {
 	return len(c.fallback)
 }
 
-// ClearAllData deletes every data row (row 2 onward) from all four tabs,
+// ClearAllData deletes every data row (row 2 onward) from all three tabs,
 // leaving the header rows. Used to roll a spreadsheet back to empty after a
 // failed migration import, so a retry passes the empty-target check.
 func (c *Client) ClearAllData() error {
-	for _, tab := range []string{"Cash Sessions", "Tournaments", "Bankroll Ledger", "Time Analysis"} {
+	for _, tab := range []string{"Cash Sessions", "Tournaments", "Bankroll Ledger"} {
 		if err := c.svc.valuesClear(c.spreadsheetID, tab+"!A2:Z"); err != nil {
 			return fmt.Errorf("clearing %s: %w", tab, err)
 		}

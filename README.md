@@ -110,7 +110,7 @@ Usage examples:
 <details>
 <summary><code>/export</code> — download all your data as CSV</summary>
 
-Exports the four data sets — cash sessions, tournaments, the bankroll ledger, and time analysis — as four CSV files sent to you as Telegram documents. Output is identical on both the Google Sheets and SQLite backends.
+Exports the three data sets — cash sessions, tournaments, and the bankroll ledger — as three CSV files sent to you as Telegram documents. Output is identical on both the Google Sheets and SQLite backends.
 
 Usage example: `/export`
 </details>

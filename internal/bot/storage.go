@@ -161,9 +161,9 @@ func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 	b.pendingSwitch = &pendingBackendSwitch{target: target, dst: dst, sheetName: sheetName, sheetID: sheetID}
 
 	text := fmt.Sprintf(
-		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\n• %d time-analysis rows\nCurrent bankroll: $%.2f\n\nClose PokerStars first — a hand played mid-switch would be double-counted. Proceed?",
+		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\nCurrent bankroll: $%.2f\n\nClose PokerStars first — a hand played mid-switch would be double-counted. Proceed?",
 		backendLabel(b.currentBackend()), backendLabel(target),
-		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), len(snap.TimeAnalysis), bankroll)
+		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), bankroll)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✅ Migrate", "storage:yes"),

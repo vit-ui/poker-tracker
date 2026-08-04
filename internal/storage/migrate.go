@@ -81,7 +81,6 @@ func verifyMigration(src, dst Store, snap Snapshot) error {
 		{"cash sessions", len(check.CashSessions), len(snap.CashSessions)},
 		{"tournaments", len(check.Tournaments), len(snap.Tournaments)},
 		{"ledger entries", len(check.Ledger), len(snap.Ledger)},
-		{"time analysis rows", len(check.TimeAnalysis), len(snap.TimeAnalysis)},
 	} {
 		if m.got != m.wrote {
 			return fmt.Errorf("%s count mismatch after migration: wrote %d, read back %d", m.name, m.wrote, m.got)

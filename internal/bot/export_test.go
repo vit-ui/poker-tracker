@@ -222,26 +222,6 @@ func TestBankrollLedgerCSVRows(t *testing.T) {
 	}
 }
 
-func TestTimeAnalysisCSVRows(t *testing.T) {
-	date := time.Date(2026, 7, 10, 22, 30, 0, 0, time.UTC)
-	entries := []storage.TimeAnalysisRecord{
-		// NetUSD carries float64 noise past 2 decimal places, same shape as
-		// a real chained-arithmetic result — proves rounding, not just
-		// formatting a number that was already clean.
-		{Date: date, Hour: 22, DayOfWeek: "Friday", NetUSD: -(0.1 + 0.42), SessionID: "abc123"},
-	}
-	rows := timeAnalysisCSVRows(entries)
-	want := []string{"2026-07-10T22:30:00Z", "22", "Friday", "-0.52", "abc123"}
-	if len(rows) != 1 {
-		t.Fatalf("len(rows) = %d, want 1", len(rows))
-	}
-	for i, w := range want {
-		if rows[0][i] != w {
-			t.Errorf("rows[0][%d] = %q, want %q (row: %v)", i, rows[0][i], w, rows[0])
-		}
-	}
-}
-
 func TestWriteCSVFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.csv")
 	header := []string{"A", "B"}

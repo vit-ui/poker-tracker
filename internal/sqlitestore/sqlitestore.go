@@ -62,15 +62,6 @@ CREATE TABLE IF NOT EXISTS bankroll_ledger (
 	running_total REAL NOT NULL,
 	session_id TEXT
 );
-
-CREATE TABLE IF NOT EXISTS time_analysis (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	date TEXT NOT NULL,
-	hour INTEGER NOT NULL,
-	day_of_week TEXT NOT NULL,
-	net_usd REAL NOT NULL,
-	session_id TEXT UNIQUE
-);
 `
 
 // columnDef is one column's name and bare SQLite type, used by
@@ -117,10 +108,6 @@ var expectedColumns = []tableDef{
 		{"date", "TEXT"}, {"type", "TEXT"}, {"amount_usd", "REAL"},
 		{"running_total", "REAL"}, {"session_id", "TEXT"},
 	}},
-	{"time_analysis", []columnDef{
-		{"date", "TEXT"}, {"hour", "INTEGER"}, {"day_of_week", "TEXT"},
-		{"net_usd", "REAL"}, {"session_id", "TEXT"},
-	}},
 }
 
 // Store persists poker session data to a local SQLite database file.
@@ -150,6 +137,11 @@ func NewStore(dbPath string) (*Store, error) {
 	}
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("creating schema: %w", err)
+	}
+	// The Time Analysis feature was removed; shed the orphan table from any
+	// database created by an older binary so it doesn't linger unused.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS time_analysis`); err != nil {
+		return nil, fmt.Errorf("dropping legacy time_analysis table: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.migrateSchema(); err != nil {
@@ -218,18 +210,14 @@ func cashSessionID(date time.Time, firstHandID string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// AppendCashSession upserts one row in cash_sessions, one row in
-// time_analysis, and one row in bankroll_ledger — all three keyed by the same
-// cashSessionID, so a cash hand history file re-parsed after every hand
-// corrects its existing rows in place instead of appending a new set each
-// time. Mirrors sheets.Client.AppendCashSession.
+// AppendCashSession upserts one row in cash_sessions and one row in
+// bankroll_ledger — both keyed by the same cashSessionID, so a re-processed
+// cash session corrects its existing rows in place instead of appending a new
+// set. Mirrors sheets.Client.AppendCashSession.
 func (s *Store) AppendCashSession(session parsers.CashSession) error {
 	id := cashSessionID(session.Date, session.FirstHandID)
 
 	if err := s.upsertCashSessionsRow(id, session); err != nil {
-		return err
-	}
-	if err := s.upsertTimeAnalysisRow(id, session); err != nil {
 		return err
 	}
 	return s.upsertLedgerCashSessionRow(id, session.Date, session.NetUSD)
@@ -251,23 +239,9 @@ func (s *Store) upsertCashSessionsRow(id string, session parsers.CashSession) er
 	return nil
 }
 
-func (s *Store) upsertTimeAnalysisRow(id string, session parsers.CashSession) error {
-	_, err := s.db.Exec(`
-		INSERT INTO time_analysis (date, hour, day_of_week, net_usd, session_id)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(session_id) DO UPDATE SET
-			date = excluded.date, hour = excluded.hour, day_of_week = excluded.day_of_week, net_usd = excluded.net_usd
-	`, session.Date.UTC().Format(dateFormat), session.Date.Hour(), session.Date.Weekday().String(), session.NetUSD, id)
-	if err != nil {
-		return fmt.Errorf("upserting time analysis row: %w", err)
-	}
-	return nil
-}
-
-// upsertLedgerCashSessionRow corrects the cash session's own bankroll_ledger
-// row in place as its net changes hand-to-hand, rather than appending a new
-// entry for every hand — the same still-in-progress-session semantics as
-// upsertCashSessionsRow/upsertTimeAnalysisRow.
+// upsertLedgerCashSessionRow writes (or corrects, if it already exists) the
+// cash session's own bankroll_ledger row, keyed by the session ID — the same
+// upsert semantics as upsertCashSessionsRow.
 func (s *Store) upsertLedgerCashSessionRow(id string, date time.Time, netUSD float64) error {
 	return s.upsertLedgerRow(id, date, "cash_session", netUSD)
 }
@@ -805,7 +779,7 @@ func (s *Store) GetAllTournaments() ([]storage.TournamentRecord, error) {
 	return s.queryTournaments(time.Time{})
 }
 
-// ExportSnapshot returns every row of all four tables as full records, for a
+// ExportSnapshot returns every row of all three tables as full records, for a
 // backend migration. Unlike GetAllTournaments it keeps partial tournament rows
 // (no date), read via allTournamentRows.
 func (s *Store) ExportSnapshot() (storage.Snapshot, error) {
@@ -821,15 +795,10 @@ func (s *Store) ExportSnapshot() (storage.Snapshot, error) {
 	if err != nil {
 		return storage.Snapshot{}, err
 	}
-	timeAnalysis, err := s.GetAllTimeAnalysis()
-	if err != nil {
-		return storage.Snapshot{}, err
-	}
 	return storage.Snapshot{
 		CashSessions: cash,
 		Tournaments:  tournaments,
 		Ledger:       ledger,
-		TimeAnalysis: timeAnalysis,
 	}, nil
 }
 
@@ -980,15 +949,6 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 		}
 	}
 
-	for _, ta := range snap.TimeAnalysis {
-		if _, err := tx.Exec(`
-			INSERT INTO time_analysis (date, hour, day_of_week, net_usd, session_id)
-			VALUES (?, ?, ?, ?, ?)
-		`, ta.Date.UTC().Format(dateFormat), ta.Hour, ta.DayOfWeek, ta.NetUSD, nullString(ta.SessionID)); err != nil {
-			return fmt.Errorf("importing time analysis row: %w", err)
-		}
-	}
-
 	return tx.Commit()
 }
 
@@ -1015,38 +975,4 @@ func nullInt(p *int) sql.NullInt64 {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: int64(*p), Valid: true}
-}
-
-// GetAllTimeAnalysis returns every time_analysis row. Used only by /export.
-func (s *Store) GetAllTimeAnalysis() ([]storage.TimeAnalysisRecord, error) {
-	rows, err := s.db.Query(`
-		SELECT date, hour, day_of_week, net_usd, session_id FROM time_analysis ORDER BY id ASC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("reading time analysis: %w", err)
-	}
-	defer rows.Close()
-
-	var result []storage.TimeAnalysisRecord
-	for rows.Next() {
-		var dateStr, dayOfWeek string
-		var sessionID sql.NullString // NULL on migrated pre-v1.4 sheets rows
-		var hour int
-		var netUSD float64
-		if err := rows.Scan(&dateStr, &hour, &dayOfWeek, &netUSD, &sessionID); err != nil {
-			return nil, fmt.Errorf("scanning time analysis row: %w", err)
-		}
-		date, err := time.Parse(dateFormat, dateStr)
-		if err != nil {
-			return nil, fmt.Errorf("parsing time analysis date %q: %w", dateStr, err)
-		}
-		result = append(result, storage.TimeAnalysisRecord{
-			Date:      date,
-			Hour:      hour,
-			DayOfWeek: dayOfWeek,
-			NetUSD:    netUSD,
-			SessionID: sessionID.String,
-		})
-	}
-	return result, rows.Err()
 }

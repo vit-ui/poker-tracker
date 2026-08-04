@@ -102,6 +102,9 @@ func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	// Cash sessions are written once the table goes quiet; shorten that window
+	// so the session-end write/eval/summary fires within the test's deadline.
+	srv.QuietPeriod = 150 * time.Millisecond
 	go srv.Run()
 	collector := client.NewCollector(link, lockfilePath)
 	go collector.Run(sessionChan, configPath, nil)
@@ -239,24 +242,26 @@ func TestPipeline_WonFreeroll(t *testing.T) {
 }
 
 // TestPipeline_CashSession: a cash hand history flows through to a recorded
-// session and its ledger entry; bankroll equals the session net.
+// session and its ledger entry once the table goes quiet (the session is now
+// written at session end, not per hand); bankroll equals the session net.
 func TestPipeline_CashSession(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("hand_history", "nlhe_cash.txt")
-	// The worker upserts the session on every hand, so its net keeps growing
-	// until the file is fully processed. Waiting only for the row to exist
-	// (after hand 1) and then sampling net and bankroll separately let a hand
-	// land between the two reads — they'd straddle a mid-file upsert and differ
-	// by ~one hand. Poll the invariant itself in a single consistent snapshot:
-	// bankroll equals the recorded net, which becomes and stays true once the
-	// last hand settles.
-	p.waitFor("bankroll matches recorded session net", func() bool {
+	// Nothing is stored until the quiet period elapses; then the whole session
+	// lands in one write. Poll the final invariant: one session row exists and
+	// bankroll equals its net.
+	p.waitFor("session recorded at session end", func() bool {
 		s, err := p.store.GetAllCashSessions()
 		return err == nil && len(s) == 1 && closeEnough(p.bankroll(), s[0].NetUSD)
 	})
 	sessions, _ := p.store.GetAllCashSessions()
 	if sessions[0].Stake != "NL2" {
 		t.Errorf("stake = %q, want NL2", sessions[0].Stake)
+	}
+	// The post-session summary is sent once, at session end.
+	p.waitFor("cash session summary", func() bool { return p.countAlerts("✅ Cash Session") >= 1 })
+	if n := p.countAlerts("✅ Cash Session"); n != 1 {
+		t.Errorf("got %d cash session summaries, want 1; alerts=%v", n, p.alertSnapshot())
 	}
 }
 
@@ -373,9 +378,10 @@ func TestPipeline_HardStopSessionLoss(t *testing.T) {
 
 // TestPipeline_IncrementalGrowingFile drives a hand-history file that grows
 // across two separate watcher events — the real per-hand append pattern — so it
-// exercises runWorker's incremental parse-state map end-to-end: event 1 records
-// the first hands with no prior state, event 2 appends more and is parsed with
-// the carried state (resume from a non-zero byte offset). The final recorded
+// exercises runWorker's incremental parse-state map end-to-end: event 1 is
+// parsed with no prior state and (once the table falls quiet) records the first
+// hands, event 2 appends more and is parsed with the carried state (resume from
+// a non-zero byte offset), then re-records the grown session. The final recorded
 // session must equal a whole-file parse regardless, which also guards the
 // self-healing fallback: a wiring bug can't corrupt the data, only lose the
 // speedup, and this asserts the data is right.

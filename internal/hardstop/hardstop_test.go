@@ -457,11 +457,12 @@ func TestEvaluateTriggers(t *testing.T) {
 		wantReason     string // "" = must not trigger
 	}{
 		{
-			// Loss 12 > 1 × $5 buy-in.
-			name:       "session loss",
-			cfg:        &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
-			session:    losingSession,
-			wantReason: "session_loss_buyins",
+			// Session loss is not Evaluate's job anymore (it's EvaluateSessionLoss,
+			// run per hand) — a losing session with only session_loss_buyins set
+			// must NOT trigger here.
+			name:    "session loss is not evaluated by Evaluate",
+			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
+			session: losingSession,
 		},
 		{
 			name:       "consecutive losses",
@@ -551,6 +552,81 @@ func TestEvaluateTriggers(t *testing.T) {
 			t.Errorf("lockfile written despite missing duration_hours: %+v", lock)
 		}
 	})
+}
+
+// TestEvaluateSessionLoss covers the per-hand session-loss check, which reads
+// only the in-memory session (no ledger): it triggers when the session's net
+// loss exceeds session_loss_buyins × buy-in, stays silent otherwise, and
+// errors when the threshold is set without duration_hours.
+func TestEvaluateSessionLoss(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	pi := func(v int) *int { return &v }
+	duration := 12
+
+	cases := []struct {
+		name     string
+		cfg      *config.Config
+		session  parsers.CashSession
+		wantLock bool
+		wantErr  bool
+	}{
+		{
+			// Loss 12 > 1 × $5 buy-in.
+			name:     "breach locks",
+			cfg:      &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
+			session:  parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+			wantLock: true,
+		},
+		{
+			// Loss 12 < 10 × $5 = $50.
+			name:    "within threshold does not lock",
+			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(10), DurationHours: pi(duration)}},
+			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+		},
+		{
+			name:    "winning session does not lock",
+			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
+			session: parsers.CashSession{BuyInUSD: 5, NetUSD: 20},
+		},
+		{
+			name:    "unset threshold does not lock",
+			cfg:     &config.Config{Hardstop: config.Hardstop{DurationHours: pi(duration)}},
+			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+		},
+		{
+			name:    "breach without duration errors",
+			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1)}},
+			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+			wantErr: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lockPath := filepath.Join(t.TempDir(), "lockfile.json")
+			ch := make(chan string, 1)
+			err := EvaluateSessionLoss(c.session, c.cfg, lockWriter(lockPath, ch))
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("EvaluateSessionLoss = nil error, want the missing-duration error")
+				}
+				if lock, _ := config.LoadLock(lockPath); lock != nil {
+					t.Errorf("lockfile written despite missing duration_hours: %+v", lock)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("EvaluateSessionLoss: %v", err)
+			}
+			lock, _ := config.LoadLock(lockPath)
+			if c.wantLock {
+				if lock == nil || lock.Reason != "session_loss_buyins" {
+					t.Errorf("lock = %+v, want session_loss_buyins", lock)
+				}
+			} else if lock != nil {
+				t.Errorf("lockfile = %+v, want none", lock)
+			}
+		})
+	}
 }
 
 // TestManualTrigger covers /hardstop trigger's path: it loads the duration

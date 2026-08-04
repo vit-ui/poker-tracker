@@ -37,16 +37,7 @@ type TournamentRecord struct {
 	PrizeWonUSD  float64
 }
 
-// TimeAnalysisRecord is a row in the Time Analysis tab/table.
-type TimeAnalysisRecord struct {
-	Date      time.Time
-	Hour      int
-	DayOfWeek string
-	NetUSD    float64
-	SessionID string
-}
-
-// Snapshot is every row of all four data sets, as full records, used only by
+// Snapshot is every row of all three data sets, as full records, used only by
 // the backend-migration path (bot's /storage). Unlike GetAllTournaments,
 // its Tournaments slice includes partial rows (a hand file arrived before the
 // summary — Date zero, no ledger impact yet), so a tournament still in progress
@@ -61,14 +52,13 @@ type Snapshot struct {
 	CashSessions []CashSessionRecord
 	Tournaments  []TournamentRecord
 	Ledger       []LedgerEntry
-	TimeAnalysis []TimeAnalysisRecord
 }
 
 // IsEmpty reports whether the snapshot holds no rows in any data set — the
 // emptiness test a migration target must pass before it's imported into.
 func (s Snapshot) IsEmpty() bool {
 	return len(s.CashSessions) == 0 && len(s.Tournaments) == 0 &&
-		len(s.Ledger) == 0 && len(s.TimeAnalysis) == 0
+		len(s.Ledger) == 0
 }
 
 // Store is the persistence contract both backends implement. Its method set
@@ -93,7 +83,6 @@ type Store interface {
 	GetTournamentByID(tournamentID string) (t parsers.Tournament, found bool, err error)
 	GetAllCashSessions() ([]CashSessionRecord, error)
 	GetAllTournaments() ([]TournamentRecord, error)
-	GetAllTimeAnalysis() ([]TimeAnalysisRecord, error)
 
 	// ExportSnapshot and ImportSnapshot move an install's whole history
 	// between backends (bot's /storage). Both backends need both

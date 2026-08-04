@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -145,6 +144,7 @@ func TestServer_ScreenNameRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.QuietPeriod = 50 * time.Millisecond // fire the cash session-end fast
 	go srv.Run()
 	go func() { // drain alerts so the screen-name warning never blocks
 		for range alertChan {
@@ -409,7 +409,7 @@ func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 	if bankroll != 94 {
 		t.Fatalf("bankroll after session 1 = %v, want 94", bankroll)
 	}
-	bot.EvaluateSessionLossAlert(session1, cfg, bankroll, alertChan)
+	bot.EvaluateSessionLossAlert(session1, cfg, func() float64 { return bankroll }, alertChan)
 	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, time.Now(), alertChan, firedAlerts, "cash:h1")
 	assertMsgs("session 1", []string{
 		"⚠️ Session loss alert\nLost 1.2 buy-ins this session ($6.00)\nBankroll: $94.00",
@@ -426,7 +426,7 @@ func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 	if bankroll != 90 {
 		t.Fatalf("bankroll after session 2 = %v, want 90", bankroll)
 	}
-	bot.EvaluateSessionLossAlert(session2, cfg, bankroll, alertChan)
+	bot.EvaluateSessionLossAlert(session2, cfg, func() float64 { return bankroll }, alertChan)
 	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, time.Now(), alertChan, firedAlerts, "cash:h2")
 	assertMsgs("session 2", []string{
 		"⚠️ Losing streak alert\n2 losing sessions in a row\nBankroll: $90.00",
@@ -526,80 +526,65 @@ func waitForString(t *testing.T, ch <-chan string, timeout time.Duration) (strin
 	}
 }
 
-// TestScheduleCashSessionSummary_FiresAfterQuietPeriod confirms a single
-// schedule call sends the built message once the quiet period elapses.
-func TestScheduleCashSessionSummary_FiresAfterQuietPeriod(t *testing.T) {
-	var mu sync.Mutex
+// TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
+// signals the table's FileID once the quiet period elapses.
+func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
 	timers := make(map[string]*time.Timer)
-	alertChan := make(chan string, 10)
+	sessionEnd := make(chan string, 10)
 
-	scheduleCashSessionSummary(&mu, timers, "table-a.txt", 50*time.Millisecond, alertChan, func() string {
-		return "final summary"
-	})
+	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd)
 
-	got, ok := waitForString(t, alertChan, 500*time.Millisecond)
+	got, ok := waitForString(t, sessionEnd, 500*time.Millisecond)
 	if !ok {
-		t.Fatal("expected a summary after the quiet period, got none")
+		t.Fatal("expected a session-end signal after the quiet period, got none")
 	}
-	if got != "final summary" {
-		t.Errorf("got %q, want %q", got, "final summary")
+	if got != "table-a.txt" {
+		t.Errorf("got %q, want %q", got, "table-a.txt")
 	}
 }
 
-// TestScheduleCashSessionSummary_ResetOnNewHand confirms rescheduling before
-// the quiet period elapses (simulating a new hand at the same table) cancels
-// the pending send and collapses to exactly one message, built from the
-// latest snapshot rather than the first one.
-func TestScheduleCashSessionSummary_ResetOnNewHand(t *testing.T) {
-	var mu sync.Mutex
+// TestArmCashSessionEnd_ResetOnNewHand confirms re-arming before the quiet
+// period elapses (a new hand at the same table) cancels the pending signal and
+// collapses to exactly one session-end.
+func TestArmCashSessionEnd_ResetOnNewHand(t *testing.T) {
 	timers := make(map[string]*time.Timer)
-	alertChan := make(chan string, 10)
+	sessionEnd := make(chan string, 10)
 
-	scheduleCashSessionSummary(&mu, timers, "table-a.txt", 100*time.Millisecond, alertChan, func() string {
-		return "hand 1 snapshot"
-	})
+	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd)
 	time.Sleep(30 * time.Millisecond)
-	scheduleCashSessionSummary(&mu, timers, "table-a.txt", 100*time.Millisecond, alertChan, func() string {
-		return "hand 2 snapshot"
-	})
+	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd)
 
-	got, ok := waitForString(t, alertChan, 500*time.Millisecond)
+	got, ok := waitForString(t, sessionEnd, 500*time.Millisecond)
 	if !ok {
-		t.Fatal("expected one summary after the quiet period, got none")
+		t.Fatal("expected one session-end after the quiet period, got none")
 	}
-	if got != "hand 2 snapshot" {
-		t.Errorf("got %q, want the latest snapshot %q", got, "hand 2 snapshot")
+	if got != "table-a.txt" {
+		t.Errorf("got %q, want %q", got, "table-a.txt")
 	}
-	if _, ok := waitForString(t, alertChan, 200*time.Millisecond); ok {
-		t.Error("expected only one summary for a table that kept getting new hands, got a second")
+	if _, ok := waitForString(t, sessionEnd, 200*time.Millisecond); ok {
+		t.Error("expected only one session-end for a table that kept getting new hands, got a second")
 	}
 }
 
-// TestScheduleCashSessionSummary_IndependentPerTable confirms two different
-// tables (different keys) each get their own independent timer and summary
-// — resetting one table's timer must never cancel another table's.
-func TestScheduleCashSessionSummary_IndependentPerTable(t *testing.T) {
-	var mu sync.Mutex
+// TestArmCashSessionEnd_IndependentPerTable confirms two different tables each
+// get their own independent timer — re-arming one must never cancel another.
+func TestArmCashSessionEnd_IndependentPerTable(t *testing.T) {
 	timers := make(map[string]*time.Timer)
-	alertChan := make(chan string, 10)
+	sessionEnd := make(chan string, 10)
 
-	scheduleCashSessionSummary(&mu, timers, "table-a.txt", 50*time.Millisecond, alertChan, func() string {
-		return "table a"
-	})
-	scheduleCashSessionSummary(&mu, timers, "table-b.txt", 50*time.Millisecond, alertChan, func() string {
-		return "table b"
-	})
+	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd)
+	armCashSessionEnd(timers, "table-b.txt", 50*time.Millisecond, sessionEnd)
 
 	seen := map[string]bool{}
 	for i := 0; i < 2; i++ {
-		got, ok := waitForString(t, alertChan, 500*time.Millisecond)
+		got, ok := waitForString(t, sessionEnd, 500*time.Millisecond)
 		if !ok {
-			t.Fatal("expected two independent summaries, got fewer")
+			t.Fatal("expected two independent session-end signals, got fewer")
 		}
 		seen[got] = true
 	}
-	if !seen["table a"] || !seen["table b"] {
-		t.Errorf("expected summaries from both tables, got %v", seen)
+	if !seen["table-a.txt"] || !seen["table-b.txt"] {
+		t.Errorf("expected session-end from both tables, got %v", seen)
 	}
 }
 
@@ -649,6 +634,7 @@ func startTestServer(t *testing.T) (*sqlitestore.Store, *transport.Link, *Server
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	srv.QuietPeriod = 50 * time.Millisecond // fire the cash session-end fast
 	done := make(chan struct{})
 	go func() { srv.Run(); close(done) }()
 	go func() {

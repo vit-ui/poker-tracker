@@ -540,21 +540,6 @@ func TestBuildCashRows_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestBuildTimeRows_RoundTrip(t *testing.T) {
-	tm, _ := time.Parse(dateFormat, "2026-07-10 20:00")
-	want := storage.TimeAnalysisRecord{
-		Date: tm, Hour: 20, DayOfWeek: "Friday", NetUSD: -5.25, SessionID: "abc123def456",
-	}
-	rows := buildTimeRows([]storage.TimeAnalysisRecord{want})
-	got, ok := parseTimeRow(viaWire(rows[0]))
-	if !ok {
-		t.Fatal("parseTimeRow returned ok=false")
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("time round-trip differs:\n want %+v\n  got %+v", want, got)
-	}
-}
-
 // TestParseRowGuards_ShortRowsSkipped pins the pre-refactor behavior: a
 // hand-edited row with a valid date but fewer cells than the script ever
 // writes is skipped, not parsed into a zeroed record that would feed /stats
@@ -565,16 +550,10 @@ func TestParseRowGuards_ShortRowsSkipped(t *testing.T) {
 	if _, ok := parseCashRow([]interface{}{"2026-07-01 20:00", "NL10", float64(50)}); ok {
 		t.Error("parseCashRow accepted a 3-cell row")
 	}
-	if _, ok := parseTimeRow([]interface{}{"2026-07-01 20:00", float64(20)}); ok {
-		t.Error("parseTimeRow accepted a 2-cell row")
-	}
-	// The shortest legitimate rows — 9-column pre-v1.4 cash rows and 4-column
-	// pre-v1.4 time rows (no Session ID yet) — still parse.
+	// The shortest legitimate cash rows — 9-column pre-v1.4 rows (no Session
+	// ID yet) — still parse.
 	if _, ok := parseCashRow(viaWire([]interface{}{"2026-07-01 20:00", "NL10", 50, 100, -5.0, 2.5, -10.0, 24.5, 18.2})); !ok {
 		t.Error("parseCashRow rejected a 9-cell pre-v1.4 row")
-	}
-	if _, ok := parseTimeRow(viaWire([]interface{}{"2026-07-01 20:00", 20, "Friday", -5.0})); !ok {
-		t.Error("parseTimeRow rejected a 4-cell pre-v1.4 row")
 	}
 }
 

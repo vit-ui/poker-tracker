@@ -17,25 +17,39 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// Evaluate checks hard stop conditions after a cash session and calls onTrigger
-// (reason, durationHours) for the first condition met, if any. ledger is the
-// full Bankroll Ledger and dayTournaments the current poker day's tournaments,
-// both fetched once per file event by the worker (internal/server) and shared
-// with the alert evaluators — no function on this path fetches from the store
-// itself, so a hand that runs every check costs one ledger read, not six.
-func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) error {
+// EvaluateSessionLoss checks the one hard-stop condition that reads only the
+// just-parsed session, not the stored ledger — the session's own net loss
+// against session_loss_buyins × buy-in — and calls onTrigger if it's breached.
+// It runs on every hand (in-memory, no store I/O) so a bleeding session is
+// stopped mid-session, unlike the ledger-based checks in Evaluate, which run
+// once the session closes (see the server's cash branch). Errors if the
+// threshold is set without duration_hours, matching Evaluate.
+func EvaluateSessionLoss(session parsers.CashSession, cfg *config.Config, onTrigger func(reason string, durationHours int)) error {
 	h := cfg.Hardstop
-	if h.SessionLossBuyins == nil && h.ConsecutiveLosses == nil && h.DailyLossUSD == nil &&
-		h.SpingoDailyLossUSD == nil && h.DownswingBuyins == nil && h.DurationHours == nil {
-		return nil
-	}
-
 	if h.SessionLossBuyins != nil && session.NetUSD < 0 &&
 		sessionLossExceeds(math.Abs(session.NetUSD), session.BuyInUSD, *h.SessionLossBuyins) {
 		if h.DurationHours == nil {
 			return fmt.Errorf("session_loss_buyins configured without duration_hours")
 		}
 		onTrigger("session_loss_buyins", *h.DurationHours)
+	}
+	return nil
+}
+
+// Evaluate checks the ledger-based hard stop conditions after a cash session
+// has closed and calls onTrigger (reason, durationHours) for the first
+// condition met, if any: consecutive losses, then downswing, then daily loss.
+// The session's own net-loss check is EvaluateSessionLoss (run per hand, from
+// the in-memory session); this reads the stored ledger, so it runs once at
+// session end, when the just-closed session is in the ledger. ledger is the
+// full Bankroll Ledger and dayTournaments the current poker day's tournaments,
+// both fetched once per file event by the worker (internal/server) and shared
+// with the alert evaluators — no function on this path fetches from the store
+// itself.
+func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) error {
+	h := cfg.Hardstop
+	if h.ConsecutiveLosses == nil && h.DailyLossUSD == nil &&
+		h.SpingoDailyLossUSD == nil && h.DownswingBuyins == nil && h.DurationHours == nil {
 		return nil
 	}
 

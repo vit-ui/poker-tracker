@@ -34,8 +34,11 @@ import (
 )
 
 // EvaluateSessionLossAlert sends a warning (not a hard stop) if the cash
-// session's net loss exceeds Alerts.SessionLossBuyins × BuyInUSD.
-func EvaluateSessionLossAlert(session parsers.CashSession, cfg *config.Config, bankroll float64, alertChan chan<- string) {
+// session's net loss exceeds Alerts.SessionLossBuyins × BuyInUSD. It runs per
+// hand, so bankroll is a function evaluated only when the alert actually fires
+// — the common (non-firing) hand then costs no store read for a bankroll it
+// wouldn't display.
+func EvaluateSessionLossAlert(session parsers.CashSession, cfg *config.Config, bankroll func() float64, alertChan chan<- string) {
 	if cfg.Alerts.SessionLossBuyins == nil || session.BuyInUSD == 0 || session.NetUSD >= 0 {
 		return
 	}
@@ -46,7 +49,7 @@ func EvaluateSessionLossAlert(session parsers.CashSession, cfg *config.Config, b
 	}
 
 	buyins := loss / session.BuyInUSD
-	alertChan <- fmt.Sprintf("⚠️ Session loss alert\nLost %.1f buy-ins this session ($%.2f)\nBankroll: $%.2f", buyins, loss, bankroll)
+	alertChan <- fmt.Sprintf("⚠️ Session loss alert\nLost %.1f buy-ins this session ($%.2f)\nBankroll: $%.2f", buyins, loss, bankroll())
 }
 
 // EvaluateDownswingAlert sends a warning (not a hard stop) if the rolling

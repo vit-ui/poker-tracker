@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Changed
+
+- **Cash sessions are recorded once, when the session ends, instead of on every
+  hand.** A cash session now writes to storage (its Cash Sessions row and its
+  Bankroll Ledger entry) a single time, once the table has gone quiet for the
+  session-end window — the same moment the post-session summary is sent, and the
+  same way tournaments have always recorded. The ledger-based checks (downswing,
+  losing streak, daily loss) and the post-session summary run at that point too.
+  The **session-loss hard stop and its warning still run on every hand**, from
+  the just-parsed session, so a session that's bleeding is still stopped
+  mid-play. One consequence: `/status`, `/stats`, and `/lastsession` don't
+  reflect a cash session until it ends (a few minutes after your last hand).
+
+### Removed
+
+- **The Time Analysis tab/table is gone.** It was never used. `/export` now
+  sends three CSV files (cash sessions, tournaments, bankroll ledger) instead of
+  four, and backend migration copies three data sets. On the SQLite backend the
+  `time_analysis` table is dropped automatically on the next start. On the Google
+  Sheets backend the physical "Time Analysis" tab is left untouched (the tracker
+  simply stops writing to it) — delete it by hand if you want it gone.
+
 ## v4.2 - 2026-08-01
 
 ### Changed

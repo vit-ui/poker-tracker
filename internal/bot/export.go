@@ -1,6 +1,6 @@
 package bot
 
-// The /export command: every row of the four data sets as CSV files sent
+// The /export command: every row of the three data sets as CSV files sent
 // through Telegram, byte-identical on both storage backends.
 
 import (
@@ -22,7 +22,6 @@ var (
 	cashSessionsCSVHeader   = []string{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}
 	tournamentsCSVHeader    = []string{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}
 	bankrollLedgerCSVHeader = []string{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}
-	timeAnalysisCSVHeader   = []string{"Date", "Hour", "Day of Week", "Net (USD)", "Session ID"}
 )
 
 // fullPrecision tells formatFloat/formatFloatPtr to render the shortest
@@ -143,20 +142,6 @@ func bankrollLedgerCSVRows(entries []storage.LedgerEntry) [][]string {
 	return rows
 }
 
-func timeAnalysisCSVRows(entries []storage.TimeAnalysisRecord) [][]string {
-	rows := make([][]string, 0, len(entries))
-	for _, e := range entries {
-		rows = append(rows, []string{
-			e.Date.UTC().Format(time.RFC3339),
-			strconv.Itoa(e.Hour),
-			e.DayOfWeek,
-			formatFloat(e.NetUSD, moneyPrecision),
-			e.SessionID,
-		})
-	}
-	return rows
-}
-
 // writeCSVFile writes header followed by rows to path, using encoding/csv.
 func writeCSVFile(path string, header []string, rows [][]string) error {
 	f, err := os.Create(path)
@@ -178,17 +163,16 @@ func writeCSVFile(path string, header []string, rows [][]string) error {
 	return w.Error()
 }
 
-// handleExportCommand implements /export: queries every row of all four data
+// handleExportCommand implements /export: queries every row of all three data
 // sets via storage.Store — never a backend-specific type, so the command is
 // identical on both backends — writes each to a CSV file in os.TempDir(),
 // sends each as a Telegram document, then deletes the temp files. An empty
 // data set still sends a header-only CSV. Dates are RFC3339 UTC on both
 // backends: the sqlite backend already stores them that way, and the sheets
 // backend's Date field is parsed back from its internal
-// "2006-01-02 15:04" format by GetAllCashSessions/GetAllTournaments/
-// GetAllTimeAnalysis before ever reaching here, so formatting with
-// time.RFC3339 here is enough to keep output byte-identical between
-// backends.
+// "2006-01-02 15:04" format by GetAllCashSessions/GetAllTournaments before
+// ever reaching here, so formatting with time.RFC3339 here is enough to keep
+// output byte-identical between backends.
 func (b *Bot) handleExportCommand(chatID int64) {
 	cashSessions, err := b.store.GetAllCashSessions()
 	if err != nil {
@@ -208,12 +192,6 @@ func (b *Bot) handleExportCommand(chatID int64) {
 		send(b.tg, chatID, "Something went wrong. Check logs.")
 		return
 	}
-	timeAnalysis, err := b.store.GetAllTimeAnalysis()
-	if err != nil {
-		slog.Error("getting time analysis for export", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
 
 	exports := []struct {
 		filename string
@@ -223,7 +201,6 @@ func (b *Bot) handleExportCommand(chatID int64) {
 		{"cash_sessions.csv", cashSessionsCSVHeader, cashSessionsCSVRows(cashSessions)},
 		{"tournaments.csv", tournamentsCSVHeader, tournamentsCSVRows(tournaments)},
 		{"bankroll_ledger.csv", bankrollLedgerCSVHeader, bankrollLedgerCSVRows(ledger)},
-		{"time_analysis.csv", timeAnalysisCSVHeader, timeAnalysisCSVRows(timeAnalysis)},
 	}
 
 	var paths []string
