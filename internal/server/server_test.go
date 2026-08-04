@@ -711,6 +711,88 @@ func closeEnoughServer(a, b float64) bool {
 	return d < 0.005
 }
 
+// waitForCommand blocks until a command arrives on ch or timeout elapses.
+func waitForCommand(t *testing.T, ch <-chan transport.Command, timeout time.Duration) (transport.Command, bool) {
+	t.Helper()
+	select {
+	case c := <-ch:
+		return c, true
+	case <-time.After(timeout):
+		return transport.Command{}, false
+	}
+}
+
+// TestServer_SessionEndLedgerHardStop proves the deferred-cash change didn't
+// break the ledger-based hard stops: a cash session's ledger-based checks now
+// run at session end (in endCashSession), against the just-written ledger, on
+// the real Run loop. The consecutive-losses stop is date-agnostic, so it can be
+// driven here (the time-windowed downswing/daily stops stay in the hardstop unit
+// tests). With one prior losing session pre-seeded and the incoming session also
+// a loss, the two-in-a-row streak trips the stop — a lock command goes down the
+// link once the table falls quiet.
+func TestServer_SessionEndLedgerHardStop(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Hard stop after 2 losing sessions in a row; no session-loss stop, so the
+	// only thing that can fire is the session-end consecutive-losses check.
+	n, hours := 2, 1
+	configPath := filepath.Join(dir, "config.json")
+	if err := config.SaveConfig(configPath, &config.Config{
+		Hardstop: config.Hardstop{ConsecutiveLosses: &n, DurationHours: &hours},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	// Pre-seed one losing cash session so the incoming one makes two in a row.
+	prev := parsers.CashSession{
+		Date:  storage.AsStoredClock(time.Now()).Add(-time.Hour),
+		Stake: "NL2", BuyInUSD: 2, NetUSD: -1.50, Hands: 20, DurationMin: 15, FirstHandID: "prevloss1",
+	}
+	if err := store.AppendCashSession(prev); err != nil {
+		t.Fatalf("pre-seeding losing session: %v", err)
+	}
+
+	link := transport.NewLink()
+	alertChan := make(chan string, 100)
+	srv, err := NewServer(store, configPath, link, alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.QuietPeriod = 50 * time.Millisecond
+	done := make(chan struct{})
+	go func() { srv.Run(); close(done) }()
+	t.Cleanup(func() {
+		close(link.Uploads)
+		<-done
+		store.Close()
+	})
+	go func() { // drain alerts so the hard-stop alert send never blocks
+		for range alertChan {
+		}
+	}()
+
+	// A live losing cash session (nlhe_cash nets a small loss). No session-loss
+	// stop is configured, so nothing fires per hand; the consecutive-losses stop
+	// fires only once the session is written at session end.
+	cashBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.Uploads <- transport.Upload{FileID: "hh/nlhe.txt", Type: "cash", Offset: 0, Bytes: cashBytes, ScreenName: importHero, ClientClock: time.Now()}
+
+	cmd, ok := waitForCommand(t, link.Commands, 5*time.Second)
+	if !ok {
+		t.Fatal("no lock command at session end — the ledger-based hard stop didn't fire")
+	}
+	if cmd.Kind != transport.CommandLock || cmd.Lock == nil || cmd.Lock.Reason != "consecutive_losses" {
+		t.Errorf("lock command = %+v, want a consecutive_losses lock", cmd)
+	}
+}
+
 // TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
 // signals the table's FileID once the quiet period elapses.
 func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
