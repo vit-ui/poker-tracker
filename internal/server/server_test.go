@@ -526,6 +526,76 @@ func waitForString(t *testing.T, ch <-chan string, timeout time.Duration) (strin
 	}
 }
 
+// TestServer_ImportBackfill drives the /scan silent-import path through the real
+// Run loop: an ImportStart marker, a cash file, a real MTT summary, a satellite
+// summary, then ImportDone. The cash session and the MTT are recorded, the
+// satellite is skipped (it needs a player answer), no live-path alert fires, and
+// the only message emitted is the completion report with the right counts.
+func TestServer_ImportBackfill(t *testing.T) {
+	readFixture := func(sub, name string) []byte {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join("..", "..", "testdata", sub, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	dir := t.TempDir()
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	link := transport.NewLink()
+	alertChan := make(chan string, 100)
+	srv, err := NewServer(store, filepath.Join(dir, "config.json"), link, alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { srv.Run(); close(done) }()
+	t.Cleanup(func() {
+		close(link.Uploads)
+		<-done
+		store.Close()
+	})
+
+	const hero = "AnonHero01"
+	up := func(fileID, typ string, bytes []byte) transport.Upload {
+		return transport.Upload{FileID: fileID, Type: typ, Offset: 0, Bytes: bytes, ScreenName: hero, ClientClock: time.Now(), Import: true}
+	}
+	link.Uploads <- transport.Upload{Type: transport.ImportStart}
+	link.Uploads <- up("hh/nlhe_cash.txt", "cash", readFixture("hand_history", "nlhe_cash.txt"))
+	link.Uploads <- up("ts/horse.txt", "tournament", readFixture("tournament_summary", "horse_T9000000003.txt"))
+	link.Uploads <- up("ts/satellite.txt", "tournament", readFixture("tournament_summary", "satellite_busted_T9000000013.txt"))
+	link.Uploads <- transport.Upload{Type: transport.ImportDone}
+
+	// The report is emitted on ImportDone, which is processed last on the single
+	// worker goroutine — so by the time it arrives, every prior upload is stored.
+	report, ok := waitForString(t, alertChan, 5*time.Second)
+	if !ok {
+		t.Fatal("no scan-complete report received")
+	}
+	if !strings.Contains(report, "recorded 1 cash session(s) and 1 tournament(s)") || !strings.Contains(report, "Skipped 1") {
+		t.Errorf("report = %q, want it to name 1 cash, 1 tournament, 1 skipped", report)
+	}
+	// Silent import: no other alert (no summary, no hard stop, no threshold alert).
+	if extra, ok := waitForString(t, alertChan, 300*time.Millisecond); ok {
+		t.Errorf("unexpected extra alert during import: %q", extra)
+	}
+
+	sessions, err := store.GetAllCashSessions()
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("GetAllCashSessions = %d rows (err %v), want 1", len(sessions), err)
+	}
+	if _, found, _ := store.GetTournamentByID("9000000003"); !found {
+		t.Error("MTT 9000000003 not recorded, want recorded")
+	}
+	if _, found, _ := store.GetTournamentByID("9000000013"); found {
+		t.Error("satellite 9000000013 recorded, want skipped")
+	}
+}
+
 // TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
 // signals the table's FileID once the quiet period elapses.
 func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {

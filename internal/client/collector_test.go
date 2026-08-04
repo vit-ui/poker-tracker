@@ -1,12 +1,14 @@
 package client
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
@@ -157,5 +159,88 @@ func TestReadUpload_MissingFileNoUpload(t *testing.T) {
 	configPath := writeConfigWithScreenName(t, dir, "Hero")
 	if _, ok := readUpload(watcher.FileEvent{Path: filepath.Join(dir, "gone.txt"), Type: "cash"}, map[string]*sentEntry{}, time.Now(), configPath); ok {
 		t.Fatal("expected no upload for a missing file")
+	}
+}
+
+// TestCollectorRescan drives the /scan folder walk: with one hand-history file
+// and one tournament-summary file in the screen-name-nested watched folders,
+// rescan emits ImportStart, one whole-file Import upload per file with the right
+// Type and bytes, then ImportDone. A non-.txt file is ignored.
+func TestCollectorRescan(t *testing.T) {
+	const hero = "AnonHero01"
+	dir := t.TempDir()
+	hhBase := filepath.Join(dir, "hh")
+	tsBase := filepath.Join(dir, "ts")
+	hhDir := filepath.Join(hhBase, hero)
+	tsDir := filepath.Join(tsBase, hero)
+	for _, d := range []string{hhDir, tsDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	readFixture := func(sub, name string) []byte {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join("..", "..", "testdata", sub, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	cashBytes := readFixture("hand_history", "nlhe_cash.txt")
+	mttBytes := readFixture("tournament_summary", "horse_T9000000003.txt")
+	if err := os.WriteFile(filepath.Join(hhDir, "nlhe_cash.txt"), cashBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tsDir, "horse.txt"), mttBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hhDir, "notes.md"), []byte("ignore me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configPath := filepath.Join(dir, "config.json")
+	cfg := &config.Config{}
+	screen := hero
+	cfg.Setup.PokerStarsScreenName = &screen
+	cfg.Paths.HandHistory = &hhBase
+	cfg.Paths.TournamentSummary = &tsBase
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	link := transport.NewLink()
+	c := NewCollector(link, filepath.Join(dir, "lockfile.json"))
+	go c.rescan(configPath, nil)
+
+	var got []transport.Upload
+	for {
+		up := <-link.Uploads
+		got = append(got, up)
+		if up.Type == transport.ImportDone {
+			break
+		}
+	}
+
+	// ImportStart + cash + tournament + ImportDone = 4 (the .md is skipped).
+	if len(got) != 4 {
+		t.Fatalf("got %d uploads, want 4: %+v", len(got), got)
+	}
+	if got[0].Type != transport.ImportStart {
+		t.Errorf("first upload Type = %q, want %q", got[0].Type, transport.ImportStart)
+	}
+	if got[len(got)-1].Type != transport.ImportDone {
+		t.Errorf("last upload Type = %q, want %q", got[len(got)-1].Type, transport.ImportDone)
+	}
+
+	// The hand-history folder is walked before the tournament-summary folder.
+	cash, tourn := got[1], got[2]
+	if cash.Type != "cash" || !cash.Import || cash.Offset != 0 || cash.ScreenName != hero || !bytes.Equal(cash.Bytes, cashBytes) {
+		t.Errorf("cash upload wrong: type=%q import=%v offset=%d screen=%q bytesMatch=%v",
+			cash.Type, cash.Import, cash.Offset, cash.ScreenName, bytes.Equal(cash.Bytes, cashBytes))
+	}
+	if tourn.Type != "tournament" || !tourn.Import || tourn.Offset != 0 || tourn.ScreenName != hero || !bytes.Equal(tourn.Bytes, mttBytes) {
+		t.Errorf("tournament upload wrong: type=%q import=%v offset=%d screen=%q bytesMatch=%v",
+			tourn.Type, tourn.Import, tourn.Offset, tourn.ScreenName, bytes.Equal(tourn.Bytes, mttBytes))
 	}
 }

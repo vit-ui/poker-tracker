@@ -190,6 +190,11 @@ func (s *Server) Run() {
 	// without this a folder of unparsed files would fire one prompt each.
 	screenNameWarned := false
 
+	// importCounts accumulates what the current /scan backfill records, reset by
+	// the ImportStart marker and reported by ImportDone. Touched only on this
+	// goroutine.
+	var importCounts importTally
+
 	// parseStates carries per-file incremental parse state so a growing session
 	// file is resumed from its last byte offset instead of re-parsed from zero
 	// on every hand event (parsers.ParseCashFileFrom). Local to this goroutine —
@@ -219,6 +224,20 @@ func (s *Server) Run() {
 				return // link closed → shut down
 			}
 			up = u
+		}
+
+		// Import markers bracket a /scan backfill. They carry no bytes and no
+		// screen name, so handle them here, before reconstruct and the
+		// screen-name guard. ImportStart resets the per-scan tally; ImportDone
+		// reports it.
+		switch up.Type {
+		case transport.ImportStart:
+			importCounts = importTally{}
+			continue
+		case transport.ImportDone:
+			s.alertChan <- importReport(importCounts)
+			importCounts = importTally{}
+			continue
 		}
 
 		// Reconstruct FIRST, before any guard that might skip this event. The
@@ -251,6 +270,14 @@ func (s *Server) Run() {
 			continue
 		}
 		screenName := up.ScreenName
+
+		// A /scan backfill upload is recorded silently — no hard stop, no
+		// alerts, no summary, no quiet-period deferral — and never touches the
+		// live evaluation path below.
+		if up.Import {
+			s.importUpload(path, up, screenName, &importCounts)
+			continue
+		}
 
 		// Threshold evaluation must see a turned-off alert/hard-stop as unset.
 		// Blank the off ones out here (EffectiveAlerts/EffectiveHardstop) so the
@@ -681,6 +708,73 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 	if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.CashSessionSummary), session.NetUSD) {
 		s.alertChan <- cashSessionSummaryText(session, bankroll)
 	}
+}
+
+// importTally counts what a /scan backfill recorded, for the completion report.
+type importTally struct {
+	cash        int // cash sessions appended
+	tournaments int // tournaments appended
+	skipped     int // tournaments skipped for needing a player answer
+}
+
+// importUpload records one /scan file silently — no hard stop, no alerts, no
+// summary, no quiet-period deferral. A cash file appends its session
+// immediately; a cash file that's actually a tournament hand enriches its
+// tournament row (not counted as a session). A tournament summary appends
+// unless it needs a player answer (a likely satellite, or a zero-buy-in
+// freeroll), which is skipped and counted so the player knows to play it in
+// live. Parse/store failures are logged and skipped. Idempotent: re-running a
+// scan re-upserts identical rows.
+func (s *Server) importUpload(path string, up transport.Upload, screenName string, tally *importTally) {
+	switch up.Type {
+	case "cash":
+		session, tourneyStats, err := parsers.ParseCashFile(path, screenName)
+		if err != nil {
+			slog.Error("import: parsing cash file", "file", up.FileID, "err", err)
+			return
+		}
+		switch {
+		case session != nil:
+			if err := s.store.AppendCashSession(*session); err != nil {
+				slog.Error("import: appending cash session", "file", up.FileID, "err", err)
+				return
+			}
+			tally.cash++
+		case tourneyStats != nil:
+			if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
+				slog.Error("import: updating tournament hand stats", "tournament_id", tourneyStats.TournamentID, "err", err)
+			}
+		}
+	case "tournament":
+		t, err := parsers.ParseTournamentFile(path, screenName)
+		if err != nil {
+			slog.Error("import: parsing tournament", "file", up.FileID, "err", err)
+			return
+		}
+		// Skip the ones the live pipeline would queue for a player answer:
+		// recording them without the answer would corrupt bankroll (a ticket
+		// counted as cash) or store a wrong zero buy-in. Skipping also protects
+		// any already-answered row from being clobbered on a re-scan.
+		if t.LikelySatellite || t.BuyInUSD == 0 {
+			tally.skipped++
+			return
+		}
+		if _, err := s.store.AppendTournament(t); err != nil {
+			slog.Error("import: appending tournament", "tournament_id", t.TournamentID, "err", err)
+			return
+		}
+		tally.tournaments++
+	}
+}
+
+// importReport is the one message a /scan sends when it finishes: what it
+// recorded, and how many tournaments it skipped for needing a player answer.
+func importReport(t importTally) string {
+	msg := fmt.Sprintf("📥 Scan complete — recorded %d cash session(s) and %d tournament(s).", t.cash, t.tournaments)
+	if t.skipped > 0 {
+		msg += fmt.Sprintf("\nSkipped %d tournament(s) that need a ticket-vs-cash or buy-in answer — play or re-open those in live to record them.", t.skipped)
+	}
+	return msg
 }
 
 // tournamentAlertText formats the post-tournament summary alert. When the

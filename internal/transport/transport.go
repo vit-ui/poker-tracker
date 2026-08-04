@@ -12,28 +12,47 @@ import (
 	"github.com/vit-ui/self-tracker/internal/config"
 )
 
+// ImportStart and ImportDone are sentinel Upload.Type values that bracket a
+// /scan backfill (see Collector.rescan): the collector sends ImportStart, then
+// one Import upload per file in the watched folders, then ImportDone. They carry
+// no bytes; the server uses them to reset and report the per-scan counters.
+const (
+	ImportStart = "import_start"
+	ImportDone  = "import_done"
+)
+
 // Upload is sent from the client to the server when a watched file changes. It
 // carries the bytes appended to that file since the previous Upload (the whole
 // file when Offset is 0), plus what the server needs to reconstruct the file,
 // parse it, and time-stamp the results against the client's clock.
 type Upload struct {
 	FileID      string    // stable identity of the source file (its path on the client)
-	Type        string    // "cash" or "tournament", matching watcher.FileEvent.Type
+	Type        string    // "cash" or "tournament" (or ImportStart/ImportDone marker), matching watcher.FileEvent.Type
 	Offset      int64     // byte offset in the file where Bytes begins
 	Bytes       []byte    // the appended bytes (the whole file when Offset == 0)
 	ScreenName  string    // the PokerStars screen name whose results to score
 	ClientClock time.Time // the client's wall-clock time when the change was seen
+
+	// Import marks an upload produced by a /scan backfill (Collector.rescan)
+	// rather than a live file change. The server records these silently — no
+	// hard stop, no alerts, no summary, no quiet-period deferral — and skips
+	// tournaments that need a player answer. See Server.importUpload.
+	Import bool
 }
 
-// CommandLock is the Kind of a hard-stop lock command.
-const CommandLock = "lock"
+// CommandLock and CommandRescan are the Kinds of command the server sends the
+// client. A lock kills PokerStars and writes the lockfile; a rescan makes the
+// collector walk both watched folders and upload every file for a silent
+// backfill (see Collector.rescan). Both decisions are made on the server side;
+// the client only carries them out.
+const (
+	CommandLock   = "lock"
+	CommandRescan = "rescan"
+)
 
-// Command is sent from the server to the client. Today the only command is a
-// hard-stop lock: on receipt the client kills PokerStars and writes the
-// lockfile. The lock is decided entirely on the server; the client only
-// enforces it.
+// Command is sent from the server to the client.
 type Command struct {
-	Kind string           // CommandLock
+	Kind string           // CommandLock or CommandRescan
 	Lock *config.LockFile // set when Kind == CommandLock
 }
 

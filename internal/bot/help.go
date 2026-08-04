@@ -27,6 +27,7 @@ var commandList = []struct {
 	{"sheet", "Get the Google Sheets URL, or switch to a different sheet."},
 	{"storage", "View or switch where your data is stored."},
 	{"export", "Export all your data as CSV files."},
+	{"scan", "Backfill: record everything in your folders not stored yet."},
 	{"credentials", "Swap the Google service account credentials file."},
 	{"screenname", "Get or change your PokerStars screen name."},
 	{"paths", "Configure PokerStars folder locations."},
@@ -98,6 +99,9 @@ var commandHelp = map[string]string{
 	"export": "Exports all your data as CSV files: cash sessions, tournaments, bankroll ledger.\n" +
 		"Usage: /export\n" +
 		"No arguments. Works on both storage backends and produces identical output either way. Sends three files, one per data set — an empty data set still sends a header-only file.",
+	"scan": "Backfills from your PokerStars folders: reads every hand-history and tournament-summary file and records any cash session or tournament that isn't stored yet. Useful right after a new install to seed your history.\n" +
+		"Usage: /scan\n" +
+		"No arguments. Records silently — no per-session summaries, no hard stops, no alerts. Tournaments that need an answer (satellite ticket-vs-cash, or a freeroll buy-in) are skipped and counted; play or re-open those in live to record them. Safe to run more than once — already-stored sessions aren't duplicated. You'll get one message with the counts when it finishes. On the Google Sheets backend a large first scan can take a few minutes to fully sync (Sheets rate-limits writes); your data is never lost, and re-running /scan once it settles reports the full totals.",
 	"credentials": "Swaps the Google service account credentials file used to access Sheets/Drive.\n" +
 		"Usage: /credentials — then send the google_service_account.json file as an attachment, or type skip to cancel.\n" +
 		"If a sheet is already configured, it's re-checked against the new credentials — if it's no longer reachable (not shared with the new service account, or a different Google Cloud project entirely), the sheet is cleared from config and you'll need to run /sheet again.\n" +

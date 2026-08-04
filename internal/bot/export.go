@@ -228,5 +228,19 @@ func (b *Bot) handleExportCommand(chatID int64) {
 		}
 	}
 
-	send(b.tg, chatID, "✅ Export complete — 4 files.")
+	send(b.tg, chatID, "✅ Export complete — 3 files.")
+}
+
+// handleScanCommand implements /scan: it triggers a one-shot backfill that
+// walks both watched folders and records every cash session and tournament not
+// already stored — useful for a new install seeded from existing history. The
+// walk and the recording happen on the collector and server (see
+// Collector.rescan / Server.importUpload); the bot only asks. It does not check
+// the folder paths here: in the split build the collector's config (not the
+// server's, which the bot reads) holds them, so the collector is the one place
+// that can guard — an unconfigured install no-ops there with a log line. The
+// completion report (with counts) arrives later via alertChan.
+func (b *Bot) handleScanCommand(chatID int64) {
+	b.requestRescan()
+	send(b.tg, chatID, "📥 Scanning your folders for anything not yet recorded — I'll report what I record when it's done.")
 }

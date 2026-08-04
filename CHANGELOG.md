@@ -6,6 +6,21 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+### Added
+
+- **`/scan` — backfill from your PokerStars folders.** Records every cash session
+  and tournament sitting in your hand-history and tournament-summary folders that
+  isn't stored yet — handy right after a new install to seed your history. It
+  records **silently**: no per-session summaries, no hard stops, no alerts.
+  Tournaments that need an answer (a satellite's ticket-vs-cash, or a freeroll's
+  buy-in) are skipped and counted — play or re-open those in live to record them.
+  Safe to run more than once (already-stored sessions aren't duplicated); you get
+  one message with the counts when it finishes. Works in both the all-local and
+  split client/server builds. On the Google Sheets backend a large first scan can
+  take a few minutes to fully sync (Sheets rate-limits writes) — data is never
+  lost (the write-ahead fallback queues and replays it), and re-running `/scan`
+  once it settles reports the full totals.
+
 ### Changed
 
 - **Cash sessions are recorded once, when the session ends, instead of on every

@@ -278,7 +278,7 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 // (as opposed to a cascade screen or a config field).
 func isCommandAction(token string) bool {
 	switch token {
-	case "screenname", "storage", "sheet", "credentials",
+	case "screenname", "storage", "sheet", "credentials", "scan",
 		"status", "lastsession", "stats", "export", "help":
 		return true
 	}
@@ -297,6 +297,8 @@ func (b *Bot) runCommandAction(chatID int64, token string) {
 		b.handleSheetCommand(chatID, "")
 	case "credentials":
 		b.startCredentialsFlow(chatID)
+	case "scan":
+		b.handleScanCommand(chatID)
 	case "status":
 		b.handleStatus(chatID)
 	case "lastsession":
@@ -900,6 +902,7 @@ func (b *Bot) renderSetupMenu(chatID int64, messageID int, path string) {
 		menuRow("Schedule", "menu:"+path+":schedule"),
 		menuRow("Screen name", "menu:"+path+":screenname"),
 		menuRow("Storage", "menu:"+path+":storage"),
+		menuRow("Scan folders", "menu:"+path+":scan"),
 	}
 	// Sheet and Credentials are only meaningful on the Google Sheets backend.
 	if b.currentBackend() == "sheets" {

@@ -158,12 +158,19 @@ func runServe() {
 		link.Commands <- transport.Command{Kind: transport.CommandLock, Lock: &lock}
 	}
 
+	// A /scan backfill sends a rescan command down the link; the remote
+	// collector walks the poker PC's folders and uploads them for a silent
+	// import.
+	requestRescan := func() {
+		link.Commands <- transport.Command{Kind: transport.CommandRescan}
+	}
+
 	go func() {
 		// No watcher on the server (the collector watches), so /paths' watcher
 		// restart is a no-op here. The bot's read-side date windows anchor to
 		// the server's client-anchored clock, so /status and /stats follow the
 		// player's local day.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock, srv.ClientNow)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock, requestRescan, srv.ClientNow)
 		slog.Error("bot.Run returned — the bot is no longer listening", "err", err)
 	}()
 

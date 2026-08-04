@@ -366,10 +366,15 @@ func runServe() {
 	// change in behavior. The split server instead sends the lock down the link.
 	sendLock := func(lock config.LockFile) { client.Enforce(lockfilePath, lock) }
 
+	// A /scan backfill is triggered the same way in both builds: send a rescan
+	// command down the link, which the collector (here, in-process) turns into a
+	// walk of the watched folders.
+	requestRescan := func() { link.Commands <- transport.Command{Kind: transport.CommandRescan} }
+
 	go func() {
 		// All-local: server and collector share this machine's clock, so the
 		// read-side date windows anchor to time.Now — unchanged behavior.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, time.Now)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit

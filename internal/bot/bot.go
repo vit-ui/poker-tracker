@@ -56,6 +56,12 @@ type Bot struct {
 	// remote collector. The bot only builds the lock and hands it over.
 	sendLock func(config.LockFile)
 
+	// requestRescan triggers a /scan backfill. Like sendLock, the caller
+	// supplies it: both builds send a CommandRescan down the link, which the
+	// collector (in-process or remote) turns into a walk of the watched folders.
+	// The bot only asks; the collector does the walk and the server records.
+	requestRescan func()
+
 	// now returns the time the read-side date windows (/status, /stats, weekly
 	// and monthly summaries) anchor to. The all-local build passes time.Now; the
 	// split server passes its client-anchored clock so windows follow the
@@ -108,7 +114,7 @@ func (c *conversation) reset() {
 // serviceAccountPath is only used by /sheet, /credentials, and /storage
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), now func() time.Time) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -123,6 +129,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		dbPath:             dbPath,
 		restartWatcher:     restartWatcher,
 		sendLock:           sendLock,
+		requestRescan:      requestRescan,
 		now:                now,
 	}
 
@@ -438,6 +445,8 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 		b.handleStorageCommand(chatID, msg.CommandArguments())
 	case "export":
 		b.handleExportCommand(chatID)
+	case "scan":
+		b.handleScanCommand(chatID)
 	case "credentials":
 		b.startCredentialsFlow(chatID)
 	case "screenname":

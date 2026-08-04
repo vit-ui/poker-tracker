@@ -4,6 +4,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -56,7 +58,7 @@ const (
 // all-local build the link never drops, so a nil dead is passed and Run blocks
 // until sessionChan is closed.
 func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string, dead <-chan struct{}) {
-	go c.applyCommands(dead)
+	go c.applyCommands(dead, configPath)
 	sent := make(map[string]*sentEntry)
 	for {
 		select {
@@ -85,8 +87,11 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 	}
 }
 
-// applyCommands enforces lock commands from the server until the link dies.
-func (c *Collector) applyCommands(dead <-chan struct{}) {
+// applyCommands carries out commands from the server until the link dies: a
+// lock kills PokerStars and writes the lockfile; a rescan walks both watched
+// folders and uploads every file for a silent backfill (/scan). configPath is
+// read fresh per rescan for the folder paths and screen name.
+func (c *Collector) applyCommands(dead <-chan struct{}, configPath string) {
 	for {
 		select {
 		case <-dead:
@@ -95,10 +100,88 @@ func (c *Collector) applyCommands(dead <-chan struct{}) {
 			if !ok {
 				return
 			}
-			if cmd.Kind == transport.CommandLock && cmd.Lock != nil {
-				Enforce(c.lockfilePath, *cmd.Lock)
+			switch cmd.Kind {
+			case transport.CommandLock:
+				if cmd.Lock != nil {
+					Enforce(c.lockfilePath, *cmd.Lock)
+				}
+			case transport.CommandRescan:
+				c.rescan(configPath, dead)
 			}
 		}
+	}
+}
+
+// rescan walks both watched folders and uploads every file as an Import upload,
+// bracketed by ImportStart/ImportDone markers, so the server can silently
+// backfill everything not yet recorded (the /scan command). The paths are the
+// config's base folders joined with the screen name — the same join the watcher
+// is started with. A file that can't be read is logged and skipped. Sends stop
+// early if the link dies mid-scan.
+func (c *Collector) rescan(configPath string, dead <-chan struct{}) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading config for rescan", "err", err)
+		return
+	}
+	if cfg.Paths.HandHistory == nil || cfg.Paths.TournamentSummary == nil || cfg.Setup.PokerStarsScreenName == nil {
+		slog.Error("rescan requested but paths or screen name not configured")
+		return
+	}
+	screenName := *cfg.Setup.PokerStarsScreenName
+	hhDir := filepath.Join(*cfg.Paths.HandHistory, screenName)
+	tsDir := filepath.Join(*cfg.Paths.TournamentSummary, screenName)
+
+	if !c.send(transport.Upload{Type: transport.ImportStart}, dead) {
+		return
+	}
+	c.uploadDir(hhDir, "cash", screenName, dead)
+	c.uploadDir(tsDir, "tournament", screenName, dead)
+	c.send(transport.Upload{Type: transport.ImportDone}, dead)
+}
+
+// uploadDir sends every regular .txt file in dir as a whole-file Import upload
+// of the given Type. PokerStars writes .txt files; anything else (or a
+// subdirectory) is skipped.
+func (c *Collector) uploadDir(dir, fileType, screenName string, dead <-chan struct{}) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		slog.Error("reading folder for rescan", "dir", dir, "err", err)
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".txt") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		bytes, err := os.ReadFile(path)
+		if err != nil {
+			slog.Error("reading file for rescan", "path", path, "err", err)
+			continue
+		}
+		up := transport.Upload{
+			FileID:      path,
+			Type:        fileType,
+			Offset:      0,
+			Bytes:       bytes,
+			ScreenName:  screenName,
+			ClientClock: time.Now(),
+			Import:      true,
+		}
+		if !c.send(up, dead) {
+			return
+		}
+	}
+}
+
+// send delivers one upload, returning false if the link died first so the
+// caller can stop the scan.
+func (c *Collector) send(up transport.Upload, dead <-chan struct{}) bool {
+	select {
+	case c.link.Uploads <- up:
+		return true
+	case <-dead:
+		return false
 	}
 }
 
