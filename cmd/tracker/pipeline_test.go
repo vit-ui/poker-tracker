@@ -447,3 +447,136 @@ func (p *pipeline) writeHH(name string, data []byte) {
 		p.t.Fatal(err)
 	}
 }
+
+// TestPipeline_ScanBackfill drives the whole /scan path end to end — a real
+// collector walking real folders → the in-process link → a real server → a real
+// sqlite store — triggered exactly as the bot would, by a CommandRescan down the
+// link. It seeds the two folders (screen-name-nested, as PokerStars nests them)
+// with a cash session, a plain MTT, a satellite, and a knockout tournament whose
+// hand file AND summary are both present, then asserts the silent import
+// recorded the right rows (knockout correlated to one -ko row), skipped the
+// satellite, and reported the right counts.
+func TestPipeline_ScanBackfill(t *testing.T) {
+	const hero = e2eHero
+	dir := t.TempDir()
+	hhBase := filepath.Join(dir, "hh")
+	tsBase := filepath.Join(dir, "ts")
+	hhDir := filepath.Join(hhBase, hero)
+	tsDir := filepath.Join(tsBase, hero)
+	for _, d := range []string{hhDir, tsDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copyFixture := func(sub, name, dst string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", sub, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, name), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Cash + the knockout's hand file in the hand-history folder; the plain MTT,
+	// the satellite, and the knockout's summary in the tournament-summary folder.
+	copyFixture("hand_history", "nlhe_cash.txt", hhDir)
+	copyFixture("hand_history", "draw27_pko_T9000000005.txt", hhDir)
+	copyFixture("tournament_summary", "horse_T9000000003.txt", tsDir)
+	copyFixture("tournament_summary", "satellite_busted_T9000000013.txt", tsDir)
+	copyFixture("tournament_summary", "draw27_pko_T9000000005.txt", tsDir)
+
+	configPath := filepath.Join(dir, "config.json")
+	cfg := &config.Config{}
+	screen := hero
+	cfg.Setup.PokerStarsScreenName = &screen
+	cfg.Paths.HandHistory = &hhBase
+	cfg.Paths.TournamentSummary = &tsBase
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	link := transport.NewLink()
+	alertChan := make(chan string, 100)
+	srv, err := server.NewServer(store, configPath, link, alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	serverDone := make(chan struct{})
+	go func() { srv.Run(); close(serverDone) }()
+	t.Cleanup(func() {
+		close(link.Uploads) // ends the server's Run loop
+		<-serverDone
+		store.Close()
+	})
+
+	// The real collector: its applyCommands loop turns the CommandRescan into a
+	// folder walk. A never-closed sessionChan (no watcher here) is fine — the
+	// scan is command-driven.
+	collector := client.NewCollector(link, filepath.Join(dir, "lockfile.json"))
+	go collector.Run(make(chan watcher.FileEvent), configPath, nil)
+
+	var mu sync.Mutex
+	var alerts []string
+	go func() {
+		for m := range alertChan {
+			mu.Lock()
+			alerts = append(alerts, m)
+			mu.Unlock()
+		}
+	}()
+	report := func() (string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, a := range alerts {
+			if strings.Contains(a, "Scan complete") {
+				return a, true
+			}
+		}
+		return "", false
+	}
+
+	// Trigger the scan exactly as the bot's requestRescan does.
+	link.Commands <- transport.Command{Kind: transport.CommandRescan}
+
+	deadline := time.Now().Add(15 * time.Second)
+	var got string
+	for {
+		if r, ok := report(); ok {
+			got = r
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no scan-complete report; alerts so far: %v", alerts)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if !strings.Contains(got, "recorded 1 cash session(s) and 2 tournament(s)") || !strings.Contains(got, "Skipped 1") {
+		t.Errorf("report = %q, want 1 cash, 2 tournaments (MTT + KO), 1 skipped (satellite)", got)
+	}
+	// Silent import: the only message the scan emits is the report.
+	mu.Lock()
+	nAlerts := len(alerts)
+	mu.Unlock()
+	if nAlerts != 1 {
+		t.Errorf("got %d alerts, want exactly 1 (the report): %v", nAlerts, alerts)
+	}
+
+	if s, err := store.GetAllCashSessions(); err != nil || len(s) != 1 {
+		t.Errorf("GetAllCashSessions = %d (err %v), want 1", len(s), err)
+	}
+	if _, found, _ := store.GetTournamentByID("9000000003"); !found {
+		t.Error("MTT 9000000003 not recorded")
+	}
+	if ko, found, _ := store.GetTournamentByID("9000000005"); !found || !strings.HasSuffix(ko.Type, "-ko") {
+		t.Errorf("knockout 9000000005: found=%v type=%q, want a recorded -ko row", found, ko.Type)
+	}
+	if _, found, _ := store.GetTournamentByID("9000000013"); found {
+		t.Error("satellite 9000000013 recorded, want skipped")
+	}
+}

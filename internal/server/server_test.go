@@ -526,21 +526,12 @@ func waitForString(t *testing.T, ch <-chan string, timeout time.Duration) (strin
 	}
 }
 
-// TestServer_ImportBackfill drives the /scan silent-import path through the real
-// Run loop: an ImportStart marker, a cash file, a real MTT summary, a satellite
-// summary, then ImportDone. The cash session and the MTT are recorded, the
-// satellite is skipped (it needs a player answer), no live-path alert fires, and
-// the only message emitted is the completion report with the right counts.
-func TestServer_ImportBackfill(t *testing.T) {
-	readFixture := func(sub, name string) []byte {
-		t.Helper()
-		b, err := os.ReadFile(filepath.Join("..", "..", "testdata", sub, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
+const importHero = "AnonHero01"
 
+// startCapturingServer is startTestServer's sibling that returns alertChan
+// undrained, so a test can assert exactly which messages the server emits.
+func startCapturingServer(t *testing.T) (*sqlitestore.Store, *transport.Link, chan string) {
+	t.Helper()
 	dir := t.TempDir()
 	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
 	if err != nil {
@@ -559,31 +550,73 @@ func TestServer_ImportBackfill(t *testing.T) {
 		<-done
 		store.Close()
 	})
+	return store, link, alertChan
+}
 
-	const hero = "AnonHero01"
-	up := func(fileID, typ string, bytes []byte) transport.Upload {
-		return transport.Upload{FileID: fileID, Type: typ, Offset: 0, Bytes: bytes, ScreenName: hero, ClientClock: time.Now(), Import: true}
+// importUp builds one /scan Import upload from a committed fixture file.
+func importUp(t *testing.T, fileID, typ, sub, name string) transport.Upload {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", sub, name))
+	if err != nil {
+		t.Fatal(err)
 	}
+	return transport.Upload{FileID: fileID, Type: typ, Offset: 0, Bytes: b, ScreenName: importHero, ClientClock: time.Now(), Import: true}
+}
+
+// feedImport sends an ImportStart / uploads / ImportDone sequence and returns
+// the scan-complete report. It also asserts the import is silent: the report
+// (emitted on ImportDone, processed last) is the FIRST and ONLY message — any
+// live-path alert would have been emitted earlier and would fail this.
+func feedImport(t *testing.T, link *transport.Link, alertChan chan string, ups ...transport.Upload) string {
+	t.Helper()
 	link.Uploads <- transport.Upload{Type: transport.ImportStart}
-	link.Uploads <- up("hh/nlhe_cash.txt", "cash", readFixture("hand_history", "nlhe_cash.txt"))
-	link.Uploads <- up("ts/horse.txt", "tournament", readFixture("tournament_summary", "horse_T9000000003.txt"))
-	link.Uploads <- up("ts/satellite.txt", "tournament", readFixture("tournament_summary", "satellite_busted_T9000000013.txt"))
+	for _, up := range ups {
+		link.Uploads <- up
+	}
 	link.Uploads <- transport.Upload{Type: transport.ImportDone}
 
-	// The report is emitted on ImportDone, which is processed last on the single
-	// worker goroutine — so by the time it arrives, every prior upload is stored.
 	report, ok := waitForString(t, alertChan, 5*time.Second)
 	if !ok {
 		t.Fatal("no scan-complete report received")
 	}
-	if !strings.Contains(report, "recorded 1 cash session(s) and 1 tournament(s)") || !strings.Contains(report, "Skipped 1") {
-		t.Errorf("report = %q, want it to name 1 cash, 1 tournament, 1 skipped", report)
+	if !strings.Contains(report, "Scan complete") {
+		t.Fatalf("first message was not the scan report (a stray alert during a silent import?): %q", report)
 	}
-	// Silent import: no other alert (no summary, no hard stop, no threshold alert).
-	if extra, ok := waitForString(t, alertChan, 300*time.Millisecond); ok {
-		t.Errorf("unexpected extra alert during import: %q", extra)
+	if extra, ok := waitForString(t, alertChan, 200*time.Millisecond); ok {
+		t.Errorf("unexpected extra alert during silent import: %q", extra)
 	}
+	return report
+}
 
+func countTournamentRows(t *testing.T, store *sqlitestore.Store, tournamentID string) int {
+	t.Helper()
+	snap, err := store.ExportSnapshot()
+	if err != nil {
+		t.Fatalf("ExportSnapshot: %v", err)
+	}
+	n := 0
+	for _, r := range snap.Tournaments {
+		if r.TournamentID == tournamentID {
+			n++
+		}
+	}
+	return n
+}
+
+// TestServer_ImportBackfill drives the /scan silent-import path through the real
+// Run loop: a cash file, a real MTT summary, and a satellite summary. The cash
+// session and the MTT are recorded, the satellite is skipped (it needs a player
+// answer), no live-path alert fires, and the completion report names the counts.
+func TestServer_ImportBackfill(t *testing.T) {
+	store, link, alertChan := startCapturingServer(t)
+	report := feedImport(t, link, alertChan,
+		importUp(t, "hh/nlhe_cash.txt", "cash", "hand_history", "nlhe_cash.txt"),
+		importUp(t, "ts/horse.txt", "tournament", "tournament_summary", "horse_T9000000003.txt"),
+		importUp(t, "ts/satellite.txt", "tournament", "tournament_summary", "satellite_busted_T9000000013.txt"),
+	)
+	if !strings.Contains(report, "recorded 1 cash session(s) and 1 tournament(s)") || !strings.Contains(report, "Skipped 1") {
+		t.Errorf("report = %q, want 1 cash, 1 tournament, 1 skipped", report)
+	}
 	sessions, err := store.GetAllCashSessions()
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("GetAllCashSessions = %d rows (err %v), want 1", len(sessions), err)
@@ -594,6 +627,88 @@ func TestServer_ImportBackfill(t *testing.T) {
 	if _, found, _ := store.GetTournamentByID("9000000013"); found {
 		t.Error("satellite 9000000013 recorded, want skipped")
 	}
+}
+
+// TestServer_ImportKnockoutTwoFile covers the most common real backfill shape: a
+// knockout tournament whose hand-history file AND summary are both in the
+// folders. The hand file (parsed as "cash" but carrying tournament stats)
+// enriches the row rather than counting as a cash session; the summary records
+// it. The two correlate into one -ko row, counted once as a tournament.
+func TestServer_ImportKnockoutTwoFile(t *testing.T) {
+	store, link, alertChan := startCapturingServer(t)
+	report := feedImport(t, link, alertChan,
+		importUp(t, "hh/pko.txt", "cash", "hand_history", "draw27_pko_T9000000005.txt"),
+		importUp(t, "ts/pko.txt", "tournament", "tournament_summary", "draw27_pko_T9000000005.txt"),
+	)
+	// The hand file is not a cash session; only the summary counts.
+	if !strings.Contains(report, "recorded 0 cash session(s) and 1 tournament(s)") {
+		t.Errorf("report = %q, want 0 cash / 1 tournament", report)
+	}
+	got, found, err := store.GetTournamentByID("9000000005")
+	if err != nil || !found {
+		t.Fatalf("KO tournament not found (err %v)", err)
+	}
+	// A -ko suffix only appears once the hand file's bounty markers are folded
+	// into the summary row — so it proves the two files correlated.
+	if got.BaseType() != "mtt" || !strings.HasSuffix(got.Type, "-ko") {
+		t.Errorf("Type = %q, want an mtt -ko (proves hand+summary correlation)", got.Type)
+	}
+	if n := countTournamentRows(t, store, "9000000005"); n != 1 {
+		t.Errorf("%d rows for the KO tournament, want exactly 1 (counted once)", n)
+	}
+}
+
+// TestServer_ImportSkipsFreeroll confirms a zero-buy-in freeroll summary is
+// skipped (its real entry cost is unknown without a player answer), counted as
+// skipped, and never recorded.
+func TestServer_ImportSkipsFreeroll(t *testing.T) {
+	store, link, alertChan := startCapturingServer(t)
+	report := feedImport(t, link, alertChan,
+		importUp(t, "ts/freeroll.txt", "tournament", "tournament_summary", "freeroll_zero_T9000000002.txt"),
+	)
+	if !strings.Contains(report, "recorded 0 cash session(s) and 0 tournament(s)") || !strings.Contains(report, "Skipped 1") {
+		t.Errorf("report = %q, want 0/0 recorded and 1 skipped", report)
+	}
+	if _, found, _ := store.GetTournamentByID("9000000002"); found {
+		t.Error("freeroll 9000000002 recorded, want skipped")
+	}
+}
+
+// TestServer_ImportIdempotent runs the same scan twice: the second run
+// re-upserts the same rows (cash by session ID, tournament by TournamentID)
+// rather than duplicating them, and reports the same counts.
+func TestServer_ImportIdempotent(t *testing.T) {
+	store, link, alertChan := startCapturingServer(t)
+	ups := []transport.Upload{
+		importUp(t, "hh/nlhe_cash.txt", "cash", "hand_history", "nlhe_cash.txt"),
+		importUp(t, "ts/horse.txt", "tournament", "tournament_summary", "horse_T9000000003.txt"),
+	}
+	first := feedImport(t, link, alertChan, ups...)
+	bankroll1, _ := store.GetCurrentBankroll()
+	second := feedImport(t, link, alertChan, ups...)
+	bankroll2, _ := store.GetCurrentBankroll()
+
+	if first != second {
+		t.Errorf("report changed on re-scan:\n first: %q\nsecond: %q", first, second)
+	}
+	if !closeEnoughServer(bankroll1, bankroll2) {
+		t.Errorf("bankroll drifted on re-scan: %.2f → %.2f", bankroll1, bankroll2)
+	}
+	sessions, _ := store.GetAllCashSessions()
+	if len(sessions) != 1 {
+		t.Errorf("%d cash sessions after two scans, want 1 (no duplicate)", len(sessions))
+	}
+	if n := countTournamentRows(t, store, "9000000003"); n != 1 {
+		t.Errorf("%d rows for the MTT after two scans, want 1 (no duplicate)", n)
+	}
+}
+
+func closeEnoughServer(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < 0.005
 }
 
 // TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
