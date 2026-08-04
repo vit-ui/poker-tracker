@@ -43,6 +43,15 @@ pulls its notes from the matching section below.
   Sheets backend the physical "Time Analysis" tab is left untouched (the tracker
   simply stops writing to it) — delete it by hand if you want it gone.
 
+### Fixed
+
+- **A slow memory creep in the long-running service.** After the shift to
+  recording cash sessions at session end, each cash table's quiet-period timer
+  was left in an internal map once its session was written, so the map grew by
+  one small entry per distinct hand-history file (a new one per table per day)
+  for the life of the process. The timer is now dropped when its session ends, so
+  the map stays bounded. No effect on stored data, alerts, or enforcement.
+
 ## v4.2 - 2026-08-01
 
 ### Changed

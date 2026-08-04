@@ -217,7 +217,7 @@ func (s *Server) Run() {
 			// A cash table went quiet: write the now-complete session and run
 			// the ledger-based hard stops, alerts, and summary — all on this
 			// goroutine. The per-hand session-loss guard already ran below.
-			s.endCashSession(fileID, pendingSessions, firedAlerts, enforce)
+			s.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, enforce)
 			continue
 		case u, ok := <-s.link.Uploads:
 			if !ok {
@@ -648,14 +648,25 @@ func armCashSessionEnd(timers map[string]*time.Timer, fileID string, quietPeriod
 // like a tournament, not per hand), then runs the ledger-based hard stops and
 // alerts and sends the post-session summary. The per-hand session-loss guard
 // already ran in Run's cash branch. A missing pendingSessions entry means this
-// FileID was already flushed (a stale timer signal), so it's a no-op. Runs on
-// the worker goroutine, so pendingSessions/firedAlerts stay single-threaded.
-func (s *Server) endCashSession(fileID string, pendingSessions map[string]parsers.CashSession, firedAlerts map[string]bool, enforce func(reason string, durationHours int)) {
+// FileID was already flushed (a stale timer signal), so it's a no-op. It prunes
+// this table's quiet-period timer alongside its pending session. Runs on the
+// worker goroutine, so pendingSessions/summaryTimers/firedAlerts stay
+// single-threaded.
+func (s *Server) endCashSession(fileID string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*time.Timer, firedAlerts map[string]bool, enforce func(reason string, durationHours int)) {
 	session, ok := pendingSessions[fileID]
 	if !ok {
 		return
 	}
 	delete(pendingSessions, fileID)
+	// Drop this table's timer with its pending session — its job is done.
+	// Without this, summaryTimers would grow one entry per distinct cash-table
+	// file path for the life of the process (a new hand-history file per table
+	// per day), unlike the bounded parseStates. Stop before dropping the handle
+	// so a superseding timer can't later fire a stale send.
+	if timer, ok := summaryTimers[fileID]; ok {
+		timer.Stop()
+		delete(summaryTimers, fileID)
+	}
 
 	// Re-read config: it may have changed during the quiet period, and the
 	// notification gates below need the raw (flag-preserving) config while the

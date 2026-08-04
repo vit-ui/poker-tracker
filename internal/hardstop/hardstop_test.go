@@ -584,6 +584,30 @@ func TestEvaluateSessionLoss(t *testing.T) {
 			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
 		},
 		{
+			// Boundary: loss exactly == 1 × $5. sessionLossExceeds uses a strict
+			// ">", so equality must NOT lock — a flip to ">=" would be caught here.
+			// Covered at the pure sessionLossExceeds level (TestSessionLossExceeds)
+			// but never through this wrapper until now.
+			name:    "loss exactly at the threshold does not lock",
+			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
+			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -5},
+		},
+		{
+			// Zero buy-in makes the threshold 1 × $0 = $0, so any loss exceeds it
+			// and locks. This is an arithmetic consequence, not a desired rule:
+			// unlike EvaluateSessionLossAlert (which guards session.BuyInUSD == 0)
+			// and evaluateDownswing (which skips buyInUSD == 0), the per-hand
+			// session-loss hard stop has no zero guard — and needs none, because a
+			// real cash header always carries non-zero blinds (BuyInUSD =
+			// bigBlind × 100) and the parser errors rather than emitting a
+			// zero-buy-in session, so this path is unreachable in production. Pinned
+			// so the divergence from the alert is understood, not accidental.
+			name:     "zero buy-in makes any loss exceed the zero threshold",
+			cfg:      &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
+			session:  parsers.CashSession{BuyInUSD: 0, NetUSD: -0.01},
+			wantLock: true,
+		},
+		{
 			name:    "winning session does not lock",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
 			session: parsers.CashSession{BuyInUSD: 5, NetUSD: 20},

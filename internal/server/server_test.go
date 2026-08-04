@@ -543,6 +543,14 @@ func startCapturingServer(t *testing.T) (*sqlitestore.Store, *transport.Link, ch
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	// The import silence check in feedImport is only meaningful if a live-path
+	// regression would surface a message *before* that check runs. The cash
+	// summary is the one live-path message deferred by the quiet-period timer, so
+	// the quiet period must stay well under feedImport's 200ms extra-alert window
+	// — otherwise a regressed cash summary lands after the check and the guard
+	// goes vacuous again. 50ms gives a 4x margin. (importUpload arms no timer, so
+	// the correct path stays silent regardless.)
+	srv.QuietPeriod = 50 * time.Millisecond
 	done := make(chan struct{})
 	go func() { srv.Run(); close(done) }()
 	t.Cleanup(func() {
@@ -621,11 +629,32 @@ func TestServer_ImportBackfill(t *testing.T) {
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("GetAllCashSessions = %d rows (err %v), want 1", len(sessions), err)
 	}
-	if _, found, _ := store.GetTournamentByID("9000000003"); !found {
+	mtt, found, _ := store.GetTournamentByID("9000000003")
+	if !found {
 		t.Error("MTT 9000000003 not recorded, want recorded")
 	}
 	if _, found, _ := store.GetTournamentByID("9000000013"); found {
 		t.Error("satellite 9000000013 recorded, want skipped")
+	}
+
+	// Hand-checked money chain, so an import that stored the wrong amount (a
+	// sign flip, a dropped bounty fold, a double-count) can't pass on row counts
+	// alone. nlhe_cash nets -$0.03 (NL2, 4 hands); the horse MTT nets -$1.10;
+	// with no deposit the bankroll is their sum, -$1.13. Compared with a
+	// tolerance because -0.03 + -1.10 isn't exact in float64 and running_total
+	// round-trips through sqlite REAL.
+	if got := sessions[0].NetUSD; !closeEnoughServer(got, -0.03) {
+		t.Errorf("imported cash session net = %.4f, want -0.03", got)
+	}
+	if got := mtt.NetUSD; !closeEnoughServer(got, -1.10) {
+		t.Errorf("imported MTT net = %.4f, want -1.10", got)
+	}
+	bankroll, err := store.GetCurrentBankroll()
+	if err != nil {
+		t.Fatalf("GetCurrentBankroll: %v", err)
+	}
+	if !closeEnoughServer(bankroll, -1.13) {
+		t.Errorf("bankroll after import = %.4f, want -1.13", bankroll)
 	}
 }
 
@@ -671,6 +700,67 @@ func TestServer_ImportSkipsFreeroll(t *testing.T) {
 	}
 	if _, found, _ := store.GetTournamentByID("9000000002"); found {
 		t.Error("freeroll 9000000002 recorded, want skipped")
+	}
+}
+
+// TestServer_ImportFreerollHandFileLeavesNoMoney pins what happens when a
+// freeroll's *hand* file is scanned before its summary — the real /scan order,
+// since the collector walks the hand-history folder first. The hand file parses
+// as tournament hand stats (not a cash session), so importUpload calls
+// UpdateTournamentHandStats, which creates a partial tournament row (stats only:
+// hands/bounty, no buy-in, no net, no ledger entry). The summary is then skipped
+// because a zero-buy-in freeroll needs a player answer. The hand file cannot
+// know in advance that its summary will be skipped (uploads arrive
+// independently), so the partial row is unavoidable — but it must carry no money:
+// no net, and no bankroll impact. It completes only if the tournament is later
+// replayed live (AppendTournament upserts by ID). This is the same benign
+// intermediate state the live pipeline produces when a hand file precedes its
+// summary, so there is nothing to fix — this test documents that it costs
+// nothing.
+func TestServer_ImportFreerollHandFileLeavesNoMoney(t *testing.T) {
+	store, link, alertChan := startCapturingServer(t)
+	report := feedImport(t, link, alertChan,
+		importUp(t, "hh/freeroll.txt", "cash", "hand_history", "freeroll_zero_T9000000002.txt"),
+		importUp(t, "ts/freeroll.txt", "tournament", "tournament_summary", "freeroll_zero_T9000000002.txt"),
+	)
+	// The hand file is not a cash session and the summary is skipped, so the
+	// scan reports nothing recorded and one skipped — even though a partial row
+	// now exists.
+	if !strings.Contains(report, "recorded 0 cash session(s) and 0 tournament(s)") || !strings.Contains(report, "Skipped 1") {
+		t.Errorf("report = %q, want 0/0 recorded and 1 skipped", report)
+	}
+	// A point lookup reports the stub as NOT recorded — GetTournamentByID treats
+	// a stats-only row (no summary yet) as not-found, so the stub can't be
+	// mistaken for a real tournament by the duplicate check or a re-scan.
+	if _, found, _ := store.GetTournamentByID("9000000002"); found {
+		t.Error("stats-only stub reported as a recorded tournament by GetTournamentByID, want not-found")
+	}
+	// It does surface in ExportSnapshot (so /export and a backend migration carry
+	// it) — but it holds no money: no net, no buy-in.
+	snap, err := store.ExportSnapshot()
+	if err != nil {
+		t.Fatalf("ExportSnapshot: %v", err)
+	}
+	var stub *storage.TournamentRecord
+	for i := range snap.Tournaments {
+		if snap.Tournaments[i].TournamentID == "9000000002" {
+			stub = &snap.Tournaments[i]
+		}
+	}
+	if stub == nil {
+		t.Fatal("partial tournament row not created by the hand file, want a stats-only stub")
+	}
+	if stub.NetUSD != 0 || stub.BuyInUSD != 0 {
+		t.Errorf("partial row carries money: net=%.4f buy-in=%.4f, want both 0", stub.NetUSD, stub.BuyInUSD)
+	}
+	// The decisive property: the ledger (bankroll) is untouched, so the
+	// incomplete tournament costs the player nothing until it's really recorded.
+	bankroll, err := store.GetCurrentBankroll()
+	if err != nil {
+		t.Fatalf("GetCurrentBankroll: %v", err)
+	}
+	if bankroll != 0 {
+		t.Errorf("bankroll = %.4f after a skipped freeroll, want 0 (no ledger impact)", bankroll)
 	}
 }
 
@@ -793,6 +883,93 @@ func TestServer_SessionEndLedgerHardStop(t *testing.T) {
 	}
 }
 
+// TestServer_LedgerHardStopDeferredNotPerHand proves the ledger-based hard stop
+// (consecutive losses) is evaluated only at session end, never per hand — the
+// property TestServer_SessionEndLedgerHardStop cannot show, because with only one
+// prior loss a regression that wrongly ran hardstop.Evaluate per hand wouldn't
+// trigger either (the current session isn't in the ledger yet), so its "fires"
+// assertion would pass regardless.
+//
+// The distinguishing setup: TWO prior losing sessions are pre-seeded and the
+// stop is set at 2 in a row. The incoming live session is also a loss, so at
+// session end the streak is intact and the stop fires — but the two pre-seeded
+// losses already satisfy the streak *before* the incoming session is written, so
+// a regression that evaluated the ledger per hand would fire immediately, well
+// inside the quiet period. The test asserts nothing fires in the first half of
+// the quiet period (timers never fire early, so a slow machine only delays the
+// real fire — it can't make this false-positive) and then the lock arrives at
+// session end.
+func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	n, hours := 2, 1
+	configPath := filepath.Join(dir, "config.json")
+	if err := config.SaveConfig(configPath, &config.Config{
+		Hardstop: config.Hardstop{ConsecutiveLosses: &n, DurationHours: &hours},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	// Two prior losing sessions: the streak is already met before the incoming
+	// session is written, so a per-hand ledger evaluation would fire at once.
+	for i, hid := range []string{"prevloss1", "prevloss2"} {
+		prev := parsers.CashSession{
+			Date:  storage.AsStoredClock(time.Now()).Add(-time.Duration(2-i) * time.Hour),
+			Stake: "NL2", BuyInUSD: 2, NetUSD: -1.50, Hands: 20, DurationMin: 15, FirstHandID: hid,
+		}
+		if err := store.AppendCashSession(prev); err != nil {
+			t.Fatalf("pre-seeding losing session %s: %v", hid, err)
+		}
+	}
+
+	link := transport.NewLink()
+	alertChan := make(chan string, 100)
+	srv, err := NewServer(store, configPath, link, alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// A long-ish quiet period so the "nothing fires early" window has real margin.
+	srv.QuietPeriod = 500 * time.Millisecond
+	done := make(chan struct{})
+	go func() { srv.Run(); close(done) }()
+	t.Cleanup(func() {
+		close(link.Uploads)
+		<-done
+		store.Close()
+	})
+	go func() {
+		for range alertChan {
+		}
+	}()
+
+	cashBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.Uploads <- transport.Upload{FileID: "hh/nlhe.txt", Type: "cash", Offset: 0, Bytes: cashBytes, ScreenName: importHero, ClientClock: time.Now()}
+
+	// Well inside the 500ms quiet period: no lock may have fired yet. A per-hand
+	// regression would have locked already.
+	if cmd, ok := waitForCommand(t, link.Commands, 200*time.Millisecond); ok {
+		t.Fatalf("hard stop fired before session end — the ledger check ran per hand: %+v", cmd)
+	}
+	// After the quiet period the session-end check fires exactly once.
+	cmd, ok := waitForCommand(t, link.Commands, 5*time.Second)
+	if !ok {
+		t.Fatal("no lock command at session end — the ledger-based hard stop didn't fire")
+	}
+	if cmd.Kind != transport.CommandLock || cmd.Lock == nil || cmd.Lock.Reason != "consecutive_losses" {
+		t.Errorf("lock command = %+v, want a consecutive_losses lock", cmd)
+	}
+	if extra, ok := waitForCommand(t, link.Commands, 300*time.Millisecond); ok {
+		t.Errorf("a second lock command fired, want exactly one: %+v", extra)
+	}
+}
+
 // TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
 // signals the table's FileID once the quiet period elapses.
 func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
@@ -852,6 +1029,59 @@ func TestArmCashSessionEnd_IndependentPerTable(t *testing.T) {
 	}
 	if !seen["table-a.txt"] || !seen["table-b.txt"] {
 		t.Errorf("expected session-end from both tables, got %v", seen)
+	}
+}
+
+// TestEndCashSession_PrunesTimer pins the fix for the summaryTimers leak:
+// endCashSession must drop the table's quiet-period timer entry (Stop + delete)
+// alongside its pending session, or the map grows one entry per distinct
+// cash-table file path forever. The timer is armed with a long quiet period so
+// it's still active when endCashSession runs — that lets a second Stop() prove
+// deterministically whether endCashSession already stopped it (Stop returns
+// false only if the timer was already stopped/expired).
+func TestEndCashSession_PrunesTimer(t *testing.T) {
+	dir := t.TempDir()
+	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	// alertChan buffered so the post-session summary send doesn't block (no Run
+	// loop is draining it here — endCashSession is called directly).
+	alertChan := make(chan string, 10)
+	srv, err := NewServer(store, filepath.Join(dir, "config.json"), transport.NewLink(), alertChan)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	const fileID = `C:\hh\table.txt`
+	summaryTimers := make(map[string]*time.Timer)
+	sessionEnd := make(chan string, 1)
+	// Long quiet period: the timer stays active (won't fire during the test), so
+	// endCashSession's Stop() is what deactivates it — provable below.
+	armCashSessionEnd(summaryTimers, fileID, time.Hour, sessionEnd)
+	timer := summaryTimers[fileID]
+
+	pendingSessions := map[string]parsers.CashSession{
+		fileID: {Date: storage.AsStoredClock(time.Now()), Stake: "NL2", BuyInUSD: 2, NetUSD: -1, Hands: 10, DurationMin: 8, FirstHandID: "h1"},
+	}
+	firedAlerts := make(map[string]bool)
+	srv.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, func(string, int) {})
+
+	if _, ok := summaryTimers[fileID]; ok {
+		t.Error("summaryTimers entry not pruned — the per-table timer leaks")
+	}
+	if _, ok := pendingSessions[fileID]; ok {
+		t.Error("pendingSessions entry not removed")
+	}
+	// Stop returns false only if endCashSession already stopped (or fired) it.
+	if timer.Stop() {
+		t.Error("endCashSession did not stop the timer before dropping it — a superseded timer could fire a stale send")
+	}
+	// The session was still written — pruning didn't skip the real work.
+	sessions, err := store.GetAllCashSessions()
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("GetAllCashSessions = %d rows (err %v), want the one written session", len(sessions), err)
 	}
 }
 
