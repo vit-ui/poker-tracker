@@ -136,6 +136,47 @@ func TestFallbackCacheAndReplay(t *testing.T) {
 	}
 }
 
+// TestLedgerFallbackCacheAndReplay covers the write-ahead fallback for a
+// deposit/withdrawal: a failed AppendLedgerEntry is cached to disk (as a ledger
+// kind), and the next successful write replays it — the path that stops a
+// transient Sheets outage from silently losing a money movement (the /deposit
+// that vanished after the scan blew the quota). Two failed deposits must queue
+// as two distinct entries (ledger rows have no upsert key, so the timestamp
+// keys them).
+func TestLedgerFallbackCacheAndReplay(t *testing.T) {
+	fake := &fakeSheets{}
+	c := newTestClient(t, fake)
+
+	fake.setFailWrites(true)
+	if err := c.AppendLedgerEntry("deposit", 6.57, time.Unix(1000, 0)); err == nil {
+		t.Fatal("AppendLedgerEntry = nil error while the API is failing, want an error")
+	}
+	if err := c.AppendLedgerEntry("withdrawal", -20, time.Unix(2000, 0)); err == nil {
+		t.Fatal("second AppendLedgerEntry = nil error while the API is failing, want an error")
+	}
+	if got := c.PendingWrites(); got != 2 {
+		t.Fatalf("PendingWrites after two failed deposits = %d, want 2 (both queued distinctly)", got)
+	}
+	queued, err := readFallbackFile(t, c.fallbackPath)
+	if err != nil {
+		t.Fatalf("fallback file not written to disk: %v", err)
+	}
+	for key, entry := range queued {
+		if entry.Kind != fallbackKindLedger || entry.Ledger == nil {
+			t.Fatalf("queued entry %q = kind %q ledger=%v, want a ledger entry", key, entry.Kind, entry.Ledger)
+		}
+	}
+
+	// The API recovers; the next successful write flushes both queued deposits.
+	fake.setFailWrites(false)
+	if err := c.AppendLedgerEntry("deposit", 10, time.Unix(3000, 0)); err != nil {
+		t.Fatalf("AppendLedgerEntry after recovery = %v, want success", err)
+	}
+	if got := c.PendingWrites(); got != 0 {
+		t.Errorf("PendingWrites after recovery = %d, want 0 (both queued deposits replayed)", got)
+	}
+}
+
 // TestHealth covers restService.doJSON's health tracking (surfaced through
 // Client.Health, the heartbeat's sheets-only data source): a successful call
 // reports healthy, a failing call reports down with the error and a since

@@ -31,6 +31,20 @@ const (
 
 	spreadsheetsScope          = "https://www.googleapis.com/auth/spreadsheets"
 	driveMetadataReadonlyScope = "https://www.googleapis.com/auth/drive.metadata.readonly"
+
+	// sheetsRateInterval/sheetsRateBurst pace every Google API call at the
+	// doJSON choke point (see waitForSlot) so no path — a /scan backfill, a
+	// fallback-flush replay, live play, or an interactive /stats or /export —
+	// can exceed Google's per-user Sheets quota (60 reads/min AND 60 writes/min,
+	// tracked separately). One combined token bucket at ~50 calls/min keeps the
+	// total call rate under 60/min with margin, which bounds each of the two
+	// separate quota buckets under 60/min as well (any subset of a <=55 total is
+	// <=60). This is a quota-conformance control, not a timeout or a retry: the
+	// write-ahead fallback still catches the rare residual failure; the limiter
+	// is what stops a bulk import from hitting the 429 cliff in the first place
+	// (a whole folder of files used to fire hundreds of calls in seconds).
+	sheetsRateInterval = 1200 * time.Millisecond
+	sheetsRateBurst    = 5
 )
 
 // restService issues authenticated Google API requests. hc comes from the
@@ -52,6 +66,17 @@ type restService struct {
 	healthMu  sync.Mutex
 	lastErr   error     // nil when the most recent doJSON call succeeded
 	downSince time.Time // zero when healthy; set once, on the nil→non-nil transition
+
+	// rateMu guards the token bucket waitForSlot drains before every doJSON
+	// call. rateInterval is the per-token refill period; a zero rateInterval
+	// disables throttling entirely (the package's own httptest-backed tests
+	// leave it unset so the suite runs at full speed — the same seam that
+	// overrides baseURL/driveURL). rateBurst caps the idle token reserve.
+	rateMu       sync.Mutex
+	rateInterval time.Duration
+	rateBurst    int
+	rateTokens   float64   // may go negative: a reservation held by a waiting caller
+	rateLast     time.Time // last refill instant; zero until the first call
 }
 
 // newRESTService builds a transport from the service account key JSON,
@@ -61,7 +86,46 @@ func newRESTService(serviceAccountJSON []byte, scope string) (*restService, erro
 	if err != nil {
 		return nil, fmt.Errorf("parsing credentials: %w", err)
 	}
-	return &restService{hc: conf.Client(context.Background()), baseURL: sheetsBaseURL, driveURL: driveFilesURL}, nil
+	return &restService{
+		hc:           conf.Client(context.Background()),
+		baseURL:      sheetsBaseURL,
+		driveURL:     driveFilesURL,
+		rateInterval: sheetsRateInterval,
+		rateBurst:    sheetsRateBurst,
+	}, nil
+}
+
+// waitForSlot blocks until the rate limiter has a token, then consumes one, so
+// the caller (doJSON) stays within Google's per-user Sheets quota. It's a
+// reservation token bucket: rateTokens is topped up by elapsed/rateInterval on
+// each call (capped at rateBurst) and decremented by one per call. When it goes
+// negative the caller sleeps for the deficit — a second concurrent caller
+// refills only a sliver before its own decrement, so it reserves a later slot
+// and the two serialize correctly. A zero rateInterval (tests) is a no-op.
+func (s *restService) waitForSlot() {
+	if s.rateInterval <= 0 {
+		return
+	}
+	s.rateMu.Lock()
+	now := time.Now()
+	if s.rateLast.IsZero() {
+		s.rateTokens = float64(s.rateBurst)
+	} else {
+		s.rateTokens += now.Sub(s.rateLast).Seconds() / s.rateInterval.Seconds()
+		if s.rateTokens > float64(s.rateBurst) {
+			s.rateTokens = float64(s.rateBurst)
+		}
+	}
+	s.rateLast = now
+	s.rateTokens--
+	var wait time.Duration
+	if s.rateTokens < 0 {
+		wait = time.Duration(-s.rateTokens * float64(s.rateInterval))
+	}
+	s.rateMu.Unlock()
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 }
 
 // valueRange is the request/response payload for every values endpoint —
@@ -77,6 +141,7 @@ type valueRange struct {
 // enough to tell an unshared sheet (403) from a bad ID (404) from a
 // transient server error (5xx, which the write-ahead fallback catches).
 func (s *restService) doJSON(method, reqURL string, body, out interface{}) (err error) {
+	s.waitForSlot()
 	defer func() {
 		s.healthMu.Lock()
 		if err != nil {

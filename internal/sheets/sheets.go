@@ -747,6 +747,7 @@ const (
 	fallbackKindCash    = "cash"
 	fallbackKindStats   = "tourney_stats"
 	fallbackKindSummary = "tourney_summary"
+	fallbackKindLedger  = "ledger"
 )
 
 // fallbackEntry is one queued write awaiting replay, holding exactly the
@@ -758,6 +759,7 @@ type fallbackEntry struct {
 	Cash      *parsers.CashSession `json:"cash,omitempty"`
 	Summary   *parsers.Tournament  `json:"summary,omitempty"`
 	HandStats *handStatsArgs       `json:"hand_stats,omitempty"`
+	Ledger    *ledgerArgs          `json:"ledger,omitempty"`
 }
 
 // handStatsArgs mirrors rawUpdateTournamentHandStats's parameter list so a
@@ -769,6 +771,16 @@ type handStatsArgs struct {
 	Hands        int     `json:"hands"`
 	BountyUSD    float64 `json:"bounty_usd"`
 	IsKnockout   bool    `json:"is_knockout"`
+}
+
+// ledgerArgs holds a failed deposit/withdrawal for replay. The Running Total is
+// deliberately *not* stored — rawAppendLedgerEntry recomputes it from the
+// sheet's current last row at replay time, so a deposit that lands after other
+// rows queued ahead of it still gets a correct cumulative total.
+type ledgerArgs struct {
+	EntryType string    `json:"entry_type"`
+	AmountUSD float64   `json:"amount_usd"`
+	Now       time.Time `json:"now"`
 }
 
 // AppendCashSession writes the session and, only if that fails, caches it for
@@ -935,6 +947,11 @@ func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 	case fallbackKindSummary:
 		_, err := c.rawAppendTournament(*entry.Summary)
 		return err == nil
+	case fallbackKindLedger:
+		// No supersede guard: a deposit/withdrawal is a pure append whose
+		// running total rawAppendLedgerEntry recomputes fresh, so there's no
+		// stale snapshot to protect against — just replay it.
+		return c.rawAppendLedgerEntry(entry.Ledger.EntryType, entry.Ledger.AmountUSD, entry.Ledger.Now) == nil
 	}
 	return true // unknown kind — drop rather than retry forever
 }
@@ -1006,7 +1023,30 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 // would put deposits in a date coordinate system shifted from every session
 // row's by the machine's UTC offset, and window queries would misplace them
 // near day boundaries.
+// AppendLedgerEntry wraps rawAppendLedgerEntry in the same cache-on-failure /
+// flush-on-success shape as the other writes, so a deposit or withdrawal that
+// fails against the API (a transient outage, a 429) is queued and replayed
+// instead of silently lost — a real incident: a /deposit right after a scan
+// exhausted the quota returned "Something went wrong" and the money movement
+// vanished. Unlike the cash/tournament wrappers, a ledger entry has no upsert
+// key, so its queue key is the timestamp (unique per user action) and replay is
+// at-least-once: the realistic failures (429/DNS/refused) all fail *before* the
+// row is written, so replay doesn't duplicate; the only gap is a write that
+// commits server-side but whose response is lost, a narrow edge worth far less
+// than the silent-loss it replaces.
 func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
+	if err := c.rawAppendLedgerEntry(entryType, amountUSD, now); err != nil {
+		key := fmt.Sprintf("%s:%d", fallbackKindLedger, now.UnixNano())
+		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindLedger, Ledger: &ledgerArgs{
+			EntryType: entryType, AmountUSD: amountUSD, Now: now,
+		}})
+		return err
+	}
+	c.flush()
+	return nil
+}
+
+func (c *Client) rawAppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
 	prev, err := c.getLastRunningTotal()
 	if err != nil {
 		return err

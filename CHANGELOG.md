@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v4.4 - 2026-08-04
+
+### Fixed
+
+- **`/scan` no longer floods the Google Sheets quota.** On the Sheets backend a
+  large backfill recorded one file at a time with no pacing, firing hundreds of
+  API calls in seconds and blowing Google's per-user limit (60 reads/min and
+  60 writes/min) — a real scan produced ~412 consecutive `429 Too Many Requests`
+  errors, and a `/deposit` right after it failed with "Something went wrong"
+  because the quota was still exhausted. Every Sheets call now passes through a
+  rate limiter (~50 calls/min, small idle burst) at the single HTTP choke point,
+  so a scan, a queued-write replay, and normal use all stay under quota. The
+  write-ahead fallback still catches the occasional failed write, and can now
+  actually drain instead of re-hitting the limit. A big first scan takes a few
+  minutes and runs quietly; nothing is lost.
+
+- **A failed `/deposit` or `/withdraw` is no longer silently lost** (Sheets
+  backend). Deposits and withdrawals now use the same write-ahead fallback as
+  session and tournament writes: if the Sheets write fails (a transient outage,
+  a rate-limit spike), the entry is queued and replayed on the next successful
+  write, with its running total recomputed so it still totals correctly.
+
 ## v4.3 - 2026-08-04
 
 ### Added

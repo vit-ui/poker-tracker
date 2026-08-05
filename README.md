@@ -118,7 +118,7 @@ Usage example: `/export`
 <details>
 <summary><code>/scan</code> — backfill history already sitting in your folders</summary>
 
-Walks both PokerStars folders and records every cash session and tournament that isn't stored yet — useful right after a new install to seed your existing history (the tracker otherwise only sees files that change while it's running). Records silently: no per-session summaries, no hard stops, no alerts. Tournaments that need an answer (a satellite's ticket-vs-cash, or a freeroll's buy-in) are skipped and counted — play or re-open those in live to record them. Safe to run more than once; already-stored sessions aren't duplicated. You get one message with the counts when it finishes.
+Walks both PokerStars folders and records every cash session and tournament that isn't stored yet — useful right after a new install to seed your existing history (the tracker otherwise only sees files that change while it's running). Records silently: no per-session summaries, no hard stops, no alerts. Tournaments that need an answer (a satellite's ticket-vs-cash, or a freeroll's buy-in) are skipped and counted — play or re-open those in live to record them. Safe to run more than once; already-stored sessions aren't duplicated. You get one message with the counts when it finishes. On the Google Sheets backend a large first scan is paced to stay within Google's rate limits, so it can take a few minutes to fully sync — let it settle before checking totals.
 
 Usage example: `/scan`
 </details>
