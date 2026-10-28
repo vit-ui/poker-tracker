@@ -1,128 +1,130 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+    push:
+        tags:
+            - "v*"
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-      - name: Build all binaries
-        env:
-          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: |
-          set -euo pipefail
-          for arch in amd64 arm64; do
-            # All-local (combined) — Windows GUI, with the bot token. The single
-            # installer packs both arches and installs the matching one.
-            GOOS=windows GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -H=windowsgui -X main.BotToken=$TOKEN" \
-              -o tracker-$arch.exe ./cmd/tracker
-            # Split client — Windows console app, NO bot token (never talks to Telegram).
-            GOOS=windows GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w" \
-              -o tracker-client-$arch.exe ./cmd/client
-            # Split server — Windows + Linux, with the bot token (the only Telegram-talking split role).
-            GOOS=windows GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -X main.BotToken=$TOKEN" \
-              -o tracker-server-windows-$arch.exe ./cmd/server
-            GOOS=linux GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -X main.BotToken=$TOKEN" \
-              -o tracker-server-linux-$arch ./cmd/server
-          done
-          # One self-extracting Linux server installer with BOTH CPU builds
-          # inside: run it and it detects the CPU (packaging/install.sh) and
-          # installs the right one — the Linux equivalent of the one Windows
-          # installer. Shipped inside a .tar.gz so a browser download keeps the
-          # execute bit (a raw download would lose it).
-          sudo apt-get update
-          sudo apt-get install -y makeself
-          # The package name is stable; the command it installs is makeself or
-          # makeself.sh depending on version — resolve whichever exists so the
-          # step never dies on a name mismatch.
-          MAKESELF="$(command -v makeself || command -v makeself.sh)"
-          mkdir -p pkg
-          cp tracker-server-linux-amd64 pkg/tracker-server-amd64
-          cp tracker-server-linux-arm64 pkg/tracker-server-arm64
-          cp packaging/install.sh pkg/install.sh
-          chmod +x pkg/tracker-server-amd64 pkg/tracker-server-arm64 pkg/install.sh
-          "$MAKESELF" --nox11 pkg PokerTracker-Server-linux "Poker Tracker Server installer" ./install.sh
-          tar -czf PokerTracker-Server-linux.tar.gz PokerTracker-Server-linux
-        shell: bash
-      - uses: actions/upload-artifact@v4
-        with:
-          name: binaries
-          path: |
-            tracker-amd64.exe
-            tracker-arm64.exe
-            tracker-client-amd64.exe
-            tracker-client-arm64.exe
-            tracker-server-windows-amd64.exe
-            tracker-server-windows-arm64.exe
-            PokerTracker-Server-linux.tar.gz
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-go@v5
+              with:
+                  go-version: "1.26"
+            - name: Build all binaries
+              env:
+                  TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+              run: |
+                  set -euo pipefail
+                  for arch in amd64 arm64; do
+                    # All-local (combined) — Windows GUI, with the bot token. The single
+                    # installer packs both arches and installs the matching one.
+                    GOOS=windows GOARCH=$arch go build -trimpath \
+                      -ldflags "-s -w -H=windowsgui -X main.BotToken=$TOKEN" \
+                      -o tracker-$arch.exe ./cmd/tracker
+                    # Split client — Windows console app, NO bot token (never talks to Telegram).
+                    GOOS=windows GOARCH=$arch go build -trimpath \
+                      -ldflags "-s -w" \
+                      -o tracker-client-$arch.exe ./cmd/client
+                    # Split server — Windows + Linux, with the bot token (the only Telegram-talking split role).
+                    GOOS=windows GOARCH=$arch go build -trimpath \
+                      -ldflags "-s -w -X main.BotToken=$TOKEN" \
+                      -o tracker-server-windows-$arch.exe ./cmd/server
+                    GOOS=linux GOARCH=$arch go build -trimpath \
+                      -ldflags "-s -w -X main.BotToken=$TOKEN" \
+                      -o tracker-server-linux-$arch ./cmd/server
+                  done
+                  # One self-extracting Linux server installer with BOTH CPU builds
+                  # inside: run it and it detects the CPU (packaging/install.sh) and
+                  # installs the right one — the Linux equivalent of the one Windows
+                  # installer. Shipped inside a .tar.gz so a browser download keeps the
+                  # execute bit (a raw download would lose it).
+                  sudo apt-get update
+                  sudo apt-get install -y makeself
+                  # The package name is stable; the command it installs is makeself or
+                  # makeself.sh depending on version — resolve whichever exists so the
+                  # step never dies on a name mismatch.
+                  MAKESELF="$(command -v makeself || command -v makeself.sh)"
+                  mkdir -p pkg
+                  cp tracker-server-linux-amd64 pkg/tracker-server-amd64
+                  cp tracker-server-linux-arm64 pkg/tracker-server-arm64
+                  cp packaging/install.sh pkg/install.sh
+                  chmod +x pkg/tracker-server-amd64 pkg/tracker-server-arm64 pkg/install.sh
+                  "$MAKESELF" --nox11 pkg PokerTracker-Server-linux "Poker Tracker Server installer" ./install.sh
+                  tar -czf PokerTracker-Server-linux.tar.gz PokerTracker-Server-linux
+              shell: bash
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: binaries
+                  path: |
+                      tracker-amd64.exe
+                      tracker-arm64.exe
+                      tracker-client-amd64.exe
+                      tracker-client-arm64.exe
+                      tracker-server-windows-amd64.exe
+                      tracker-server-windows-arm64.exe
+                      PokerTracker-Server-linux.tar.gz
+                  retention-days: 1
 
-  installer:
-    needs: build
-    runs-on: windows-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: binaries
-      - name: Determine version
-        id: version
-        shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - name: Build installer
-        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
-        with:
-          path: setup.iss
-          options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Setup
-          path: Output/PokerTracker-Setup-${{ steps.version.outputs.version }}.exe
+    installer:
+        needs: build
+        runs-on: windows-latest
+        outputs:
+            version: ${{ steps.version.outputs.version }}
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/download-artifact@v4
+              with:
+                  name: binaries
+            - name: Determine version
+              id: version
+              shell: bash
+              run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            - name: Build installer
+              uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+              with:
+                  path: setup.iss
+                  options: /O+ "/DAppVersion=${{ steps.version.outputs.version }}"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: Setup
+                  path: Output/PokerTracker-Setup-${{ steps.version.outputs.version }}.exe
+                  retention-days: 1
 
-  release:
-    needs: installer
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: Setup
-      - uses: actions/download-artifact@v4
-        with:
-          name: binaries
-      - name: Extract release notes from CHANGELOG
-        shell: bash
-        run: |
-          # Pull the "## <tag> …" section (up to the next "## ") into the body.
-          # No matching section fails the job: a public release must never
-          # ship with a placeholder description — fix the CHANGELOG heading
-          # ("## <tag> — <date>", trailing space after the tag) and re-tag.
-          awk -v h="## ${GITHUB_REF_NAME} " '
-            index($0, h) == 1 { grab = 1; next }
-            /^## / && grab { exit }
-            grab { print }
-          ' CHANGELOG.md > RELEASE_NOTES.md
-          if [ ! -s RELEASE_NOTES.md ]; then
-            echo "::error::CHANGELOG.md has no '## ${GITHUB_REF_NAME} — <date>' section — add it and re-tag."
-            exit 1
-          fi
-      - uses: softprops/action-gh-release@v2
-        with:
-          body_path: RELEASE_NOTES.md
-          files: |
-            PokerTracker-Setup-${{ needs.installer.outputs.version }}.exe
-            PokerTracker-Server-linux.tar.gz
+    release:
+        needs: installer
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/download-artifact@v4
+              with:
+                  name: Setup
+            - uses: actions/download-artifact@v4
+              with:
+                  name: binaries
+            - name: Extract release notes from CHANGELOG
+              shell: bash
+              run: |
+                  # Pull the "## <tag> …" section (up to the next "## ") into the body.
+                  # No matching section fails the job: a public release must never
+                  # ship with a placeholder description — fix the CHANGELOG heading
+                  # ("## <tag> — <date>", trailing space after the tag) and re-tag.
+                  awk -v h="## ${GITHUB_REF_NAME} " '
+                    index($0, h) == 1 { grab = 1; next }
+                    /^## / && grab { exit }
+                    grab { print }
+                  ' CHANGELOG.md > RELEASE_NOTES.md
+                  if [ ! -s RELEASE_NOTES.md ]; then
+                    echo "::error::CHANGELOG.md has no '## ${GITHUB_REF_NAME} — <date>' section — add it and re-tag."
+                    exit 1
+                  fi
+            - uses: softprops/action-gh-release@v2
+              with:
+                  body_path: RELEASE_NOTES.md
+                  files: |
+                      PokerTracker-Setup-${{ needs.installer.outputs.version }}.exe
+                      PokerTracker-Server-linux.tar.gz
