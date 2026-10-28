@@ -321,7 +321,7 @@ func (b *Bot) handleStatus(chatID int64) {
 	bankroll, err := b.store.GetCurrentBankroll()
 	if err != nil {
 		slog.Error("getting bankroll", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
@@ -333,19 +333,19 @@ func (b *Bot) handleStatus(chatID int64) {
 	todayNet, err := netSince(b.store, startOfToday)
 	if err != nil {
 		slog.Error("getting today's net", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	weekNet, err := netSince(b.store, startOfWeek)
 	if err != nil {
 		slog.Error("getting week's net", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	monthNet, err := netSince(b.store, startOfMonth)
 	if err != nil {
 		slog.Error("getting month's net", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
@@ -359,7 +359,7 @@ func (b *Bot) handleStatus(chatID int64) {
 		text += fmt.Sprintf("\n🛑 Locked until %s", lock.ExpiresAt.Local().Format("2006-01-02 15:04"))
 	}
 
-	send(b.tg, chatID, text)
+	b.reply(chatID, text)
 }
 
 // SpinGoPrizePoolText formats a Spin & Go's prize pool for display: the real
@@ -391,13 +391,13 @@ func (b *Bot) handleLastSession(chatID int64) {
 	cashSessions, err := b.store.GetCashSessionsSince(time.Time{})
 	if err != nil {
 		slog.Error("getting cash sessions", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	tournaments, err := b.store.GetTournamentsSince(time.Time{})
 	if err != nil {
 		slog.Error("getting tournaments", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
@@ -411,31 +411,31 @@ func (b *Bot) handleLastSession(chatID int64) {
 	}
 
 	if lastCash == nil && lastTourn == nil {
-		send(b.tg, chatID, "No sessions recorded yet.")
+		b.reply(chatID, "No sessions recorded yet.")
 		return
 	}
 
 	bankroll, err := b.store.GetCurrentBankroll()
 	if err != nil {
 		slog.Error("getting bankroll", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
 	if lastTourn == nil || (lastCash != nil && lastCash.Date.After(lastTourn.Date)) {
-		send(b.tg, chatID, fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+		b.reply(chatID, fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
 			lastCash.Stake, FormatSignedUSD(lastCash.NetUSD), lastCash.Hands, lastCash.DurationMin,
 			formatPercent(lastCash.VPIP), formatPercent(lastCash.PFR), bankroll))
 		return
 	}
 
 	if lastTourn.BaseType() == "spingo" {
-		send(b.tg, chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+		b.reply(chatID, fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
 			lastTourn.BuyInUSD, SpinGoPrizePoolText(*lastTourn), Ordinal(lastTourn.FinishPos), FormatSignedUSD(lastTourn.NetUSD),
 			formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 		return
 	}
-	send(b.tg, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
+	b.reply(chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%.2f",
 		lastTourn.BuyInUSD, Ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, FormatSignedUSD(lastTourn.NetUSD),
 		formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankroll))
 }
@@ -453,28 +453,28 @@ func (b *Bot) handleStats(chatID int64, args string) {
 		msg, err := cashStatsMessage(b.store, since, periodLabel)
 		if err != nil {
 			slog.Error("getting cash stats", "err", err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
+			b.reply(chatID, "Something went wrong. Check logs.")
 			return
 		}
-		send(b.tg, chatID, msg)
+		b.reply(chatID, msg)
 	}
 	if gameType == "" || gameType == "spins" {
 		msg, err := tournamentStatsMessage(b.store, since, "spingo", periodLabel, "Spin & Go", "🎰", false)
 		if err != nil {
 			slog.Error("getting spins stats", "err", err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
+			b.reply(chatID, "Something went wrong. Check logs.")
 			return
 		}
-		send(b.tg, chatID, msg)
+		b.reply(chatID, msg)
 	}
 	if gameType == "" || gameType == "mtt" {
 		msg, err := tournamentStatsMessage(b.store, since, "mtt", periodLabel, "MTT", "🏆", true)
 		if err != nil {
 			slog.Error("getting mtt stats", "err", err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
+			b.reply(chatID, "Something went wrong. Check logs.")
 			return
 		}
-		send(b.tg, chatID, msg)
+		b.reply(chatID, msg)
 	}
 }
 

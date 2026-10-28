@@ -91,27 +91,27 @@ func (b *Bot) handleSheetCommand(chatID int64, args string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
-		send(b.tg, chatID, "This install uses local storage — there is no Google Sheet. Use /export to get your data as CSV.")
+		b.reply(chatID, "This install uses local storage — there is no Google Sheet. Use /export to get your data as CSV.")
 		return
 	}
 
 	args = strings.TrimSpace(args)
 	if args == "" {
-		send(b.tg, chatID, b.store.GetSheetURL())
+		b.reply(chatID, b.store.GetSheetURL())
 		return
 	}
 
 	name, id, err := resolveSheetInput(b.serviceAccountPath, args)
 	if err != nil {
-		send(b.tg, chatID, fmt.Sprintf("Couldn't find that sheet: %v", err))
+		b.reply(chatID, fmt.Sprintf("Couldn't find that sheet: %v", err))
 		return
 	}
 	if _, err := sheets.NewClient(b.serviceAccountPath, id, ""); err != nil {
-		send(b.tg, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
+		b.reply(chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
 		return
 	}
 
@@ -119,17 +119,17 @@ func (b *Bot) handleSheetCommand(chatID int64, args string) {
 	cfg.Setup.GoogleSheetID = &id
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
-	send(b.tg, chatID, "✅ Sheet updated. Restarting tracker in a moment...")
+	b.reply(chatID, "✅ Sheet updated. Restarting tracker in a moment...")
 
 	if err := selfRestart(b.configPath); err != nil {
 		// A live process on stale config beats a dead one — don't exit if
 		// the restart helper never got off the ground.
 		slog.Error("restarting tracker after sheet switch", "err", err)
-		send(b.tg, chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
+		b.reply(chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
 		return
 	}
 	os.Exit(0)
@@ -154,28 +154,28 @@ func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
 	if args == "" {
 		if cfg.Setup.PokerStarsScreenName == nil {
-			send(b.tg, chatID, "No screen name configured yet. Usage: /screenname <name>")
+			b.reply(chatID, "No screen name configured yet. Usage: /screenname <name>")
 			return
 		}
-		send(b.tg, chatID, "Current PokerStars screen name: "+*cfg.Setup.PokerStarsScreenName)
+		b.reply(chatID, "Current PokerStars screen name: "+*cfg.Setup.PokerStarsScreenName)
 		return
 	}
 
 	cfg.Setup.PokerStarsScreenName = &args
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
 	b.restartWatcher()
-	send(b.tg, chatID, "✅ Screen name updated to "+args+". Watcher restarted.")
+	b.reply(chatID, "✅ Screen name updated to "+args+". Watcher restarted.")
 }
 
 // startCredentialsFlow implements /credentials: swaps the Google service
@@ -188,7 +188,7 @@ func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 func (b *Bot) startCredentialsFlow(chatID int64) {
 	b.flow = "credentials"
 	b.field = "file"
-	send(b.tg, chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")
+	b.reply(chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")
 }
 
 // handleCredentialsTextReply handles a plain-text reply during the
@@ -197,10 +197,10 @@ func (b *Bot) startCredentialsFlow(chatID int64) {
 func (b *Bot) handleCredentialsTextReply(chatID int64, text string) {
 	if strings.EqualFold(strings.TrimSpace(text), "skip") {
 		b.reset()
-		send(b.tg, chatID, "Kept the existing credentials file.")
+		b.reply(chatID, "Kept the existing credentials file.")
 		return
 	}
-	send(b.tg, chatID, "Send the google_service_account.json file as an attachment, or type skip.")
+	b.reply(chatID, "Send the google_service_account.json file as an attachment, or type skip.")
 }
 
 // handleCredentialsDocument saves an uploaded google_service_account.json
@@ -218,7 +218,7 @@ func (b *Bot) handleCredentialsTextReply(chatID int64, text string) {
 func (b *Bot) handleCredentialsDocument(chatID int64, fileID string) {
 	if err := downloadTelegramFile(b.tg, fileID, b.serviceAccountPath); err != nil {
 		slog.Error("downloading credentials file", "err", err)
-		send(b.tg, chatID, "Couldn't download that file. Try again, or type skip.")
+		b.reply(chatID, "Couldn't download that file. Try again, or type skip.")
 		return
 	}
 	b.reset()
@@ -226,19 +226,19 @@ func (b *Bot) handleCredentialsDocument(chatID int64, fileID string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "✅ Credentials file saved, but something went wrong checking your sheet. Check logs, and run /sheet to reconnect if needed.")
+		b.reply(chatID, "✅ Credentials file saved, but something went wrong checking your sheet. Check logs, and run /sheet to reconnect if needed.")
 		return
 	}
 
 	// On the sqlite backend there's no sheet to re-validate — the credentials
 	// exist solely so /storage can migrate to Google Sheets.
 	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
-		send(b.tg, chatID, "✅ Credentials file saved. You can now run /storage sheets <sheet name or URL> to migrate to Google Sheets.")
+		b.reply(chatID, "✅ Credentials file saved. You can now run /storage sheets <sheet name or URL> to migrate to Google Sheets.")
 		return
 	}
 
 	if cfg.Setup.GoogleSheetID == nil {
-		send(b.tg, chatID, "✅ Credentials file saved. Restart the tracker service for this to take effect. No sheet is configured yet — run /sheet to connect one.")
+		b.reply(chatID, "✅ Credentials file saved. Restart the tracker service for this to take effect. No sheet is configured yet — run /sheet to connect one.")
 		return
 	}
 
@@ -248,9 +248,9 @@ func (b *Bot) handleCredentialsDocument(chatID int64, fileID string) {
 		if saveErr := config.SaveConfig(b.configPath, cfg); saveErr != nil {
 			slog.Error("saving config", "err", saveErr)
 		}
-		send(b.tg, chatID, "✅ Credentials file saved, but your current sheet isn't accessible with it — it needs to be shared with the new service account, or you're pointing at a different Google Cloud project entirely. Run /sheet to connect a sheet this service account can reach.")
+		b.reply(chatID, "✅ Credentials file saved, but your current sheet isn't accessible with it — it needs to be shared with the new service account, or you're pointing at a different Google Cloud project entirely. Run /sheet to connect a sheet this service account can reach.")
 		return
 	}
 
-	send(b.tg, chatID, "✅ Credentials file saved. Your existing sheet is still accessible with it. Restart the tracker service for this to take effect.")
+	b.reply(chatID, "✅ Credentials file saved. Your existing sheet is still accessible with it. Restart the tracker service for this to take effect.")
 }

@@ -177,19 +177,19 @@ func (b *Bot) handleExportCommand(chatID int64) {
 	cashSessions, err := b.store.GetAllCashSessions()
 	if err != nil {
 		slog.Error("getting cash sessions for export", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	tournaments, err := b.store.GetAllTournaments()
 	if err != nil {
 		slog.Error("getting tournaments for export", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	ledger, err := b.store.GetLedgerEntriesSince(time.Time{})
 	if err != nil {
 		slog.Error("getting ledger entries for export", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 
@@ -208,7 +208,7 @@ func (b *Bot) handleExportCommand(chatID int64) {
 		path := filepath.Join(os.TempDir(), e.filename)
 		if err := writeCSVFile(path, e.header, e.rows); err != nil {
 			slog.Error("writing export csv", "file", e.filename, "err", err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
+			b.reply(chatID, "Something went wrong. Check logs.")
 			for _, p := range paths {
 				os.Remove(p)
 			}
@@ -228,7 +228,7 @@ func (b *Bot) handleExportCommand(chatID int64) {
 		}
 	}
 
-	send(b.tg, chatID, "✅ Export complete — 3 files.")
+	b.reply(chatID, "✅ Export complete — 3 files.")
 }
 
 // handleScanCommand implements /scan: it triggers a one-shot backfill that
@@ -242,5 +242,5 @@ func (b *Bot) handleExportCommand(chatID int64) {
 // completion report (with counts) arrives later via alertChan.
 func (b *Bot) handleScanCommand(chatID int64) {
 	b.requestRescan()
-	send(b.tg, chatID, "📥 Scanning your folders for anything not yet recorded — I'll report what I record when it's done.")
+	b.reply(chatID, "📥 Scanning your folders for anything not yet recorded — I'll report what I record when it's done.")
 }

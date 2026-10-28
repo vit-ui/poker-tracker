@@ -92,9 +92,9 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 	amount, err := parsePositiveFloat(args)
 	if err != nil {
 		if kind == "deposit" {
-			send(b.tg, chatID, "Invalid amount. Usage: /deposit <usd_amount> — enter the USD amount shown on PokerStars after the deposit clears, not BRL.")
+			b.reply(chatID, "Invalid amount. Usage: /deposit <usd_amount> — enter the USD amount shown on PokerStars after the deposit clears, not BRL.")
 		} else {
-			send(b.tg, chatID, "Invalid amount. Usage: /withdraw <usd_amount> — enter the USD amount shown on PokerStars, not BRL.")
+			b.reply(chatID, "Invalid amount. Usage: /withdraw <usd_amount> — enter the USD amount shown on PokerStars, not BRL.")
 		}
 		return
 	}
@@ -108,16 +108,16 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 
 	if err := b.store.AppendLedgerEntry(kind, ledgerAmount, b.now()); err != nil {
 		slog.Error("appending ledger entry", "kind", kind, "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	bankroll, err := b.store.GetCurrentBankroll()
 	if err != nil {
 		slog.Error("getting bankroll", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
-	send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, FormatSignedUSD(ledgerAmount), bankroll))
+	b.reply(chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, FormatSignedUSD(ledgerAmount), bankroll))
 }
 
 // ensureScreenName checks Setup.PokerStarsScreenName before any of the four
@@ -136,7 +136,7 @@ func (b *Bot) ensureScreenName(chatID int64, cfg *config.Config, resumeFlow stri
 	b.flow = "screen_name"
 	b.field = "screen_name"
 	b.resumeFlow = resumeFlow
-	send(b.tg, chatID, "Your PokerStars screen name isn't set. Send it now (exact spelling, case-sensitive) before continuing.")
+	b.reply(chatID, "Your PokerStars screen name isn't set. Send it now (exact spelling, case-sensitive) before continuing.")
 	return false
 }
 
@@ -146,27 +146,27 @@ func (b *Bot) ensureScreenName(chatID int64, cfg *config.Config, resumeFlow stri
 func (b *Bot) handleScreenNameReply(chatID int64, text string) {
 	name := strings.TrimSpace(text)
 	if name == "" {
-		send(b.tg, chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
+		b.reply(chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
 		return
 	}
 
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		b.reset()
 		return
 	}
 	cfg.Setup.PokerStarsScreenName = &name
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		b.reset()
 		return
 	}
 
 	slog.Info("screen name set at runtime", "screen_name", name)
-	send(b.tg, chatID, fmt.Sprintf("✅ Screen name saved: %s", name))
+	b.reply(chatID, fmt.Sprintf("✅ Screen name saved: %s", name))
 
 	resumeFlow := b.resumeFlow
 	b.resumeFlow = ""
@@ -222,10 +222,28 @@ func (b *Bot) showMenu(chatID int64, messageID int, text string, rows [][]tgbota
 	}
 }
 
+// replyConfig selects a standalone command reply or an edit of the menu that
+// started the action. Keep this separate from background notification delivery.
+func (c *conversation) replyConfig(chatID int64, text string) tgbotapi.Chattable {
+	if c.menuReplyMessageID == 0 {
+		return tgbotapi.NewMessage(chatID, text)
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(navButton(c.menuReplyPath))
+	return tgbotapi.NewEditMessageTextAndMarkup(chatID, c.menuReplyMessageID, text, markup)
+}
+
+func (b *Bot) reply(chatID int64, text string) {
+	if _, err := b.tg.Send(b.replyConfig(chatID, text)); err != nil {
+		slog.Error("sending command reply", "err", err)
+	}
+}
+
 // handleMenuCallback routes a "menu:"-prefixed callback (path is everything
 // after that prefix). Actions (:set, :off, leave) run and re-render; anything
 // else is a screen path handed to renderScreen.
 func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
+	b.menuReplyMessageID = messageID
+	b.menuReplyPath = path
 	if path == "cancel" {
 		b.reset()
 		b.clearKeyboard(chatID, messageID)
@@ -262,8 +280,8 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 	case last == "deposit" || last == "withdraw":
 		b.beginMoneyEntry(chatID, messageID, path)
 	case isCommandAction(last):
-		// A hub shortcut to an existing command — runs it (which sends its own
-		// output or starts its flow); the menu message stays for more taps.
+		// Use the same handler as a typed command, with replies directed
+		// to this menu message and Back directed to its parent.
 		b.reset()
 		b.runCommandAction(chatID, last)
 	default:
@@ -285,8 +303,8 @@ func isCommandAction(token string) bool {
 	return false
 }
 
-// runCommandAction invokes the command a hub button stands for. These send
-// their own messages (or start their own flow), leaving the menu in place.
+// runCommandAction invokes the command a hub button stands for. Its text
+// replies replace the current menu; exported files remain separate documents.
 func (b *Bot) runCommandAction(chatID int64, token string) {
 	switch token {
 	case "screenname":
@@ -308,7 +326,7 @@ func (b *Bot) runCommandAction(chatID int64, token string) {
 	case "export":
 		b.handleExportCommand(chatID)
 	case "help":
-		send(b.tg, chatID, helpText(""))
+		b.reply(chatID, helpText(""))
 	}
 }
 
@@ -549,7 +567,7 @@ func (b *Bot) renderAlertsMenu(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	var rows [][]tgbotapi.InlineKeyboardButton
@@ -567,7 +585,7 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	var rows [][]tgbotapi.InlineKeyboardButton
@@ -599,7 +617,7 @@ func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	label := alertLabel(key)
@@ -637,7 +655,7 @@ func (b *Bot) handleHardstopLeave(chatID int64, messageID int, menuPath string) 
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	if hardstopRuleSetWithoutDuration(cfg) {
@@ -665,7 +683,7 @@ func (b *Bot) renderPathsMenu(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	hh := "not set"
@@ -701,7 +719,7 @@ func (b *Bot) renderScheduleMenu(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	rows := [][]tgbotapi.InlineKeyboardButton{
@@ -792,7 +810,7 @@ func (b *Bot) renderSummariesMenu(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	var rows [][]tgbotapi.InlineKeyboardButton
@@ -818,7 +836,7 @@ func (b *Bot) renderSummaryItem(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	current := config.SummaryMode(summaryModePtr(cfg, key))
@@ -846,13 +864,13 @@ func (b *Bot) setSummaryMode(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	setSummaryModeField(cfg, key, mode)
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	b.renderSummaryItem(chatID, messageID, itemPath)
@@ -864,14 +882,14 @@ func (b *Bot) toggleStakeChange(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	enabled := !config.NotificationEnabled(cfg.Notifications.StakeChange)
 	cfg.Notifications.StakeChange = &enabled
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	b.renderScreen(chatID, messageID, parentPath(path))
@@ -945,18 +963,27 @@ func (b *Bot) beginMoneyEntry(chatID int64, messageID int, path string) {
 	b.flow = "menu"
 	b.field = path
 	b.menuMessageID = messageID
-	send(b.tg, chatID, fmt.Sprintf("Send the USD amount to %s (as shown on PokerStars, not BRL).", verb))
+	b.menuReplyMessageID = messageID
+	b.menuReplyPath = path
+	b.reply(chatID, fmt.Sprintf("Send the USD amount to %s (as shown on PokerStars, not BRL).", verb))
 }
 
 // --- value entry ---
 
-// beginValueEntry sends the prompt for a field and records the target and the
+// beginValueEntry replaces the menu with a prompt and records the target and the
 // menu message to edit back once the reply is saved.
 func (b *Bot) beginValueEntry(chatID int64, messageID int, target string) {
 	b.flow = "menu"
 	b.field = target
 	b.menuMessageID = messageID
-	send(b.tg, chatID, promptFor(target))
+	b.menuReplyMessageID = messageID
+	b.menuReplyPath = target
+	// Thresholds have an item screen between the list and its Set prompt.
+	parts := strings.Split(target, ":")
+	if flow := parts[len(parts)-2]; flow == "alerts" || flow == "hardstop" {
+		b.menuReplyPath += ":set"
+	}
+	b.reply(chatID, promptFor(target))
 }
 
 func promptFor(target string) string {
@@ -1044,13 +1071,13 @@ func (b *Bot) doTurnOff(chatID int64, messageID int, target string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	setThresholdEnabled(cfg, flow, key, false)
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	b.renderThresholdItem(chatID, messageID, target)
@@ -1068,17 +1095,17 @@ func (b *Bot) turnOn(chatID int64, messageID int, target string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	if err := validateActivate(cfg, flow, key); err != nil {
-		send(b.tg, chatID, err.Error())
+		b.reply(chatID, err.Error())
 		return
 	}
 	setThresholdEnabled(cfg, flow, key, true)
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	b.renderThresholdItem(chatID, messageID, target)
@@ -1138,17 +1165,15 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 		if key == "withdraw" {
 			kind = "withdrawal"
 		}
-		messageID := b.menuMessageID
 		b.reset()
 		b.handleDepositWithdraw(chatID, text, kind)
-		b.renderScreen(chatID, messageID, parentPath(target))
 		return
 	}
 
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		b.reset()
 		return
 	}
@@ -1167,12 +1192,12 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 		saveErr = saveScheduleValue(cfg, text)
 	}
 	if saveErr != nil {
-		send(b.tg, chatID, saveErr.Error())
+		b.reply(chatID, saveErr.Error())
 		return
 	}
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		b.reset()
 		return
 	}
@@ -1199,14 +1224,14 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 // the other folder when only one is set — replacing the old paths "Done".
 func (b *Bot) afterPathSave(chatID int64, cfg *config.Config, wasComplete bool) {
 	if cfg.Paths.HandHistory == nil || cfg.Paths.TournamentSummary == nil {
-		send(b.tg, chatID, "Saved. Set the other folder too before the tracker can start.")
+		b.reply(chatID, "Saved. Set the other folder too before the tracker can start.")
 		return
 	}
 	b.restartWatcher()
 	if wasComplete {
-		send(b.tg, chatID, "✅ Paths saved. Watcher restarted.")
+		b.reply(chatID, "✅ Paths saved. Watcher restarted.")
 	} else {
-		send(b.tg, chatID, "✅ Paths saved. Tracker is now active.")
+		b.reply(chatID, "✅ Paths saved. Tracker is now active.")
 	}
 }
 
@@ -1365,7 +1390,7 @@ func (b *Bot) startPathsFlow(chatID int64) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	if !b.ensureScreenName(chatID, cfg, "paths") {
@@ -1378,7 +1403,7 @@ func (b *Bot) startAlertsFlow(chatID int64) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	if !b.ensureScreenName(chatID, cfg, "alerts") {
@@ -1391,7 +1416,7 @@ func (b *Bot) startHardstopFlow(chatID int64) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	if !b.ensureScreenName(chatID, cfg, "hardstop") {
@@ -1404,7 +1429,7 @@ func (b *Bot) startScheduleFlow(chatID int64) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		b.reply(chatID, "Something went wrong. Check logs.")
 		return
 	}
 	if !b.ensureScreenName(chatID, cfg, "schedule") {
@@ -1424,10 +1449,10 @@ func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 			alertText = text
 		})
 		if err != nil {
-			send(b.tg, chatID, "Configure duration first with /hardstop")
+			b.reply(chatID, "Configure duration first with /hardstop")
 			return
 		}
-		send(b.tg, chatID, alertText)
+		b.reply(chatID, alertText)
 		return
 	}
 	b.startHardstopFlow(chatID)

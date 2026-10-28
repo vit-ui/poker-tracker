@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Fixed
+
+- Menu shortcuts and input prompts now replace the current message. The previous
+  buttons no longer stay active above their result. Back returns to the parent
+  menu. Typed commands and background notifications keep their separate replies.
+
 ## v4.4 - 2026-08-04
 
 ### Fixed

@@ -65,9 +65,9 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 	args = strings.TrimSpace(args)
 	if args == "" {
 		if current == "sheets" {
-			send(b.tg, chatID, "Storage: Google Sheets — "+b.store.GetSheetURL()+"\nSwitch to the local file with /storage local")
+			b.reply(chatID, "Storage: Google Sheets — "+b.store.GetSheetURL()+"\nSwitch to the local file with /storage local")
 		} else {
-			send(b.tg, chatID, "Storage: local file (tracker.db next to the tracker). Use /export to get your data as CSV.\nSwitch with /storage sheets <sheet name or URL>")
+			b.reply(chatID, "Storage: local file (tracker.db next to the tracker). Use /export to get your data as CSV.\nSwitch with /storage sheets <sheet name or URL>")
 		}
 		return
 	}
@@ -80,11 +80,11 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 	case "local", "sqlite", "file":
 		target = "sqlite"
 	default:
-		send(b.tg, chatID, fmt.Sprintf("Unknown storage %q. %s", first, storageUsage))
+		b.reply(chatID, fmt.Sprintf("Unknown storage %q. %s", first, storageUsage))
 		return
 	}
 	if target == current {
-		send(b.tg, chatID, "Already using "+backendLabel(current)+" — nothing changed.")
+		b.reply(chatID, "Already using "+backendLabel(current)+" — nothing changed.")
 		return
 	}
 	sheetArg := strings.TrimSpace(strings.TrimPrefix(args, first))
@@ -95,7 +95,7 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 	// minutes from now.
 	if sheetsSrc, ok := b.store.(*sheets.Client); ok {
 		if n := sheetsSrc.PendingWrites(); n > 0 {
-			send(b.tg, chatID, fmt.Sprintf("Can't migrate yet — %d sheet write(s) are still queued for retry (the sheet was briefly unreachable). Wait a minute for them to flush, then try again.", n))
+			b.reply(chatID, fmt.Sprintf("Can't migrate yet — %d sheet write(s) are still queued for retry (the sheet was briefly unreachable). Wait a minute for them to flush, then try again.", n))
 			return
 		}
 	}
@@ -108,7 +108,7 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 			b.pendingStorageSheetArg = sheetArg
 			b.flow = "storage_credentials"
 			b.field = "file"
-			send(b.tg, chatID, "This install has no Google credentials yet. Send your google_service_account.json file as an attachment and I'll continue the migration — or type cancel.")
+			b.reply(chatID, "This install has no Google credentials yet. Send your google_service_account.json file as an attachment and I'll continue the migration — or type cancel.")
 			return
 		}
 	}
@@ -122,7 +122,7 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 	dst, sheetName, sheetID, err := b.prepareTarget(target, sheetArg)
 	if err != nil {
-		send(b.tg, chatID, err.Error())
+		b.reply(chatID, err.Error())
 		return
 	}
 
@@ -130,15 +130,15 @@ func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 	existing, err := dst.ExportSnapshot()
 	if err != nil {
 		closeStore(dst)
-		send(b.tg, chatID, fmt.Sprintf("Couldn't read the target %s: %v", target, err))
+		b.reply(chatID, fmt.Sprintf("Couldn't read the target %s: %v", target, err))
 		return
 	}
 	if !existing.IsEmpty() {
 		closeStore(dst)
 		if target == "sqlite" {
-			send(b.tg, chatID, "The local database already has data. Delete tracker.db (next to the tracker) and try again — migration only runs into a fresh backend.")
+			b.reply(chatID, "The local database already has data. Delete tracker.db (next to the tracker) and try again — migration only runs into a fresh backend.")
 		} else {
-			send(b.tg, chatID, "That sheet already has data. Migration needs an empty sheet — use a brand-new one, then try again.")
+			b.reply(chatID, "That sheet already has data. Migration needs an empty sheet — use a brand-new one, then try again.")
 		}
 		return
 	}
@@ -150,7 +150,7 @@ func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 	snap, err := b.store.ExportSnapshot()
 	if err != nil {
 		closeStore(dst)
-		send(b.tg, chatID, fmt.Sprintf("Couldn't read your current data: %v", err))
+		b.reply(chatID, fmt.Sprintf("Couldn't read your current data: %v", err))
 		return
 	}
 	var bankroll float64
@@ -179,13 +179,13 @@ func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 func (b *Bot) handleStorageCredentialsDocument(chatID int64, fileID string) {
 	if err := downloadTelegramFile(b.tg, fileID, b.serviceAccountPath); err != nil {
 		slog.Error("downloading credentials file", "err", err)
-		send(b.tg, chatID, "Couldn't download that file. Try again, or type cancel.")
+		b.reply(chatID, "Couldn't download that file. Try again, or type cancel.")
 		return
 	}
 	sheetArg := b.pendingStorageSheetArg
 	b.pendingStorageSheetArg = ""
 	b.reset()
-	send(b.tg, chatID, "✅ Credentials saved. Continuing the migration…")
+	b.reply(chatID, "✅ Credentials saved. Continuing the migration…")
 	b.prepareAndConfirmSwitch(chatID, "sheets", sheetArg)
 }
 
@@ -197,10 +197,10 @@ func (b *Bot) handleStorageCredentialsText(chatID int64, text string) {
 	if strings.EqualFold(t, "cancel") || strings.EqualFold(t, "skip") {
 		b.pendingStorageSheetArg = ""
 		b.reset()
-		send(b.tg, chatID, "Cancelled. No data moved.")
+		b.reply(chatID, "Cancelled. No data moved.")
 		return
 	}
-	send(b.tg, chatID, "Send the google_service_account.json file as an attachment, or type cancel.")
+	b.reply(chatID, "Send the google_service_account.json file as an attachment, or type cancel.")
 }
 
 // prepareTarget constructs and validates the destination backend. For sheets
@@ -244,7 +244,7 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 
 	ps := b.pendingSwitch
 	if ps == nil {
-		send(b.tg, chatID, "That switch already expired. Run /storage again.")
+		b.reply(chatID, "That switch already expired. Run /storage again.")
 		return
 	}
 	b.pendingSwitch = nil
@@ -252,7 +252,7 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 	if !confirmed {
 		// Nothing was written to the target — discard, don't roll back.
 		b.discardTarget(ps)
-		send(b.tg, chatID, "Cancelled. No data moved.")
+		b.reply(chatID, "Cancelled. No data moved.")
 		return
 	}
 
@@ -265,19 +265,19 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 	if sheetsSrc, ok := b.store.(*sheets.Client); ok {
 		if n := sheetsSrc.PendingWrites(); n > 0 {
 			b.discardTarget(ps)
-			send(b.tg, chatID, fmt.Sprintf("Can't migrate — %d sheet write(s) queued since the confirmation was sent. Wait a minute for them to flush, then run /storage again.", n))
+			b.reply(chatID, fmt.Sprintf("Can't migrate — %d sheet write(s) queued since the confirmation was sent. Wait a minute for them to flush, then run /storage again.", n))
 			return
 		}
 	}
 
-	send(b.tg, chatID, "Migrating… this can take a moment.")
+	b.reply(chatID, "Migrating… this can take a moment.")
 	slog.Info("backend migration starting", "target", ps.target)
 
 	migrated, err := storage.Migrate(b.store, ps.dst)
 	if err != nil {
 		b.rollbackTarget(ps)
 		slog.Error("migrating backend", "err", err)
-		send(b.tg, chatID, fmt.Sprintf("Migration failed — nothing changed, still on %s.\n%v\n\nBefore retrying, make sure the target is empty (a fresh sheet, or delete tracker.db).", backendLabel(b.currentBackend()), err))
+		b.reply(chatID, fmt.Sprintf("Migration failed — nothing changed, still on %s.\n%v\n\nBefore retrying, make sure the target is empty (a fresh sheet, or delete tracker.db).", backendLabel(b.currentBackend()), err))
 		return
 	}
 
@@ -285,7 +285,7 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 	if err != nil {
 		b.rollbackTarget(ps)
 		slog.Error("loading config after migration", "err", err)
-		send(b.tg, chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
+		b.reply(chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
 		return
 	}
 	cfg.Setup.StorageBackend = &ps.target
@@ -296,7 +296,7 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 	if err := config.SaveConfig(b.configPath, cfg); err != nil {
 		b.rollbackTarget(ps)
 		slog.Error("saving config after migration", "err", err)
-		send(b.tg, chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
+		b.reply(chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
 		return
 	}
 
@@ -307,11 +307,11 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 	// handle so the file isn't held open across the restart.
 	closeStore(ps.dst)
 
-	send(b.tg, chatID, fmt.Sprintf("✅ Migrated %d cash sessions, %d tournaments, and %d ledger entries to %s — bankroll verified equal. Restarting tracker in a moment…",
+	b.reply(chatID, fmt.Sprintf("✅ Migrated %d cash sessions, %d tournaments, and %d ledger entries to %s — bankroll verified equal. Restarting tracker in a moment…",
 		len(migrated.CashSessions), len(migrated.Tournaments), len(migrated.Ledger), backendLabel(ps.target)))
 	if err := selfRestart(b.configPath); err != nil {
 		slog.Error("restarting tracker after backend switch", "err", err)
-		send(b.tg, chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
+		b.reply(chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
 		return
 	}
 	os.Exit(0)

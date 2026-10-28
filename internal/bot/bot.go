@@ -93,6 +93,11 @@ type conversation struct {
 	// sending a new one.
 	menuMessageID int
 
+	// Replies to a menu action replace its message. Background notifications
+	// use sendMessage and never read this update-goroutine-only state.
+	menuReplyMessageID int
+	menuReplyPath      string
+
 	// resumeFlow names the flow (see ensureScreenName) to start once the
 	// screen-name recovery prompt is answered.
 	resumeFlow string
@@ -403,6 +408,10 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	chatID := cb.Message.Chat.ID
 	messageID := cb.Message.MessageID
 	data := cb.Data
+	if !strings.HasPrefix(data, "menu:") {
+		b.menuReplyMessageID = 0
+		b.menuReplyPath = ""
+	}
 
 	switch {
 	case strings.HasPrefix(data, "satellite_cash:"):
@@ -424,6 +433,9 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 
 // handleCommand dispatches a slash command to its handler.
 func (b *Bot) handleCommand(msg *tgbotapi.Message) {
+	// Typed commands get standalone replies, even after a menu action.
+	b.menuReplyMessageID = 0
+	b.menuReplyPath = ""
 	chatID := msg.Chat.ID
 	switch msg.Command() {
 	case "start":
