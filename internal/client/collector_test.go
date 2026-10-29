@@ -210,7 +210,7 @@ func TestCollectorRescan(t *testing.T) {
 	}
 
 	link := transport.NewLink()
-	c := NewCollector(link, filepath.Join(dir, "lockfile.json"), nil)
+	c := NewCollector(link, NewEnforcer(filepath.Join(dir, "lockfile.json")), nil)
 	go c.rescan(configPath, nil)
 
 	var got []transport.Upload

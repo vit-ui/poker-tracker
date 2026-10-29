@@ -8,6 +8,15 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Cash tables finish after 2 minutes 30 seconds of quiet. Pending snapshots and
+  activity times survive interruption; recovered files resynchronize without
+  restarting an unchanged quiet period or duplicating a stored session.
+- Hard-stop requests and collector receipts persist across restart and lost
+  acknowledgements. Replaying the same trigger preserves its expiry, including
+  after it has expired; distinct new financial triggers still enforce.
+- Manual hard stops bypass storage work and remain responsive during blocked
+  uploads. Existing locks enforce before combined-mode backend initialization.
+
 - Cash corrections after backend migration recognize both historical session-ID
   formats and preserve the existing session and ledger IDs instead of appending
   another result. New cash rows use one shared identity calculation.

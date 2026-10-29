@@ -284,6 +284,11 @@ func runServe() {
 	// comment for why the build flag alone wasn't enough in practice.
 	hideConsole()
 
+	// Existing protection must start before any network-backed startup work.
+	enforcer := client.NewEnforcer(lockfilePath)
+	enforcer.EnforceActive()
+	go enforcer.Run(make(chan struct{}))
+
 	// Construct the storage backend (shared with the split server via
 	// internal/backend). On the sheets path this blocks in EnsureSheetID until a
 	// sheet is configured; the watcher/server/bot goroutines can't run without a
@@ -358,24 +363,21 @@ func runServe() {
 	if err != nil {
 		panic("creating server: " + err.Error())
 	}
-	go srv.Run()
+	go func() { err := srv.Run(); slog.Error("server worker stopped", "err", err); os.Exit(1) }()
 
-	collector := client.NewCollector(link, lockfilePath, collectionControl)
+	collector := client.NewCollector(link, enforcer, collectionControl)
 	go collector.Run(sessionChan, configPath, nil) // nil dead: the in-process link never drops
-
-	// Runs for the life of this process — the done channel is never closed,
-	// since RunEnforcementLoop is only meant to stop when --serve itself
-	// exits.
-	go client.RunEnforcementLoop(lockfilePath, make(chan struct{}))
 
 	// All-local: a manual /hardstop trigger enforces inline, exactly as before
 	// the split — same client.Enforce (taskkill + write the local lockfile), no
 	// change in behavior. The split server instead sends the lock down the link.
-	sendLock := func(lock config.LockFile) { client.Enforce(lockfilePath, lock) }
 
 	// A /scan backfill is triggered the same way in both builds: send a rescan
 	// command down the link, which the collector (here, in-process) turns into a
 	// walk of the watched folders.
+	sendLock := func(lock config.LockFile) {
+		link.Commands <- transport.Command{Kind: transport.CommandLock, Lock: &lock}
+	}
 	requestRescan := func() { link.Commands <- transport.Command{Kind: transport.CommandRescan} }
 
 	go func() {

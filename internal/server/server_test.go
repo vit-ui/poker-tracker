@@ -219,6 +219,7 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	defer store.Close()
 	date := time.Date(2026, 7, 21, 23, 21, 0, 0, time.UTC)
 	tourney := func(id string, buyIn float64, finishPos, players int, net float64) parsers.Tournament {
 		return parsers.Tournament{
@@ -973,12 +974,12 @@ func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 // TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
 // signals the table's FileID once the quiet period elapses.
 func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
-	timers := make(map[string]*time.Timer)
-	sessionEnd := make(chan string, 10)
+	timers := make(map[string]*cashTimer)
+	sessionEnd := make(chan cashEndSignal, 10)
 
-	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd)
+	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd, nil)
 
-	got, ok := waitForString(t, sessionEnd, 500*time.Millisecond)
+	got, ok := waitForCashSignal(t, sessionEnd, 500*time.Millisecond)
 	if !ok {
 		t.Fatal("expected a session-end signal after the quiet period, got none")
 	}
@@ -991,21 +992,21 @@ func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
 // period elapses (a new hand at the same table) cancels the pending signal and
 // collapses to exactly one session-end.
 func TestArmCashSessionEnd_ResetOnNewHand(t *testing.T) {
-	timers := make(map[string]*time.Timer)
-	sessionEnd := make(chan string, 10)
+	timers := make(map[string]*cashTimer)
+	sessionEnd := make(chan cashEndSignal, 10)
 
-	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd)
+	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd, nil)
 	time.Sleep(30 * time.Millisecond)
-	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd)
+	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd, nil)
 
-	got, ok := waitForString(t, sessionEnd, 500*time.Millisecond)
+	got, ok := waitForCashSignal(t, sessionEnd, 500*time.Millisecond)
 	if !ok {
 		t.Fatal("expected one session-end after the quiet period, got none")
 	}
 	if got != "table-a.txt" {
 		t.Errorf("got %q, want %q", got, "table-a.txt")
 	}
-	if _, ok := waitForString(t, sessionEnd, 200*time.Millisecond); ok {
+	if _, ok := waitForCashSignal(t, sessionEnd, 200*time.Millisecond); ok {
 		t.Error("expected only one session-end for a table that kept getting new hands, got a second")
 	}
 }
@@ -1013,15 +1014,15 @@ func TestArmCashSessionEnd_ResetOnNewHand(t *testing.T) {
 // TestArmCashSessionEnd_IndependentPerTable confirms two different tables each
 // get their own independent timer — re-arming one must never cancel another.
 func TestArmCashSessionEnd_IndependentPerTable(t *testing.T) {
-	timers := make(map[string]*time.Timer)
-	sessionEnd := make(chan string, 10)
+	timers := make(map[string]*cashTimer)
+	sessionEnd := make(chan cashEndSignal, 10)
 
-	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd)
-	armCashSessionEnd(timers, "table-b.txt", 50*time.Millisecond, sessionEnd)
+	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd, nil)
+	armCashSessionEnd(timers, "table-b.txt", 50*time.Millisecond, sessionEnd, nil)
 
 	seen := map[string]bool{}
 	for i := 0; i < 2; i++ {
-		got, ok := waitForString(t, sessionEnd, 500*time.Millisecond)
+		got, ok := waitForCashSignal(t, sessionEnd, 500*time.Millisecond)
 		if !ok {
 			t.Fatal("expected two independent session-end signals, got fewer")
 		}
@@ -1055,18 +1056,18 @@ func TestEndCashSession_PrunesTimer(t *testing.T) {
 	}
 
 	const fileID = `C:\hh\table.txt`
-	summaryTimers := make(map[string]*time.Timer)
-	sessionEnd := make(chan string, 1)
+	summaryTimers := make(map[string]*cashTimer)
+	sessionEnd := make(chan cashEndSignal, 1)
 	// Long quiet period: the timer stays active (won't fire during the test), so
 	// endCashSession's Stop() is what deactivates it — provable below.
-	armCashSessionEnd(summaryTimers, fileID, time.Hour, sessionEnd)
+	armCashSessionEnd(summaryTimers, fileID, time.Hour, sessionEnd, nil)
 	timer := summaryTimers[fileID]
 
 	pendingSessions := map[string]parsers.CashSession{
 		fileID: {Date: storage.AsStoredClock(time.Now()), Stake: "NL2", BuyInUSD: 2, NetUSD: -1, Hands: 10, DurationMin: 8, FirstHandID: "h1"},
 	}
 	firedAlerts := make(map[string]bool)
-	srv.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, func(string, int) {})
+	srv.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, func(string, int, string) {})
 
 	if _, ok := summaryTimers[fileID]; ok {
 		t.Error("summaryTimers entry not pruned — the per-table timer leaks")
@@ -1366,5 +1367,15 @@ func TestBlipMessage(t *testing.T) {
 				t.Errorf("blipMessage(%d, %d) = %q, want %q", c.before, c.after, got, c.want)
 			}
 		})
+	}
+}
+
+func waitForCashSignal(t *testing.T, ch <-chan cashEndSignal, wait time.Duration) (string, bool) {
+	t.Helper()
+	select {
+	case signal := <-ch:
+		return signal.FileID, true
+	case <-time.After(wait):
+		return "", false
 	}
 }

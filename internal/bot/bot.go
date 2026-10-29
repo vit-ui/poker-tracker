@@ -41,6 +41,7 @@ var apiEndpoint = tgbotapi.APIEndpoint
 // worker-side alert evaluators (alerts.go) run on the worker goroutine,
 // which has no Bot, and stay plain functions too.
 type Bot struct {
+	sendLock           func(config.LockFile)
 	updateID           int
 	migrating          bool
 	worker             chan<- storage.Operation
@@ -54,14 +55,7 @@ type Bot struct {
 	dbPath             string
 	restartWatcher     func()
 
-	// sendLock carries out a manual /hardstop trigger's lock. The caller
-	// supplies it so the bot doesn't care where enforcement happens: the
-	// all-local build passes the same inline client.Enforce it always used
-	// (unchanged behavior), the split server passes a send down the link to the
-	// remote collector. The bot only builds the lock and hands it over.
-	sendLock func(config.LockFile)
-
-	// requestRescan triggers a /scan backfill. Like sendLock, the caller
+	// requestRescan triggers a /scan backfill. The caller
 	// supplies it: both builds send a CommandRescan down the link, which the
 	// collector (in-process or remote) turns into a walk of the watched folders.
 	// The bot only asks; the collector does the walk and the server records.
@@ -190,19 +184,23 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			// day windows fire on, so "Monday 09:00" is the player's, not the
 			// server host's.
 			if active == nil && len(b.pendingOperations) == 0 {
-				if client, ok := b.store.(*sheets.Client); ok && client.PendingWrites() > 0 {
-					b.queueOperation(func(store storage.Store) storage.OperationResult {
-						client := store.(*sheets.Client)
+				b.queueOperation(func(store storage.Store) storage.OperationResult {
+					if client, ok := store.(*sheets.Client); ok && client.PendingWrites() > 0 {
 						before := client.PendingWrites()
 						client.DrainPendingWrites()
 						return storage.OperationResult{Recovered: before - client.PendingWrites()}
-					}, func(result storage.OperationResult) {
-						if result.Recovered > 0 {
-							b.sendMessage(fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", result.Recovered))
-						}
-					})
-				}
+					}
+					return storage.OperationResult{}
+				}, func(result storage.OperationResult) {
+					if result.Recovered > 0 {
+						b.sendMessage(fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", result.Recovered))
+					}
+				})
+				request := &b.pendingOperations[len(b.pendingOperations)-1].request
+				request.FinalizeCash = true
+				request.RetryHardstops = true
 			}
+
 			realNow := time.Now()
 			now := b.now()
 			if realNow.Sub(lastHeartbeatCheck) >= 30*time.Minute {
@@ -382,6 +380,10 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	}
 
 	if b.migrating {
+		if msg := update.Message; msg != nil && msg.IsCommand() && msg.Command() == "hardstop" && strings.TrimSpace(msg.CommandArguments()) == "trigger" {
+			b.handleHardstopCommand(senderChatID, "trigger")
+			return
+		}
 		if update.CallbackQuery != nil {
 			if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Storage migration is in progress. Try again after restart.")); err != nil {
 				slog.Error("answering callback during migration", "err", err)

@@ -7,6 +7,8 @@ package storage
 // rollback. Resumed must then be buffered once to receive the resume outcome.
 type Operation struct {
 	PrepareMigration bool
+	FinalizeCash     bool
+	RetryHardstops   bool
 	Release          <-chan struct{}
 	Resumed          chan error
 	Apply            func(Store) OperationResult

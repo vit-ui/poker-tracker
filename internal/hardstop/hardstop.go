@@ -377,8 +377,14 @@ func BuildTrigger(reason string, durationHours int, now time.Time) (config.LockF
 		Reason:        reason,
 		DurationHours: durationHours,
 	}
-	alert := fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reasonPhrase(reason), expiresAt.Local().Format("2006-01-02 15:04"))
+	alert := LockMessage(lock, time.Local)
 	return lock, alert
+}
+
+// LockMessage formats the collector-confirmed lock instead of a speculative
+// retry expiry. Split mode supplies the collector's observed timezone.
+func LockMessage(lock config.LockFile, location *time.Location) string {
+	return fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reasonPhrase(lock.Reason), lock.ExpiresAt.In(location).Format("2006-01-02 15:04"))
 }
 
 // reasonPhrase turns a lockfile reason key into the plain-language line the

@@ -22,6 +22,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -106,7 +107,7 @@ func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 	// so the session-end write/eval/summary fires within the test's deadline.
 	srv.QuietPeriod = 150 * time.Millisecond
 	go srv.Run()
-	collector := client.NewCollector(link, lockfilePath, nil)
+	collector := client.NewCollector(link, client.NewEnforcer(lockfilePath), nil)
 	go collector.Run(sessionChan, configPath, nil)
 	go client.RunEnforcementLoop(lockfilePath, done)
 
@@ -356,6 +357,9 @@ func TestPipeline_TwoFileCorrelationKnockout(t *testing.T) {
 // tiny so the small committed fixture loss ($0.03) crosses it; session loss is
 // date-agnostic, so this runs end-to-end without a now-relative window.
 func TestPipeline_HardStopSessionLoss(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("real enforcement requires the coordinated owned-process native harness")
+	}
 	buyins := 0.01 // threshold = 0.01 buy-ins * $2 (NL2) = $0.02, below the $0.03 loss
 	hours := 1
 	cfg := &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: &buyins, DurationHours: &hours}}
@@ -517,7 +521,7 @@ func TestPipeline_ScanBackfill(t *testing.T) {
 	// The real collector: its applyCommands loop turns the CommandRescan into a
 	// folder walk. A never-closed sessionChan (no watcher here) is fine — the
 	// scan is command-driven.
-	collector := client.NewCollector(link, filepath.Join(dir, "lockfile.json"), nil)
+	collector := client.NewCollector(link, client.NewEnforcer(filepath.Join(dir, "lockfile.json")), nil)
 	go collector.Run(make(chan watcher.FileEvent), configPath, nil)
 
 	var mu sync.Mutex

@@ -102,7 +102,9 @@ func runServe() {
 
 	// Enforce a still-active lock immediately on startup (e.g. after a restart
 	// mid-lockout), independent of the server connection.
-	go client.RunEnforcementLoop(lockfilePath, make(chan struct{}))
+
+	enforcer := client.NewEnforcer(lockfilePath)
+	enforcer.EnforceActive()
 
 	link, dead, err := transport.DialServer(info)
 	if err != nil {
@@ -111,7 +113,8 @@ func runServe() {
 	}
 	slog.Info("connected to the server", "addr", info.Address())
 
-	collector := client.NewCollector(link, lockfilePath, watcherControl.SetPaused)
+	collector := client.NewCollector(link, enforcer, watcherControl.SetPaused)
+	go collector.RunEnforcementLoop(dead)
 	collector.Run(sessionChan, configPath, dead) // blocks until the link drops
 	slog.Error("server connection lost — exiting for the service manager to restart and reconnect")
 	os.Exit(1)

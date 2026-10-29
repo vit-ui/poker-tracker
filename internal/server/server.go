@@ -35,11 +35,11 @@ import (
 // the session once and runs the ledger-based hard stops, alerts, and summary —
 // the same time-gap technique poker trackers use to detect a session boundary.
 // (The session-loss hard stop and alert still run per hand, from the in-memory
-// session, so a bleeding session is stopped mid-play.) 5 minutes trades a
+// session, so a bleeding session is stopped mid-play.) 150 seconds trades a
 // faster session record after quitting against a higher chance of a mid-session
 // break tripping it early (a resumed table then re-writes on the next quiet
 // period — an idempotent upsert).
-const cashSessionSummaryQuietPeriod = 5 * time.Minute
+const cashSessionSummaryQuietPeriod = 150 * time.Second
 
 // parseEntry is one file's carried incremental-parse state plus when it was
 // last touched, so idle entries can be evicted (see parseStateCap/TTL).
@@ -170,7 +170,7 @@ func (s *Server) reconstruct(up transport.Upload) (string, error) {
 // Run is the worker loop: it receives uploads, reconstructs and parses each
 // file, writes storage, and evaluates the hard stop and alerts. It blocks until
 // the link's Uploads channel is closed.
-func (s *Server) Run() {
+func (s *Server) Run() error {
 	defer os.RemoveAll(s.workDir)
 	// summaryTimers holds one quiet-period timer per cash table (FileID). A new
 	// hand resets its table's timer; when the table goes quiet the timer signals
@@ -178,14 +178,44 @@ func (s *Server) Run() {
 	// ledger-based evaluation (endCashSession). Both the map and pendingSessions
 	// are touched only on this goroutine — the timer callback merely sends on the
 	// channel — so no mutex is needed.
-	summaryTimers := make(map[string]*time.Timer)
+	summaryTimers := make(map[string]*cashTimer)
 	defer func() {
 		for _, timer := range summaryTimers {
 			timer.Stop()
 		}
 	}()
 	pendingSessions := make(map[string]parsers.CashSession)
-	sessionEndChan := make(chan string)
+	sessionEndChan := make(chan cashEndSignal)
+	workerDone := make(chan struct{})
+	defer close(workerDone)
+	journalPath := filepath.Join(filepath.Dir(s.configPath), "pending_cash.json")
+	activity := make(map[string]time.Time)
+	clocks := make(map[string]time.Time)
+	resyncPending := make(map[string]bool)
+	recoveredSnapshots := make(map[string]config.PendingCash)
+	resyncRequested := false
+	recovered, err := config.LoadPendingCash(journalPath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range recovered {
+		pendingSessions[entry.FileID] = entry.Session
+		activity[entry.FileID] = entry.LastActivity
+		clocks[entry.FileID] = entry.ClientClock
+		s.updateClock(entry.ClientClock)
+		resyncPending[entry.FileID] = true
+		recoveredSnapshots[entry.FileID] = entry
+		remaining := remainingCashQuiet(s.QuietPeriod, entry.LastActivity, time.Now())
+		armCashSessionEnd(summaryTimers, entry.FileID, remaining, sessionEndChan, workerDone)
+	}
+	persistPending := func() error {
+		entries := make([]config.PendingCash, 0, len(pendingSessions))
+		for file, session := range pendingSessions {
+			entries = append(entries, config.PendingCash{FileID: file, Session: session, LastActivity: activity[file], ClientClock: clocks[file]})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].FileID < entries[j].FileID })
+		return config.SavePendingCash(journalPath, entries)
+	}
 
 	// firedAlerts dedups the streak/daily/stake alert evaluations: multiple cash
 	// sessions in one poker day each reach endCashSession, and those conditions,
@@ -214,12 +244,68 @@ func (s *Server) Run() {
 	// enforce turns a hard-stop decision into its two effects: the alert goes to
 	// Telegram, and a lock command goes down the link to the collector, which
 	// kills PokerStars and writes the lockfile. hardstop only decides.
-	enforce := func(reason string, durationHours int) {
-		lock, alert := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
-		s.link.Commands <- transport.Command{Kind: transport.CommandLock, Lock: &lock}
-		s.alertChan <- alert
+	deliveriesPath := filepath.Join(filepath.Dir(s.configPath), "hardstop_deliveries.json")
+	deliveries, err := config.LoadHardstopDeliveries(deliveriesPath)
+	if err != nil {
+		return err
+	}
+	sentLocks := make(map[string]bool)
+	lockFailures := make(map[string]bool)
+	deliveriesDirty := false
+	saveDeliveries := func() error {
+		merged, err := config.MergeHardstopDeliveries(deliveriesPath, deliveries)
+		if err == nil {
+			deliveries = merged
+		}
+		return err
+	}
+	refreshDeliveries := func() {
+		stored, err := config.LoadHardstopDeliveries(deliveriesPath)
+		if err != nil {
+			slog.Error("refreshing hard-stop deliveries", "err", err)
+			return
+		}
+		for id, entry := range stored {
+			if _, known := deliveries[id]; !known || entry.Confirmed {
+				deliveries[id] = entry
+			}
+		}
 	}
 
+	enforce := func(reason string, durationHours int, id string) {
+		if _, known := deliveries[id]; known {
+			return
+		}
+		lock, _ := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
+		lock.TriggerID = id
+		deliveries[id] = config.HardstopDelivery{Lock: lock}
+		if err := saveDeliveries(); err != nil {
+			deliveriesDirty = true
+			slog.Error("persisting outgoing hard stop", "err", err)
+			s.alertChan <- "⚠️ Could not save the hard-stop delivery locally. Protection is being requested; keep the tracker running and check logs."
+		} else {
+			deliveriesDirty = false
+		}
+	}
+
+	finalizeCash := func(fileID string) error {
+		snapshot, present := pendingSessions[fileID]
+		if err := s.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, enforce); err != nil {
+			return err
+		}
+		if deliveriesDirty && present {
+			// The financial write succeeded, but its safety intent is not durable yet.
+			// Retain recovery material until the existing maintenance tick saves it.
+			pendingSessions[fileID] = snapshot
+			if err := persistPending(); err != nil {
+				return err
+			}
+			return fmt.Errorf("cash recorded but hard-stop delivery could not be persisted")
+		}
+		delete(activity, fileID)
+		delete(clocks, fileID)
+		return persistPending()
+	}
 	var pendingCollection *collectionOperation
 	recordDrainFailure := func(err error) {
 		if err != nil && pendingCollection != nil && pendingCollection.command.Kind == transport.CommandPauseCollection {
@@ -235,7 +321,7 @@ func (s *Server) Run() {
 	for {
 		var operations <-chan storage.Operation
 		var uploads <-chan transport.Upload
-		var endings <-chan string
+		var endings <-chan cashEndSignal
 		var release <-chan struct{}
 		var commands chan<- transport.Command
 		var command transport.Command
@@ -256,10 +342,52 @@ func (s *Server) Run() {
 				command = pendingCollection.command
 			}
 		}
+		select {
+		case <-s.link.CollectorDone():
+		default:
+			ids := make([]string, 0)
+			for id, entry := range deliveries {
+				if !entry.Confirmed && !sentLocks[id] {
+					ids = append(ids, id)
+				}
+			}
+			if len(ids) > 0 {
+				sort.Strings(ids)
+				lock := deliveries[ids[0]].Lock
+				commands = s.link.Commands
+				command = transport.Command{Kind: transport.CommandLock, Lock: &lock}
+			}
+		}
+		var resync chan<- transport.Command
+		var resyncCommand transport.Command
+		if len(resyncPending) > 0 && !resyncRequested && pendingCollection == nil && heldOperation == nil {
+			select {
+			case <-s.link.CollectorDone():
+			default:
+				resync = s.link.Commands
+				resyncCommand.Kind = transport.CommandResyncFiles
+				for file := range resyncPending {
+					resyncCommand.Files = append(resyncCommand.Files, file)
+				}
+				sort.Strings(resyncCommand.Files)
+			}
+		}
 		var up transport.Upload
 		select {
+		case <-s.link.ConnectionChanged:
+			sentLocks = make(map[string]bool)
+			resyncRequested = false
+			continue
+		case resync <- resyncCommand:
+			resyncRequested = true
+			continue
+
 		case commands <- command:
-			pendingCollection.sent = true
+			if command.Kind == transport.CommandLock {
+				sentLocks[command.Lock.TriggerID] = true
+			} else {
+				pendingCollection.sent = true
+			}
 			continue
 		case <-disconnected:
 			pendingCollection.finish(collectorFailure())
@@ -272,7 +400,29 @@ func (s *Server) Run() {
 			continue
 		case operation := <-operations:
 			if !operation.PrepareMigration {
-				operation.Reply <- operation.Apply(s.store)
+
+				if operation.RetryHardstops {
+					refreshDeliveries()
+					sentLocks = make(map[string]bool)
+					if deliveriesDirty {
+						if err := saveDeliveries(); err == nil {
+							deliveriesDirty = false
+						} else {
+							slog.Error("persisting queued hard-stop deliveries", "err", err)
+						}
+					}
+				}
+				result := operation.Apply(s.store)
+				if operation.FinalizeCash {
+					for file := range pendingSessions {
+						if time.Since(activity[file]) >= s.QuietPeriod {
+							if err := finalizeCash(file); err != nil {
+								slog.Error("finalizing recovered cash after Sheets drain", "err", err)
+							}
+						}
+					}
+				}
+				operation.Reply <- result
 				continue
 			}
 			done := s.link.CollectorDone()
@@ -284,17 +434,57 @@ func (s *Server) Run() {
 			}
 			pendingCollection = &collectionOperation{operation: operation, command: transport.Command{Kind: transport.CommandPauseCollection, RequestID: nextRequestID()}, disconnected: done}
 			continue
-		case fileID := <-endings:
+		case signal := <-endings:
+			if summaryTimers[signal.FileID] != signal.Generation {
+				continue
+			}
+			fileID := signal.FileID
 			// A cash table went quiet: write the now-complete session and run
 			// the ledger-based hard stops, alerts, and summary — all on this
 			// goroutine. The per-hand session-loss guard already ran below.
-			s.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, enforce)
+			if err := finalizeCash(fileID); err != nil {
+				slog.Error("finalizing pending cash", "err", err)
+			}
 			continue
 		case u, ok := <-uploads:
 			if !ok {
-				return // link closed → shut down
+				return nil // accepted buffered uploads have drained
 			}
 			up = u
+		}
+
+		if reply := up.LockReply; reply != nil {
+			s.updateClock(up.ClientClock)
+			refreshDeliveries()
+			entry, known := deliveries[reply.TriggerID]
+			if !known || entry.Confirmed {
+				continue
+			}
+			if reply.Error != "" {
+				if !lockFailures[reply.TriggerID] {
+					s.alertChan <- "⚠️ The collector could not complete hard-stop protection. Keep it running and check its logs."
+					lockFailures[reply.TriggerID] = true
+				}
+				continue
+			}
+			delete(lockFailures, reply.TriggerID)
+			if !known || entry.Confirmed {
+				continue
+			}
+			previous := entry
+			entry.Confirmed = true
+			deliveries[reply.TriggerID] = entry
+			if err := saveDeliveries(); err != nil {
+				deliveries[reply.TriggerID] = previous
+				deliveriesDirty = true
+				slog.Error("saving hard-stop acknowledgement", "err", err)
+				continue
+			}
+			deliveriesDirty = false
+			if reply.Lock != nil {
+				s.alertChan <- hardstop.LockMessage(*reply.Lock, s.ClientNow().Location())
+			}
+			continue
 		}
 
 		if reply := up.CollectionReply; reply != nil {
@@ -336,7 +526,7 @@ func (s *Server) Run() {
 				if err != nil {
 					break
 				}
-				if err = s.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, enforce); err != nil {
+				if err = finalizeCash(fileID); err != nil {
 					break
 				}
 			}
@@ -358,6 +548,8 @@ func (s *Server) Run() {
 			pendingCollection = nil
 			continue
 		}
+
+		s.updateClock(up.ClientClock)
 
 		// Import markers bracket a /scan backfill. They carry no bytes and no
 		// screen name, so handle them here, before reconstruct and the
@@ -439,7 +631,24 @@ func (s *Server) Run() {
 					}
 				}
 			}
+			lastActivity := now
+			if up.Recovery {
+				lastActivity = activity[up.FileID]
+				if previous, ok := recoveredSnapshots[up.FileID]; ok && lastActivity.IsZero() {
+					lastActivity = previous.LastActivity
+				}
+				observed := up.FileActivity
+				if observed.After(now) {
+					observed = now
+				}
+				if observed.After(lastActivity) {
+					lastActivity = observed
+				}
+			}
 			var prior *parsers.ParseState
+			if up.Offset == 0 {
+				delete(parseStates, up.FileID)
+			}
 			if e := parseStates[up.FileID]; e != nil {
 				prior = e.state
 			}
@@ -447,18 +656,35 @@ func (s *Server) Run() {
 			if err != nil {
 				recordDrainFailure(err)
 				slog.Error("parsing cash file", "file", up.FileID, "err", err)
+				if _, exists := pendingSessions[up.FileID]; exists {
+					activity[up.FileID] = lastActivity
+					clocks[up.FileID] = up.ClientClock
+					if err := persistPending(); err != nil {
+						return err
+					}
+					armCashSessionEnd(summaryTimers, up.FileID, remainingCashQuiet(s.QuietPeriod, lastActivity, time.Now()), sessionEndChan, workerDone)
+				}
+
 				continue
 			}
 			// newState is always non-nil on the no-error path.
 			parseStates[up.FileID] = &parseEntry{state: newState, lastSeen: now}
 			if session != nil {
+				if previous, known := recoveredSnapshots[up.FileID]; known && up.Recovery {
+					_, pending := pendingSessions[up.FileID]
+					if !pending && !up.FileActivity.After(previous.LastActivity) && sameCashSnapshot(previous.Session, *session) {
+						delete(resyncPending, up.FileID)
+						delete(recoveredSnapshots, up.FileID)
+						continue
+					}
+				}
 				// Per hand, from the in-memory session only — no store write and
 				// no ledger read. The session-loss hard stop is the one guard
 				// that must fire mid-session, and the session-loss alert warns at
 				// its lower threshold before it. The write, the ledger-based hard
 				// stops/alerts, and the summary all run once the table goes quiet
 				// (endCashSession, via the sessionEndChan timer below).
-				if err := hardstop.EvaluateSessionLoss(*session, &evalCfg, enforce); err != nil {
+				if err := hardstop.EvaluateSessionLoss(*session, &evalCfg, automaticEnforcement(&evalCfg, evalNow, session, nil, nil, nil, enforce)); err != nil {
 					recordDrainFailure(err)
 					slog.Error("evaluating session-loss hard stop", "err", err)
 				}
@@ -475,7 +701,14 @@ func (s *Server) Run() {
 				// quiet-period timer; the last hand's session is what gets
 				// written when the table falls quiet.
 				pendingSessions[up.FileID] = *session
-				armCashSessionEnd(summaryTimers, up.FileID, s.QuietPeriod, sessionEndChan)
+				activity[up.FileID] = lastActivity
+				clocks[up.FileID] = up.ClientClock
+				if err := persistPending(); err != nil {
+					return fmt.Errorf("journaling processed cash: %w", err)
+				}
+				delete(resyncPending, up.FileID)
+				delete(recoveredSnapshots, up.FileID)
+				armCashSessionEnd(summaryTimers, up.FileID, remainingCashQuiet(s.QuietPeriod, lastActivity, time.Now()), sessionEndChan, workerDone)
 			} else if tourneyStats != nil {
 				before := sheetsPending(s.store)
 				if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
@@ -561,7 +794,7 @@ func (s *Server) Run() {
 			// configured.
 			ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
 			bankroll := ledgerBankroll(ledger)
-			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, evalNow, enforce); err != nil {
+			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, evalNow, automaticEnforcement(&evalCfg, evalNow, nil, &t, ledger, dayTournaments, enforce)); err != nil {
 				recordDrainFailure(err)
 				slog.Error("evaluating hard stop", "err", err)
 			}
@@ -783,12 +1016,25 @@ func sameTournamentContent(a, b parsers.Tournament) bool {
 // writes the session (endCashSession). The map is touched only by the worker
 // goroutine (this function and endCashSession); the timer callback merely sends
 // on the channel, so no mutex is needed.
-func armCashSessionEnd(timers map[string]*time.Timer, fileID string, quietPeriod time.Duration, sessionEndChan chan<- string) {
-	if t, ok := timers[fileID]; ok {
-		t.Stop()
+// A cashTimer object is a unique generation token, including across deletion
+// and later reuse of the same file ID. Callbacks never mutate worker state.
+type cashTimer struct{ *time.Timer }
+type cashEndSignal struct {
+	FileID     string
+	Generation *cashTimer
+}
+
+func armCashSessionEnd(timers map[string]*cashTimer, fileID string, quietPeriod time.Duration, sessionEndChan chan<- cashEndSignal, done <-chan struct{}) {
+	if previous := timers[fileID]; previous != nil {
+		previous.Stop()
 	}
-	timers[fileID] = time.AfterFunc(quietPeriod, func() {
-		sessionEndChan <- fileID
+	generation := &cashTimer{}
+	timers[fileID] = generation
+	generation.Timer = time.AfterFunc(quietPeriod, func() {
+		select {
+		case sessionEndChan <- cashEndSignal{FileID: fileID, Generation: generation}:
+		case <-done:
+		}
 	})
 }
 
@@ -801,7 +1047,7 @@ func armCashSessionEnd(timers map[string]*time.Timer, fileID string, quietPeriod
 // this table's quiet-period timer alongside its pending session. Runs on the
 // worker goroutine, so pendingSessions/summaryTimers/firedAlerts stay
 // single-threaded.
-func (s *Server) endCashSession(fileID string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*time.Timer, firedAlerts map[string]bool, enforce func(reason string, durationHours int)) error {
+func (s *Server) endCashSession(fileID string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*cashTimer, firedAlerts map[string]bool, enforce func(reason string, durationHours int, triggerID string)) error {
 	session, ok := pendingSessions[fileID]
 	if !ok {
 		return nil
@@ -849,7 +1095,7 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 	// after the write, so the ledger includes the session just recorded.
 	ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
 	bankroll := ledgerBankroll(ledger)
-	if err := hardstop.Evaluate(session, &evalCfg, ledger, dayTournaments, evalNow, enforce); err != nil {
+	if err := hardstop.Evaluate(session, &evalCfg, ledger, dayTournaments, evalNow, automaticEnforcement(&evalCfg, evalNow, &session, nil, ledger, dayTournaments, enforce)); err != nil {
 		slog.Error("evaluating hard stop", "err", err)
 	}
 	bot.EvaluateDownswingAlert(session.BuyInUSD, &evalCfg, ledger, bankroll, evalNow, s.alertChan)
@@ -965,4 +1211,19 @@ func tournamentAlertText(t parsers.Tournament, netUSD, bankroll float64) string 
 func cashSessionSummaryText(session parsers.CashSession, bankroll float64) string {
 	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
 		session.Stake, bot.FormatSignedUSD(session.NetUSD), session.Hands, session.DurationMin, bankroll)
+}
+
+func remainingCashQuiet(quiet time.Duration, lastActivity, now time.Time) time.Duration {
+	elapsed := now.Sub(lastActivity)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return quiet - elapsed
+}
+
+func sameCashSnapshot(a, b parsers.CashSession) bool {
+	sameDate := a.Date.Equal(b.Date)
+	a.Date = time.Time{}
+	b.Date = time.Time{}
+	return sameDate && a == b
 }

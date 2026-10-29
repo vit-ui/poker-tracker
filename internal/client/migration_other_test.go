@@ -16,7 +16,7 @@ func TestUnsupportedCollectorCannotConfirmPokerStarsClosure(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfigWithScreenName(t, dir, "AnonHero01")
 	link := transport.NewLink()
-	collector := NewCollector(link, filepath.Join(dir, "lockfile.json"), func(bool) ([]watcher.FileEvent, error) {
+	collector := NewCollector(link, NewEnforcer(filepath.Join(dir, "lockfile.json")), func(bool) ([]watcher.FileEvent, error) {
 		t.Error("unsupported process check paused collection")
 		return nil, nil
 	})

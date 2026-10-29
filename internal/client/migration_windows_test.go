@@ -94,7 +94,7 @@ func TestCollectorMigrationPauseDrainAndResume(t *testing.T) {
 			if _, err := control.SetPaused(false); err != nil {
 				t.Fatal(err)
 			}
-			collector := NewCollector(collectorLink, filepath.Join(dir, "lockfile.json"), control.SetPaused)
+			collector := NewCollector(collectorLink, NewEnforcer(filepath.Join(dir, "lockfile.json")), control.SetPaused)
 			collectorStopped := make(chan struct{})
 			go func() { collector.Run(events, configPath, collectorDead); close(collectorStopped) }()
 			defer func() {

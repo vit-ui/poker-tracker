@@ -206,9 +206,9 @@ func TestFailedCashPersistenceRetainsPendingSnapshot(t *testing.T) {
 	defer os.RemoveAll(server.workDir)
 	store.Close()
 	pending := map[string]parsers.CashSession{"table": {Date: time.Now(), FirstHandID: "pending-hand", NetUSD: -1, BuyInUSD: 2}}
-	timers := map[string]*time.Timer{"table": time.NewTimer(time.Hour)}
+	timers := map[string]*cashTimer{"table": &cashTimer{Timer: time.NewTimer(time.Hour)}}
 	defer timers["table"].Stop()
-	if err := server.endCashSession("table", pending, timers, map[string]bool{}, func(string, int) { t.Fatal("failed persistence evaluated enforcement") }); err == nil {
+	if err := server.endCashSession("table", pending, timers, map[string]bool{}, func(string, int, string) { t.Fatal("failed persistence evaluated enforcement") }); err == nil {
 		t.Fatal("closed storage accepted pending cash")
 	}
 	if len(pending) != 1 || pending["table"].FirstHandID != "pending-hand" || len(timers) != 1 {

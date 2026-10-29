@@ -159,18 +159,18 @@ func runServe() {
 		slog.Error("creating server", "err", err)
 		os.Exit(1)
 	}
-	go srv.Run()
+	go func() { err := srv.Run(); slog.Error("server worker stopped", "err", err); os.Exit(1) }()
 
 	// A hard-stop decision (manual via the bot, or automatic in the server) is
 	// sent down the link to the collector, which kills PokerStars and writes the
 	// lockfile on the poker PC.
-	sendLock := func(lock config.LockFile) {
-		link.Commands <- transport.Command{Kind: transport.CommandLock, Lock: &lock}
-	}
 
 	// A /scan backfill sends a rescan command down the link; the remote
 	// collector walks the poker PC's folders and uploads them for a silent
 	// import.
+	sendLock := func(lock config.LockFile) {
+		link.Commands <- transport.Command{Kind: transport.CommandLock, Lock: &lock}
+	}
 	requestRescan := func() {
 		link.Commands <- transport.Command{Kind: transport.CommandRescan}
 	}

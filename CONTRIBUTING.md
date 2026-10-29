@@ -126,6 +126,17 @@ go test ./internal/parsers/...      # one package
 - Cash upserts recognize both historical backend identity formats and preserve
   existing IDs. Keep canonical and legacy key calculations in shared storage
   code; correcting a migrated session must update its original ledger row.
+- Cash quiet timers default to 150 seconds and carry a per-arm generation.
+  Callbacks only signal the worker and cancel when it exits. Config owns atomic
+  `pending_cash.json` replacement; restore per-table activity and resynchronize
+  recovered files without postponing unchanged snapshots. Retire recovery state
+  only after persistence or durable Sheets fallback acceptance.
+- Keep hard-stop trigger identity separate from delivery and expiry. Persist
+  outgoing requests and collector receipts, including expired receipts; replay
+  cannot extend or restart the same trigger. Financial changes remain eligible
+  for new decisions. Manual protection bypasses storage and upload backpressure.
+  Ordinary tests must never terminate a real PokerStars process: actual Windows
+  enforcement requires a coordinated closed-game window and owned dummy process.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

@@ -1450,17 +1450,35 @@ func (b *Bot) startScheduleFlow(chatID int64) {
 // stop; anything else opens the hard-stop menu.
 func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 	if strings.TrimSpace(args) == "trigger" {
-		var alertText string
-		err := hardstop.ManualTrigger(b.configPath, func(reason string, durationHours int) {
-			lock, text := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
-			b.sendLock(lock)
-			alertText = text
+		var requested config.LockFile
+		err := hardstop.ManualTrigger(b.configPath, func(reason string, duration int) {
+			requested, _ = hardstop.BuildTrigger(reason, duration, time.Now().UTC())
+			if b.updateID != 0 {
+				requested.TriggerID = fmt.Sprintf("hardstop:manual:%d:%d:%d", b.tg.Self.ID, chatID, b.updateID)
+			} else {
+				requested.TriggerID = "hardstop:manual:" + rand.Text()
+			}
 		})
 		if err != nil {
 			send(b.tg, chatID, "Configure duration first with /hardstop")
 			return
 		}
-		send(b.tg, chatID, alertText)
+		path := filepath.Join(filepath.Dir(b.configPath), "hardstop_deliveries.json")
+		deliveries, err := config.MergeHardstopDeliveries(path, map[string]config.HardstopDelivery{requested.TriggerID: {Lock: requested}})
+		if err != nil {
+			b.sendLock(requested)
+			slog.Error("saving manual hard-stop request", "err", err)
+			send(b.tg, chatID, "Could not save the request locally. Protection has been requested; keep the tracker running and check logs.")
+			return
+		}
+		delivery := deliveries[requested.TriggerID]
+		if delivery.Confirmed {
+			send(b.tg, chatID, "That hard-stop request was already handled.")
+			return
+		}
+		b.sendLock(delivery.Lock)
+		send(b.tg, chatID, "Hard stop requested.")
+
 		return
 	}
 	b.startHardstopFlow(chatID)

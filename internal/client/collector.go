@@ -20,15 +20,15 @@ import (
 // that come back down. It never parses or stores anything — that's the server's
 // job.
 type Collector struct {
-	link         *transport.Link
-	lockfilePath string
-	control      func(bool) ([]watcher.FileEvent, error)
+	link     *transport.Link
+	enforcer *Enforcer
+	control  func(bool) ([]watcher.FileEvent, error)
 }
 
 // NewCollector creates a Collector over the given link, writing enforced locks
 // to lockfilePath. control pauses/resumes its watcher and returns drained events.
-func NewCollector(link *transport.Link, lockfilePath string, control func(bool) ([]watcher.FileEvent, error)) *Collector {
-	return &Collector{link: link, lockfilePath: lockfilePath, control: control}
+func NewCollector(link *transport.Link, enforcer *Enforcer, control func(bool) ([]watcher.FileEvent, error)) *Collector {
+	return &Collector{link: link, enforcer: enforcer, control: control}
 }
 
 // sentEntry is a file's last-sent byte offset plus when it was last touched, so
@@ -67,7 +67,7 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 	go c.applyCommands(dead, finished, requests)
 	sent := make(map[string]*sentEntry)
 	paused := false
-	upload := func(event watcher.FileEvent) error {
+	upload := func(event watcher.FileEvent, recovery bool) error {
 		now := time.Now()
 		if len(sent) > sentStateCap {
 			for path, entry := range sent {
@@ -80,6 +80,7 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 		if err != nil {
 			return err
 		}
+		up.Recovery = recovery
 		if ok && !c.send(up, dead) {
 			return fmt.Errorf("collector disconnected while draining files")
 		}
@@ -96,6 +97,31 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 		case cmd := <-requests:
 			var err error
 			switch cmd.Kind {
+			case transport.CommandResyncFiles:
+				cfg, err := config.LoadConfig(configPath)
+				if err != nil || cfg.Paths.HandHistory == nil || cfg.Setup.PokerStarsScreenName == nil {
+					slog.Error("cash resync has no configured collection folder", "err", err)
+					continue
+				}
+				directory := filepath.Join(*cfg.Paths.HandHistory, *cfg.Setup.PokerStarsScreenName)
+				expected, err := os.Stat(directory)
+				if err != nil {
+					slog.Error("reading cash resync folder", "err", err)
+					continue
+				}
+				for _, path := range cmd.Files {
+					parent, err := os.Stat(filepath.Dir(path))
+					if err != nil || !os.SameFile(expected, parent) || !strings.EqualFold(filepath.Ext(path), ".txt") {
+						slog.Error("refusing cash resync outside the configured hand-history folder", "file", path)
+						continue
+					}
+					delete(sent, path)
+					if err := upload(watcher.FileEvent{Path: path, Type: "cash"}, true); err != nil {
+						slog.Error("resynchronizing pending cash file", "err", err)
+					}
+				}
+				continue
+
 			case transport.CommandRescan:
 				if !paused {
 					c.rescan(configPath, dead)
@@ -133,13 +159,13 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 							err = errors.Join(err, fmt.Errorf("file collection stopped"))
 							break drain
 						}
-						err = errors.Join(err, upload(event))
+						err = errors.Join(err, upload(event, false))
 					default:
 						break drain
 					}
 				}
 				for _, event := range pending {
-					err = errors.Join(err, upload(event))
+					err = errors.Join(err, upload(event, false))
 				}
 				if err != nil {
 					_, resumeErr := c.control(false)
@@ -167,7 +193,7 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 			if !ok {
 				return
 			}
-			if err := upload(event); err != nil {
+			if err := upload(event, false); err != nil {
 				slog.Error("reading file for upload", "err", err)
 			}
 		}
@@ -179,28 +205,50 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 // lock kills PokerStars and writes the lockfile. File/control requests are
 // forwarded to Run so uploads and pause acknowledgements keep their order.
 func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<- transport.Command) {
+	var pendingRequests []transport.Command
+	var replies []transport.Upload
 	for {
+		var outgoingRequests chan<- transport.Command
+		var request transport.Command
+		if len(pendingRequests) > 0 {
+			outgoingRequests = requests
+			request = pendingRequests[0]
+		}
+		var outgoingReplies chan<- transport.Upload
+		var reply transport.Upload
+		if len(replies) > 0 {
+			outgoingReplies = c.link.Uploads
+			reply = replies[0]
+		}
 		select {
 		case <-dead:
 			return
 		case <-finished:
 			return
-		case cmd, ok := <-c.link.Commands:
+		case outgoingRequests <- request:
+			pendingRequests[0] = transport.Command{}
+			pendingRequests = pendingRequests[1:]
+		case outgoingReplies <- reply:
+			replies[0] = transport.Upload{}
+			replies = replies[1:]
+		case command, ok := <-c.link.Commands:
 			if !ok {
 				return
 			}
-			if cmd.Kind == transport.CommandLock {
-				if cmd.Lock != nil {
-					Enforce(c.lockfilePath, *cmd.Lock)
-				}
+			if command.Kind != transport.CommandLock {
+				pendingRequests = append(pendingRequests, command)
 				continue
 			}
-			select {
-			case requests <- cmd:
-			case <-dead:
-				return
-			case <-finished:
-				return
+			if command.Lock == nil {
+				continue
+			}
+			active, _, err := c.enforcer.Enforce(*command.Lock)
+			if command.Lock.TriggerID != "" {
+				result := &transport.LockReply{TriggerID: command.Lock.TriggerID, Lock: active}
+				if err != nil {
+					result.Error = err.Error()
+				}
+				replies = append(replies, transport.Upload{LockReply: result, ClientClock: time.Now()})
 			}
 		}
 	}
@@ -329,11 +377,15 @@ func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Ti
 	sent[event.Path] = &sentEntry{offset: size, lastSeen: now}
 
 	return transport.Upload{
-		FileID:      event.Path,
-		Type:        event.Type,
-		Offset:      offset,
-		Bytes:       buf,
-		ScreenName:  screenName,
-		ClientClock: time.Now(),
+		FileID:       event.Path,
+		Type:         event.Type,
+		Offset:       offset,
+		Bytes:        buf,
+		ScreenName:   screenName,
+		ClientClock:  time.Now(),
+		FileActivity: info.ModTime(),
 	}, true, nil
 }
+
+// RunEnforcementLoop shares failed-save protection with command handling.
+func (c *Collector) RunEnforcementLoop(done <-chan struct{}) { c.enforcer.Run(done) }

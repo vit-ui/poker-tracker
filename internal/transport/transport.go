@@ -30,7 +30,16 @@ type CollectionReply struct {
 	Error     string
 }
 
+type LockReply struct {
+	TriggerID string
+	Lock      *config.LockFile
+	Error     string
+}
+
 type Upload struct {
+	Recovery        bool
+	FileActivity    time.Time
+	LockReply       *LockReply
 	CollectionReply *CollectionReply
 	FileID          string    // stable identity of the source file (its path on the client)
 	Type            string    // "cash" or "tournament" (or ImportStart/ImportDone marker), matching watcher.FileEvent.Type
@@ -52,12 +61,14 @@ type Upload struct {
 const (
 	CommandLock             = "lock"
 	CommandRescan           = "rescan"
+	CommandResyncFiles      = "resync_files"
 	CommandPauseCollection  = "pause_collection"
 	CommandResumeCollection = "resume_collection"
 )
 
 // Command is sent from the server to the client.
 type Command struct {
+	Files     []string
 	RequestID string
 	Kind      string           // one of the Command constants
 	Lock      *config.LockFile // set when Kind == CommandLock
@@ -67,11 +78,12 @@ type Command struct {
 // flow up (client → server), commands flow down (server → client). Split builds
 // bridge each end to TLS; all-local shares this channel pair directly.
 type Link struct {
-	connectionMu  sync.Mutex
-	collectorDone <-chan struct{}
-	localDone     chan struct{}
-	Uploads       chan Upload
-	Commands      chan Command
+	ConnectionChanged chan struct{}
+	connectionMu      sync.Mutex
+	collectorDone     <-chan struct{}
+	localDone         chan struct{}
+	Uploads           chan Upload
+	Commands          chan Command
 }
 
 // NewLink creates a Link with small buffers, matching the sessionChan/alertChan
@@ -80,10 +92,11 @@ type Link struct {
 func NewLink() *Link {
 	localDone := make(chan struct{})
 	return &Link{
-		collectorDone: localDone,
-		localDone:     localDone,
-		Uploads:       make(chan Upload, 10),
-		Commands:      make(chan Command, 10),
+		ConnectionChanged: make(chan struct{}, 1),
+		collectorDone:     localDone,
+		localDone:         localDone,
+		Uploads:           make(chan Upload, 10),
+		Commands:          make(chan Command, 10),
 	}
 }
 
@@ -100,10 +113,18 @@ func (l *Link) useNetwork() {
 	defer l.connectionMu.Unlock()
 	close(l.localDone)
 	l.collectorDone = l.localDone
+	select {
+	case l.ConnectionChanged <- struct{}{}:
+	default:
+	}
 }
 
 func (l *Link) setCollectorDone(done <-chan struct{}) {
 	l.connectionMu.Lock()
 	defer l.connectionMu.Unlock()
 	l.collectorDone = done
+	select {
+	case l.ConnectionChanged <- struct{}{}:
+	default:
+	}
 }

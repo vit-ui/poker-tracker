@@ -467,6 +467,13 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 			return
 		}
 		if f.Upload != nil {
+			if reply := f.Upload.LockReply; reply != nil && reply.Error == "" {
+				st.mu.Lock()
+				if st.current == framed {
+					st.activeLock = reply.Lock
+				}
+				st.mu.Unlock()
+			}
 			select {
 			case link.Uploads <- *f.Upload:
 			case <-framed.done:

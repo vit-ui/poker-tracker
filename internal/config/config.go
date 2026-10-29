@@ -189,6 +189,7 @@ type Config struct {
 
 // LockFile is the in-memory representation of lockfile.json.
 type LockFile struct {
+	TriggerID     string    `json:"trigger_id,omitempty"`
 	TriggeredAt   time.Time `json:"triggered_at"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	Reason        string    `json:"reason"`
@@ -263,42 +264,47 @@ func SaveConfig(path string, cfg *Config) error {
 func LoadLock(path string) (*LockFile, error) {
 	mu.RLock()
 	defer mu.RUnlock()
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+	state, err := loadLockState(path)
+	if err != nil {
+		return nil, err
+	}
+	if state.ExpiresAt.IsZero() {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("reading lockfile: %w", err)
-	}
-	var lock LockFile
-	if err := json.Unmarshal(data, &lock); err != nil {
-		return nil, fmt.Errorf("parsing lockfile: %w", err)
-	}
+	lock := state.LockFile
 	return &lock, nil
 }
 
-// SaveLock writes lock to path.
+// SaveLock retains trigger receipts while replacing a legacy lock directly.
+// Production enforcement uses ApplyHardstop for atomic replay decisions.
 func SaveLock(path string, lock *LockFile) error {
-	data, err := json.MarshalIndent(lock, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshalling lockfile: %w", err)
-	}
 	mu.Lock()
 	defer mu.Unlock()
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("writing lockfile: %w", err)
+	state, err := loadLockState(path)
+	if err != nil {
+		return err
 	}
-	return nil
+	state.LockFile = *lock
+	return saveLockState(path, state)
 }
 
-// DeleteLock removes lockfile.json at path.
+// DeleteLock clears the active lock without discarding replay receipts. Old
+// installations with no receipts retain their original file-removal behavior.
 func DeleteLock(path string) error {
 	mu.Lock()
 	defer mu.Unlock()
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("deleting lockfile: %w", err)
+	state, err := loadLockState(path)
+	if err != nil {
+		return err
 	}
-	return nil
+	if len(state.Triggers) == 0 {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("deleting lockfile: %w", err)
+		}
+		return nil
+	}
+	state.LockFile = LockFile{}
+	return saveLockState(path, state)
 }
 
 // IsLockExpired reports whether the lock's expiry time is in the past.

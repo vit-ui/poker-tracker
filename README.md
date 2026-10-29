@@ -72,6 +72,22 @@ Legacy ledger rows and fallback entries with blank IDs remain readable; their
 recovery retains the older at-least-once behavior and may duplicate an append
 whose acknowledgement was lost. Equal amounts are never merged.
 
+Cash sessions are recorded after **2 minutes 30 seconds without a table-file
+update**, including updates while you sit out. The tracker saves processed
+pending cash snapshots in `pending_cash.json` beside its configuration. After
+restart it restores each table's remaining interval and asks the collector for
+the whole source file. An unchanged recovery upload keeps the original deadline;
+later corrections update the same stored session. Keep the PokerStars histories:
+they are the recovery source for bytes the tracker never received or processed.
+
+Hard-stop requests and collector receipts are durable. Recovery of the same
+trigger preserves its original expiry and cannot restart an expired lock;
+distinct new financial triggers can still enforce. The collector retains active
+protection independently of connectivity. Keep `lockfile.json` and
+`hardstop_deliveries.json` with the installation when backing it up or upgrading.
+Use matching collector and server versions for recovery acknowledgements and
+whole-file resynchronization; older peers do not support these operations.
+
 ## Using it
 
 Once installed, talk to your bot on Telegram. Every command also has detailed help via `/help <command>`. Expand any entry below for the details:
