@@ -164,6 +164,8 @@ and server versions supporting the pause/acknowledgement protocol.
 Verification compares the copied records and IDs, row counts, independently
 summed ledger amounts and bankroll. Partial tournaments and already-folded
 bounties are copied directly; Sheets retains its minute-level date precision.
+Later cash corrections recognize both historical backend ID formats and retain
+the copied ID, so a resumed or corrected file updates the existing result.
 
 Usage examples:
 - `/storage` — show the active storage

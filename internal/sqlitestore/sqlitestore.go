@@ -6,9 +6,7 @@
 package sqlitestore
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -201,13 +199,9 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// cashSessionID derives a stable identifier for a cash session from its
-// first hand's timestamp and PokerStars Hand #, the same role TournamentID
-// plays for tournaments. Mirrors sheets.cashSessionID; the two backends'
-// values need not match each other since an install never switches backends.
+// cashSessionID is the canonical key used for new rows by both backends.
 func cashSessionID(date time.Time, firstHandID string) string {
-	sum := sha256.Sum256([]byte(date.UTC().Format(dateFormat) + "|" + firstHandID))
-	return hex.EncodeToString(sum[:])[:12]
+	return storage.CashSessionIdentities(date, firstHandID)[0]
 }
 
 // write serializes a complete mutation on the store's single connection and
@@ -239,7 +233,28 @@ func (s *Store) AppendCashSession(session parsers.CashSession) error {
 }
 
 func (s *Store) appendCashSession(tx *sql.Tx, session parsers.CashSession) error {
-	id := cashSessionID(session.Date, session.FirstHandID)
+	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
+	id := keys[0]
+	rows, err := tx.Query("SELECT session_id FROM cash_sessions WHERE session_id IN (?,?)", keys[0], keys[1])
+	if err != nil {
+		return fmt.Errorf("resolving cash identity: %w", err)
+	}
+	count := 0
+	for rows.Next() {
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		count++
+	}
+	rowErr := rows.Err()
+	rows.Close()
+	if rowErr != nil {
+		return rowErr
+	}
+	if count > 1 {
+		return fmt.Errorf("cash session has conflicting legacy identities")
+	}
 
 	if err := s.upsertCashSessionsRow(tx, id, session); err != nil {
 		return err

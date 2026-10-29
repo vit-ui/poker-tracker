@@ -8,6 +8,10 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Cash corrections after backend migration recognize both historical session-ID
+  formats and preserve the existing session and ledger IDs instead of appending
+  another result. New cash rows use one shared identity calculation.
+
 - Deposits and withdrawals use stable, namespaced operation IDs in both stores,
   exports, migration and durable Sheets fallback. Recovery reconciles remotely
   accepted writes before replay; equal intentional deposits stay distinct.

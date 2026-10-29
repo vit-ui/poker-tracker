@@ -123,6 +123,9 @@ go test ./internal/parsers/...      # one package
   its remote write, and retire the queue entry only after success. Keep pending
   entries visible if queue-file replacement fails; use the existing worker/ticker
   and Sheets quota pacing for recovery.
+- Cash upserts recognize both historical backend identity formats and preserve
+  existing IDs. Keep canonical and legacy key calculations in shared storage
+  code; correcting a migrated session must update its original ledger row.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

@@ -3,8 +3,6 @@
 package sheets
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -252,21 +250,10 @@ func (c *Client) getLastRunningTotal() (float64, error) {
 	return parseFloat(last[0]), nil
 }
 
-// CashSessionID derives a stable identifier for a cash session from its
-// first hand's timestamp and PokerStars Hand ID. Both are fixed the moment
-// the first hand in the file is parsed and never change as PokerStars keeps
-// appending later hands to the same file, so re-parsing the growing file on
-// every hand always yields the same ID — the same role TournamentID plays
-// for tournaments, but cash hand histories carry no single-field session
-// identifier of their own to key off of directly. Exported so cmd/tracker can
-// attach the same Session ID shown in the sheet to a Telegram error about a
-// specific session; on a sqlite-backend install this value won't match the
-// stored session_id (sqlitestore.cashSessionID uses its own, independent
-// formula) — it's still a stable per-session fingerprint there, just not a
-// literal lookup key.
+// CashSessionID retains the historical Sheets fingerprint for fallback keys
+// and legacy callers. Stored rows recognize both historical identity formats.
 func CashSessionID(date time.Time, firstHandID string) string {
-	sum := sha256.Sum256([]byte(date.Format(dateFormat) + "|" + firstHandID))
-	return hex.EncodeToString(sum[:])[:12]
+	return storage.CashSessionIdentities(date, firstHandID)[1]
 }
 
 // findRowByColumnValue searches column columnLetter of tab for a row whose
@@ -296,15 +283,33 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 // Mirrors AppendTournament's find-or-append pattern, applied to both tabs a
 // cash session touches rather than just one.
 func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
-	id := CashSessionID(session.Date, session.FirstHandID)
-
-	if err := c.upsertCashSessionsRow(id, session); err != nil {
+	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
+	id := keys[0]
+	response, err := c.svc.valuesGet(c.spreadsheetID, "Cash Sessions!J:J")
+	if err != nil {
+		return fmt.Errorf("resolving cash identity: %w", err)
+	}
+	rowIndex := 0
+	for i, row := range response.Values {
+		if i == 0 || len(row) == 0 {
+			continue
+		}
+		value := fmt.Sprint(row[0])
+		if value == keys[0] || value == keys[1] {
+			if rowIndex != 0 {
+				return fmt.Errorf("cash session has conflicting legacy identities")
+			}
+			rowIndex = i + 1
+			id = value
+		}
+	}
+	if err := c.upsertCashSessionsRow(id, session, rowIndex); err != nil {
 		return err
 	}
 	return c.upsertLedgerCashSessionRow(id, session.Date, session.NetUSD)
 }
 
-func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession) error {
+func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession, rowIndex int) error {
 	values := []interface{}{
 		session.Date.Format(dateFormat),
 		session.Stake,
@@ -317,11 +322,7 @@ func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession) e
 		session.PFR,
 		id,
 	}
-	rowIndex, found, err := c.findRowByColumnValue("Cash Sessions", "J", id)
-	if err != nil {
-		return err
-	}
-	if !found {
+	if rowIndex == 0 {
 		return c.appendRow("Cash Sessions", values)
 	}
 	rangeStr := fmt.Sprintf("Cash Sessions!A%d:J%d", rowIndex, rowIndex)
