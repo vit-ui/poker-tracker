@@ -8,6 +8,16 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Concurrent storage writes preserve ledger amounts and running totals. SQLite
+  commits each session, tournament, bounty correction or money movement in one
+  transaction; a failed ledger write rolls back the associated result changes.
+  Sheets serializes complete mutation sequences, including fallback replay.
+- Backend migration verifies destination records, stable IDs and independently
+  summed ledger amounts, in addition to counts and bankroll. It detects altered
+  amounts even when copied running totals match, while preserving partial
+  tournaments, folded bounties and the documented Sheets date precision.
+- Reject NaN and infinite amounts or thresholds before saving them. Both
+  storage backends also validate numeric inputs before writes or fallback updates.
 - Windows setup and uninstall stop tracker processes by their executable's
   installation directory instead of terminating every tracker installation.
   Early setup reads configuration and credentials from the selected directory.

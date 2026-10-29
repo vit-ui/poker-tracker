@@ -26,6 +26,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // commaAsDecimal lets every plain-text amount typed into the bot — /deposit,
@@ -48,8 +49,8 @@ func parsePositiveFloat(s string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if v <= 0 {
-		return 0, fmt.Errorf("must be positive")
+	if v <= 0 || storage.ValidateNumbers(v) != nil {
+		return 0, fmt.Errorf("must be positive and finite")
 	}
 	return v, nil
 }

@@ -1,6 +1,9 @@
 package config_test
 
 import (
+	"bytes"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +11,33 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 )
+
+func TestSaveConfigRejectsNonFiniteWithoutChangingFile(t *testing.T) {
+	for _, invalid := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		t.Run(fmt.Sprint(invalid), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			cfg := &config.Config{}
+			if err := config.SaveConfig(path, cfg); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Alerts.DailyLossUSD = &invalid
+			if err := config.SaveConfig(path, cfg); err == nil {
+				t.Fatal("saved a non-finite threshold")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("rejected threshold changed config")
+			}
+		})
+	}
+}
 
 func TestLoadConfig_MissingFileCreatesAllNulls(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")

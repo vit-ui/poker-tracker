@@ -57,6 +57,8 @@ func parseSheetDate(v interface{}) (time.Time, error) {
 // short-lived validation clients bot.go constructs during setup/sheet changes,
 // which never persist a session and so must never touch the fallback file.
 type Client struct {
+	// mutationMu covers complete read/write/replay sequences, not individual HTTP calls.
+	mutationMu    sync.Mutex
 	svc           *restService
 	spreadsheetID string
 
@@ -789,6 +791,11 @@ type ledgerArgs struct {
 // does the Sheets I/O and knows nothing about the fallback, so flush (which
 // calls raw* directly) can never recurse back through here.
 func (c *Client) AppendCashSession(session parsers.CashSession) error {
+	if err := storage.ValidateCashSession(session); err != nil {
+		return err
+	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	if err := c.rawAppendCashSession(session); err != nil {
 		key := fallbackKindCash + ":" + CashSessionID(session.Date, session.FirstHandID)
 		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindCash, Cash: &session})
@@ -803,6 +810,11 @@ func (c *Client) AppendCashSession(session parsers.CashSession) error {
 // rawAppendTournament reads the row's bounty fresh every call and reconciles
 // NetUSD from it, so a re-flush self-corrects regardless of ordering.
 func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
+	if err := storage.ValidateTournament(t); err != nil {
+		return 0, err
+	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	netUSD, err := c.rawAppendTournament(t)
 	if err != nil {
 		key := fallbackKindSummary + ":" + t.TournamentID
@@ -816,6 +828,11 @@ func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
 // UpdateTournamentHandStats wraps rawUpdateTournamentHandStats with the same
 // cache-on-failure / flush-on-success shape.
 func (c *Client) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
+	if err := storage.ValidateNumbers(vpip, pfr, bountyUSD); err != nil {
+		return err
+	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	if err := c.rawUpdateTournamentHandStats(tournamentID, vpip, pfr, hands, bountyUSD, isKnockout); err != nil {
 		key := fallbackKindStats + ":" + tournamentID
 		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{
@@ -888,8 +905,9 @@ func (c *Client) cacheFailed(key string, entry fallbackEntry) {
 // flush replays every queued entry against the sheet, deleting each that
 // resolves (replayed successfully, or discarded as superseded). Holds
 // fallbackMu across the whole loop — for a single-user tool, serializing the
-// two writer goroutines through one flush is simpler than any finer scheme and
-// costs nothing. A no-op when disabled or empty.
+// fallback accounting. Public mutations hold mutationMu across the original
+// operation and this replay; startup calls it before publishing the client.
+// A no-op when disabled or empty.
 func (c *Client) flush() {
 	if c.fallbackPath == "" {
 		return
@@ -1035,6 +1053,11 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 // commits server-side but whose response is lost, a narrow edge worth far less
 // than the silent-loss it replaces.
 func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
+	if err := storage.ValidateNumbers(amountUSD); err != nil {
+		return err
+	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	if err := c.rawAppendLedgerEntry(entryType, amountUSD, now); err != nil {
 		key := fmt.Sprintf("%s:%d", fallbackKindLedger, now.UnixNano())
 		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindLedger, Ledger: &ledgerArgs{
@@ -1318,6 +1341,8 @@ func (c *Client) GetAllTournaments() ([]storage.TournamentRecord, error) {
 // backend migration. Unlike GetAllTournaments its Tournaments slice keeps
 // partial rows (blank Date), read via allTournamentRows.
 func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	cash, err := c.GetAllCashSessions()
 	if err != nil {
 		return storage.Snapshot{}, err
@@ -1345,6 +1370,11 @@ func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
 // and Prize Won are stored as-read, never recomputed. The caller
 // (storage.Migrate) guarantees the tabs hold only their header row first.
 func (c *Client) ImportSnapshot(snap storage.Snapshot) error {
+	if err := storage.ValidateSnapshot(snap); err != nil {
+		return err
+	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	if rows := buildCashRows(snap.CashSessions); len(rows) > 0 {
 		if err := c.svc.valuesAppend(c.spreadsheetID, "Cash Sessions!A1", rows); err != nil {
 			return fmt.Errorf("importing cash sessions: %w", err)
@@ -1458,6 +1488,8 @@ func (c *Client) PendingWrites() int {
 // leaving the header rows. Used to roll a spreadsheet back to empty after a
 // failed migration import, so a retry passes the empty-target check.
 func (c *Client) ClearAllData() error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	for _, tab := range []string{"Cash Sessions", "Tournaments", "Bankroll Ledger"} {
 		if err := c.svc.valuesClear(c.spreadsheetID, tab+"!A2:Z"); err != nil {
 			return fmt.Errorf("clearing %s: %w", tab, err)

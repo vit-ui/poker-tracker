@@ -102,6 +102,13 @@ go test ./internal/parsers/...      # one package
   hand-rolled REST client rather than the official SDK.
 - The two storage backends (Sheets and SQLite) must stay behaviorally
   identical — same semantics, same date formats, same `/export` output.
+- Keep SQLite mutation reads, result writes and ledger cascades inside the
+  same transaction. In Sheets, hold the mutation lock through the complete
+  operation and fallback replay; HTTP quota pacing alone does not serialize
+  a read followed by a write.
+- Migration copies raw records and verifies independently read destination
+  amounts and identities. Preserve partial tournaments and nil-versus-zero
+  fields; allow the documented minute precision when Sheets participates.
 
 ## Commits
 

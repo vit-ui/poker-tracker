@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -110,4 +112,87 @@ func CascadeRunningTotals(amounts []float64, newAmount, base float64) []float64 
 // already a time.Local instant) while making the anchored split correct.
 func AsStoredClock(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
+}
+
+func ledgerSum(rows []LedgerEntry) float64 {
+	var sum float64
+	for _, row := range rows {
+		sum += row.AmountUSD
+	}
+	return sum
+}
+
+func sameNumber(a, b, tolerance float64) bool {
+	return !math.IsNaN(a) && !math.IsNaN(b) && !math.IsInf(a, 0) && !math.IsInf(b, 0) && math.Abs(a-b) <= tolerance
+}
+
+func sameOptionalNumber(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return sameNumber(*a, *b, 1e-9)
+}
+
+func sameDate(a, b time.Time, precision time.Duration) bool {
+	return a.UTC().Truncate(precision).Equal(b.UTC().Truncate(precision))
+}
+
+// ValidateNumbers rejects NaN and infinities before they reach config or storage.
+func ValidateNumbers(values ...float64) error {
+	for i, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("numeric value %d must be finite", i+1)
+		}
+	}
+	return nil
+}
+
+// ValidateCashSession checks the numeric fields used by both backends.
+func ValidateCashSession(session parsers.CashSession) error {
+	return ValidateNumbers(session.BuyInUSD, session.NetUSD, session.RakeUSD, session.BB100, session.VPIP, session.PFR)
+}
+
+// ValidateTournament preserves optional values while checking every number.
+func ValidateTournament(tournament parsers.Tournament) error {
+	if err := ValidateNumbers(tournament.BuyInUSD, tournament.NetUSD, tournament.PrizePoolUSD); err != nil {
+		return err
+	}
+	for _, value := range []*float64{tournament.Multiplier, tournament.VPIP, tournament.PFR} {
+		if value != nil {
+			if err := ValidateNumbers(*value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateSnapshot checks a raw snapshot before any import writes are made.
+func ValidateSnapshot(snapshot Snapshot) error {
+	for _, session := range snapshot.CashSessions {
+		if err := ValidateCashSession(session.CashSession); err != nil {
+			return fmt.Errorf("cash session %s: %w", session.SessionID, err)
+		}
+	}
+	for _, tournament := range snapshot.Tournaments {
+		if err := ValidateTournament(tournament.Tournament); err != nil {
+			return fmt.Errorf("tournament %s: %w", tournament.TournamentID, err)
+		}
+		if err := ValidateNumbers(tournament.BountyWonUSD, tournament.PrizeWonUSD); err != nil {
+			return fmt.Errorf("tournament %s winnings: %w", tournament.TournamentID, err)
+		}
+	}
+	for i, entry := range snapshot.Ledger {
+		if err := ValidateNumbers(entry.AmountUSD, entry.RunningTotal); err != nil {
+			return fmt.Errorf("ledger entry %d: %w", i+1, err)
+		}
+	}
+	return ValidateNumbers(ledgerSum(snapshot.Ledger))
+}
+
+func sameOptionalInt(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
