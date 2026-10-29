@@ -8,6 +8,12 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Sheet and credential changes drain accepted collection and worker writes before
+  restarting the correct service. Sheet changes refuse queued old-sheet writes
+  and finish cash there first. Credentials stage and validate the replacement;
+  invalid keys preserve the previous key and sheet, and failed restart helpers
+  restore previous settings before resuming collection.
+
 - Combined, collector and server services share bounded rotating file logs and
   discard logging if the file cannot open. Unexpected required bot or collector
   termination exits with failure so service-manager recovery can take effect.

@@ -127,19 +127,21 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 					c.rescan(configPath, dead)
 				}
 				continue
-			case transport.CommandPauseCollection:
+			case transport.CommandPauseCollection, transport.CommandDrainCollection:
 				if paused {
 					err = fmt.Errorf("collection is already paused")
 					break
 				}
-				running, checkErr := pokerStarsRunning()
-				if checkErr != nil {
-					err = checkErr
-					break
-				}
-				if running {
-					err = fmt.Errorf("close PokerStars before changing storage")
-					break
+				if cmd.Kind == transport.CommandPauseCollection {
+					running, checkErr := pokerStarsRunning()
+					if checkErr != nil {
+						err = checkErr
+						break
+					}
+					if running {
+						err = fmt.Errorf("close PokerStars before changing storage")
+						break
+					}
 				}
 				if c.control == nil {
 					err = fmt.Errorf("collection pause is unavailable")

@@ -143,6 +143,11 @@ go test ./internal/parsers/...      # one package
   executable directory's rotating log and discard on open failure. Keep required
   bot/worker/collector failures visible as nonzero process exits; a running PID
   must not conceal a terminated required component.
+- Configuration restarts pause and drain collection before changing startup
+  settings; credentials preserve pending cash deadlines, while a sheet change
+  finalizes cash in the source sheet and refuses queued writes. Keep the worker
+  held through restart or restored settings and acknowledged resume. Offline
+  preparation drains already queued uploads before applying the change.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

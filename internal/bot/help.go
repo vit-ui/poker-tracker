@@ -104,8 +104,8 @@ var commandHelp = map[string]string{
 		"No arguments. Records silently — no per-session summaries, no hard stops, no alerts. Tournaments that need an answer (satellite ticket-vs-cash, or a freeroll buy-in) are skipped and counted; play or re-open those in live to record them. Safe to run more than once — already-stored sessions aren't duplicated. You'll get one message with the counts when it finishes. On the Google Sheets backend a large first scan can take a few minutes to fully sync (Sheets rate-limits writes); your data is never lost, and re-running /scan once it settles reports the full totals.",
 	"credentials": "Swaps the Google service account credentials file used to access Sheets/Drive.\n" +
 		"Usage: /credentials — then send the google_service_account.json file as an attachment, or type skip to cancel.\n" +
-		"If a sheet is already configured, it's re-checked against the new credentials — if it's no longer reachable (not shared with the new service account, or a different Google Cloud project entirely), the sheet is cleared from config and you'll need to run /sheet again.\n" +
-		"Requires a restart of the tracker service to take effect.\n" +
+		"The new key is checked against the current sheet before replacement. If validation fails, the existing key and sheet are kept.\n" +
+		"On Sheets, accepted work drains before the service restarts automatically. A failed restart helper restores the old key.\n" +
 		"On the local-file backend, this is how you provide the credentials /storage needs before migrating to Google Sheets.",
 	"screenname": "Gets or changes your PokerStars screen name (exact capitalisation matters).\n" +
 		"Usage: /screenname [name]\n" +

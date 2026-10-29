@@ -63,6 +63,7 @@ const (
 	CommandRescan           = "rescan"
 	CommandResyncFiles      = "resync_files"
 	CommandPauseCollection  = "pause_collection"
+	CommandDrainCollection  = "drain_collection"
 	CommandResumeCollection = "resume_collection"
 )
 

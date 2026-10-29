@@ -163,6 +163,10 @@ Usage example: `/scan`
 
 Two jobs in one command: viewing and **switching spreadsheets**. With no argument, replies with the current spreadsheet's URL. With a sheet name or a pasted URL, switches the tracker to that spreadsheet — access is validated (and any missing tabs created) before anything is saved, then the service restarts itself to pick up the change. On the local-file backend there is no sheet; the command points you to `/export` instead.
 
+The current sheet's queued writes must sync first. Before switching, collection
+drains and pending cash finishes against the old sheet. An automatic restart
+failure restores the previous setting before collection resumes.
+
 Usage examples:
 - `/sheet` — show the current spreadsheet URL
 - `/sheet My Other Bankroll` — switch to a different sheet by name
@@ -205,7 +209,7 @@ Usage examples:
 <details>
 <summary><code>/credentials</code> — swap the Google service account key</summary>
 
-Send the new `google_service_account.json` as an attachment, or type `skip` to keep the current one. On the Google Sheets backend the current sheet is re-checked against the new credentials, and if the new account can't reach it you're prompted to reconnect one with `/sheet`; takes effect after a service restart. On the local-file backend this is how you provide the credentials `/storage` needs before migrating to Google Sheets.
+Send the new `google_service_account.json` as an attachment, or type `skip` to keep the current one. On the Google Sheets backend the upload is staged and checked against the current sheet. If validation fails, the old key and sheet stay unchanged. A valid replacement drains accepted work, preserves pending cash and restarts the service; restart-helper failure restores the previous key before collection resumes. On the local-file backend the key is saved without a restart, ready for `/storage` migration to Google Sheets.
 
 Usage example: `/credentials` — then attach the JSON file
 </details>

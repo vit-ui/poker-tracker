@@ -385,11 +385,11 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 			return
 		}
 		if update.CallbackQuery != nil {
-			if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Storage migration is in progress. Try again after restart.")); err != nil {
+			if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "A configuration change is in progress. Try again after restart.")); err != nil {
 				slog.Error("answering callback during migration", "err", err)
 			}
 		} else {
-			send(b.tg, senderChatID, "Storage migration is in progress. This command was not accepted; try again after restart.")
+			send(b.tg, senderChatID, "A configuration change is in progress. This command was not accepted; try again after restart.")
 		}
 		return
 	}

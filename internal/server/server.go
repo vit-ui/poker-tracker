@@ -307,18 +307,63 @@ func (s *Server) Run() error {
 		return persistPending()
 	}
 	var pendingCollection *collectionOperation
+	var offlinePreparation *storage.Operation
+	var offlineDrainError error
 	recordDrainFailure := func(err error) {
-		if err != nil && pendingCollection != nil && pendingCollection.command.Kind == transport.CommandPauseCollection {
+		if err != nil && pendingCollection != nil && pendingCollection.command.Kind != transport.CommandResumeCollection {
 			pendingCollection.result.Err = errors.Join(pendingCollection.result.Err, err)
+		}
+		if err != nil && offlinePreparation != nil {
+			offlineDrainError = errors.Join(offlineDrainError, err)
 		}
 	}
 	var heldOperation *storage.Operation
+	heldCollectionPaused := false
+	prepareRestart := func(operation storage.Operation) error {
+		if operation.PrepareMigration || operation.FinalizeAllCash {
+			ids := make([]string, 0, len(pendingSessions))
+			for id := range pendingSessions {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				if err := finalizeCash(id); err != nil {
+					return err
+				}
+			}
+		}
+		return persistPending()
+	}
 	var requestSequence uint64
 	nextRequestID := func() string {
 		requestSequence++
 		return fmt.Sprintf("migration-%d", requestSequence)
 	}
 	for {
+		if offlinePreparation != nil && len(s.link.Uploads) == 0 {
+			operation := *offlinePreparation
+			done := s.link.CollectorDone()
+			select {
+			case <-done:
+				result := storage.OperationResult{Err: offlineDrainError}
+				if result.Err == nil {
+					result.Err = prepareRestart(operation)
+				}
+				if result.Err == nil {
+					result = operation.Apply(s.store)
+				}
+				if result.Err == nil {
+					heldOperation = &operation
+					heldCollectionPaused = false
+				}
+				operation.Reply <- result
+			default:
+				pendingCollection = &collectionOperation{operation: operation, command: transport.Command{Kind: transport.CommandDrainCollection, RequestID: nextRequestID()}, disconnected: done, result: storage.OperationResult{Err: offlineDrainError}}
+			}
+			offlinePreparation = nil
+			offlineDrainError = nil
+			continue
+		}
 		var operations <-chan storage.Operation
 		var uploads <-chan transport.Upload
 		var endings <-chan cashEndSignal
@@ -329,7 +374,7 @@ func (s *Server) Run() error {
 		if heldOperation == nil {
 			uploads = s.link.Uploads
 			endings = sessionEndChan
-			if pendingCollection == nil {
+			if pendingCollection == nil && offlinePreparation == nil {
 				operations = s.Operations
 			}
 		} else {
@@ -360,7 +405,7 @@ func (s *Server) Run() error {
 		}
 		var resync chan<- transport.Command
 		var resyncCommand transport.Command
-		if len(resyncPending) > 0 && !resyncRequested && pendingCollection == nil && heldOperation == nil {
+		if len(resyncPending) > 0 && !resyncRequested && pendingCollection == nil && offlinePreparation == nil && heldOperation == nil {
 			select {
 			case <-s.link.CollectorDone():
 			default:
@@ -394,12 +439,17 @@ func (s *Server) Run() error {
 			pendingCollection = nil
 			continue
 		case <-release:
+			if !heldCollectionPaused {
+				heldOperation.Resumed <- nil
+				heldOperation = nil
+				continue
+			}
 			pendingCollection = &collectionOperation{operation: *heldOperation, replied: true}
 			pendingCollection.resume(nextRequestID(), s.link.CollectorDone())
 			heldOperation = nil
 			continue
 		case operation := <-operations:
-			if !operation.PrepareMigration {
+			if !operation.PrepareMigration && !operation.PrepareRestart {
 
 				if operation.RetryHardstops {
 					refreshDeliveries()
@@ -428,11 +478,18 @@ func (s *Server) Run() error {
 			done := s.link.CollectorDone()
 			select {
 			case <-done:
+				if operation.PrepareRestart && !operation.PrepareMigration {
+					offlinePreparation = &operation
+					continue
+				}
 				operation.Reply <- storage.OperationResult{Err: collectorFailure()}
 				continue
 			default:
 			}
 			pendingCollection = &collectionOperation{operation: operation, command: transport.Command{Kind: transport.CommandPauseCollection, RequestID: nextRequestID()}, disconnected: done}
+			if operation.PrepareRestart && !operation.PrepareMigration {
+				pendingCollection.command.Kind = transport.CommandDrainCollection
+			}
 			continue
 		case signal := <-endings:
 			if summaryTimers[signal.FileID] != signal.Generation {
@@ -516,21 +573,11 @@ func (s *Server) Run() error {
 			}
 			// Every drained upload preceding the reply has now been processed. Flush
 			// all current table snapshots before taking the raw source snapshot.
-			fileIDs := make([]string, 0, len(pendingSessions))
-			for fileID := range pendingSessions {
-				fileIDs = append(fileIDs, fileID)
-			}
-			sort.Strings(fileIDs)
 			err := pendingCollection.result.Err
-			for _, fileID := range fileIDs {
-				if err != nil {
-					break
-				}
-				if err = finalizeCash(fileID); err != nil {
-					break
-				}
+			if err == nil {
+				err = prepareRestart(pendingCollection.operation)
 			}
-			if err == nil && sheetsPending(s.store) > 0 {
+			if err == nil && pendingCollection.operation.PrepareMigration && sheetsPending(s.store) > 0 {
 				err = fmt.Errorf("source has pending Sheets writes; wait for recovery before migrating")
 			}
 			if err != nil {
@@ -544,6 +591,7 @@ func (s *Server) Run() error {
 			}
 			operation := pendingCollection.operation
 			heldOperation = &operation
+			heldCollectionPaused = true
 			operation.Reply <- pendingCollection.result
 			pendingCollection = nil
 			continue

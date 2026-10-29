@@ -5,13 +5,17 @@ package bot
 // and screen-name changes.
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/sheets"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // handleSheetCommand implements /sheet. With no argument, replies with the
@@ -25,10 +29,8 @@ import (
 // the already-running store for the rest of this process's life (the store
 // is a required non-nil dependency threaded through goroutines that are
 // already running, and hot-swapping it would need a much larger refactor
-// for what's a rare, deliberate action). Instead, once the new sheet ID is
-// saved this process kills itself and restarts the "Poker Tracker"
-// scheduled task via a detached command, so the fresh process picks up the
-// new sheet ID from config.json on startup.
+// for what's a rare, deliberate action). The worker drains collection before
+// saving the new sheet ID and restarting the owning installation's service.
 func (b *Bot) handleSheetCommand(chatID int64, args string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -46,6 +48,10 @@ func (b *Bot) handleSheetCommand(chatID int64, args string) {
 		send(b.tg, chatID, b.store.GetSheetURL())
 		return
 	}
+	if client, ok := b.store.(*sheets.Client); ok && client.PendingWrites() > 0 {
+		send(b.tg, chatID, "Wait for queued writes to sync to the current sheet before changing sheets.")
+		return
+	}
 
 	name, id, err := resolveSheetInput(b.serviceAccountPath, args)
 	if err != nil {
@@ -57,24 +63,21 @@ func (b *Bot) handleSheetCommand(chatID int64, args string) {
 		return
 	}
 
-	cfg.Setup.GoogleSheetName = name
-	cfg.Setup.GoogleSheetID = &id
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-
-	send(b.tg, chatID, "✅ Sheet updated. Restarting tracker in a moment...")
-
-	if err := selfRestart(b.configPath, b.taskName); err != nil {
-		// A live process on stale config beats a dead one — don't exit if
-		// the restart helper never got off the ground.
-		slog.Error("restarting tracker after sheet switch", "err", err)
-		send(b.tg, chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
-		return
-	}
-	os.Exit(0)
+	b.restartConfiguration(chatID, "sheet", true, func(store storage.Store) (func() error, error) {
+		if client, ok := store.(*sheets.Client); ok && client.PendingWrites() > 0 {
+			return nil, fmt.Errorf("queued writes must sync to the current sheet first")
+		}
+		current, err := config.LoadConfig(b.configPath)
+		if err != nil {
+			return nil, err
+		}
+		previous := *current
+		current.Setup.GoogleSheetName, current.Setup.GoogleSheetID = name, &id
+		if err := config.SaveConfig(b.configPath, current); err != nil {
+			return nil, err
+		}
+		return func() error { return config.SaveConfig(b.configPath, &previous) }, nil
+	}, func() {})
 }
 
 // handleScreenNameCommand implements /screenname. With no argument, replies
@@ -145,54 +148,98 @@ func (b *Bot) handleCredentialsTextReply(chatID int64, text string) {
 	send(b.tg, chatID, "Send the google_service_account.json file as an attachment, or type skip.")
 }
 
-// handleCredentialsDocument saves an uploaded google_service_account.json
-// to serviceAccountPath (overwriting whatever was there), then
-// re-validates the currently configured sheet against it. A different
-// service account is very likely a different Google Cloud identity, and a
-// sheet only works if it's been explicitly shared with whichever service
-// account is actually in use — the sheet that worked under the old
-// credentials may well not be reachable under the new ones. If it isn't,
-// the now-unreachable sheet is cleared from config (rather than left
-// pointing at something the tracker can no longer write to) and the
-// player is told to run /sheet to reconnect one. Either way this only
-// touches config.json and the credentials file on disk — same as /sheet,
-// the already-running store isn't affected until the service restarts.
+// handleCredentialsDocument validates an owned staged upload before replacing
+// the live key. Sheets keeps its selected sheet and old key on validation failure.
 func (b *Bot) handleCredentialsDocument(chatID int64, fileID string) {
-	if err := downloadTelegramFile(b.tg, fileID, b.serviceAccountPath); err != nil {
-		slog.Error("downloading credentials file", "err", err)
-		send(b.tg, chatID, "Couldn't download that file. Try again, or type skip.")
+	if err := os.MkdirAll(filepath.Dir(b.serviceAccountPath), 0755); err != nil {
+		send(b.tg, chatID, "Could not prepare credentials storage. Check logs.")
 		return
 	}
-	b.reset()
-
-	cfg, err := config.LoadConfig(b.configPath)
+	staged, err := os.CreateTemp(filepath.Dir(b.serviceAccountPath), "credentials-upload-*.json")
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "✅ Credentials file saved, but something went wrong checking your sheet. Check logs, and run /sheet to reconnect if needed.")
+		send(b.tg, chatID, "Could not prepare credentials storage. Check logs.")
 		return
 	}
-
-	// On the sqlite backend there's no sheet to re-validate — the credentials
-	// exist solely so /storage can migrate to Google Sheets.
-	if cfg.Setup.StorageBackend != nil && *cfg.Setup.StorageBackend == "sqlite" {
+	stagePath := staged.Name()
+	if err := staged.Close(); err != nil {
+		os.Remove(stagePath)
+		send(b.tg, chatID, "Could not prepare credentials storage. Check logs.")
+		return
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			os.Remove(stagePath)
+		}
+	}()
+	if err := downloadTelegramFile(b.tg, fileID, stagePath); err != nil {
+		slog.Error("downloading staged credentials", "err", err)
+		send(b.tg, chatID, "Couldn't download that file. Existing credentials unchanged. Try again, or type skip.")
+		return
+	}
+	bytes, err := os.ReadFile(stagePath)
+	if err != nil || !json.Valid(bytes) {
+		send(b.tg, chatID, "That file is not valid JSON. Existing credentials unchanged.")
+		return
+	}
+	if b.currentBackend() == "sqlite" {
+		if err := os.Rename(stagePath, b.serviceAccountPath); err != nil {
+			send(b.tg, chatID, "Could not save credentials. Existing credentials unchanged. Check logs.")
+			return
+		}
+		b.reset()
 		send(b.tg, chatID, "✅ Credentials file saved. You can now run /storage sheets <sheet name or URL> to migrate to Google Sheets.")
 		return
 	}
-
-	if cfg.Setup.GoogleSheetID == nil {
-		send(b.tg, chatID, "✅ Credentials file saved. Restart the tracker service for this to take effect. No sheet is configured yet — run /sheet to connect one.")
+	cfg, err := config.LoadConfig(b.configPath)
+	if err != nil || cfg.Setup.GoogleSheetID == nil {
+		send(b.tg, chatID, "Could not determine the current sheet. Existing credentials unchanged. Check /sheet and try again.")
 		return
 	}
-
-	if _, err := sheets.NewClient(b.serviceAccountPath, *cfg.Setup.GoogleSheetID, ""); err != nil {
-		cfg.Setup.GoogleSheetID = nil
-		cfg.Setup.GoogleSheetName = nil
-		if saveErr := config.SaveConfig(b.configPath, cfg); saveErr != nil {
-			slog.Error("saving config", "err", saveErr)
+	if _, err := sheets.NewClient(stagePath, *cfg.Setup.GoogleSheetID, ""); err != nil {
+		slog.Error("validating uploaded credentials against current sheet", "err", err)
+		send(b.tg, chatID, "The new credentials could not access the current sheet. Existing credentials and sheet unchanged. Share that sheet with the new service account as Editor, then try again.")
+		return
+	}
+	old, err := os.ReadFile(b.serviceAccountPath)
+	missing := errors.Is(err, os.ErrNotExist)
+	if err != nil && !missing {
+		send(b.tg, chatID, "Could not preserve existing credentials. Nothing changed. Check logs.")
+		return
+	}
+	backupPath := ""
+	if !missing {
+		backup, err := os.CreateTemp(filepath.Dir(b.serviceAccountPath), "credentials-previous-*.json")
+		if err != nil {
+			send(b.tg, chatID, "Could not preserve existing credentials. Nothing changed. Check logs.")
+			return
 		}
-		send(b.tg, chatID, "✅ Credentials file saved, but your current sheet isn't accessible with it — it needs to be shared with the new service account, or you're pointing at a different Google Cloud project entirely. Run /sheet to connect a sheet this service account can reach.")
-		return
+		backupPath = backup.Name()
+		_, writeErr := backup.Write(old)
+		closeErr := backup.Close()
+		if err := errors.Join(writeErr, closeErr); err != nil {
+			os.Remove(backupPath)
+			send(b.tg, chatID, "Could not preserve existing credentials. Nothing changed. Check logs.")
+			return
+		}
 	}
-
-	send(b.tg, chatID, "✅ Credentials file saved. Your existing sheet is still accessible with it. Restart the tracker service for this to take effect.")
+	cleanup := func() {
+		os.Remove(stagePath)
+		if backupPath != "" {
+			os.Remove(backupPath)
+		}
+	}
+	retained = true
+	b.reset()
+	b.restartConfiguration(chatID, "credentials", false, func(storage.Store) (func() error, error) {
+		if err := os.Rename(stagePath, b.serviceAccountPath); err != nil {
+			return nil, err
+		}
+		return func() error {
+			if missing {
+				return os.Remove(b.serviceAccountPath)
+			}
+			return os.Rename(backupPath, b.serviceAccountPath)
+		}, nil
+	}, cleanup)
 }

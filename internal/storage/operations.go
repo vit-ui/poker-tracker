@@ -5,8 +5,12 @@ package storage
 // PrepareMigration first pauses/drains collection and finalizes pending cash.
 // On success the worker stays held until restart, or Release is closed after
 // rollback. Resumed must then be buffered once to receive the resume outcome.
+// PrepareRestart drains collection without requiring PokerStars to close and
+// preserves pending cash, unless FinalizeAllCash is set for a sheet change.
 type Operation struct {
 	PrepareMigration bool
+	PrepareRestart   bool
+	FinalizeAllCash  bool
 	FinalizeCash     bool
 	RetryHardstops   bool
 	Release          <-chan struct{}
