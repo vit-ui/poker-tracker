@@ -18,6 +18,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
@@ -38,12 +39,18 @@ func init() {
 }
 
 func main() {
+	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
 	serve := flag.Bool("serve", false, "run the collector")
 	setup := flag.Bool("setup", false, "configure folders, screen name, and the server connection string")
 	checkLock := flag.Bool("check-lock", false, "check the local lockfile and exit (0 = clear, 1 = locked)")
 	flag.Parse()
 
 	switch {
+	case *stopInstallation != "":
+		if err := installation.Stop(*stopInstallation); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case *serve:
 		runServe()
 	case *setup:

@@ -16,6 +16,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
@@ -23,6 +24,9 @@ import (
 
 // BotToken is injected at build time via -ldflags "-X main.BotToken=...".
 var BotToken string
+
+// InstallationID is injected into disposable builds; production leaves it empty.
+var InstallationID string
 
 // serviceAccountPath, configPath, and lockfilePath are resolved relative to
 // the directory tracker.exe itself lives in — never the process's current
@@ -33,10 +37,8 @@ var BotToken string
 // C:\poker-tracker (this actually happened: schtasks /Run in runSetup
 // launched --serve with cwd=System32, which read/wrote a fresh, empty
 // config.json there instead of the real one, making it look like the
-// sheet and credentials were never configured). The installer always
-// installs to a fixed, non-user-selectable directory (setup.iss:
-// DefaultDirName=C:\poker-tracker), so wherever tracker.exe itself is is
-// always the right anchor, regardless of who launched it or how.
+// sheet and credentials were never configured). The executable directory
+// also keeps disposable installations separate from the working installation.
 var (
 	serviceAccountPath string
 	configPath         string
@@ -61,12 +63,18 @@ func init() {
 }
 
 func main() {
+	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
 	serve := flag.Bool("serve", false, "run the background service")
 	checkLock := flag.Bool("check-lock", false, "check lockfile state and exit")
 	setup := flag.Bool("setup", false, "run setup wizard via Telegram bot")
 	flag.Parse()
 
 	switch {
+	case *stopInstallation != "":
+		if err := installation.Stop(*stopInstallation); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case *checkLock:
 		runCheckLock()
 	case *setup:
@@ -100,18 +108,9 @@ func runCheckLock() {
 }
 
 func runSetup() {
-	// Kills any previously-running tracker.exe --serve before starting the
-	// wizard — found the hard way: MultipleInstancesPolicy=IgnoreNew (both
-	// task XML templates) means schtasks /Run below silently no-ops if an
-	// old instance is still alive, so a stale process from an earlier
-	// setup keeps running with old config forever, never picking up
-	// what this run is about to write. The stale process also risks
-	// polling the same bot token concurrently with bot.RunSetup below.
-	// /FI excludes this process's own PID — taskkill /IM tracker.exe
-	// would otherwise kill itself, since this process is also named
-	// tracker.exe.
-	_, _ = exec.Command("taskkill.exe", "/F", "/IM", "tracker.exe",
-		"/FI", fmt.Sprintf("PID ne %d", os.Getpid())).CombinedOutput()
+	if err := installation.Stop(filepath.Dir(configPath)); err != nil {
+		panic("stopping this installation before setup: " + err.Error())
+	}
 
 	bot.RunSetup(BotToken, configPath, serviceAccountPath)
 
@@ -141,7 +140,7 @@ func runSetup() {
 
 	if out, err := exec.Command("schtasks.exe",
 		"/Create",
-		"/TN", "Poker Tracker",
+		"/TN", installation.TaskName(InstallationID, false),
 		"/XML", xmlFile.Name(),
 		"/F",
 	).CombinedOutput(); err != nil {
@@ -151,7 +150,7 @@ func runSetup() {
 	// Starts the service now instead of leaving the player to reboot or
 	// start it manually. Not fatal if it fails — the task is already
 	// registered and will still run on the next logon — so this only logs.
-	if out, err := exec.Command("schtasks.exe", "/Run", "/TN", "Poker Tracker").CombinedOutput(); err != nil {
+	if out, err := exec.Command("schtasks.exe", "/Run", "/TN", installation.TaskName(InstallationID, false)).CombinedOutput(); err != nil {
 		slog.Error("starting task scheduler entry", "err", err, "output", string(out))
 	}
 	os.Exit(0)
@@ -374,7 +373,7 @@ func runServe() {
 	go func() {
 		// All-local: server and collector share this machine's clock, so the
 		// read-side date windows anchor to time.Now — unchanged behavior.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false))
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit

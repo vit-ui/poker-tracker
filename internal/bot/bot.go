@@ -41,6 +41,7 @@ var apiEndpoint = tgbotapi.APIEndpoint
 // worker-side alert evaluators (alerts.go) run on the worker goroutine,
 // which has no Bot, and stay plain functions too.
 type Bot struct {
+	taskName           string
 	tg                 *tgbotapi.BotAPI
 	store              storage.Store
 	configPath         string
@@ -114,13 +115,15 @@ func (c *conversation) reset() {
 // serviceAccountPath is only used by /sheet, /credentials, and /storage
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time) error {
+// taskName identifies the Windows role and installation for configuration restarts.
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
 	}
 
 	b := &Bot{
+		taskName:           taskName,
 		tg:                 tgBot,
 		store:              store,
 		configPath:         configPath,

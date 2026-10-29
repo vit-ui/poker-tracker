@@ -50,6 +50,25 @@ The release ships **two files**: one Windows installer and one Linux server bund
 
 Changing what `iscc`/makeself produce (output names, artifact list) requires a matching update to `.github/workflows/release.yml`.
 
+### Disposable Windows installations
+
+Compile the combined and server binaries with the same unique, alphanumeric
+test identity, for example `-ldflags "-X main.InstallationID=isolation123"`,
+and compile `setup.iss` with `/DInstallationID=isolation123`. Build the collector
+normally. The installer uses separate task names, installation-directory
+defaults and uninstall registration for that identity; production builds leave
+it empty and retain `Poker Tracker` and `PokerTrackerServer`.
+
+Stage all six Windows payloads in a disposable source copy and compile there.
+Use a separate test bot and empty spreadsheet for integration tests. Do not
+inject the working bot token into a disposable combined/server build. Native
+installer and process-isolation checks require an elevated Windows session;
+Wine compilation does not verify Task Scheduler or Windows process isolation.
+The installer invokes the collector's `--stop-installation <directory>` helper,
+which verifies executable paths before stopping processes and excludes itself.
+PokerStars enforcement continues to target `PokerStars.exe` and requires a
+separately coordinated test window.
+
 ## Tests
 
 ```bash

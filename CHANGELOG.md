@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Fixed
+
+- Windows setup and uninstall stop tracker processes by their executable's
+  installation directory instead of terminating every tracker installation.
+  Early setup reads configuration and credentials from the selected directory.
+- Windows setup, startup, restart and uninstall use matching task identities.
+  Disposable builds can use separate tasks, installation folders and uninstall
+  registry entries while production keeps its existing names.
+
 ## v4.4 - 2026-08-04
 
 ### Fixed

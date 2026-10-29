@@ -16,45 +16,21 @@ import (
 	"github.com/vit-ui/self-tracker/internal/sheets"
 )
 
-// selfRestart kills this process by PID and re-runs the "Poker Tracker"
-// scheduled task, so the fresh process picks up whatever handleSheetCommand
-// just saved to config.json. Used only there.
-//
-// The kill-then-run sequence is written out as a .bat and run as
-// cmd.exe /C <path> rather than as an inline `cmd.exe /C "a & b & c"`
-// string: passing a single clean path removes a layer of quote-mangling
-// that an inline string doesn't get for free (Go's argv escaping, then
-// cmd.exe's own parser, both operating on the same `"Poker Tracker"`
-// argument — two chances to get it wrong instead of one). Written next to
-// config.json rather than into os.TempDir() — the system temp path can
-// itself contain spaces (e.g. a "First Last" profile directory), which
-// would just relocate the exact quoting hazard this is meant to avoid onto
-// cmd's handling of the .bat path itself; config.json's directory is the
-// installer's fixed, space-free C:\poker-tracker. The script's last line
-// deletes itself, so nothing is left behind in that directory once the
-// restart has fired — confirmed working on the real machine, so this
-// doesn't keep a diagnostic log around for a failure mode that's no
-// longer expected.
-//
-// CREATE_BREAKAWAY_FROM_JOB (see detachedSysProcAttr) keeps the helper
-// alive after this process exits — without it, Task Scheduler's Job Object
-// kills every child of "Poker Tracker" the instant its main process ends,
-// before schtasks /Run ever gets to run. Confirmed in practice: without
-// this flag, /sheet killed the tracker and nothing came back. Some Task
-// Scheduler configurations reject breakaway outright (CreateProcess fails
-// with access denied); if Start fails, this retries once without it rather
-// than giving up — an unprotected restart attempt is still better odds
-// than none.
-func selfRestart(configPath string) error {
+// selfRestart stops this PID and runs the injected Windows task, preserving
+// the role and disposable installation identity. The batch file lives beside
+// config.json and deletes itself after requesting the restart. A detached
+// helper survives the process's Task Scheduler Job Object; if Windows rejects
+// breakaway at startup, the existing fallback starts it without that flag.
+func selfRestart(configPath, taskName string) error {
 	dir := filepath.Dir(configPath)
 	batPath := filepath.Join(dir, "restart.bat")
 	script := fmt.Sprintf(
 		"@echo off\r\n"+
 			"taskkill /F /PID %d\r\n"+
 			"ping -n 4 127.0.0.1 >nul\r\n"+
-			"schtasks /Run /TN \"Poker Tracker\"\r\n"+
+			"schtasks /Run /TN \"%s\"\r\n"+
 			"del \"%%~f0\"\r\n",
-		os.Getpid())
+		os.Getpid(), taskName)
 
 	if err := os.WriteFile(batPath, []byte(script), 0644); err != nil {
 		return fmt.Errorf("writing restart script: %w", err)
@@ -125,7 +101,7 @@ func (b *Bot) handleSheetCommand(chatID int64, args string) {
 
 	send(b.tg, chatID, "✅ Sheet updated. Restarting tracker in a moment...")
 
-	if err := selfRestart(b.configPath); err != nil {
+	if err := selfRestart(b.configPath, b.taskName); err != nil {
 		// A live process on stale config beats a dead one — don't exit if
 		// the restart helper never got off the ground.
 		slog.Error("restarting tracker after sheet switch", "err", err)

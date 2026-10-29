@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/vit-ui/self-tracker/internal/installation"
 )
 
 // installService registers the server as a Task Scheduler task that runs on
@@ -19,7 +21,7 @@ func installService() error {
 	}
 	cmd := exec.Command("schtasks", "/Create",
 		"/SC", "ONSTART",
-		"/TN", "PokerTrackerServer",
+		"/TN", installation.TaskName(InstallationID, true),
 		"/TR", fmt.Sprintf(`"%s" --serve`, exe),
 		"/RU", "SYSTEM",
 		"/RL", "HIGHEST",

@@ -31,6 +31,11 @@ Your **storage backend** — asked in the chat on the Telegram path, or on its o
 
 You can switch between them anytime later with `/storage`. Either way, the service registers itself in Task Scheduler and starts automatically, including on every subsequent boot.
 
+Setup reads existing settings from the selected installation folder. When
+replacing or uninstalling the program, it stops tracker processes belonging
+to that folder. Builds for disposable installation tests use separate task
+names and uninstall registration; see [Contributing](CONTRIBUTING.md#disposable-windows-installations).
+
 ### Requirements
 
 - Windows, with PokerStars already installed.

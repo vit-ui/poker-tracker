@@ -309,7 +309,7 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 
 	send(b.tg, chatID, fmt.Sprintf("✅ Migrated %d cash sessions, %d tournaments, and %d ledger entries to %s — bankroll verified equal. Restarting tracker in a moment…",
 		len(migrated.CashSessions), len(migrated.Tournaments), len(migrated.Ledger), backendLabel(ps.target)))
-	if err := selfRestart(b.configPath); err != nil {
+	if err := selfRestart(b.configPath, b.taskName); err != nil {
 		slog.Error("restarting tracker after backend switch", "err", err)
 		send(b.tg, chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
 		return

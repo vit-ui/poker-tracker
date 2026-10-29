@@ -13,13 +13,24 @@
   #define AppVersion "0.0.0-dev"
 #endif
 
+#ifndef InstallationID
+  #define InstallationID ""
+#endif
+#if InstallationID != ""
+  #define InstallationSuffix "-" + InstallationID
+#else
+  #define InstallationSuffix ""
+#endif
+#define CombinedTaskName "Poker Tracker" + InstallationSuffix
+#define ServerTaskName "PokerTrackerServer" + InstallationSuffix
+
 [Setup]
-AppId={{5D7656F7-7CCB-4B00-8694-954DDE2986AE}
-AppName=Poker Tracker
+AppId={{5D7656F7-7CCB-4B00-8694-954DDE2986AE}{#InstallationSuffix}
+AppName=Poker Tracker{#InstallationSuffix}
 AppVersion={#AppVersion}
-DefaultDirName=C:\poker-tracker
+DefaultDirName=C:\poker-tracker{#InstallationSuffix}
 DisableDirPage=yes
-DefaultGroupName=Poker Tracker
+DefaultGroupName=Poker Tracker{#InstallationSuffix}
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
 PrivilegesRequired=admin
@@ -40,9 +51,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; IsARM64, so exactly one Source per role installs and it matches the machine's
 ; CPU. DestName is the fixed "tracker.exe" for combined and client — an external
 ; .bat launcher (poker-tracker-plan.md, not in this repo) hardcodes
-; C:\poker-tracker\tracker.exe, and main.go's self-taskkill, the Task Scheduler
-; XML, and CurUninstallStepChanged's taskkill all assume it. The server role runs
-; as its own tracker-server.exe (its own PokerTrackerServer task, see below).
+; C:\poker-tracker\tracker.exe. Process stopping checks the full executable
+; path. The server role uses tracker-server.exe and a separate scheduled task.
 ;
 ; All-local (combined) build — installed unless the player chose connect-to-server
 ; or run-a-server on the role page. Both arches; the matching one wins.
@@ -67,6 +77,10 @@ Source: "tracker-client-arm64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; F
 Source: "tracker-server-windows-amd64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerAmd64
 Source: "tracker-server-windows-arm64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerArm64
 
+; The collector is also a temporary, network-free process-stop helper for setup.
+Source: "tracker-client-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy
+Source: "tracker-client-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy
+
 [UninstallDelete]
 ; tracker.exe itself is removed automatically (tracked via [Files] above).
 ; credentials was written by [Code] at install time, so Inno doesn't know
@@ -84,17 +98,8 @@ Type: dirifempty; Name: "{app}\credentials"
 Type: dirifempty; Name: "{app}"
 
 [UninstallRun]
-; Must run before file deletion below, or a running --serve process holds
-; tracker.exe open and the uninstaller can't remove it. [UninstallRun]
-; entries execute before files are deleted by default, and top-to-bottom
-; within the section, so this only needs to be listed first.
-Filename: "taskkill.exe"; Parameters: "/IM tracker.exe /F"; Flags: runhidden; RunOnceId: "KillTracker"
-Filename: "schtasks.exe"; Parameters: "/Delete /TN ""Poker Tracker"" /F"; Flags: runhidden; RunOnceId: "DeleteTask"
-; Server-role cleanup — its own exe name and task. Harmless no-ops on a combined
-; or client install (nothing by that name exists); a failed schtasks /Delete is
-; ignored, same as the combined task's entry above.
-Filename: "taskkill.exe"; Parameters: "/IM tracker-server.exe /F"; Flags: runhidden; RunOnceId: "KillServer"
-Filename: "schtasks.exe"; Parameters: "/Delete /TN ""PokerTrackerServer"" /F"; Flags: runhidden; RunOnceId: "DeleteServerTask"
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#CombinedTaskName}"" /F"; Flags: runhidden; RunOnceId: "DeleteTask"
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#ServerTaskName}"" /F"; Flags: runhidden; RunOnceId: "DeleteServerTask"
 
 [Code]
 var
@@ -444,7 +449,7 @@ end;
 // localtest/windows-installer-check.sh; see CLAUDE.md.
 procedure ApplyTestAnswers();
 var
-  Role, ServerMethod, Backend, Creds, Sheet: String;
+  Role, ServerMethod, Backend, Creds, Sheet, Answer: String;
 begin
   Role := ExpandConstant('{param:TESTROLE|}');
   if Role = 'client' then PageRole.SelectedValueIndex := 1
@@ -483,19 +488,50 @@ begin
   if Creds <> '' then PageCredentials.Values[0] := Creds;
   Sheet := ExpandConstant('{param:TESTSHEET|}');
   if Sheet <> '' then PageSheetName.Values[0] := Sheet;
+  Answer := ExpandConstant('{param:TESTCONNECTION|}');
+  if Answer <> '' then PageConnection.Values[0] := Answer;
+  Answer := ExpandConstant('{param:TESTSCREENNAME|}');
+  if Answer <> '' then PageScreenName.Values[0] := Answer;
+  Answer := ExpandConstant('{param:TESTHANDHISTORY|}');
+  if Answer <> '' then PageHandHistoryDir.Values[0] := Answer;
+  Answer := ExpandConstant('{param:TESTTOURNAMENT|}');
+  if Answer <> '' then PageTournamentDir.Values[0] := Answer;
+end;
+
+procedure StopInstallation();
+var
+  HelperPath: String;
+  ResultCode: Integer;
+begin
+  if IsUninstaller then
+  begin
+    HelperPath := ExpandConstant('{app}\tracker.exe');
+    if not FileExists(HelperPath) then
+      HelperPath := ExpandConstant('{app}\tracker-server.exe');
+    if not FileExists(HelperPath) then
+      Exit;
+  end
+  else
+  begin
+    if IsARM64 then
+      HelperPath := 'tracker-client-arm64.exe'
+    else
+      HelperPath := 'tracker-client-amd64.exe';
+    ExtractTemporaryFile(HelperPath);
+    HelperPath := ExpandConstant('{tmp}\') + HelperPath;
+  end;
+  if not Exec(HelperPath, '--stop-installation "' + ExpandConstant('{app}') + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    RaiseException('Could not stop this installation safely. Close its tracker process and try again.');
 end;
 
 procedure InitializeWizard();
 var
   MethodDescription, BackendDescription: String;
 begin
-  // Read before {app} is valid for ExpandConstant (see the comment on the
-  // page-anchoring below) — hardcoded to match DefaultDirName ([Setup]
-  // above) rather than expanded, since this runs before the wizard's
-  // internal position has passed wpSelectDir. Done first, before any page
-  // is created, so ExistingConfigJSON is available to build MethodDescription
-  // below and to ShouldSkipPage/CurStepChanged once the wizard is running.
-  ExistingConfigJSON := ReadFileAsString('C:\poker-tracker\config.json');
+  // WizardDirValue is available during initialization and includes /DIR and
+  // the directory restored from this installation identity's uninstall entry.
+  ExistingConfigJSON := ReadFileAsString(AddBackslash(WizardDirValue) + 'config.json');
   BackendAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'storage_backend');
   // Seeds UsingSQLite from the existing value when the page that would
   // normally set it (PageBackend, below) is about to be skipped — see the
@@ -507,7 +543,7 @@ begin
   ScreenNameAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'pokerstars_screen_name');
   HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
   TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
-  CredentialsAlreadySet := FileExists('C:\poker-tracker\credentials\google_service_account.json');
+  CredentialsAlreadySet := FileExists(AddBackslash(WizardDirValue) + 'credentials\google_service_account.json');
   // On sqlite, Sheet/Credentials never get set by this wizard (there's no
   // Google step for that backend at all — ShouldSkipPage), so requiring
   // them here would keep AllFieldsAlreadySet permanently False for a fully
@@ -1010,9 +1046,8 @@ end;
 // [Files]-driven copy to {app} doesn't happen until the Install step,
 // which is after this — too late for RunTelegramSetup, called mid-wizard.
 procedure PreInstallFiles();
-var
-  ResultCode: Integer;
 begin
+  StopInstallation();
   ForceDirectories(ExpandConstant('{app}'));
   // Sqlite installs never read or write a credentials file — no directory
   // for it either (CLAUDE.md: "the credentials file may not exist on a
@@ -1034,17 +1069,6 @@ begin
 
   ExtractTemporaryFile(CombinedExeName());
   FileCopy(ExpandConstant('{tmp}\' + CombinedExeName()), ExpandConstant('{app}\tracker.exe'), True);
-
-  // Kill any previously-running tracker.exe before this install's task
-  // gets (re)started below — MultipleInstancesPolicy=IgnoreNew
-  // (BuildTaskXML) means schtasks /Run silently no-ops if an old
-  // instance is still alive, leaving it running with stale config
-  // forever instead of picking up what this install just wrote. Safe to
-  // run unconditionally: this installer process is never itself named
-  // tracker.exe (unlike cmd/tracker/main.go's runSetup, which needs a
-  // PID filter to avoid killing itself). Result ignored — "nothing to
-  // kill" is the expected, common case on a first install.
-  Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 // RegisterScheduledTask is the manual-setup path's equivalent of what
@@ -1063,12 +1087,12 @@ begin
   ExePath := ExpandConstant('{app}\tracker.exe');
   XMLPath := ExpandConstant('{tmp}\poker-tracker-task.xml');
   SaveStringToFile(XMLPath, UTF16Bytes(BuildTaskXML(ExePath, ExpandConstant('{app}'))), False);
-  if not Exec('schtasks.exe', '/Create /TN "Poker Tracker" /XML "' + XMLPath + '" /F',
+  if not Exec('schtasks.exe', '/Create /TN "{#CombinedTaskName}" /XML "' + XMLPath + '" /F',
      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
     MsgBox('Could not register the Task Scheduler entry. You can set it up manually — see CLAUDE.md''s Windows Task Scheduler Setup section.', mbError, MB_OK);
   DeleteFile(XMLPath);
 
-  if not Exec('schtasks.exe', '/Run /TN "Poker Tracker"',
+  if not Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"',
      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
     MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
 end;
@@ -1198,7 +1222,6 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   JoinedPath: String;
-  ResultCode: Integer;
 begin
   Result := True;
 
@@ -1214,19 +1237,7 @@ begin
     UsingTelegram := (PageMethod.SelectedValueIndex = 0)
 
   else if CurPageID = wpReady then
-    // Leaving the Ready page means the player just clicked Install. This
-    // runs before Inno's own Restart-Manager-based "close applications"
-    // scan (part of the Preparing-to-install step right after this),
-    // which is what actually produces "Setup was unable to automatically
-    // close all applications" if it finds tracker.exe still running —
-    // e.g. the fresh --serve that tracker.exe --setup's own last step
-    // started via schtasks /Run during PageWaiting, well before this
-    // point. A taskkill placed later (CurStepChanged's ssInstall, tried
-    // before) runs after that scan already happened, too late to prevent
-    // the prompt. Safe to run unconditionally, same as PreInstallFiles'
-    // own taskkill — this installer process is never itself named
-    // tracker.exe.
-    Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+    StopInstallation()
 
   else if CurPageID = PageConnection.ID then
   begin
@@ -1376,7 +1387,7 @@ begin
   if (not Exec(ExePath, '--install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     MsgBox('Could not register the server boot task. Run tracker-server.exe --install from an elevated prompt.', mbError, MB_OK)
   else
-    Exec('schtasks.exe', '/Run /TN "PokerTrackerServer"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('schtasks.exe', '/Run /TN "{#ServerTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   ConnPath := ExpandConstant('{tmp}\server-conn.txt');
   if Exec(ExpandConstant('{cmd}'), '/C ""' + ExePath + '" --pair > "' + ConnPath + '""',
@@ -1401,6 +1412,8 @@ var
   HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String;
   ResultCode: Integer;
 begin
+  if CurStep = ssInstall then
+    StopInstallation();
   if CurStep = ssPostInstall then
   begin
     // Connect-to-server: the client binary is already installed as tracker.exe
@@ -1504,50 +1517,21 @@ begin
       // prompt during file copy), so by this point the task is
       // registered but not running. Only a restart is needed, not the
       // full RegisterScheduledTask the manual path uses above.
-      if not Exec('schtasks.exe', '/Run /TN "Poker Tracker"',
+      if not Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
         MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
     end;
   end;
 end;
 
-// CurUninstallStepChanged deletes the player-data files not covered by
-// [UninstallDelete] — see the comment there. UninstallSilent() is False
-// for a normal, interactive Control Panel uninstall and True when the
-// uninstaller is invoked with /SILENT or /VERYSILENT, which is how a
-// chained "remove the old version before installing the new one" step
-// would run it were one ever added — this keeps that hypothetical future
-// path from wiping settings too, not just today's plain in-place upgrade
-// (which never runs this uninstaller at all). tracker.db (sqlite backend
-// only — DeleteFile on a nonexistent path is a silent no-op on the sheets
-// backend) and sheets_fallback.json (the mirror case: sheets backend only,
-// holding writes that failed against the Sheets API for later replay)
-// follow the exact same rule as the three JSON files: deleted on a real
-// manual uninstall, preserved across an in-place upgrade.
-//
-// The explicit taskkill below is required, not redundant with
-// [UninstallRun]'s own taskkill entry: CurUninstallStepChanged(usUninstall)
-// fires before [UninstallRun] executes, not after — a real gap found live
-// (tracker.db survived a manual uninstall while the three JSON files
-// didn't). config.json/lockfile.json/pending_tournaments.json only ever
-// hold a file handle open for the length of one config.go read or write
-// (SaveConfig does an atomic tmp-then-rename), so they're never actually
-// locked when this runs regardless of process state. tracker.db is
-// different: a live --serve process keeps its sqlite connection — and the
-// file handle under it — open for the process's entire lifetime, so
-// DeleteFile silently fails against it if tracker.exe hasn't been killed
-// yet. Same pattern as PreInstallFiles' and NextButtonClick(wpReady)'s own
-// inline taskkill calls elsewhere in this file — this installer process is
-// never itself named tracker.exe, so it's safe to run unconditionally.
+// Stop before deleting any files, including on silent uninstall. Player data
+// keeps the existing manual-versus-silent uninstall policy.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  ResultCode: Integer;
 begin
+  if CurUninstallStep = usUninstall then
+    StopInstallation();
   if (CurUninstallStep = usUninstall) and not UninstallSilent() then
   begin
-    Exec('taskkill.exe', '/F /IM tracker.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // Also stop the server role's process (its own exe name); no-op otherwise.
-    Exec('taskkill.exe', '/F /IM tracker-server.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     DeleteFile(ExpandConstant('{app}\config.json'));
     DeleteFile(ExpandConstant('{app}\lockfile.json'));
     DeleteFile(ExpandConstant('{app}\pending_tournaments.json'));

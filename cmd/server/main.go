@@ -21,6 +21,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
@@ -30,6 +31,9 @@ import (
 // same as cmd/tracker. Only the server talks to Telegram, so only the server
 // (and combined) build carries the token.
 var BotToken string
+
+// InstallationID is injected into disposable builds; production leaves it empty.
+var InstallationID string
 
 // listenPort is the fixed TCP port the server listens on and advertises in the
 // connection string. Fixed rather than configurable to keep pairing simple.
@@ -61,6 +65,7 @@ func init() {
 }
 
 func main() {
+	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
 	serve := flag.Bool("serve", false, "run the server")
 	setup := flag.Bool("setup", false, "generate credentials and print the connection string")
 	pair := flag.Bool("pair", false, "reprint the connection string to pair another collector")
@@ -75,6 +80,11 @@ func main() {
 	flag.Parse()
 
 	switch {
+	case *stopInstallation != "":
+		if err := installation.Stop(*stopInstallation); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case *serve:
 		runServe()
 	case *setup:
@@ -170,7 +180,7 @@ func runServe() {
 		// restart is a no-op here. The bot's read-side date windows anchor to
 		// the server's client-anchored clock, so /status and /stats follow the
 		// player's local day.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock, requestRescan, srv.ClientNow)
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock, requestRescan, srv.ClientNow, installation.TaskName(InstallationID, true))
 		slog.Error("bot.Run returned — the bot is no longer listening", "err", err)
 	}()
 
