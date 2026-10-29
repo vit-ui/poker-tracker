@@ -139,6 +139,10 @@ go test ./internal/parsers/...      # one package
   enforcement requires a coordinated closed-game window and owned dummy process.
   Active protection checks every second, idle state every 30 seconds; accepting a
   lock wakes the idle timer. Windows checks process presence before taskkill.
+- All serve roles configure `internal/logging` before startup work, using the
+  executable directory's rotating log and discard on open failure. Keep required
+  bot/worker/collector failures visible as nonzero process exits; a running PID
+  must not conceal a terminated required component.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

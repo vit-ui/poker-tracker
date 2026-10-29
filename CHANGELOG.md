@@ -8,6 +8,10 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Combined, collector and server services share bounded rotating file logs and
+  discard logging if the file cannot open. Unexpected required bot or collector
+  termination exits with failure so service-manager recovery can take effect.
+
 - Active hard stops recheck PokerStars every second, and new locks wake an idle
   enforcement loop immediately. Idle checks remain every 30 seconds; rechecks
   preserve the original expiry and avoid launching taskkill when the game is closed.

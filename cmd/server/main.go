@@ -22,6 +22,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/installation"
+	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
@@ -110,6 +111,8 @@ func runInstall() {
 }
 
 func runServe() {
+	closeLog := logging.Configure(filepath.Join(filepath.Dir(configPath), "tracker.log"))
+	defer closeLog()
 	// Keep the idle footprint small without starving the read spikes. GOGC=50
 	// (vs the default 100) halves the heap growth ratio, so the idle heap floor
 	// stays low and freed pages are scavenged back to the OS sooner — this is
@@ -182,6 +185,7 @@ func runServe() {
 		// player's local day.
 		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations)
 		slog.Error("bot.Run returned — the bot is no longer listening", "err", err)
+		os.Exit(1)
 	}()
 
 	select {}

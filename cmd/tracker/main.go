@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -18,6 +17,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/installation"
+	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
@@ -274,11 +274,8 @@ func runServe() {
 	// auto-forwarded to Telegram (the worker sends the few user-actionable
 	// notices explicitly). If the file can't be opened, fall back to
 	// io.Discard — never stderr, which reintroduces the hang.
-	if w, err := newRotatingWriter(logPath, logMaxBytes); err != nil {
-		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	} else {
-		slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	}
+	closeLog := logging.Configure(logPath)
+	defer closeLog()
 
 	// Belt-and-suspenders on top of -H=windowsgui — see hideConsole's doc
 	// comment for why the build flag alone wasn't enough in practice.
@@ -295,14 +292,16 @@ func runServe() {
 	// store, so it resolves first.
 	sc, backendName, err := backend.Open(BotToken, configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
-		panic(err.Error())
+		slog.Error("opening storage backend", "err", err)
+		os.Exit(1)
 	}
 
 	// Reload — EnsureSheetID inside Open may have written telegram_chat_id
 	// and/or google_sheet_id back to config.json.
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		panic("loading config: " + err.Error())
+		slog.Error("loading config", "err", err)
+		os.Exit(1)
 	}
 
 	slog.Info("tracker service starting", "backend", backendName)
@@ -361,12 +360,17 @@ func runServe() {
 	link := transport.NewLink()
 	srv, err := server.NewServer(sc, configPath, link, alertChan)
 	if err != nil {
-		panic("creating server: " + err.Error())
+		slog.Error("creating server", "err", err)
+		os.Exit(1)
 	}
 	go func() { err := srv.Run(); slog.Error("server worker stopped", "err", err); os.Exit(1) }()
 
 	collector := client.NewCollector(link, enforcer, collectionControl)
-	go collector.Run(sessionChan, configPath, nil) // nil dead: the in-process link never drops
+	go func() {
+		collector.Run(sessionChan, configPath, nil)
+		slog.Error("collector stopped unexpectedly")
+		os.Exit(1)
+	}()
 
 	// All-local: a manual /hardstop trigger enforces inline, exactly as before
 	// the split — same client.Enforce (taskkill + write the local lockfile), no
@@ -393,6 +397,7 @@ func runServe() {
 		// anything. This log is the only way that failure was ever going
 		// to be visible.
 		slog.Error("bot.Run goroutine returned — the bot is no longer listening for anything", "err", err)
+		os.Exit(1)
 	}()
 
 	select {}

@@ -19,6 +19,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/installation"
+	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
@@ -64,6 +65,8 @@ func main() {
 }
 
 func runServe() {
+	closeLog := logging.Configure(filepath.Join(filepath.Dir(configPath), "tracker.log"))
+	defer closeLog()
 	// Bound this idle background service's footprint. Same knobs, and the same
 	// reasoning, as cmd/tracker's runServe (see its long comment): the scheduled
 	// task can't set GOMEMLIMIT/GOGC env vars, so set the in-code equivalents.

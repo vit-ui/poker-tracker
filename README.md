@@ -276,7 +276,7 @@ Usage examples:
 
 This is a single-user tool built for one specific personal setup, and it's intentionally lean: no web UI, no REST API, no dashboard. Telegram and the installer are the only interfaces. It's provided as-is, with no warranty, and is not affiliated with or endorsed by PokerStars.
 
-The background service writes a `tracker.log` next to the program for troubleshooting — errors plus a few milestones (start-up, hard stops, migrations). It's capped at 5 MB and rolls over to a single `tracker.log.old`, so it never grows without bound.
+Each background role writes a `tracker.log` next to its program for troubleshooting — errors plus a few milestones (start-up, hard stops, migrations). It's capped at 5 MB and rolls over to a single `tracker.log.old`. If the log cannot open, the service discards logging; it does not fall back to a hidden console. Unexpected termination of the required bot, worker or collector exits with failure so the service manager can restart the process.
 
 ## License
 
