@@ -333,6 +333,8 @@ type serveState struct {
 // collector still receives it (a duplicate re-push is harmless: Enforce is
 // idempotent). Blocks until ln is closed.
 func Serve(ln net.Listener, token string, link *Link) {
+	link.useNetwork()
+	var routines sync.WaitGroup
 	st := &serveState{connections: make(map[net.Conn]struct{}), done: make(chan struct{})}
 	defer func() {
 		st.mu.Lock()
@@ -345,6 +347,7 @@ func Serve(ln net.Listener, token string, link *Link) {
 			conn.Close()
 		}
 		st.mu.Unlock()
+		routines.Wait()
 	}()
 
 	// The sole command writer: one consumer of link.Commands, targeting the
@@ -352,7 +355,9 @@ func Serve(ln net.Listener, token string, link *Link) {
 	// connection are one critical section, serialized against serveConn's
 	// connection swap + re-push (see the type doc), so a lock is never lost to a
 	// reconnect and is re-delivered to whoever connects next.
+	routines.Add(1)
 	go func() {
+		defer routines.Done()
 		for {
 			var cmd Command
 			select {
@@ -394,7 +399,8 @@ func Serve(ln net.Listener, token string, link *Link) {
 		st.connections[conn] = struct{}{}
 		st.mu.Unlock()
 		enableKeepAlive(conn)
-		go serveConn(conn, token, link, st)
+		routines.Add(1)
+		go func() { defer routines.Done(); serveConn(conn, token, link, st) }()
 	}
 }
 
@@ -434,6 +440,7 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 	framed.writeMu.Lock()
 	old := st.current
 	st.current = framed
+	link.setCollectorDone(framed.done)
 	lock := st.activeLock
 	st.mu.Unlock()
 	if old != nil {

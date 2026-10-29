@@ -107,18 +107,21 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 		label = "Withdrawal"
 	}
 
-	if err := b.store.AppendLedgerEntry(kind, ledgerAmount, b.now()); err != nil {
-		slog.Error("appending ledger entry", "kind", kind, "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	bankroll, err := b.store.GetCurrentBankroll()
-	if err != nil {
-		slog.Error("getting bankroll", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, FormatSignedUSD(ledgerAmount), bankroll))
+	now := b.now()
+	b.queueOperation(func(store storage.Store) storage.OperationResult {
+		if err := store.AppendLedgerEntry(kind, ledgerAmount, now); err != nil {
+			return storage.OperationResult{Err: err}
+		}
+		bankroll, err := store.GetCurrentBankroll()
+		return storage.OperationResult{Bankroll: bankroll, Err: err}
+	}, func(result storage.OperationResult) {
+		if result.Err != nil {
+			slog.Error("recording money movement", "kind", kind, "err", result.Err)
+			send(b.tg, chatID, "Something went wrong. Check logs.")
+			return
+		}
+		send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, FormatSignedUSD(ledgerAmount), result.Bankroll))
+	})
 }
 
 // ensureScreenName checks Setup.PokerStarsScreenName before any of the four

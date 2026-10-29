@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"sync"
 	"time"
 	"unicode/utf16"
 
@@ -304,40 +305,47 @@ func runServe() {
 	sessionChan := make(chan watcher.FileEvent, 10)
 	alertChan := make(chan string, 20)
 
+	var watcherMu sync.Mutex
 	var watcherDone chan struct{}
-	if cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil {
-		hhPath, tsPath := resolvePaths(cfg)
+	var watcherControl *watcher.Control
+	startWatcher := func(current *config.Config) {
+		if current.Paths.HandHistory == nil || current.Paths.TournamentSummary == nil {
+			return
+		}
+		hhPath, tsPath := resolvePaths(current)
 		slog.Info("watcher starting", "hand_history", hhPath, "tournament_summary", tsPath)
 		watcherDone = make(chan struct{})
-		go func() {
-			if err := watcher.Watch(watcherDone, hhPath, tsPath, sessionChan); err != nil {
+		watcherControl = watcher.NewControl()
+		go func(done <-chan struct{}, control *watcher.Control) {
+			if err := watcher.WatchControlled(done, hhPath, tsPath, sessionChan, control); err != nil {
 				slog.Error("watcher stopped", "err", err)
 				alertChan <- "⚠️ File watching stopped unexpectedly — I'm no longer seeing new poker sessions. Restart the tracker (or your PC) to recover."
 			}
-		}()
+		}(watcherDone, watcherControl)
 	}
-
+	startWatcher(cfg)
 	restartWatcher := func() {
-		newCfg, err := config.LoadConfig(configPath)
+		current, err := config.LoadConfig(configPath)
 		if err != nil {
 			slog.Error("loading config for watcher restart", "err", err)
 			return
 		}
-		if newCfg.Paths.HandHistory == nil || newCfg.Paths.TournamentSummary == nil {
-			return
-		}
-		hhPath, tsPath := resolvePaths(newCfg)
-		slog.Info("watcher restarting", "hand_history", hhPath, "tournament_summary", tsPath)
+		watcherMu.Lock()
+		defer watcherMu.Unlock()
 		if watcherDone != nil {
 			close(watcherDone)
+			watcherDone = nil
+			watcherControl = nil
 		}
-		watcherDone = make(chan struct{})
-		go func() {
-			if err := watcher.Watch(watcherDone, hhPath, tsPath, sessionChan); err != nil {
-				slog.Error("watcher stopped", "err", err)
-				alertChan <- "⚠️ File watching stopped unexpectedly — I'm no longer seeing new poker sessions. Restart the tracker (or your PC) to recover."
-			}
-		}()
+		startWatcher(current)
+	}
+	collectionControl := func(paused bool) ([]watcher.FileEvent, error) {
+		watcherMu.Lock()
+		defer watcherMu.Unlock()
+		if watcherControl == nil {
+			return nil, nil
+		} // setup has not enabled collection
+		return watcherControl.SetPaused(paused)
 	}
 
 	// The collector (watcher-side) and server (brain-side) run in one process
@@ -352,7 +360,7 @@ func runServe() {
 	}
 	go srv.Run()
 
-	collector := client.NewCollector(link, lockfilePath)
+	collector := client.NewCollector(link, lockfilePath, collectionControl)
 	go collector.Run(sessionChan, configPath, nil) // nil dead: the in-process link never drops
 
 	// Runs for the life of this process — the done channel is never closed,
@@ -373,7 +381,7 @@ func runServe() {
 	go func() {
 		// All-local: server and collector share this machine's clock, so the
 		// read-side date windows anchor to time.Now — unchanged behavior.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false))
+		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit

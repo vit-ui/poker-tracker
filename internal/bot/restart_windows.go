@@ -2,7 +2,13 @@
 
 package bot
 
-import "syscall"
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+)
 
 // createBreakawayFromJob is CREATE_BREAKAWAY_FROM_JOB — without it, the
 // detached restart helper spawned by handleSheetCommand inherits the Job
@@ -28,4 +34,37 @@ func detachedSysProcAttr() *syscall.SysProcAttr {
 // createNoWindow either way; that flag isn't the one at risk of rejection.
 func noWindowSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: createNoWindow}
+}
+
+// selfRestart stops this PID and runs the injected Windows task, preserving
+// the role and disposable installation identity. The batch file lives beside
+// config.json and deletes itself after requesting the restart. A detached
+// helper survives the process's Task Scheduler Job Object; if Windows rejects
+// breakaway at startup, the existing fallback starts it without that flag.
+func selfRestart(configPath, taskName string) error {
+	dir := filepath.Dir(configPath)
+	batPath := filepath.Join(dir, "restart.bat")
+	script := fmt.Sprintf(
+		"@echo off\r\n"+
+			"taskkill /F /PID %d\r\n"+
+			"ping -n 4 127.0.0.1 >nul\r\n"+
+			"schtasks /Run /TN \"%s\"\r\n"+
+			"del \"%%~f0\"\r\n",
+		os.Getpid(), taskName)
+
+	if err := os.WriteFile(batPath, []byte(script), 0644); err != nil {
+		return fmt.Errorf("writing restart script: %w", err)
+	}
+
+	cmd := exec.Command("cmd.exe", "/C", batPath)
+	cmd.SysProcAttr = detachedSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		cmd = exec.Command("cmd.exe", "/C", batPath)
+		cmd.SysProcAttr = noWindowSysProcAttr()
+		if err := cmd.Start(); err != nil {
+			os.Remove(batPath)
+			return fmt.Errorf("starting restart script: %w", err)
+		}
+	}
+	return nil
 }

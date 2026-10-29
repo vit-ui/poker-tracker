@@ -49,7 +49,7 @@ func TestReadUpload_CashAppendOnlyStreaming(t *testing.T) {
 	if err := os.WriteFile(path, []byte("AAAA"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	up, ok := readUpload(event, sent, now, configPath)
+	up, ok, _ := readUpload(event, sent, now, configPath)
 	if !ok || up.Offset != 0 || string(up.Bytes) != "AAAA" {
 		t.Fatalf("first event: got ok=%v offset=%d bytes=%q, want whole file from 0", ok, up.Offset, string(up.Bytes))
 	}
@@ -64,13 +64,13 @@ func TestReadUpload_CashAppendOnlyStreaming(t *testing.T) {
 	if err := os.WriteFile(path, []byte("AAAABBB"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	up, ok = readUpload(event, sent, now, configPath)
+	up, ok, _ = readUpload(event, sent, now, configPath)
 	if !ok || up.Offset != 4 || string(up.Bytes) != "BBB" {
 		t.Fatalf("append event: got ok=%v offset=%d bytes=%q, want only \"BBB\" at offset 4", ok, up.Offset, string(up.Bytes))
 	}
 
 	// No new bytes: an event with the file unchanged sends nothing.
-	if _, ok = readUpload(event, sent, now, configPath); ok {
+	if _, ok, _ = readUpload(event, sent, now, configPath); ok {
 		t.Fatal("unchanged file: expected no upload, got one")
 	}
 }
@@ -90,7 +90,7 @@ func TestReadUpload_CashRewriteResendsWhole(t *testing.T) {
 	if err := os.WriteFile(path, []byte("AAAABBBB"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := readUpload(event, sent, now, configPath); !ok {
+	if _, ok, _ := readUpload(event, sent, now, configPath); !ok {
 		t.Fatal("initial send failed")
 	}
 
@@ -98,7 +98,7 @@ func TestReadUpload_CashRewriteResendsWhole(t *testing.T) {
 	if err := os.WriteFile(path, []byte("CC"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	up, ok := readUpload(event, sent, now, configPath)
+	up, ok, _ := readUpload(event, sent, now, configPath)
 	if !ok || up.Offset != 0 || string(up.Bytes) != "CC" {
 		t.Fatalf("rewrite: got ok=%v offset=%d bytes=%q, want whole file \"CC\" from 0", ok, up.Offset, string(up.Bytes))
 	}
@@ -119,7 +119,7 @@ func TestReadUpload_TournamentAlwaysWhole(t *testing.T) {
 	if err := os.WriteFile(path, []byte("first version"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := readUpload(event, sent, now, configPath); !ok {
+	if _, ok, _ := readUpload(event, sent, now, configPath); !ok {
 		t.Fatal("initial tournament send failed")
 	}
 
@@ -127,7 +127,7 @@ func TestReadUpload_TournamentAlwaysWhole(t *testing.T) {
 	if err := os.WriteFile(path, []byte("second longer version"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	up, ok := readUpload(event, sent, now, configPath)
+	up, ok, _ := readUpload(event, sent, now, configPath)
 	if !ok || up.Offset != 0 || string(up.Bytes) != "second longer version" {
 		t.Fatalf("tournament rewrite: got ok=%v offset=%d bytes=%q, want whole file from 0", ok, up.Offset, string(up.Bytes))
 	}
@@ -143,7 +143,7 @@ func TestReadUpload_MissingScreenNameSendsEmpty(t *testing.T) {
 	if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	up, ok := readUpload(watcher.FileEvent{Path: path, Type: "cash"}, map[string]*sentEntry{}, time.Now(), configPath)
+	up, ok, _ := readUpload(watcher.FileEvent{Path: path, Type: "cash"}, map[string]*sentEntry{}, time.Now(), configPath)
 	if !ok {
 		t.Fatal("expected an upload even with no screen name")
 	}
@@ -157,8 +157,8 @@ func TestReadUpload_MissingScreenNameSendsEmpty(t *testing.T) {
 func TestReadUpload_MissingFileNoUpload(t *testing.T) {
 	dir := t.TempDir()
 	configPath := writeConfigWithScreenName(t, dir, "Hero")
-	if _, ok := readUpload(watcher.FileEvent{Path: filepath.Join(dir, "gone.txt"), Type: "cash"}, map[string]*sentEntry{}, time.Now(), configPath); ok {
-		t.Fatal("expected no upload for a missing file")
+	if _, ok, err := readUpload(watcher.FileEvent{Path: filepath.Join(dir, "gone.txt"), Type: "cash"}, map[string]*sentEntry{}, time.Now(), configPath); ok || err == nil {
+		t.Fatalf("missing file: upload=%v error=%v; need a reported failure for migration drain", ok, err)
 	}
 }
 
@@ -210,7 +210,7 @@ func TestCollectorRescan(t *testing.T) {
 	}
 
 	link := transport.NewLink()
-	c := NewCollector(link, filepath.Join(dir, "lockfile.json"))
+	c := NewCollector(link, filepath.Join(dir, "lockfile.json"), nil)
 	go c.rescan(configPath, nil)
 
 	var got []transport.Upload

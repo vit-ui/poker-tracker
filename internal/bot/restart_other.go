@@ -1,16 +1,9 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package bot
 
-import "syscall"
+import "fmt"
 
-// detachedSysProcAttr and noWindowSysProcAttr are no-ops outside Windows —
-// there's no Job Object to break away from, and no console window to
-// suppress, on other platforms.
-func detachedSysProcAttr() *syscall.SysProcAttr {
-	return nil
-}
-
-func noWindowSysProcAttr() *syscall.SysProcAttr {
-	return nil
+func selfRestart(configPath, serviceName string) error {
+	return fmt.Errorf("automatic restart is supported only on Windows and Linux")
 }

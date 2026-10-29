@@ -8,6 +8,18 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Linux configuration restarts use the owning systemd user service rather than
+  Windows restart commands. Setup and restart share the server installation
+  identity; a manually launched process cannot restart another installation.
+
+- Bot money movements and tournament answers share the file-processing worker;
+  incoming updates, reminders and replies run on one bot event loop. Pending
+  tournament queue changes use atomic config-owned updates and replacement.
+- Storage migration requires the Windows collector to confirm PokerStars is
+  closed. It drains pending file events, finalizes pending cash, copies on the
+  worker and holds writes until restart or rollback. Failed cash persistence
+  retains the pending snapshot and does not send a successful session summary.
+
 - Split transport serializes complete command frames with reconnect lock replay.
   Replayed locks precede newer commands; replaced connections and listener
   shutdown release blocked uploads and close their owned sockets.

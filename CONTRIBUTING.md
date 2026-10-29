@@ -110,6 +110,12 @@ go test ./internal/parsers/...      # one package
   replay. Closing a connection must interrupt blocked writes and upload delivery;
   never hold the listener state lock during a frame write. Keep authentication,
   certificate pinning, TLS 1.3 and the pre-authentication deadline intact.
+- Bot-originated writes and migration run on the server file worker. Keep
+  Telegram responses on the bot event loop. A migration waits for the collector's
+  process check and ordered drain acknowledgement, flushes pending cash, and
+  holds the worker through restart or rollback. Disconnect cannot imply success.
+- Pending question append, refresh, reminder and removal use config's atomic
+  queue update API so concurrent reminder and worker changes preserve entries.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

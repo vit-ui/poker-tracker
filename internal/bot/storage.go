@@ -36,7 +36,7 @@ const storageUsage = "Usage:\n" +
 // pendingBackendSwitch holds the target backend prepared during /storage
 // preflight, kept until the player confirms or cancels. The target store is
 // already constructed and validated (reachable, empty); confirming imports
-// into it, cancelling discards it. Single-goroutine access (pollUpdates), same
+// into it, cancelling discards it. Single-goroutine access on the bot event loop, same
 // as conversation, so no locking.
 type pendingBackendSwitch struct {
 	target    string        // "sheets" | "sqlite"
@@ -161,7 +161,7 @@ func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 	b.pendingSwitch = &pendingBackendSwitch{target: target, dst: dst, sheetName: sheetName, sheetID: sheetID}
 
 	text := fmt.Sprintf(
-		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\nCurrent bankroll: $%.2f\n\nClose PokerStars first — a hand played mid-switch would be double-counted. Proceed?",
+		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\nCurrent bankroll: $%.2f\n\nClose PokerStars first — the collector will check before pausing collection. Proceed?",
 		backendLabel(b.currentBackend()), backendLabel(target),
 		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), bankroll)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
@@ -256,12 +256,9 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 		return
 	}
 
-	// Re-run the write-ahead check from preflight: the source kept running
-	// while the confirmation sat unanswered, and a write buffered since then
-	// is invisible to the migration reads. A hand that lands *during* the copy
-	// without buffering is caught instead by Migrate's src-vs-dst bankroll
-	// verify; the few seconds between verify and process exit stay covered
-	// only by the close-PokerStars warning.
+	// Recheck here for a prompt refusal; the worker repeats this check after
+	// the collector's pause/drain acknowledgement and pending cash finalization.
+
 	if sheetsSrc, ok := b.store.(*sheets.Client); ok {
 		if n := sheetsSrc.PendingWrites(); n > 0 {
 			b.discardTarget(ps)
@@ -270,51 +267,76 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 		}
 	}
 
-	send(b.tg, chatID, "Migrating… this can take a moment.")
-	slog.Info("backend migration starting", "target", ps.target)
-
-	migrated, err := storage.Migrate(b.store, ps.dst)
-	if err != nil {
+	b.migrating = true
+	send(b.tg, chatID, "Checking that PokerStars is closed and draining collection before migrating…")
+	release := make(chan struct{})
+	resumed := make(chan error, 1)
+	var previous *config.Config
+	b.queueOperation(func(source storage.Store) storage.OperationResult {
+		slog.Info("backend migration starting", "target", ps.target)
+		migrated, err := storage.Migrate(source, ps.dst)
+		if err != nil {
+			b.rollbackTarget(ps)
+			return storage.OperationResult{Err: err}
+		}
+		cfg, err := config.LoadConfig(b.configPath)
+		if err != nil {
+			b.rollbackTarget(ps)
+			return storage.OperationResult{Err: fmt.Errorf("loading backend configuration: %w", err)}
+		}
+		saved := *cfg
+		previous = &saved
+		cfg.Setup.StorageBackend = &ps.target
+		if ps.target == "sheets" {
+			cfg.Setup.GoogleSheetName = ps.sheetName
+			cfg.Setup.GoogleSheetID = &ps.sheetID
+		}
+		if err := config.SaveConfig(b.configPath, cfg); err != nil {
+			b.rollbackTarget(ps)
+			return storage.OperationResult{Err: fmt.Errorf("saving backend configuration: %w", err)}
+		}
+		return storage.OperationResult{Snapshot: &migrated}
+	}, func(result storage.OperationResult) {
+		if result.Err != nil {
+			// A collector refusal occurs before Apply, so release the untouched target
+			// too. Rollback after an Apply failure has already run on the worker.
+			b.discardTarget(ps)
+			b.migrating = false
+			slog.Error("migrating backend", "err", result.Err)
+			send(b.tg, chatID, fmt.Sprintf("Migration failed; still using %s.\n%v", backendLabel(b.currentBackend()), result.Err))
+			return
+		}
+		snap := result.Snapshot
+		closeStore(ps.dst)
+		slog.Info("backend migration verified", "target", ps.target, "cash_sessions", len(snap.CashSessions), "tournaments", len(snap.Tournaments), "ledger", len(snap.Ledger))
+		send(b.tg, chatID, fmt.Sprintf("✅ Migrated %d cash sessions, %d tournaments, and %d ledger entries to %s. Amounts and bankroll verified. Restarting tracker…", len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), backendLabel(ps.target)))
+		if err := selfRestart(b.configPath, b.taskName); err == nil {
+			os.Exit(0)
+		} else {
+			slog.Error("restarting tracker after backend switch", "err", err)
+		}
+		// The worker and collector are still paused. Restore configuration before
+		// releasing either, so later accepted writes cannot fork the two backends.
+		if err := config.SaveConfig(b.configPath, previous); err != nil {
+			slog.Error("restoring configuration after failed restart", "err", err)
+			send(b.tg, chatID, "Automatic restart failed and the previous settings could not be restored. Collection remains paused and the verified destination is preserved. Restart the tracker service manually to use the copied data.")
+			return
+		}
 		b.rollbackTarget(ps)
-		slog.Error("migrating backend", "err", err)
-		send(b.tg, chatID, fmt.Sprintf("Migration failed — nothing changed, still on %s.\n%v\n\nBefore retrying, make sure the target is empty (a fresh sheet, or delete tracker.db).", backendLabel(b.currentBackend()), err))
-		return
-	}
-
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		b.rollbackTarget(ps)
-		slog.Error("loading config after migration", "err", err)
-		send(b.tg, chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
-		return
-	}
-	cfg.Setup.StorageBackend = &ps.target
-	if ps.target == "sheets" {
-		cfg.Setup.GoogleSheetName = ps.sheetName
-		cfg.Setup.GoogleSheetID = &ps.sheetID
-	}
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		b.rollbackTarget(ps)
-		slog.Error("saving config after migration", "err", err)
-		send(b.tg, chatID, "Data copied fine, but saving the backend choice failed — the copy was rolled back and nothing changed. Check logs, then run /storage again.")
-		return
-	}
-
-	slog.Info("backend migration complete", "target", ps.target,
-		"cash_sessions", len(migrated.CashSessions), "tournaments", len(migrated.Tournaments), "ledger", len(migrated.Ledger))
-
-	// The restarted process opens the new backend fresh; close our sqlite
-	// handle so the file isn't held open across the restart.
-	closeStore(ps.dst)
-
-	send(b.tg, chatID, fmt.Sprintf("✅ Migrated %d cash sessions, %d tournaments, and %d ledger entries to %s — bankroll verified equal. Restarting tracker in a moment…",
-		len(migrated.CashSessions), len(migrated.Tournaments), len(migrated.Ledger), backendLabel(ps.target)))
-	if err := selfRestart(b.configPath, b.taskName); err != nil {
-		slog.Error("restarting tracker after backend switch", "err", err)
-		send(b.tg, chatID, "Couldn't restart automatically — restart the tracker service by hand (Task Scheduler → Poker Tracker → Run, or reboot).")
-		return
-	}
-	os.Exit(0)
+		close(release)
+		b.queueOperation(func(storage.Store) storage.OperationResult { return storage.OperationResult{Err: <-resumed} }, func(result storage.OperationResult) {
+			b.migrating = false
+			if result.Err != nil {
+				send(b.tg, chatID, fmt.Sprintf("Automatic restart failed. The previous storage settings were restored, but collection could not resume: %v. Restart the collector service manually.", result.Err))
+			} else {
+				send(b.tg, chatID, "Automatic restart failed. The copy was rolled back and collection resumed using the previous storage. Nothing changed.")
+			}
+		})
+	})
+	request := &b.pendingOperations[len(b.pendingOperations)-1].request
+	request.PrepareMigration = true
+	request.Release = release
+	request.Resumed = resumed
 }
 
 // rollbackTarget returns a half-written target to empty so a retry passes the

@@ -14,39 +14,33 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // checkPendingTournaments re-sends the satellite/ticket confirmation menu for
 // any pending entry more than 30 minutes past its last reminder.
 func (b *Bot) checkPendingTournaments(now time.Time) {
 	pendingPath := filepath.Join(filepath.Dir(b.configPath), "pending_tournaments.json")
-	pending, err := config.LoadPendingTournaments(pendingPath)
+	var due []config.PendingTournament
+	err := config.UpdatePendingTournaments(pendingPath, func(pending []config.PendingTournament) ([]config.PendingTournament, bool) {
+		for i := range pending {
+			if now.Sub(pending[i].LastRemindedAt) <= 30*time.Minute {
+				continue
+			}
+			due = append(due, pending[i])
+			pending[i].LastRemindedAt = now
+		}
+		return pending, len(due) > 0
+	})
 	if err != nil {
-		slog.Error("loading pending tournaments", "err", err)
+		slog.Error("updating pending tournament reminders", "err", err)
 		return
 	}
-	if len(pending) == 0 {
-		return
-	}
-	changed := false
-	for i := range pending {
-		if now.Sub(pending[i].LastRemindedAt) <= 30*time.Minute {
-			continue
-		}
-		// Reason selects the question; empty means the original satellite one,
-		// so a pending file written before this field existed still asks
-		// ticket-vs-cash.
-		if pending[i].Reason == config.PendingFreerollBuyin {
-			b.sendFreerollBuyInMenu(pending[i].Tournament)
+	for _, entry := range due {
+		if entry.Reason == config.PendingFreerollBuyin {
+			b.sendFreerollBuyInMenu(entry.Tournament)
 		} else {
-			b.sendSatelliteMenu(pending[i].Tournament)
-		}
-		pending[i].LastRemindedAt = now
-		changed = true
-	}
-	if changed {
-		if err := config.SavePendingTournaments(pendingPath, pending); err != nil {
-			slog.Error("saving pending tournaments", "err", err)
+			b.sendSatelliteMenu(entry.Tournament)
 		}
 	}
 }
@@ -86,52 +80,30 @@ func RecoverTicketPayout(buyInUSD, netUSD float64) (newBuyInUSD, newNetUSD float
 
 // resolveSatellite handles a tap on the satellite/ticket confirmation menu.
 func (b *Bot) resolveSatellite(chatID int64, messageID int, tournamentID string, paidCash bool) {
-	pendingPath := filepath.Join(filepath.Dir(b.configPath), "pending_tournaments.json")
-	pending, err := config.LoadPendingTournaments(pendingPath)
-	if err != nil {
-		slog.Error("loading pending tournaments", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-
-	idx := -1
-	for i, p := range pending {
-		if p.Tournament.TournamentID == tournamentID {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		send(b.tg, chatID, "Already resolved.")
-		return
-	}
-
-	t := pending[idx].Tournament
-	var resultText string
-	if paidCash {
-		if _, err := b.store.AppendTournament(t); err != nil {
-			slog.Error("appending tournament", "err", err)
+	b.queueOperation(func(store storage.Store) storage.OperationResult {
+		return recordPendingTournament(store, b.configPath, tournamentID, func(t parsers.Tournament) parsers.Tournament {
+			if !paidCash {
+				t.BuyInUSD, t.NetUSD = RecoverTicketPayout(t.BuyInUSD, t.NetUSD)
+			}
+			return t
+		})
+	}, func(result storage.OperationResult) {
+		if result.Err != nil {
+			slog.Error("recording resolved satellite", "err", result.Err)
 			send(b.tg, chatID, "Something went wrong. Check logs.")
 			return
 		}
-		resultText = "✅ Logged as cash entry."
-	} else {
-		t.BuyInUSD, t.NetUSD = RecoverTicketPayout(t.BuyInUSD, t.NetUSD)
-		if _, err := b.store.AppendTournament(t); err != nil {
-			slog.Error("appending tournament", "err", err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
+		if !result.Found {
+			send(b.tg, chatID, "Already resolved.")
 			return
 		}
-		resultText = "✅ Logged as ticket entry — buy-in corrected to $0."
-	}
-
-	pending = append(pending[:idx], pending[idx+1:]...)
-	if err := config.SavePendingTournaments(pendingPath, pending); err != nil {
-		slog.Error("saving pending tournaments", "err", err)
-	}
-
-	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, resultText, emptyKeyboard)
-	if _, err := b.tg.Send(edit); err != nil {
-		slog.Error("editing telegram message", "err", err)
-	}
+		text := "✅ Logged as cash entry."
+		if !paidCash {
+			text = "✅ Logged as ticket entry — buy-in corrected to $0."
+		}
+		edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, emptyKeyboard)
+		if _, err := b.tg.Send(edit); err != nil {
+			slog.Error("editing telegram message", "err", err)
+		}
+	})
 }

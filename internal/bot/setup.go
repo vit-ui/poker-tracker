@@ -366,7 +366,7 @@ func readReply(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID i
 // waitForCallbackChoice blocks until a callback query from chatID arrives
 // with Data matching one of accepted, answers it, and returns the matched
 // value. Used by RunSetup's storage backend prompt, the only inline keyboard
-// RunSetup shows — RunSetup runs sequentially before the bot.Run/pollUpdates
+// RunSetup shows — RunSetup runs sequentially before the bot.Run event loop
 // callback machinery exists, so it needs its own blocking wait here rather
 // than the Bot's handleCallback.
 func waitForCallbackChoice(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64, accepted ...string) string {

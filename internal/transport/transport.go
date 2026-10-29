@@ -1,12 +1,10 @@
-// Package transport defines the messages the collector (client) and the server
-// exchange, and the in-process wiring that connects them when both roles run in
-// one binary (the all-local build). The same message types will carry over a
-// network connection in the split build; this package holds only the message
-// types and the in-process channels — no networking, and deliberately no
-// interface while there is a single (in-process) implementation.
+// Package transport defines collector/server messages and their in-process
+// channel link. The same messages cross the authenticated, pinned TLS link
+// when collection and server processing run in separate installations.
 package transport
 
 import (
+	"sync"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -25,13 +23,21 @@ const (
 // carries the bytes appended to that file since the previous Upload (the whole
 // file when Offset is 0), plus what the server needs to reconstruct the file,
 // parse it, and time-stamp the results against the client's clock.
+// CollectionReply acknowledges a collector-side pause/resume request. Errors
+// describe observed failure; an absent reply never establishes completion.
+type CollectionReply struct {
+	RequestID string
+	Error     string
+}
+
 type Upload struct {
-	FileID      string    // stable identity of the source file (its path on the client)
-	Type        string    // "cash" or "tournament" (or ImportStart/ImportDone marker), matching watcher.FileEvent.Type
-	Offset      int64     // byte offset in the file where Bytes begins
-	Bytes       []byte    // the appended bytes (the whole file when Offset == 0)
-	ScreenName  string    // the PokerStars screen name whose results to score
-	ClientClock time.Time // the client's wall-clock time when the change was seen
+	CollectionReply *CollectionReply
+	FileID          string    // stable identity of the source file (its path on the client)
+	Type            string    // "cash" or "tournament" (or ImportStart/ImportDone marker), matching watcher.FileEvent.Type
+	Offset          int64     // byte offset in the file where Bytes begins
+	Bytes           []byte    // the appended bytes (the whole file when Offset == 0)
+	ScreenName      string    // the PokerStars screen name whose results to score
+	ClientClock     time.Time // the client's wall-clock time when the change was seen
 
 	// Import marks an upload produced by a /scan backfill (Collector.rescan)
 	// rather than a live file change. The server records these silently — no
@@ -40,37 +46,64 @@ type Upload struct {
 	Import bool
 }
 
-// CommandLock and CommandRescan are the Kinds of command the server sends the
-// client. A lock kills PokerStars and writes the lockfile; a rescan makes the
-// collector walk both watched folders and upload every file for a silent
-// backfill (see Collector.rescan). Both decisions are made on the server side;
-// the client only carries them out.
+// Commands ask the collector to enforce a lock, scan histories, or pause/resume
+// collection. Pause/resume carry RequestID and receive an ordered CollectionReply
+// upload. A pause checks PokerStars closure before draining its watcher.
 const (
-	CommandLock   = "lock"
-	CommandRescan = "rescan"
+	CommandLock             = "lock"
+	CommandRescan           = "rescan"
+	CommandPauseCollection  = "pause_collection"
+	CommandResumeCollection = "resume_collection"
 )
 
 // Command is sent from the server to the client.
 type Command struct {
-	Kind string           // CommandLock or CommandRescan
-	Lock *config.LockFile // set when Kind == CommandLock
+	RequestID string
+	Kind      string           // one of the Command constants
+	Lock      *config.LockFile // set when Kind == CommandLock
 }
 
 // Link is the in-process connection between one client and one server: uploads
-// flow up (client → server), commands flow down (server → client). The split
-// build will replace this with a network connection carrying the same two
-// message types; the all-local build uses this channel pair.
+// flow up (client → server), commands flow down (server → client). Split builds
+// bridge each end to TLS; all-local shares this channel pair directly.
 type Link struct {
-	Uploads  chan Upload
-	Commands chan Command
+	connectionMu  sync.Mutex
+	collectorDone <-chan struct{}
+	localDone     chan struct{}
+	Uploads       chan Upload
+	Commands      chan Command
 }
 
 // NewLink creates a Link with small buffers, matching the sessionChan/alertChan
 // buffering runServe already uses so a brief stall on one side doesn't block the
 // other.
 func NewLink() *Link {
+	localDone := make(chan struct{})
 	return &Link{
-		Uploads:  make(chan Upload, 10),
-		Commands: make(chan Command, 10),
+		collectorDone: localDone,
+		localDone:     localDone,
+		Uploads:       make(chan Upload, 10),
+		Commands:      make(chan Command, 10),
 	}
+}
+
+// CollectorDone closes when the currently selected collector disconnects. An
+// in-process collector remains available until its owning process shuts down.
+func (l *Link) CollectorDone() <-chan struct{} {
+	l.connectionMu.Lock()
+	defer l.connectionMu.Unlock()
+	return l.collectorDone
+}
+
+func (l *Link) useNetwork() {
+	l.connectionMu.Lock()
+	defer l.connectionMu.Unlock()
+	close(l.localDone)
+	l.collectorDone = l.localDone
+}
+
+func (l *Link) setCollectorDone(done <-chan struct{}) {
+	l.connectionMu.Lock()
+	defer l.connectionMu.Unlock()
+	l.collectorDone = done
 }

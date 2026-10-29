@@ -41,6 +41,9 @@ var apiEndpoint = tgbotapi.APIEndpoint
 // worker-side alert evaluators (alerts.go) run on the worker goroutine,
 // which has no Bot, and stay plain functions too.
 type Bot struct {
+	migrating          bool
+	worker             chan<- storage.Operation
+	pendingOperations  []pendingOperation
 	taskName           string
 	tg                 *tgbotapi.BotAPI
 	store              storage.Store
@@ -70,12 +73,12 @@ type Bot struct {
 	now func() time.Time
 
 	// pendingSwitch holds a /storage migration awaiting the player's
-	// confirmation tap. Touched only from pollUpdates, like conversation.
+	// confirmation tap. Touched only on the bot event loop, like conversation.
 	pendingSwitch *pendingBackendSwitch
 
 	// pendingStorageSheetArg holds the sheet name/URL from a /storage sheets
 	// migration that paused to collect the service-account key inline, resumed
-	// once the file is uploaded. Touched only from pollUpdates.
+	// once the file is uploaded. Touched only on the bot event loop.
 	pendingStorageSheetArg string
 
 	conversation
@@ -83,7 +86,7 @@ type Bot struct {
 
 // conversation tracks the in-progress inline-keyboard flow, if any, for the
 // single configured chat. It is only ever touched from the
-// update-processing goroutine (pollUpdates), so no locking is needed.
+// bot event loop, so no locking is needed.
 type conversation struct {
 	flow  string // "", "screen_name", "menu", "credentials", "storage_credentials", "freeroll_buyin"
 	field string // field awaiting a text reply within flow, "" if none (freeroll_buyin: the tournament ID)
@@ -115,14 +118,15 @@ func (c *conversation) reset() {
 // serviceAccountPath is only used by /sheet, /credentials, and /storage
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
-// taskName identifies the Windows role and installation for configuration restarts.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string) error {
+// taskName identifies the role/installation Windows task or Linux user unit for restarts.
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
 	}
 
 	b := &Bot{
+		worker:             worker,
 		taskName:           taskName,
 		tg:                 tgBot,
 		store:              store,
@@ -139,10 +143,47 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 	var lastWeeklySent, lastMonthlySent, lastHeartbeatCheck time.Time
 	var sheetsDown bool
 
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 30
+	updates := tgBot.GetUpdatesChan(u)
+	defer tgBot.StopReceivingUpdates()
+	var active *pendingOperation
+	var results <-chan storage.OperationResult
+	for {
+		var outbound chan<- storage.Operation
+		var request storage.Operation
+		if active == nil && len(b.pendingOperations) > 0 {
+			outbound = b.worker
+			request = b.pendingOperations[0].request
+		}
+		select {
+		case outbound <- request:
+			next := b.pendingOperations[0]
+			b.pendingOperations[0] = pendingOperation{}
+			b.pendingOperations = b.pendingOperations[1:]
+			active = &next
+			results = next.request.Reply
+		case result := <-results:
+			complete := active.complete
+			active = nil
+			results = nil
+			complete(result)
+		case update, ok := <-updates:
+			if !ok {
+				return fmt.Errorf("telegram update stream closed")
+			}
+			b.handleUpdate(update)
+		case msg, ok := <-alertChan:
+			if !ok {
+				return nil
+			}
+			b.sendMessage(msg)
+		case <-ticker.C:
+			if b.migrating {
+				continue
+			}
 			// realNow drives real-elapsed timing (the 30-min heartbeat, pending
 			// reminders); now is the player-anchored clock the weekly/monthly
 			// day windows fire on, so "Monday 09:00" is the player's, not the
@@ -184,14 +225,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			}
 			b.checkPendingTournaments(realNow)
 		}
-	}()
-
-	go b.pollUpdates()
-
-	for msg := range alertChan {
-		b.sendMessage(msg)
 	}
-	return nil
 }
 
 // heartbeatEvent decides what (if anything) to send given the latest
@@ -298,30 +332,13 @@ func (b *Bot) sendMessageWithKeyboard(text string, markup tgbotapi.InlineKeyboar
 	sendWithKeyboard(b.tg, chatID, text, markup)
 }
 
-// pollUpdates polls Telegram for incoming messages and callback queries and
-// dispatches them. Runs in its own goroutine so it never blocks alertChan.
-func (b *Bot) pollUpdates() {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 30
-	updates := b.tg.GetUpdatesChan(u)
-
-	for update := range updates {
-		// CallbackQuery.Message can be nil if the tapped button is on a
-		// message Telegram no longer has (old or deleted). Every downstream
-		// handler assumes a non-nil Message, so filter here before any of
-		// them run — otherwise this goroutine panics and silently kills all
-		// incoming command handling until the service is restarted.
-		if update.CallbackQuery != nil && update.CallbackQuery.Message == nil {
-			if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Already resolved.")); err != nil {
-				slog.Error("answering callback query", "err", err)
-			}
-			continue
-		}
-		b.handleUpdate(update)
-	}
-}
-
 func (b *Bot) handleUpdate(update tgbotapi.Update) {
+	if update.CallbackQuery != nil && update.CallbackQuery.Message == nil {
+		if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Already resolved.")); err != nil {
+			slog.Error("answering callback query", "err", err)
+		}
+		return
+	}
 	var senderChatID int64
 	switch {
 	case update.Message != nil:
@@ -346,6 +363,17 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		}
 	} else if *cfg.Setup.TelegramChatID != senderChatIDStr {
 		return // not the configured chat — ignore silently
+	}
+
+	if b.migrating {
+		if update.CallbackQuery != nil {
+			if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Storage migration is in progress. Try again after restart.")); err != nil {
+				slog.Error("answering callback during migration", "err", err)
+			}
+		} else {
+			send(b.tg, senderChatID, "Storage migration is in progress. This command was not accepted; try again after restart.")
+		}
+		return
 	}
 
 	if update.CallbackQuery != nil {

@@ -149,6 +149,12 @@ Usage examples:
 
 With no argument, shows where your data lives. `/storage local` moves everything to the local file; `/storage sheets <sheet name or URL>` moves everything to an empty Google Sheet shared with your service account (if this install has no service-account key yet, you'll be prompted to upload it right there and the migration continues). Naming the storage you're already on changes nothing. The target must be empty — there is no merge. You confirm a summary of row counts before anything is copied (close PokerStars first so no hand is played mid-switch), and the copy is verified against your current bankroll before the backend is flipped, so a failed migration leaves you exactly where you were.
 
+The collector checks that PokerStars is closed before pausing collection. It
+drains accepted file updates, and the server records pending cash before copying.
+Commands received during migration are refused with a request to retry after
+restart. The poker PC must be connected in split mode, with matching collector
+and server versions supporting the pause/acknowledgement protocol.
+
 Verification compares the copied records and IDs, row counts, independently
 summed ledger amounts and bankroll. Partial tournaments and already-folded
 bounties are copied directly; Sheets retains its minute-level date precision.

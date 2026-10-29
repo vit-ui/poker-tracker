@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 
+	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
 )
 
@@ -29,7 +30,8 @@ func installService() error {
 	if err := os.MkdirAll(unitDir, 0755); err != nil {
 		return fmt.Errorf("creating %s: %w", unitDir, err)
 	}
-	unitPath := filepath.Join(unitDir, "poker-tracker.service")
+	serviceName := installation.ServerServiceName(InstallationID)
+	unitPath := filepath.Join(unitDir, serviceName)
 	unit := fmt.Sprintf(`[Unit]
 Description=Poker Tracker server
 After=network-online.target
@@ -51,7 +53,7 @@ WantedBy=default.target
 	}
 	for _, args := range [][]string{
 		{"--user", "daemon-reload"},
-		{"--user", "enable", "--now", "poker-tracker.service"},
+		{"--user", "enable", "--now", serviceName},
 	} {
 		cmd := exec.Command("systemctl", args...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

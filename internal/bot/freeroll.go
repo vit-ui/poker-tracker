@@ -10,12 +10,11 @@ package bot
 import (
 	"fmt"
 	"log/slog"
-	"path/filepath"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/parsers"
+	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // sendFreerollBuyInMenu asks whether a zero-buy-in tournament was entered for
@@ -71,55 +70,40 @@ func (b *Bot) handleFreerollBuyInReply(chatID int64, text string) {
 // messageID is edited to the confirmation (a callback message for the free
 // tap, the remembered menu message for the paid text reply).
 func (b *Bot) recordFreerollEntry(chatID int64, messageID int, tournamentID string, buyInUSD float64) {
-	pendingPath := filepath.Join(filepath.Dir(b.configPath), "pending_tournaments.json")
-	pending, err := config.LoadPendingTournaments(pendingPath)
-	if err != nil {
-		slog.Error("loading pending tournaments", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-
-	idx := -1
-	for i, p := range pending {
-		if p.Tournament.TournamentID == tournamentID {
-			idx = i
-			break
+	b.queueOperation(func(store storage.Store) storage.OperationResult {
+		result := recordPendingTournament(store, b.configPath, tournamentID, func(t parsers.Tournament) parsers.Tournament {
+			t.NetUSD -= buyInUSD
+			t.BuyInUSD = buyInUSD
+			return t
+		})
+		if result.Err == nil && result.Found {
+			result.Bankroll, result.BankrollErr = store.GetCurrentBankroll()
 		}
-	}
-	if idx == -1 {
-		send(b.tg, chatID, "Already resolved.")
-		return
-	}
-
-	t := pending[idx].Tournament
-	t.NetUSD -= buyInUSD
-	t.BuyInUSD = buyInUSD
-	netUSD, err := b.store.AppendTournament(t)
-	if err != nil {
-		slog.Error("appending tournament", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-
-	pending = append(pending[:idx], pending[idx+1:]...)
-	if err := config.SavePendingTournaments(pendingPath, pending); err != nil {
-		slog.Error("saving pending tournaments", "err", err)
-	}
-
-	var resultText string
-	if buyInUSD == 0 {
-		resultText = fmt.Sprintf("✅ Logged as a free entry (buy-in $0).\nNet: %s", FormatSignedUSD(netUSD))
-	} else {
-		resultText = fmt.Sprintf("✅ Logged — buy-in $%.2f.\nNet: %s", buyInUSD, FormatSignedUSD(netUSD))
-	}
-	if bankroll, err := b.store.GetCurrentBankroll(); err != nil {
-		slog.Error("getting bankroll", "err", err)
-	} else {
-		resultText += fmt.Sprintf("\nBankroll: $%.2f", bankroll)
-	}
-
-	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, resultText, emptyKeyboard)
-	if _, err := b.tg.Send(edit); err != nil {
-		slog.Error("editing telegram message", "err", err)
-	}
+		return result
+	}, func(result storage.OperationResult) {
+		if result.Err != nil {
+			slog.Error("recording resolved freeroll", "err", result.Err)
+			send(b.tg, chatID, "Something went wrong. Check logs.")
+			return
+		}
+		if !result.Found {
+			send(b.tg, chatID, "Already resolved.")
+			return
+		}
+		var text string
+		if buyInUSD == 0 {
+			text = fmt.Sprintf("✅ Logged as a free entry (buy-in $0).\nNet: %s", FormatSignedUSD(result.NetUSD))
+		} else {
+			text = fmt.Sprintf("✅ Logged — buy-in $%.2f.\nNet: %s", buyInUSD, FormatSignedUSD(result.NetUSD))
+		}
+		if result.BankrollErr != nil {
+			slog.Error("getting bankroll", "err", result.BankrollErr)
+		} else {
+			text += fmt.Sprintf("\nBankroll: $%.2f", result.Bankroll)
+		}
+		edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, emptyKeyboard)
+		if _, err := b.tg.Send(edit); err != nil {
+			slog.Error("editing telegram message", "err", err)
+		}
+	})
 }

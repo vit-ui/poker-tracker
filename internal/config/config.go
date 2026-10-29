@@ -250,14 +250,10 @@ func SaveConfig(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("marshalling config: %w", err)
 	}
-	tmp := path + ".tmp"
 	mu.Lock()
 	defer mu.Unlock()
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("renaming config: %w", err)
+	if err := replaceStateFile(path, data); err != nil {
+		return fmt.Errorf("saving config: %w", err)
 	}
 	return nil
 }
@@ -316,6 +312,10 @@ func IsLockExpired(lock *LockFile) bool {
 func LoadPendingTournaments(path string) ([]PendingTournament, error) {
 	mu.RLock()
 	defer mu.RUnlock()
+	return loadPendingTournaments(path)
+}
+
+func loadPendingTournaments(path string) ([]PendingTournament, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -332,14 +332,46 @@ func LoadPendingTournaments(path string) ([]PendingTournament, error) {
 
 // SavePendingTournaments writes pending to path.
 func SavePendingTournaments(path string, pending []PendingTournament) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return savePendingTournaments(path, pending)
+}
+
+// UpdatePendingTournaments atomically reads, changes and replaces the pending
+// queue. update must only change the supplied data, without I/O or config calls.
+func UpdatePendingTournaments(path string, update func([]PendingTournament) ([]PendingTournament, bool)) error {
+	mu.Lock()
+	defer mu.Unlock()
+	pending, err := loadPendingTournaments(path)
+	if err != nil {
+		return err
+	}
+	pending, changed := update(pending)
+	if !changed {
+		return nil
+	}
+	return savePendingTournaments(path, pending)
+}
+
+func savePendingTournaments(path string, pending []PendingTournament) error {
 	data, err := json.MarshalIndent(PendingTournaments{Pending: pending}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling pending tournaments: %w", err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("writing pending tournaments: %w", err)
+	if err := replaceStateFile(path, data); err != nil {
+		return fmt.Errorf("saving pending tournaments: %w", err)
+	}
+	return nil
+}
+
+// replaceStateFile is called with mu held by the owning config operation.
+func replaceStateFile(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("writing temporary state file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replacing state file: %w", err)
 	}
 	return nil
 }

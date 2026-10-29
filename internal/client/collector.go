@@ -1,6 +1,8 @@
 package client
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -20,12 +22,13 @@ import (
 type Collector struct {
 	link         *transport.Link
 	lockfilePath string
+	control      func(bool) ([]watcher.FileEvent, error)
 }
 
 // NewCollector creates a Collector over the given link, writing enforced locks
-// to lockfilePath.
-func NewCollector(link *transport.Link, lockfilePath string) *Collector {
-	return &Collector{link: link, lockfilePath: lockfilePath}
+// to lockfilePath. control pauses/resumes its watcher and returns drained events.
+func NewCollector(link *transport.Link, lockfilePath string, control func(bool) ([]watcher.FileEvent, error)) *Collector {
+	return &Collector{link: link, lockfilePath: lockfilePath, control: control}
 }
 
 // sentEntry is a file's last-sent byte offset plus when it was last touched, so
@@ -58,55 +61,146 @@ const (
 // all-local build the link never drops, so a nil dead is passed and Run blocks
 // until sessionChan is closed.
 func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string, dead <-chan struct{}) {
-	go c.applyCommands(dead, configPath)
+	finished := make(chan struct{})
+	defer close(finished)
+	requests := make(chan transport.Command)
+	go c.applyCommands(dead, finished, requests)
 	sent := make(map[string]*sentEntry)
+	paused := false
+	upload := func(event watcher.FileEvent) error {
+		now := time.Now()
+		if len(sent) > sentStateCap {
+			for path, entry := range sent {
+				if now.Sub(entry.lastSeen) > sentStateTTL {
+					delete(sent, path)
+				}
+			}
+		}
+		up, ok, err := readUpload(event, sent, now, configPath)
+		if err != nil {
+			return err
+		}
+		if ok && !c.send(up, dead) {
+			return fmt.Errorf("collector disconnected while draining files")
+		}
+		return nil
+	}
+	for {
+		var events <-chan watcher.FileEvent
+		if !paused {
+			events = sessionChan
+		}
+		select {
+		case <-dead:
+			return
+		case cmd := <-requests:
+			var err error
+			switch cmd.Kind {
+			case transport.CommandRescan:
+				if !paused {
+					c.rescan(configPath, dead)
+				}
+				continue
+			case transport.CommandPauseCollection:
+				if paused {
+					err = fmt.Errorf("collection is already paused")
+					break
+				}
+				running, checkErr := pokerStarsRunning()
+				if checkErr != nil {
+					err = checkErr
+					break
+				}
+				if running {
+					err = fmt.Errorf("close PokerStars before changing storage")
+					break
+				}
+				if c.control == nil {
+					err = fmt.Errorf("collection pause is unavailable")
+					break
+				}
+				var pending []watcher.FileEvent
+				pending, err = c.control(true)
+				if err != nil {
+					break
+				}
+				paused = true
+			drain:
+				for {
+					select {
+					case event, ok := <-sessionChan:
+						if !ok {
+							err = errors.Join(err, fmt.Errorf("file collection stopped"))
+							break drain
+						}
+						err = errors.Join(err, upload(event))
+					default:
+						break drain
+					}
+				}
+				for _, event := range pending {
+					err = errors.Join(err, upload(event))
+				}
+				if err != nil {
+					_, resumeErr := c.control(false)
+					err = errors.Join(err, resumeErr)
+					paused = resumeErr != nil
+				}
+			case transport.CommandResumeCollection:
+				if c.control == nil {
+					err = fmt.Errorf("collection resume is unavailable")
+					break
+				}
+				_, err = c.control(false)
+				if err == nil {
+					paused = false
+				}
+			}
+			reply := &transport.CollectionReply{RequestID: cmd.RequestID}
+			if err != nil {
+				reply.Error = err.Error()
+			}
+			if !c.send(transport.Upload{CollectionReply: reply, ClientClock: time.Now()}, dead) {
+				return
+			}
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if err := upload(event); err != nil {
+				slog.Error("reading file for upload", "err", err)
+			}
+		}
+	}
+
+}
+
+// applyCommands carries out commands from the server until the link dies: a
+// lock kills PokerStars and writes the lockfile. File/control requests are
+// forwarded to Run so uploads and pause acknowledgements keep their order.
+func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<- transport.Command) {
 	for {
 		select {
 		case <-dead:
 			return
-		case event, ok := <-sessionChan:
-			if !ok {
-				return
-			}
-			now := time.Now()
-			if len(sent) > sentStateCap {
-				for p, e := range sent {
-					if now.Sub(e.lastSeen) > sentStateTTL {
-						delete(sent, p)
-					}
-				}
-			}
-			if up, ok := readUpload(event, sent, now, configPath); ok {
-				select {
-				case c.link.Uploads <- up:
-				case <-dead:
-					return // link died mid-send; don't block
-				}
-			}
-		}
-	}
-}
-
-// applyCommands carries out commands from the server until the link dies: a
-// lock kills PokerStars and writes the lockfile; a rescan walks both watched
-// folders and uploads every file for a silent backfill (/scan). configPath is
-// read fresh per rescan for the folder paths and screen name.
-func (c *Collector) applyCommands(dead <-chan struct{}, configPath string) {
-	for {
-		select {
-		case <-dead:
+		case <-finished:
 			return
 		case cmd, ok := <-c.link.Commands:
 			if !ok {
 				return
 			}
-			switch cmd.Kind {
-			case transport.CommandLock:
+			if cmd.Kind == transport.CommandLock {
 				if cmd.Lock != nil {
 					Enforce(c.lockfilePath, *cmd.Lock)
 				}
-			case transport.CommandRescan:
-				c.rescan(configPath, dead)
+				continue
+			}
+			select {
+			case requests <- cmd:
+			case <-dead:
+				return
+			case <-finished:
+				return
 			}
 		}
 	}
@@ -191,7 +285,7 @@ func (c *Collector) send(up transport.Upload, dead <-chan struct{}) bool {
 // is rewritten wholesale on each bust, so it is always sent whole (offset 0).
 // The screen name is read fresh from config each event so a value filled in at
 // runtime isn't missed.
-func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Time, configPath string) (transport.Upload, bool) {
+func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Time, configPath string) (transport.Upload, bool, error) {
 	screenName := ""
 	if cfg, err := config.LoadConfig(configPath); err == nil && cfg.Setup.PokerStarsScreenName != nil {
 		screenName = *cfg.Setup.PokerStarsScreenName
@@ -199,14 +293,12 @@ func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Ti
 
 	f, err := os.Open(event.Path)
 	if err != nil {
-		slog.Error("opening file for upload", "path", event.Path, "err", err)
-		return transport.Upload{}, false
+		return transport.Upload{}, false, fmt.Errorf("opening file for upload %s: %w", event.Path, err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		slog.Error("stat file for upload", "path", event.Path, "err", err)
-		return transport.Upload{}, false
+		return transport.Upload{}, false, fmt.Errorf("stat file for upload %s: %w", event.Path, err)
 	}
 	size := info.Size()
 
@@ -222,19 +314,17 @@ func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Ti
 		// size < last means the file was rewritten/truncated: offset stays 0,
 		// resending the whole file so the server rebuilds it from scratch.
 		if size == offset {
-			return transport.Upload{}, false // nothing new to send
+			return transport.Upload{}, false, nil // nothing new to send
 		}
 	}
 	// Tournament summaries (and rewritten cash files) send whole from offset 0.
 
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		slog.Error("seeking file for upload", "path", event.Path, "err", err)
-		return transport.Upload{}, false
+		return transport.Upload{}, false, fmt.Errorf("seeking file for upload %s: %w", event.Path, err)
 	}
 	buf := make([]byte, size-offset)
 	if _, err := io.ReadFull(f, buf); err != nil {
-		slog.Error("reading file for upload", "path", event.Path, "err", err)
-		return transport.Upload{}, false
+		return transport.Upload{}, false, fmt.Errorf("reading file for upload %s: %w", event.Path, err)
 	}
 	sent[event.Path] = &sentEntry{offset: size, lastSeen: now}
 
@@ -245,5 +335,5 @@ func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Ti
 		Bytes:       buf,
 		ScreenName:  screenName,
 		ClientClock: time.Now(),
-	}, true
+	}, true, nil
 }

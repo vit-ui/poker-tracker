@@ -92,8 +92,9 @@ func runServe() {
 	ts := filepath.Join(*cfg.Paths.TournamentSummary, *cfg.Setup.PokerStarsScreenName)
 
 	sessionChan := make(chan watcher.FileEvent, 10)
+	watcherControl := watcher.NewControl()
 	go func() {
-		if err := watcher.Watch(make(chan struct{}), hh, ts, sessionChan); err != nil {
+		if err := watcher.WatchControlled(make(chan struct{}), hh, ts, sessionChan, watcherControl); err != nil {
 			slog.Error("file watching stopped", "err", err)
 			os.Exit(1)
 		}
@@ -110,7 +111,7 @@ func runServe() {
 	}
 	slog.Info("connected to the server", "addr", info.Address())
 
-	collector := client.NewCollector(link, lockfilePath)
+	collector := client.NewCollector(link, lockfilePath, watcherControl.SetPaused)
 	collector.Run(sessionChan, configPath, dead) // blocks until the link drops
 	slog.Error("server connection lost — exiting for the service manager to restart and reconnect")
 	os.Exit(1)

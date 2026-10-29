@@ -106,7 +106,7 @@ func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 	// so the session-end write/eval/summary fires within the test's deadline.
 	srv.QuietPeriod = 150 * time.Millisecond
 	go srv.Run()
-	collector := client.NewCollector(link, lockfilePath)
+	collector := client.NewCollector(link, lockfilePath, nil)
 	go collector.Run(sessionChan, configPath, nil)
 	go client.RunEnforcementLoop(lockfilePath, done)
 
@@ -517,7 +517,7 @@ func TestPipeline_ScanBackfill(t *testing.T) {
 	// The real collector: its applyCommands loop turns the CommandRescan into a
 	// folder walk. A never-closed sessionChan (no watcher here) is fine — the
 	// scan is command-driven.
-	collector := client.NewCollector(link, filepath.Join(dir, "lockfile.json"))
+	collector := client.NewCollector(link, filepath.Join(dir, "lockfile.json"), nil)
 	go collector.Run(make(chan watcher.FileEvent), configPath, nil)
 
 	var mu sync.Mutex
