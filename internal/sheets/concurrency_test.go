@@ -36,9 +36,9 @@ func TestMoneyMovementsSerializeReadAndAppend(t *testing.T) {
 	}}
 	c := newTestClient(t, fake)
 	errors := make(chan error, 2)
-	go func() { errors <- c.AppendLedgerEntry("deposit", 1, time.Unix(100, 0)) }()
+	go func() { errors <- c.AppendLedgerEntry("deposit", 1, time.Unix(100, 0), "") }()
 	<-firstRead
-	go func() { errors <- c.AppendLedgerEntry("deposit", 1, time.Unix(200, 0)) }()
+	go func() { errors <- c.AppendLedgerEntry("deposit", 1, time.Unix(200, 0), "") }()
 	select {
 	case <-secondRead:
 		close(releaseFirst)
@@ -77,7 +77,7 @@ func TestNonFiniteWritesDoNotChangeSheetOrFallback(t *testing.T) {
 			name  string
 			write func(*Client) error
 		}{
-			{"movement", func(c *Client) error { return c.AppendLedgerEntry("deposit", invalid, time.Now()) }},
+			{"movement", func(c *Client) error { return c.AppendLedgerEntry("deposit", invalid, time.Now(), "") }},
 			{"cash", func(c *Client) error { return c.AppendCashSession(parsers.CashSession{NetUSD: invalid}) }},
 			{"tournament", func(c *Client) error {
 				_, err := c.AppendTournament(parsers.Tournament{TournamentID: "T-FINITE", BuyInUSD: invalid})

@@ -575,21 +575,35 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 // UTC instant — so deposit/withdrawal rows live in the same date coordinate
 // system as session rows (whose dates come from PokerStars' zone-less local
 // timestamps) and window queries treat both alike.
-func (s *Store) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
+func (s *Store) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error {
+	if err := storage.ValidateMoneyOperationID(operationID); err != nil {
+		return err
+	}
 	if err := storage.ValidateNumbers(amountUSD); err != nil {
 		return err
 	}
-	return s.write(func(tx *sql.Tx) error { return s.appendLedgerEntry(tx, entryType, amountUSD, now) })
+	return s.write(func(tx *sql.Tx) error { return s.appendLedgerEntry(tx, entryType, amountUSD, now, operationID) })
 }
 
-func (s *Store) appendLedgerEntry(tx *sql.Tx, entryType string, amountUSD float64, now time.Time) error {
+func (s *Store) appendLedgerEntry(tx *sql.Tx, entryType string, amountUSD float64, now time.Time, operationID string) error {
+	if operationID != "" {
+		var exists int
+		err := tx.QueryRow("SELECT 1 FROM bankroll_ledger WHERE session_id = ?", operationID).Scan(&exists)
+		if err == nil {
+			return nil
+		}
+		if err != sql.ErrNoRows {
+			return fmt.Errorf("checking money operation identity: %w", err)
+		}
+	}
+
 	prev, err := lastRunningTotal(tx.QueryRow(lastRunningTotalQuery))
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(`
-		INSERT INTO bankroll_ledger (date, type, amount_usd, running_total) VALUES (?, ?, ?, ?)
-	`, storage.AsStoredClock(now).Format(dateFormat), entryType, amountUSD, prev+amountUSD)
+		INSERT INTO bankroll_ledger (date, type, amount_usd, running_total,session_id) VALUES (?, ?, ?, ?,?)
+	`, storage.AsStoredClock(now).Format(dateFormat), entryType, amountUSD, prev+amountUSD, operationID)
 	if err != nil {
 		return fmt.Errorf("appending ledger entry: %w", err)
 	}

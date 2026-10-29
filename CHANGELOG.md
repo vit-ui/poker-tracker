@@ -8,6 +8,14 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Deposits and withdrawals use stable, namespaced operation IDs in both stores,
+  exports, migration and durable Sheets fallback. Recovery reconciles remotely
+  accepted writes before replay; equal intentional deposits stay distinct.
+- Sheets recovery preserves newer tournament re-entry, cash and bounty corrections
+  even with unchanged hand counts. Replay order is deterministic, and the bot's
+  existing ticker requests worker-owned draining when idle. Replies distinguish
+  recorded movements, durable local queueing and local save failures.
+
 - Linux configuration restarts use the owning systemd user service rather than
   Windows restart commands. Setup and restart share the server installation
   identity; a manually launched process cannot restart another installation.

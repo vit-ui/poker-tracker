@@ -40,7 +40,7 @@ func TestWorkerOperationsSerializeWithUploadsAndBufferedReplies(t *testing.T) {
 	first := storage.Operation{Reply: make(chan storage.OperationResult, 1), Apply: func(s storage.Store) storage.OperationResult {
 		close(entered)
 		<-release
-		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 1, time.Now())}
+		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 1, time.Now(), "")}
 	}}
 	server.Operations <- first
 	<-entered
@@ -52,7 +52,7 @@ func TestWorkerOperationsSerializeWithUploadsAndBufferedReplies(t *testing.T) {
 	link.Uploads <- transport.Upload{Type: transport.ImportDone}
 	accepted := make(chan struct{})
 	second := storage.Operation{Reply: make(chan storage.OperationResult, 1), Apply: func(s storage.Store) storage.OperationResult {
-		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 2, time.Now())}
+		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 2, time.Now(), "")}
 	}}
 	go func() {
 		select {

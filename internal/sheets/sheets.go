@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -757,6 +758,7 @@ const (
 // populated; the map key is "<kind>:<id>" so a tournament's summary write and
 // its hand-stats write (both keyed by TournamentID) never collide.
 type fallbackEntry struct {
+	QueuedAt  time.Time            `json:"queued_at,omitempty"`
 	Kind      string               `json:"kind"`
 	Cash      *parsers.CashSession `json:"cash,omitempty"`
 	Summary   *parsers.Tournament  `json:"summary,omitempty"`
@@ -780,9 +782,10 @@ type handStatsArgs struct {
 // sheet's current last row at replay time, so a deposit that lands after other
 // rows queued ahead of it still gets a correct cumulative total.
 type ledgerArgs struct {
-	EntryType string    `json:"entry_type"`
-	AmountUSD float64   `json:"amount_usd"`
-	Now       time.Time `json:"now"`
+	OperationID string    `json:"operation_id,omitempty"`
+	EntryType   string    `json:"entry_type"`
+	AmountUSD   float64   `json:"amount_usd"`
+	Now         time.Time `json:"now"`
 }
 
 // AppendCashSession writes the session and, only if that fails, caches it for
@@ -796,51 +799,97 @@ func (c *Client) AppendCashSession(session parsers.CashSession) error {
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
+	key := fallbackKindCash + ":" + CashSessionID(session.Date, session.FirstHandID)
+	entry := fallbackEntry{Kind: fallbackKindCash, Cash: &session}
+	if err := c.prepareQueuedReplacement(key, entry); err != nil {
+		return err
+	}
 	if err := c.rawAppendCashSession(session); err != nil {
-		key := fallbackKindCash + ":" + CashSessionID(session.Date, session.FirstHandID)
-		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindCash, Cash: &session})
+		return c.queueWriteFailure(key, entry, err)
+	}
+	if err := c.retireFallback(key); err != nil {
 		return err
 	}
 	c.flush()
 	return nil
 }
 
-// AppendTournament wraps rawAppendTournament, preserving its (netUSD, error)
-// return on both paths. Its fallback entry needs no hand-count guard —
-// rawAppendTournament reads the row's bounty fresh every call and reconciles
-// NetUSD from it, so a re-flush self-corrects regardless of ordering.
 func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
 	if err := storage.ValidateTournament(t); err != nil {
 		return 0, err
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	netUSD, err := c.rawAppendTournament(t)
+	key := fallbackKindSummary + ":" + t.TournamentID
+	entry := fallbackEntry{Kind: fallbackKindSummary, Summary: &t}
+	if err := c.prepareQueuedReplacement(key, entry); err != nil {
+		return 0, err
+	}
+	net, err := c.rawAppendTournament(t)
 	if err != nil {
-		key := fallbackKindSummary + ":" + t.TournamentID
-		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindSummary, Summary: &t})
-		return netUSD, err
+		return net, c.queueWriteFailure(key, entry, err)
+	}
+	if err := c.retireFallback(key); err != nil {
+		return net, err
 	}
 	c.flush()
-	return netUSD, nil
+	return net, nil
 }
 
-// UpdateTournamentHandStats wraps rawUpdateTournamentHandStats with the same
-// cache-on-failure / flush-on-success shape.
-func (c *Client) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
-	if err := storage.ValidateNumbers(vpip, pfr, bountyUSD); err != nil {
+func (c *Client) UpdateTournamentHandStats(id string, vpip, pfr float64, hands int, bounty float64, knockout bool) error {
+	if err := storage.ValidateNumbers(vpip, pfr, bounty); err != nil {
 		return err
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	if err := c.rawUpdateTournamentHandStats(tournamentID, vpip, pfr, hands, bountyUSD, isKnockout); err != nil {
-		key := fallbackKindStats + ":" + tournamentID
-		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{
-			TournamentID: tournamentID, VPIP: vpip, PFR: pfr, Hands: hands, BountyUSD: bountyUSD, IsKnockout: isKnockout,
-		}})
+	key := fallbackKindStats + ":" + id
+	entry := fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{TournamentID: id, VPIP: vpip, PFR: pfr, Hands: hands, BountyUSD: bounty, IsKnockout: knockout}}
+	if err := c.prepareQueuedReplacement(key, entry); err != nil {
+		return err
+	}
+	if err := c.rawUpdateTournamentHandStats(id, vpip, pfr, hands, bounty, knockout); err != nil {
+		return c.queueWriteFailure(key, entry, err)
+	}
+	if err := c.retireFallback(key); err != nil {
 		return err
 	}
 	c.flush()
+	return nil
+}
+
+// If an older snapshot is queued, persist its replacement before attempting a
+// newer remote correction. The queue remains pending until success; if retiring
+// it later fails, restart can only replay the newer snapshot, never the old one.
+func (c *Client) prepareQueuedReplacement(key string, entry fallbackEntry) error {
+	c.fallbackMu.Lock()
+	_, exists := c.fallback[key]
+	c.fallbackMu.Unlock()
+	if !exists {
+		return nil
+	}
+	if err := c.cacheFailed(key, entry); err != nil {
+		return &storage.WriteError{Err: err}
+	}
+	return nil
+}
+
+func (c *Client) queueWriteFailure(key string, entry fallbackEntry, remoteErr error) error {
+	err := c.cacheFailed(key, entry)
+	return &storage.WriteError{Err: errors.Join(remoteErr, err), Queued: err == nil}
+}
+
+func (c *Client) retireFallback(key string) error {
+	c.fallbackMu.Lock()
+	defer c.fallbackMu.Unlock()
+	entry, exists := c.fallback[key]
+	if !exists {
+		return nil
+	}
+	delete(c.fallback, key)
+	if err := c.persistFallbackLocked(); err != nil {
+		c.fallback[key] = entry
+		return &storage.WriteError{Err: err, Queued: true}
+	}
 	return nil
 }
 
@@ -885,21 +934,20 @@ func (c *Client) persistFallbackLocked() error {
 
 // cacheFailed queues a failed write for later replay and persists immediately
 // so a crash never loses it. A no-op when the fallback is disabled.
-func (c *Client) cacheFailed(key string, entry fallbackEntry) {
+func (c *Client) cacheFailed(key string, entry fallbackEntry) error {
 	if c.fallbackPath == "" {
-		return
+		return fmt.Errorf("local fallback is disabled")
 	}
+	entry.QueuedAt = time.Now()
 	c.fallbackMu.Lock()
 	c.fallback[key] = entry
 	err := c.persistFallbackLocked()
 	c.fallbackMu.Unlock()
-	// Log after releasing the lock: slog.Error routes to alertChan
-	// (telegramErrorHandler), and blocking on a full alertChan while holding
-	// fallbackMu would deadlock the bot goroutine that drains it if it's
-	// parked waiting for this same lock.
+	// Log only after releasing the queue mutex.
 	if err != nil {
 		slog.Error("persisting sheets fallback", "err", err)
 	}
+	return err
 }
 
 // flush replays every queued entry against the sheet, deleting each that
@@ -918,8 +966,22 @@ func (c *Client) flush() {
 		return
 	}
 	changed := false
-	for key, entry := range c.fallback {
+	removed := make(map[string]fallbackEntry)
+	keys := make([]string, 0, len(c.fallback))
+	for key := range c.fallback {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left, right := c.fallback[keys[i]].QueuedAt, c.fallback[keys[j]].QueuedAt
+		if left.Equal(right) {
+			return keys[i] < keys[j]
+		}
+		return left.Before(right)
+	})
+	for _, key := range keys {
+		entry := c.fallback[key]
 		if c.resolveFallbackEntry(entry) {
+			removed[key] = entry
 			delete(c.fallback, key)
 			changed = true
 		}
@@ -927,10 +989,14 @@ func (c *Client) flush() {
 	var persistErr error
 	if changed {
 		persistErr = c.persistFallbackLocked()
+		if persistErr != nil {
+			for key, entry := range removed {
+				c.fallback[key] = entry
+			}
+		}
 	}
 	c.fallbackMu.Unlock()
-	// Log after unlock — see cacheFailed for why holding fallbackMu across an
-	// alertChan-routed slog call risks deadlocking the bot goroutine.
+	// Log after releasing the queue mutex.
 	if persistErr != nil {
 		slog.Error("persisting sheets fallback after flush", "err", persistErr)
 	}
@@ -969,7 +1035,7 @@ func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 		// No supersede guard: a deposit/withdrawal is a pure append whose
 		// running total rawAppendLedgerEntry recomputes fresh, so there's no
 		// stale snapshot to protect against — just replay it.
-		return c.rawAppendLedgerEntry(entry.Ledger.EntryType, entry.Ledger.AmountUSD, entry.Ledger.Now) == nil
+		return c.rawAppendLedgerEntry(entry.Ledger.EntryType, entry.Ledger.AmountUSD, entry.Ledger.Now, entry.Ledger.OperationID) == nil
 	}
 	return true // unknown kind — drop rather than retry forever
 }
@@ -1041,35 +1107,43 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 // would put deposits in a date coordinate system shifted from every session
 // row's by the machine's UTC offset, and window queries would misplace them
 // near day boundaries.
-// AppendLedgerEntry wraps rawAppendLedgerEntry in the same cache-on-failure /
-// flush-on-success shape as the other writes, so a deposit or withdrawal that
-// fails against the API (a transient outage, a 429) is queued and replayed
-// instead of silently lost — a real incident: a /deposit right after a scan
-// exhausted the quota returned "Something went wrong" and the money movement
-// vanished. Unlike the cash/tournament wrappers, a ledger entry has no upsert
-// key, so its queue key is the timestamp (unique per user action) and replay is
-// at-least-once: the realistic failures (429/DNS/refused) all fail *before* the
-// row is written, so replay doesn't duplicate; the only gap is a write that
-// commits server-side but whose response is lost, a narrow edge worth far less
-// than the silent-loss it replaces.
-func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
+// Identified movements reconcile their existing ledger ID before replay, including
+// a remotely committed append whose acknowledgement was lost. Legacy blank IDs
+// retain append semantics and cannot provide exactly-once recovery.
+func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error {
+	if err := storage.ValidateMoneyOperationID(operationID); err != nil {
+		return err
+	}
 	if err := storage.ValidateNumbers(amountUSD); err != nil {
 		return err
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	if err := c.rawAppendLedgerEntry(entryType, amountUSD, now); err != nil {
+	if err := c.rawAppendLedgerEntry(entryType, amountUSD, now, operationID); err != nil {
 		key := fmt.Sprintf("%s:%d", fallbackKindLedger, now.UnixNano())
-		c.cacheFailed(key, fallbackEntry{Kind: fallbackKindLedger, Ledger: &ledgerArgs{
-			EntryType: entryType, AmountUSD: amountUSD, Now: now,
+		if operationID != "" {
+			key = fallbackKindLedger + ":" + operationID
+		}
+		saveErr := c.cacheFailed(key, fallbackEntry{Kind: fallbackKindLedger, Ledger: &ledgerArgs{
+			EntryType: entryType, AmountUSD: amountUSD, Now: now, OperationID: operationID,
 		}})
-		return err
+		return &storage.WriteError{Err: errors.Join(err, saveErr), Queued: saveErr == nil}
 	}
 	c.flush()
 	return nil
 }
 
-func (c *Client) rawAppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error {
+func (c *Client) rawAppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error {
+	if operationID != "" {
+		_, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", operationID)
+		if err != nil {
+			return fmt.Errorf("checking money operation identity: %w", err)
+		}
+		if found {
+			return nil
+		}
+	}
+
 	prev, err := c.getLastRunningTotal()
 	if err != nil {
 		return err
@@ -1079,6 +1153,7 @@ func (c *Client) rawAppendLedgerEntry(entryType string, amountUSD float64, now t
 		entryType,
 		amountUSD,
 		prev + amountUSD,
+		operationID,
 	})
 }
 
@@ -1553,4 +1628,12 @@ func parseFloat(v interface{}) float64 {
 		return f
 	}
 	return 0
+}
+
+// DrainPendingWrites is called only by the server worker, including its bot-ticker
+// requests. It reuses normal replay and quota pacing without a connectivity probe.
+func (c *Client) DrainPendingWrites() {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	c.flush()
 }

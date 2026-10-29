@@ -196,3 +196,12 @@ func sameOptionalInt(a, b *int) bool {
 	}
 	return *a == *b
 }
+
+// ValidateMoneyOperationID keeps movement identities separate from parser-owned
+// session/tournament keys. Blank identities are retained only for legacy rows.
+func ValidateMoneyOperationID(id string) error {
+	if id != "" && (!strings.HasPrefix(id, "money:") || len(id) == len("money:")) {
+		return fmt.Errorf("invalid money operation identity")
+	}
+	return nil
+}

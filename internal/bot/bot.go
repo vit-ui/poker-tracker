@@ -41,6 +41,7 @@ var apiEndpoint = tgbotapi.APIEndpoint
 // worker-side alert evaluators (alerts.go) run on the worker goroutine,
 // which has no Bot, and stay plain functions too.
 type Bot struct {
+	updateID           int
 	migrating          bool
 	worker             chan<- storage.Operation
 	pendingOperations  []pendingOperation
@@ -188,6 +189,20 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			// reminders); now is the player-anchored clock the weekly/monthly
 			// day windows fire on, so "Monday 09:00" is the player's, not the
 			// server host's.
+			if active == nil && len(b.pendingOperations) == 0 {
+				if client, ok := b.store.(*sheets.Client); ok && client.PendingWrites() > 0 {
+					b.queueOperation(func(store storage.Store) storage.OperationResult {
+						client := store.(*sheets.Client)
+						before := client.PendingWrites()
+						client.DrainPendingWrites()
+						return storage.OperationResult{Recovered: before - client.PendingWrites()}
+					}, func(result storage.OperationResult) {
+						if result.Recovered > 0 {
+							b.sendMessage(fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", result.Recovered))
+						}
+					})
+				}
+			}
 			realNow := time.Now()
 			now := b.now()
 			if realNow.Sub(lastHeartbeatCheck) >= 30*time.Minute {
@@ -333,6 +348,7 @@ func (b *Bot) sendMessageWithKeyboard(text string, markup tgbotapi.InlineKeyboar
 }
 
 func (b *Bot) handleUpdate(update tgbotapi.Update) {
+	b.updateID = update.UpdateID
 	if update.CallbackQuery != nil && update.CallbackQuery.Message == nil {
 		if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Already resolved.")); err != nil {
 			slog.Error("answering callback query", "err", err)

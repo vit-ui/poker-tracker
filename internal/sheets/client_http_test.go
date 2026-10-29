@@ -148,10 +148,10 @@ func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 	c := newTestClient(t, fake)
 
 	fake.setFailWrites(true)
-	if err := c.AppendLedgerEntry("deposit", 6.57, time.Unix(1000, 0)); err == nil {
+	if err := c.AppendLedgerEntry("deposit", 6.57, time.Unix(1000, 0), ""); err == nil {
 		t.Fatal("AppendLedgerEntry = nil error while the API is failing, want an error")
 	}
-	if err := c.AppendLedgerEntry("withdrawal", -20, time.Unix(2000, 0)); err == nil {
+	if err := c.AppendLedgerEntry("withdrawal", -20, time.Unix(2000, 0), ""); err == nil {
 		t.Fatal("second AppendLedgerEntry = nil error while the API is failing, want an error")
 	}
 	if got := c.PendingWrites(); got != 2 {
@@ -169,7 +169,7 @@ func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 
 	// The API recovers; the next successful write flushes both queued deposits.
 	fake.setFailWrites(false)
-	if err := c.AppendLedgerEntry("deposit", 10, time.Unix(3000, 0)); err != nil {
+	if err := c.AppendLedgerEntry("deposit", 10, time.Unix(3000, 0), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry after recovery = %v, want success", err)
 	}
 	if got := c.PendingWrites(); got != 0 {

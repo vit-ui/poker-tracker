@@ -14,6 +14,8 @@ package bot
 // fires when leaving the hard-stop menu.
 
 import (
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +28,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
+	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
@@ -108,16 +111,42 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 	}
 
 	now := b.now()
+	var operationID string
+	if b.updateID != 0 {
+		operationID = fmt.Sprintf("money:telegram:%d:%d:%d", b.tg.Self.ID, chatID, b.updateID)
+	} else {
+		operationID = "money:" + rand.Text()
+	}
 	b.queueOperation(func(store storage.Store) storage.OperationResult {
-		if err := store.AppendLedgerEntry(kind, ledgerAmount, now); err != nil {
+		before := 0
+		if client, ok := store.(*sheets.Client); ok {
+			before = client.PendingWrites()
+		}
+		if err := store.AppendLedgerEntry(kind, ledgerAmount, now, operationID); err != nil {
 			return storage.OperationResult{Err: err}
 		}
 		bankroll, err := store.GetCurrentBankroll()
-		return storage.OperationResult{Bankroll: bankroll, Err: err}
+		recovered := 0
+		if client, ok := store.(*sheets.Client); ok {
+			recovered = before - client.PendingWrites()
+		}
+		return storage.OperationResult{Bankroll: bankroll, BankrollErr: err, Recovered: recovered}
 	}, func(result storage.OperationResult) {
 		if result.Err != nil {
 			slog.Error("recording money movement", "kind", kind, "err", result.Err)
-			send(b.tg, chatID, "Something went wrong. Check logs.")
+			var writeErr *storage.WriteError
+			if errors.As(result.Err, &writeErr) && writeErr.Queued {
+				send(b.tg, chatID, label+" queued locally. It will be reconciled with Sheets when the connection recovers.")
+			} else {
+				send(b.tg, chatID, "Could not confirm this movement, and it was not queued locally. Check your records before trying again.")
+			}
+			return
+		}
+		if result.Recovered > 0 {
+			send(b.tg, chatID, fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", result.Recovered))
+		}
+		if result.BankrollErr != nil {
+			send(b.tg, chatID, fmt.Sprintf("✅ %s recorded: %s. Bankroll is temporarily unavailable.", label, FormatSignedUSD(ledgerAmount)))
 			return
 		}
 		send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, FormatSignedUSD(ledgerAmount), result.Bankroll))

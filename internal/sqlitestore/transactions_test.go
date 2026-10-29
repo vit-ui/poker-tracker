@@ -34,7 +34,7 @@ func TestConcurrentMoneyMovements(t *testing.T) {
 						if amount < 0 {
 							kind = "withdrawal"
 						}
-						errors <- s.AppendLedgerEntry(kind, amount, time.Now())
+						errors <- s.AppendLedgerEntry(kind, amount, time.Now(), "")
 					})
 				}
 			}
@@ -77,7 +77,7 @@ func TestNonFiniteWritesDoNotChangeStore(t *testing.T) {
 			name  string
 			write func(*Store) error
 		}{
-			{"movement", func(s *Store) error { return s.AppendLedgerEntry("deposit", invalid, time.Now()) }},
+			{"movement", func(s *Store) error { return s.AppendLedgerEntry("deposit", invalid, time.Now(), "") }},
 			{"cash", func(s *Store) error { return s.AppendCashSession(parsers.CashSession{NetUSD: invalid}) }},
 			{"tournament", func(s *Store) error {
 				_, err := s.AppendTournament(parsers.Tournament{TournamentID: "T-FINITE", BuyInUSD: invalid})
@@ -110,7 +110,7 @@ func TestOverlappingCorrectionsAndMovements(t *testing.T) {
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	cash := buildCashSession(date, "cash-a", 20, -5)
 	tournament := parsers.Tournament{Date: date, Type: "mtt", TournamentID: "T-ATOMIC-1", BuyInUSD: 1, NetUSD: -1}
-	if err := s.AppendLedgerEntry("deposit", 100, date); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 100, date, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AppendCashSession(cash); err != nil {
@@ -122,8 +122,8 @@ func TestOverlappingCorrectionsAndMovements(t *testing.T) {
 	cash.NetUSD = -7
 	tournament.BuyInUSD, tournament.NetUSD = 2, -2
 	operations := []func() error{
-		func() error { return s.AppendLedgerEntry("deposit", 10, date) },
-		func() error { return s.AppendLedgerEntry("withdrawal", -20, date) },
+		func() error { return s.AppendLedgerEntry("deposit", 10, date, "") },
+		func() error { return s.AppendLedgerEntry("withdrawal", -20, date, "") },
 		func() error { return s.AppendCashSession(cash) },
 		func() error { _, err := s.AppendTournament(tournament); return err },
 		func() error { return s.UpdateTournamentHandStats(tournament.TournamentID, 20, 10, 20, 1, true) },
@@ -199,7 +199,7 @@ func TestMutationsRollBackWithLedgerFailure(t *testing.T) {
 			date := mustTime(t, "2026-07-10T20:00:00Z")
 			cash := buildCashSession(date, "cash-original", 20, -5)
 			tournament := parsers.Tournament{Date: date, Type: "mtt", TournamentID: "T-ATOMIC-ORIGINAL", BuyInUSD: 1, NetUSD: -1}
-			if err := s.AppendLedgerEntry("deposit", 100, date); err != nil {
+			if err := s.AppendLedgerEntry("deposit", 100, date, ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.AppendCashSession(cash); err != nil {
@@ -208,7 +208,7 @@ func TestMutationsRollBackWithLedgerFailure(t *testing.T) {
 			if _, err := s.AppendTournament(tournament); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.AppendLedgerEntry("withdrawal", -10, date); err != nil {
+			if err := s.AppendLedgerEntry("withdrawal", -10, date, ""); err != nil {
 				t.Fatal(err)
 			}
 			before, err := s.ExportSnapshot()

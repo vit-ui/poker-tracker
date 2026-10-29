@@ -116,6 +116,13 @@ go test ./internal/parsers/...      # one package
   holds the worker through restart or rollback. Disconnect cannot imply success.
 - Pending question append, refresh, reminder and removal use config's atomic
   queue update API so concurrent reminder and worker changes preserve entries.
+- Money operation IDs use the `money:` namespace. Preserve them through fallback,
+  raw migration and CSV export; replay an existing ID without a second append.
+  Preserve legacy blank IDs and never deduplicate movements by amount or date.
+- Superseding a queued snapshot must durably preserve the newest candidate before
+  its remote write, and retire the queue entry only after success. Keep pending
+  entries visible if queue-file replacement fails; use the existing worker/ticker
+  and Sheets quota pacing for recovery.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

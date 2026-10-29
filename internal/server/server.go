@@ -481,7 +481,7 @@ func (s *Server) Run() {
 				if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
 					recordDrainFailure(err)
 					slog.Error("updating tournament hand stats", "err", err, "tournament_id", tourneyStats.TournamentID)
-					if msg := blipMessage(before, sheetsPending(s.store)); msg != "" {
+					if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
 						s.alertChan <- msg
 					}
 				} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
@@ -549,7 +549,7 @@ func (s *Server) Run() {
 				recordDrainFailure(err)
 				slog.Error("appending tournament to sheets", "err", err,
 					"date", t.Date.Format("2006-01-02 15:04"), "tournament_id", t.TournamentID)
-				if msg := blipMessage(before, sheetsPending(s.store)); msg != "" {
+				if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
 					s.alertChan <- msg
 				}
 			} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
@@ -593,6 +593,15 @@ func syncedMessage(before, after int) string {
 		return fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", n)
 	}
 	return ""
+}
+
+// writeFailureMessage distinguishes durable fallback from failure to save it.
+func writeFailureMessage(before, after int, err error) string {
+	var writeErr *storage.WriteError
+	if errors.As(err, &writeErr) && !writeErr.Queued {
+		return "⚠️ Could not save the failed write locally. Keep the source histories for recovery and check logs."
+	}
+	return blipMessage(before, after)
 }
 
 // blipMessage is syncedMessage's counterpart for the failure side: a Sheets
@@ -816,7 +825,7 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 		slog.Error("appending cash session to sheets", "err", err,
 			"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
 			"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
-		if msg := blipMessage(before, sheetsPending(s.store)); msg != "" {
+		if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
 			s.alertChan <- msg
 		}
 		return fmt.Errorf("persisting cash session %s: %w", fileID, err)

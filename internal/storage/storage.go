@@ -14,7 +14,7 @@ type LedgerEntry struct {
 	Type         string // "deposit" | "withdrawal" | "cash_session" | "tournament"
 	AmountUSD    float64
 	RunningTotal float64
-	SessionID    string // blank for deposit/withdrawal rows
+	SessionID    string // cash/tournament identity, money operation ID, or blank on legacy movements
 }
 
 // CashSessionRecord is a full Cash Sessions row, including the Session ID
@@ -67,7 +67,7 @@ type Store interface {
 	AppendCashSession(session parsers.CashSession) error
 	AppendTournament(t parsers.Tournament) (float64, error)
 	UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error
-	AppendLedgerEntry(entryType string, amountUSD float64, now time.Time) error
+	AppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error
 	GetCurrentBankroll() (float64, error)
 	GetSheetURL() string
 	GetLedgerEntriesSince(t time.Time) ([]LedgerEntry, error)

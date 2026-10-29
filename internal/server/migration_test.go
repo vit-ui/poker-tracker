@@ -75,7 +75,7 @@ func migrationReply(t *testing.T, reply <-chan storage.OperationResult) storage.
 
 func TestMigrationDrainsCashAndHoldsWorkerUntilResume(t *testing.T) {
 	server, link, source := migrationWorker(t)
-	if err := source.AppendLedgerEntry("deposit", 1, time.Now()); err != nil {
+	if err := source.AppendLedgerEntry("deposit", 1, time.Now(), ""); err != nil {
 		t.Fatal(err)
 	}
 	destination, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "destination.db"))
@@ -111,7 +111,7 @@ func TestMigrationDrainsCashAndHoldsWorkerUntilResume(t *testing.T) {
 		t.Fatalf("copied bankroll %v, want .97", got)
 	}
 	next := storage.Operation{Reply: make(chan storage.OperationResult, 1), Apply: func(store storage.Store) storage.OperationResult {
-		return storage.OperationResult{Err: store.AppendLedgerEntry("deposit", 2, time.Now())}
+		return storage.OperationResult{Err: store.AppendLedgerEntry("deposit", 2, time.Now(), "")}
 	}}
 	accepted := make(chan struct{})
 	cancel := make(chan struct{})

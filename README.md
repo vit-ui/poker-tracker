@@ -66,6 +66,12 @@ disconnects and sent again when the collector reconnects. Reconnecting replaces
 the previous connection; lock replay and ordinary commands use the same frame
 writer. Other commands issued while disconnected are not queued for reconnect.
 
+New money movements carry an operation ID in the existing ledger identity column,
+including CSV exports. Sheets recovery checks that ID before replaying a write.
+Legacy ledger rows and fallback entries with blank IDs remain readable; their
+recovery retains the older at-least-once behavior and may duplicate an append
+whose acknowledgement was lost. Equal amounts are never merged.
+
 ## Using it
 
 Once installed, talk to your bot on Telegram. Every command also has detailed help via `/help <command>`. Expand any entry below for the details:

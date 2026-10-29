@@ -15,6 +15,7 @@ type Operation struct {
 
 // OperationResult is consumed on the bot event loop, where replies are sent.
 type OperationResult struct {
+	Recovered   int
 	Snapshot    *Snapshot
 	NetUSD      float64
 	Bankroll    float64

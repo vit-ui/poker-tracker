@@ -511,7 +511,7 @@ func TestBuildWeeklySummary(t *testing.T) {
 		t.Fatalf("AppendTournament(mtt): %v", err)
 	}
 	// Dated now by AppendLedgerEntry — inside the window, excluded by type.
-	if err := store.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
+	if err := store.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 
@@ -656,7 +656,7 @@ func TestTournamentStatsMessage(t *testing.T) {
 // counts.
 func TestNetSince(t *testing.T) {
 	store := newStatsStore(t)
-	if err := store.AppendLedgerEntry("deposit", 100, time.Now()); err != nil {
+	if err := store.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 	if err := store.AppendCashSession(parsers.CashSession{
