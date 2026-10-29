@@ -36,6 +36,10 @@ replacing or uninstalling the program, it stops tracker processes belonging
 to that folder. Builds for disposable installation tests use separate task
 names and uninstall registration; see [Contributing](CONTRIBUTING.md#disposable-windows-installations).
 
+Windows service tasks restart failures and check every minute for a stopped
+process. A running copy stays in place. Recovery belongs to Task Scheduler, so
+the collector can exit on connection loss and reconnect when its task restarts.
+
 ### Requirements
 
 - Windows, with PokerStars already installed.

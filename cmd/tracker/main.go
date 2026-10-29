@@ -10,7 +10,6 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
-	"unicode/utf16"
 
 	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/bot"
@@ -120,32 +119,8 @@ func runSetup() {
 		panic("getting executable path: " + err.Error())
 	}
 
-	// Plain schtasks flags (/SC ONLOGON /RL HIGHEST) can't turn off "Start
-	// the task only if the computer is on AC power" or the default
-	// execution time limit — there's no flag for either. /Create /XML is
-	// the only way to control every task property, so the task definition
-	// is built inline and written to a temp file for schtasks to read.
-	// schtasks /Create /XML rejects a UTF-8 file — it requires UTF-16 with
-	// a byte-order mark, hence utf16File instead of a plain WriteString.
-	xmlFile, err := os.CreateTemp("", "poker-tracker-task-*.xml")
-	if err != nil {
-		panic("creating task scheduler xml: " + err.Error())
-	}
-	defer os.Remove(xmlFile.Name())
-	if err := xmlFile.Close(); err != nil {
-		panic("closing task scheduler xml: " + err.Error())
-	}
-	if err := os.WriteFile(xmlFile.Name(), utf16File(fmt.Sprintf(taskSchedulerXML, exePath, filepath.Dir(exePath))), 0644); err != nil {
-		panic("writing task scheduler xml: " + err.Error())
-	}
-
-	if out, err := exec.Command("schtasks.exe",
-		"/Create",
-		"/TN", installation.TaskName(InstallationID, false),
-		"/XML", xmlFile.Name(),
-		"/F",
-	).CombinedOutput(); err != nil {
-		panic(fmt.Sprintf("registering Task Scheduler entry: %v: %s", err, out))
+	if err := installation.RegisterWindowsTask(installation.TaskName(InstallationID, false), exePath); err != nil {
+		panic(err.Error())
 	}
 
 	// Starts the service now instead of leaving the player to reboot or
@@ -156,91 +131,6 @@ func runSetup() {
 	}
 	os.Exit(0)
 }
-
-// utf16File encodes s as UTF-16LE with a leading byte-order mark — the
-// encoding schtasks /Create /XML requires; it rejects a plain UTF-8 file.
-func utf16File(s string) []byte {
-	points := utf16.Encode([]rune(s))
-	buf := make([]byte, 2+2*len(points))
-	buf[0], buf[1] = 0xFF, 0xFE
-	for i, p := range points {
-		buf[2+2*i] = byte(p)
-		buf[2+2*i+1] = byte(p >> 8)
-	}
-	return buf
-}
-
-// taskSchedulerXML is the Task Scheduler task definition registered during
-// --setup, with the tracker.exe path substituted twice: once for Command,
-// once for WorkingDirectory (both %s, same value — see the exePath/dir
-// split in runSetup).
-//
-// BootTrigger + a SYSTEM Principal, not LogonTrigger + a group Principal:
-// an earlier version used <LogonTrigger> with the Administrators-group SID
-// (S-1-5-32-544) as Principal, matching CLAUDE.md's original description.
-// That combination showed as "Ready" in Task Scheduler but did not
-// reliably start tracker.exe on a real PC restart — LogonTrigger fires off
-// an interactive logon, and evaluating "is this logon a member of group X"
-// against a UAC-split token is a documented source of trigger misfires,
-// on top of depending on an interactive session existing at all.
-// BootTrigger fires at system startup itself, independent of any user
-// logon, and Principal UserId S-1-5-18 (SYSTEM) needs no logon token to
-// evaluate — Task Scheduler always has a SYSTEM context to run as. This
-// matches the original hand-verified manual setup (plan §Windows Task
-// Scheduler Setup: "At startup", not "At log on"). SYSTEM has full local
-// filesystem access to the player's PokerStars folders and enough
-// privilege to taskkill.exe PokerStars.exe regardless of which user
-// account is running it. The 30-second Delay mirrors that same manual
-// setup, giving the filesystem/network/antivirus time to settle right
-// after boot. RunLevel HighestAvailable is kept even though it's moot for
-// SYSTEM (already maximally privileged) — harmless and keeps the two
-// Principal fields together as one block. WorkingDirectory is
-// belt-and-suspenders now that the three deployment paths are resolved
-// from os.Executable() rather than cwd (see the var block above) — but it
-// matches the documented manual Task Scheduler setup ("Start in
-// C:\poker-tracker") and costs nothing to set correctly.
-const taskSchedulerXML = `<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
-    <BootTrigger>
-      <Enabled>true</Enabled>
-      <Delay>PT30S</Delay>
-    </BootTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>false</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>true</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>%s</Command>
-      <Arguments>--serve</Arguments>
-      <WorkingDirectory>%s</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>
-`
 
 func runServe() {
 	// Keep this idle background service's footprint bounded. Despite the

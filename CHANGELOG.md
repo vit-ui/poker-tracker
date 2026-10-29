@@ -8,6 +8,10 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Windows tasks share boot, power, execution-limit and failure-recovery settings
+  across setup paths and roles. A repeating minute trigger keeps recovery
+  available after failure attempts run out, while IgnoreNew preserves one process.
+
 - Sheet and credential changes drain accepted collection and worker writes before
   restarting the correct service. Sheet changes refuse queued old-sheet writes
   and finish cash there first. Credentials stage and validate the replacement;

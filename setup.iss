@@ -973,7 +973,15 @@ begin
   Result := Buf;
 end;
 
-// BuildTaskXML mirrors taskSchedulerXML in cmd/tracker/main.go exactly, so
+function XMLEscape(const S: String): String;
+begin
+  Result := S;
+  StringChangeEx(Result, '&', '&amp;', True);
+  StringChangeEx(Result, '<', '&lt;', True);
+  StringChangeEx(Result, '>', '&gt;', True);
+end;
+
+// BuildTaskXML mirrors internal/installation.WindowsTaskXML, so
 // a task registered by manual setup behaves identically to one registered
 // by tracker.exe --setup (Telegram path) — same battery/time-limit/
 // multiple-instance settings either way. WorkingDirectory matters less
@@ -993,6 +1001,11 @@ begin
     '      <Enabled>true</Enabled>' + #13#10 +
     '      <Delay>PT30S</Delay>' + #13#10 +
     '    </BootTrigger>' + #13#10 +
+    '    <TimeTrigger>' + #13#10 +
+    '      <Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>' + #13#10 +
+    '      <StartBoundary>' + GetDateTimeString('yyyy-mm-dd', '-', ':') + 'T' + GetDateTimeString('hh:nn:ss', '-', ':') + '</StartBoundary>' + #13#10 +
+    '      <Enabled>true</Enabled>' + #13#10 +
+    '    </TimeTrigger>' + #13#10 +
     '  </Triggers>' + #13#10 +
     '  <Principals>' + #13#10 +
     '    <Principal id="Author">' + #13#10 +
@@ -1005,7 +1018,7 @@ begin
     '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>' + #13#10 +
     '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>' + #13#10 +
     '    <AllowHardTerminate>true</AllowHardTerminate>' + #13#10 +
-    '    <StartWhenAvailable>false</StartWhenAvailable>' + #13#10 +
+    '    <StartWhenAvailable>true</StartWhenAvailable>' + #13#10 +
     '    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>' + #13#10 +
     '    <IdleSettings>' + #13#10 +
     '      <StopOnIdleEnd>true</StopOnIdleEnd>' + #13#10 +
@@ -1018,12 +1031,13 @@ begin
     '    <WakeToRun>false</WakeToRun>' + #13#10 +
     '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>' + #13#10 +
     '    <Priority>7</Priority>' + #13#10 +
+    '    <RestartOnFailure><Interval>PT1M</Interval><Count>255</Count></RestartOnFailure>' + #13#10 +
     '  </Settings>' + #13#10 +
     '  <Actions Context="Author">' + #13#10 +
     '    <Exec>' + #13#10 +
-    '      <Command>' + ExePath + '</Command>' + #13#10 +
+    '      <Command>' + XMLEscape(ExePath) + '</Command>' + #13#10 +
     '      <Arguments>--serve</Arguments>' + #13#10 +
-    '      <WorkingDirectory>' + WorkingDir + '</WorkingDirectory>' + #13#10 +
+    '      <WorkingDirectory>' + XMLEscape(WorkingDir) + '</WorkingDirectory>' + #13#10 +
     '    </Exec>' + #13#10 +
     '  </Actions>' + #13#10 +
     '</Task>';

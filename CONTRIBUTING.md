@@ -148,6 +148,12 @@ go test ./internal/parsers/...      # one package
   finalizes cash in the source sheet and refuses queued writes. Keep the worker
   held through restart or restored settings and acknowledged resume. Offline
   preparation drains already queued uploads before applying the change.
+- Keep Windows task policy equivalent in `installation.WindowsTaskXML` and
+  Inno's `BuildTaskXML`: SYSTEM boot, IgnoreNew, no power/runtime interruption,
+  failure restarts and an indefinite minute trigger. The latter avoids the
+  [255-attempt failure-restart limit](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsch/2ff4aa5a-7bc4-449f-bbb1-27475645867f).
+  Native checks must prove recovery and one running PID using disposable task
+  identities, then verify uninstall cleanup and working-installation preservation.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.
