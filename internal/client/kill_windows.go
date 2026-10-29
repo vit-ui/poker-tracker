@@ -10,6 +10,13 @@ import (
 )
 
 func killPokerStars() error {
+	running, err := pokerStarsRunning()
+	if err != nil {
+		return err
+	}
+	if !running {
+		return nil
+	}
 	directory, err := windows.GetSystemDirectory()
 	if err != nil {
 		return fmt.Errorf("locating Windows enforcement command: %w", err)

@@ -137,6 +137,8 @@ go test ./internal/parsers/...      # one package
   for new decisions. Manual protection bypasses storage and upload backpressure.
   Ordinary tests must never terminate a real PokerStars process: actual Windows
   enforcement requires a coordinated closed-game window and owned dummy process.
+  Active protection checks every second, idle state every 30 seconds; accepting a
+  lock wakes the idle timer. Windows checks process presence before taskkill.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

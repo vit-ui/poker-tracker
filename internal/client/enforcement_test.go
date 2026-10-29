@@ -60,3 +60,20 @@ func TestLockfileActiveAt(t *testing.T) {
 		}
 	})
 }
+
+func TestHardstopCheckIntervals(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		active bool
+		want   time.Duration
+	}{
+		{"active", true, time.Second},
+		{"idle", false, 30 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := lockCheckInterval(test.active); got != test.want {
+				t.Fatalf("interval=%v, want %v", got, test.want)
+			}
+		})
+	}
+}

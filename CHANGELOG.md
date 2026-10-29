@@ -8,6 +8,10 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Active hard stops recheck PokerStars every second, and new locks wake an idle
+  enforcement loop immediately. Idle checks remain every 30 seconds; rechecks
+  preserve the original expiry and avoid launching taskkill when the game is closed.
+
 - Cash tables finish after 2 minutes 30 seconds of quiet. Pending snapshots and
   activity times survive interruption; recovered files resynchronize without
   restarting an unchanged quiet period or duplicating a stored session.

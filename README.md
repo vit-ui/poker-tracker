@@ -85,6 +85,9 @@ trigger preserves its original expiry and cannot restart an expired lock;
 distinct new financial triggers can still enforce. The collector retains active
 protection independently of connectivity. Keep `lockfile.json` and
 `hardstop_deliveries.json` with the installation when backing it up or upgrading.
+While locked, it checks for a reopened PokerStars client every second and closes
+it again. Startup and newly received locks enforce immediately; the idle check
+remains every 30 seconds.
 Use matching collector and server versions for recovery acknowledgements and
 whole-file resynchronization; older peers do not support these operations.
 

@@ -21,9 +21,12 @@ type Enforcer struct {
 	mu      sync.Mutex
 	active  *config.LockFile
 	unsaved *config.LockFile
+	changed chan struct{}
 }
 
-func NewEnforcer(path string) *Enforcer { return &Enforcer{path: path} }
+func NewEnforcer(path string) *Enforcer {
+	return &Enforcer{path: path, changed: make(chan struct{}, 1)}
+}
 
 func (e *Enforcer) Enforce(proposed config.LockFile) (*config.LockFile, bool, error) {
 	e.mu.Lock()
@@ -52,6 +55,10 @@ func (e *Enforcer) Enforce(proposed config.LockFile) (*config.LockFile, bool, er
 		e.unsaved = nil
 	}
 	e.mu.Unlock()
+	select {
+	case e.changed <- struct{}{}:
+	default:
+	}
 	if active != nil && active.ExpiresAt.After(now) {
 		err = errors.Join(err, killPokerStars())
 	}
@@ -67,7 +74,7 @@ func (e *Enforcer) Enforce(proposed config.LockFile) (*config.LockFile, bool, er
 // Enforcer with its collector's enforcement loop.
 func Enforce(path string, lock config.LockFile) { NewEnforcer(path).Enforce(lock) }
 
-func (e *Enforcer) EnforceActive() {
+func (e *Enforcer) EnforceActive() bool {
 	e.mu.Lock()
 	now := time.Now()
 	if e.unsaved != nil {
@@ -91,20 +98,30 @@ func (e *Enforcer) EnforceActive() {
 			slog.Error("enforcing active hard stop", "err", err)
 		}
 	}
+	return active || err != nil
 }
 
-// Run enforces immediately on startup and then every 30 seconds. Persistence
-// errors retain the original expiry in memory rather than resetting its clock.
+func lockCheckInterval(active bool) time.Duration {
+	if active {
+		return time.Second
+	}
+	return 30 * time.Second
+}
+
+// Run enforces immediately, checks active protection every second, and checks
+// idle state every 30 seconds. New commands wake an idle timer immediately.
+// Persistence errors retain the original expiry instead of resetting its clock.
 func (e *Enforcer) Run(done <-chan struct{}) {
-	e.EnforceActive()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	timer := time.NewTimer(lockCheckInterval(e.EnforceActive()))
+	defer timer.Stop()
 	for {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
-			e.EnforceActive()
+		case <-e.changed:
+			timer.Reset(lockCheckInterval(e.EnforceActive()))
+		case <-timer.C:
+			timer.Reset(lockCheckInterval(e.EnforceActive()))
 		}
 	}
 }
