@@ -149,7 +149,7 @@ func ParseConnectionString(s string) (ConnInfo, error) {
 }
 
 // writeFrame writes one length-prefixed JSON frame. Only one goroutine may
-// write to a given conn (the transport keeps a single writer per direction).
+// write to a given conn; server connections serialize through frameConn.write.
 func writeFrame(w io.Writer, f frame) error {
 	payload, err := json.Marshal(f)
 	if err != nil {
@@ -277,6 +277,28 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 	return ln, nil
 }
 
+// frameConn serializes complete frames, including reconnect lock replay. Closing
+// the socket does not take writeMu, so replacement can interrupt a blocked write.
+type frameConn struct {
+	net.Conn
+	writeMu   sync.Mutex
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func (c *frameConn) close() {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		c.Conn.Close()
+	})
+}
+
+func (c *frameConn) write(f frame) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeFrame(c.Conn, f)
+}
+
 // serveState is Serve's shared per-listener state: the current collector
 // connection and the most recent hard-stop lock, both guarded by mu. Tracking
 // the active lock is what lets a lock survive a disconnected collector: it is
@@ -284,9 +306,12 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 // was offline — or lost to a socket that closed mid-write during a reconnect —
 // is still delivered.
 type serveState struct {
-	mu         sync.Mutex
-	current    net.Conn
-	activeLock *config.LockFile
+	mu          sync.Mutex
+	current     *frameConn
+	activeLock  *config.LockFile
+	connections map[net.Conn]struct{}
+	done        chan struct{}
+	closed      bool
 }
 
 // Serve accepts client connections on ln and bridges each to link after the
@@ -308,7 +333,19 @@ type serveState struct {
 // collector still receives it (a duplicate re-push is harmless: Enforce is
 // idempotent). Blocks until ln is closed.
 func Serve(ln net.Listener, token string, link *Link) {
-	st := &serveState{}
+	st := &serveState{connections: make(map[net.Conn]struct{}), done: make(chan struct{})}
+	defer func() {
+		st.mu.Lock()
+		st.closed = true
+		close(st.done)
+		if st.current != nil {
+			st.current.close()
+		}
+		for conn := range st.connections {
+			conn.Close()
+		}
+		st.mu.Unlock()
+	}()
 
 	// The sole command writer: one consumer of link.Commands, targeting the
 	// current collector. Storing the active lock and reading the current
@@ -316,7 +353,17 @@ func Serve(ln net.Listener, token string, link *Link) {
 	// connection swap + re-push (see the type doc), so a lock is never lost to a
 	// reconnect and is re-delivered to whoever connects next.
 	go func() {
-		for cmd := range link.Commands {
+		for {
+			var cmd Command
+			select {
+			case <-st.done:
+				return
+			case value, ok := <-link.Commands:
+				if !ok {
+					return
+				}
+				cmd = value
+			}
 			st.mu.Lock()
 			if cmd.Kind == CommandLock && cmd.Lock != nil {
 				st.activeLock = cmd.Lock
@@ -324,11 +371,16 @@ func Serve(ln net.Listener, token string, link *Link) {
 			conn := st.current
 			st.mu.Unlock()
 			if conn == nil {
-				slog.Warn("no collector connected — command held and will be re-sent on reconnect", "kind", cmd.Kind)
+				if cmd.Kind == CommandLock && cmd.Lock != nil {
+					slog.Warn("collector disconnected; lock retained for reconnect")
+				} else {
+					slog.Warn("collector disconnected; command not delivered", "kind", cmd.Kind)
+				}
 				continue
 			}
-			if err := writeFrame(conn, frame{Command: &cmd}); err != nil {
+			if err := conn.write(frame{Command: &cmd}); err != nil {
 				slog.Error("sending command to collector", "err", err)
+				conn.close()
 			}
 		}
 	}()
@@ -338,12 +390,21 @@ func Serve(ln net.Listener, token string, link *Link) {
 		if err != nil {
 			return
 		}
+		st.mu.Lock()
+		st.connections[conn] = struct{}{}
+		st.mu.Unlock()
 		enableKeepAlive(conn)
 		go serveConn(conn, token, link, st)
 	}
 }
 
 func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
+	defer func() {
+		conn.Close()
+		st.mu.Lock()
+		delete(st.connections, conn)
+		st.mu.Unlock()
+	}()
 	// Bound the pre-auth window: the TLS handshake happens on this first read,
 	// and the token frame must arrive within it, or the connection is dropped
 	// instead of blocking this goroutine indefinitely (see handshakeTimeout).
@@ -361,26 +422,37 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 	// any still-active lock so it can be re-pushed to this fresh connection —
 	// covering a lock decided while nothing was connected and a lock lost to a
 	// socket that closed mid-write during this very reconnect.
+	framed := &frameConn{Conn: conn, done: make(chan struct{})}
 	st.mu.Lock()
+	if st.closed {
+		st.mu.Unlock()
+		framed.close()
+		return
+	}
+	// Reserve the first write before publishing the connection. A newer lock
+	// must follow the replay, rather than be overwritten by an older lock.
+	framed.writeMu.Lock()
 	old := st.current
-	st.current = conn
+	st.current = framed
 	lock := st.activeLock
 	st.mu.Unlock()
 	if old != nil {
-		old.Close()
+		old.close()
 	}
 	if lock != nil && !config.IsLockExpired(lock) {
 		if err := writeFrame(conn, frame{Command: &Command{Kind: CommandLock, Lock: lock}}); err != nil {
 			slog.Error("re-pushing active lock to reconnected collector", "err", err)
+			framed.close()
 		}
 	}
+	framed.writeMu.Unlock()
 	defer func() {
 		st.mu.Lock()
-		if st.current == conn {
+		if st.current == framed {
 			st.current = nil
 		}
 		st.mu.Unlock()
-		conn.Close()
+		framed.close()
 	}()
 	for {
 		f, err := readFrame(conn)
@@ -388,7 +460,13 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 			return
 		}
 		if f.Upload != nil {
-			link.Uploads <- *f.Upload
+			select {
+			case link.Uploads <- *f.Upload:
+			case <-framed.done:
+				return
+			case <-st.done:
+				return
+			}
 		}
 	}
 }

@@ -106,6 +106,10 @@ go test ./internal/parsers/...      # one package
   same transaction. In Sheets, hold the mutation lock through the complete
   operation and fallback replay; HTTP quota pacing alone does not serialize
   a read followed by a write.
+- Serialize entire transport frames per connection, including reconnect lock
+  replay. Closing a connection must interrupt blocked writes and upload delivery;
+  never hold the listener state lock during a frame write. Keep authentication,
+  certificate pinning, TLS 1.3 and the pre-authentication deadline intact.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.

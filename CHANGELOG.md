@@ -8,6 +8,10 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Split transport serializes complete command frames with reconnect lock replay.
+  Replayed locks precede newer commands; replaced connections and listener
+  shutdown release blocked uploads and close their owned sockets.
+
 - Concurrent storage writes preserve ledger amounts and running totals. SQLite
   commits each session, tournament, bounty correction or money movement in one
   transaction; a failed ledger write rolls back the associated result changes.
