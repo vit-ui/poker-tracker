@@ -42,8 +42,9 @@ to that folder. Builds for disposable installation tests use separate task
 names and uninstall registration; see [Contributing](CONTRIBUTING.md#disposable-windows-installations).
 
 Windows service tasks restart failures and check every minute for a stopped
-process. A running copy stays in place. Recovery belongs to Task Scheduler, so
-the collector can exit on connection loss and reconnect when its task restarts.
+process. A running copy stays in place. The collector keeps enforcing active
+locks during server outages and reconnects itself every 30 seconds. Task recovery
+handles unexpected process failures.
 
 ### Requirements
 
@@ -83,10 +84,16 @@ pending until you send a corrected value. If saved folders are unavailable at
 startup, collection stays inactive and the collector stays connected to accept
 corrections; hard-stop enforcement continues.
 
+The collector’s enforcement loop stays alive while the server is disconnected,
+including when the server is unavailable at boot. It keeps checking an active
+lock every second and preserves its original expiry while reconnecting. TLS,
+certificate pinning and pairing authentication still apply to each connection.
+
 Collector-confirmed hard-stop expiry survives server restarts and collector
 disconnects and sent again when the collector reconnects. Reconnecting replaces
 the previous connection; lock replay and ordinary commands use the same frame
-writer. Other commands issued while disconnected are not queued for reconnect.
+writer. Folder and screen-name edits are durably queued; rescan requests remain
+one-shot commands.
 `/status` uses the collector’s observed protection state and reports when that
 state is unavailable. Lock times follow the poker PC’s timezone.
 

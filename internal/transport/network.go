@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -199,13 +200,35 @@ func FingerprintPEM(certPEM []byte) (string, error) {
 	return fmt.Sprintf("%x", sum), nil
 }
 
+// CollectorConnection owns its socket and all transport goroutines. Close also
+// cancels a command delivery blocked behind a full collector channel.
+type CollectorConnection struct {
+	Link     *Link
+	Done     <-chan struct{}
+	socket   *frameConn
+	routines sync.WaitGroup
+}
+
+func (c *CollectorConnection) Close() { c.socket.close(); c.routines.Wait() }
+
 // DialServer connects to a server described by info over TLS, pinning the
 // server's certificate to info.Fingerprint (no CA), presents the token, and
 // returns a *Link whose channels are bridged to the connection: Uploads written
 // to link.Uploads go up, Commands from the server arrive on link.Commands. The
 // returned dead channel is closed when the connection drops, so the caller can
-// stop and let its service manager restart it.
+// close this connection and reconnect without stopping lock enforcement.
+// Its listener owns shutdown; use ConnectCollector for explicit session ownership.
 func DialServer(info ConnInfo) (*Link, <-chan struct{}, error) {
+	connection, err := ConnectCollector(info, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	return connection.Link, connection.Done, nil
+}
+
+// ConnectCollector uses caller cancellation for dialing/handshake and active
+// socket ownership. It adds no network timeout or reconnect policy.
+func ConnectCollector(info ConnInfo, stop <-chan struct{}) (*CollectorConnection, error) {
 	cfg := &tls.Config{
 		MinVersion:         tls.VersionTLS13, // both ends are our own code — require the newest TLS, no downgrade
 		InsecureSkipVerify: true,             // we pin the exact cert below instead of a CA chain
@@ -220,44 +243,69 @@ func DialServer(info ConnInfo) (*Link, <-chan struct{}, error) {
 			return nil
 		},
 	}
-	conn, err := tls.Dial("tcp", info.Address(), cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("dialing server: %w", err)
-	}
-	if err := writeFrame(conn, frame{Token: info.Token}); err != nil {
-		conn.Close()
-		return nil, nil, fmt.Errorf("sending token: %w", err)
-	}
 
-	link := NewLink()
-	dead := make(chan struct{})
-	go func() { // upload writer: the only writer to conn on the client side
+	dialContext, cancel := context.WithCancel(context.Background())
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		select {
+		case <-stop:
+			cancel()
+		case <-dialContext.Done():
+		}
+	}()
+	conn, err := (&tls.Dialer{Config: cfg}).DialContext(dialContext, "tcp", info.Address())
+	cancel()
+	<-cancelDone
+	if err != nil {
+		return nil, fmt.Errorf("dialing server: %w", err)
+	}
+	socket := &frameConn{Conn: conn, done: make(chan struct{})}
+	connection := &CollectorConnection{Link: NewLink(), Done: socket.done, socket: socket}
+	connection.routines.Go(func() {
+		select {
+		case <-stop:
+			socket.close()
+		case <-socket.done:
+		}
+	})
+	if err := socket.write(frame{Token: info.Token}); err != nil {
+		connection.Close()
+		return nil, fmt.Errorf("sending token: %w", err)
+	}
+	connection.routines.Go(func() {
+		defer socket.close()
 		for {
 			select {
-			case <-dead:
+			case <-socket.done:
 				return
-			case up := <-link.Uploads:
-				if err := writeFrame(conn, frame{Upload: &up}); err != nil {
-					conn.Close()
+			case up, ok := <-connection.Link.Uploads:
+				if !ok {
+					return
+				}
+				if err := socket.write(frame{Upload: &up}); err != nil {
 					return
 				}
 			}
 		}
-	}()
-	go func() { // command reader; closing dead on exit signals the drop
-		defer close(dead)
-		defer conn.Close()
+	})
+	connection.routines.Go(func() {
+		defer socket.close()
 		for {
-			f, err := readFrame(conn)
+			f, err := readFrame(socket)
 			if err != nil {
 				return
 			}
 			if f.Command != nil {
-				link.Commands <- *f.Command
+				select {
+				case connection.Link.Commands <- *f.Command:
+				case <-socket.done:
+					return
+				}
 			}
 		}
-	}()
-	return link, dead, nil
+	})
+	return connection, nil
 }
 
 // Listen starts a TLS listener on addr with the given PEM cert/key. addr is a
@@ -320,7 +368,7 @@ type serveState struct {
 // single goroutine is the sole consumer of link.Commands, writing each command
 // to whichever collector is current. This is what keeps a hard-stop lock from
 // being split between a live and a stale connection — the bug otherwise is that
-// after an ungraceful drop + service-manager reconnect, two per-connection
+// after an ungraceful drop and collector reconnect, two per-connection
 // writers would both drain link.Commands and one could write a lock into the
 // dead socket's buffer (no error), silently losing enforcement.
 //

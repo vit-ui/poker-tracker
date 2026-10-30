@@ -1,0 +1,62 @@
+package client
+
+import (
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/transport"
+)
+
+// RunNetworkCollector keeps protection alive independently of server availability.
+// Only unexpected collection failures return to the service manager. Reconnect
+// attempts use the idle check cadence; no separate connectivity probe is needed.
+func RunNetworkCollector(configPath string, enforcer *Enforcer, done <-chan struct{}) error {
+	return runNetworkCollector(configPath, enforcer, done, lockCheckInterval(false))
+}
+
+func runNetworkCollector(configPath string, enforcer *Enforcer, done <-chan struct{}, reconnectDelay time.Duration) error {
+	enforcementDone, enforcementStopped := make(chan struct{}), make(chan struct{})
+	go func() { defer close(enforcementStopped); enforcer.Run(enforcementDone) }()
+	defer func() { close(enforcementDone); <-enforcementStopped }()
+	for {
+		select {
+		case <-done:
+			return nil
+		default:
+		}
+		cfg, err := config.LoadConfig(configPath)
+		var connection *transport.CollectorConnection
+		if err == nil {
+			if cfg.Setup.ConnectionString == nil {
+				err = fmt.Errorf("collector connection string is not configured")
+			} else {
+				var info transport.ConnInfo
+				info, err = transport.ParseConnectionString(*cfg.Setup.ConnectionString)
+				if err == nil {
+					connection, err = transport.ConnectCollector(info, done)
+				}
+			}
+		}
+		if err != nil {
+			slog.Error("collector connection unavailable; enforcement remains active", "err", err)
+		} else {
+			slog.Info("collector transport connected")
+			collector := NewCollector(connection.Link, enforcer, nil)
+			err = collector.Serve(configPath, connection.Done)
+			connection.Close()
+			if err != nil {
+				return fmt.Errorf("collecting files: %w", err)
+			}
+			slog.Info("collector transport disconnected; enforcement remains active")
+		}
+		timer := time.NewTimer(reconnectDelay)
+		select {
+		case <-done:
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
+}

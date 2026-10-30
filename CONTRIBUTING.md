@@ -117,6 +117,14 @@ go test ./internal/parsers/...      # one package
 - Telegram setup filters initial reinstall contact to the saved chat ID. Fresh
   setup may detect the first text sender. Never overwrite a configured chat with
   another sender, and refresh config after waiting so concurrent settings survive.
+- The split collector owns reconnection after an outage. Keep one enforcer alive
+  across dialing and transport sessions, including unsaved in-memory protection.
+  Use the 30-second idle cadence for actual connect attempts, without a separate
+  network probe or custom network timeout. Task Scheduler still recovers unexpected
+  process failures. A closed connection must release blocked readers/writers;
+  transport cancellation covers dialing and TLS handshake as well as active I/O.
+  Ordinary Windows tests must not exercise active enforcement; use the ignored
+  native check only in a user-coordinated closed-PokerStars window.
 - Save server-owned limits/schedule/notification fields through atomic config
   updates. They do not require a collector or screen name. PC folder/name edits
   use typed authenticated commands and a config-owned `collector_settings.json`

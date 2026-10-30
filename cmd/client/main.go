@@ -75,41 +75,13 @@ func runServe() {
 	debug.SetMemoryLimit(32 << 20)
 	debug.SetGCPercent(50)
 
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		os.Exit(1)
-	}
-	if cfg.Setup.ConnectionString == nil || cfg.Paths.HandHistory == nil ||
-		cfg.Paths.TournamentSummary == nil || cfg.Setup.PokerStarsScreenName == nil {
-		slog.Error("client is not set up — run: tracker-client --setup")
-		os.Exit(1)
-	}
-	info, err := transport.ParseConnectionString(*cfg.Setup.ConnectionString)
-	if err != nil {
-		slog.Error("invalid connection string — re-run --setup", "err", err)
-		os.Exit(1)
-	}
-	// Enforce a still-active lock immediately on startup (e.g. after a restart
-	// mid-lockout), independent of the server connection.
-
+	// Enforcement belongs to the process, not a network connection. The same
+	// enforcer retains unsaved protection across every reconnect attempt.
 	enforcer := client.NewEnforcer(lockfilePath)
-	enforcer.EnforceActive()
-
-	link, dead, err := transport.DialServer(info)
-	if err != nil {
-		slog.Error("connecting to the server", "addr", info.Address(), "err", err)
-		os.Exit(1) // the service manager restarts us, which re-dials
+	if err := client.RunNetworkCollector(configPath, enforcer, nil); err != nil {
+		slog.Error("collector stopped unexpectedly", "err", err)
+		os.Exit(1)
 	}
-	slog.Info("connected to the server", "addr", info.Address())
-
-	collector := client.NewCollector(link, enforcer, nil)
-	go collector.RunEnforcementLoop(dead)
-	if err := collector.Serve(configPath, dead); err != nil {
-		slog.Error("collector stopped", "err", err)
-	}
-	slog.Error("server connection lost — exiting for the service manager to restart and reconnect")
-	os.Exit(1)
 }
 
 func runSetup() {

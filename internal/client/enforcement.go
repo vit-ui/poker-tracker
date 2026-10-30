@@ -15,7 +15,7 @@ import (
 )
 
 // Enforcer shares durable lock state and a fail-closed in-memory lock between
-// command handling and the existing 30-second enforcement loop.
+// command handling and the process-owned enforcement loop.
 type Enforcer struct {
 	path    string
 	mu      sync.Mutex

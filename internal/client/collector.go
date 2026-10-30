@@ -58,7 +58,7 @@ const (
 // background goroutine) applies incoming lock commands. configPath is read per
 // event for the screen name the server needs to score results. dead is closed
 // by the network transport when the connection to the server drops; Run returns
-// then so the caller can exit and let its service manager restart it. In the
+// then so the connection owner can reconnect while enforcement continues. In the
 // all-local build the link never drops, so a nil dead is passed and Run blocks
 // until sessionChan is closed.
 func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string, dead <-chan struct{}) error {

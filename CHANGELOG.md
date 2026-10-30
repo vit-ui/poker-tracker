@@ -8,6 +8,12 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Split collectors keep active-lock enforcement running through server outages
+  and reconnect themselves every 30 seconds, including when the server is down
+  at boot. Original lock expiry and unsaved protection survive connection changes.
+  Closing transport sessions releases blocked command readers and upload writers;
+  owner cancellation also interrupts dialing and TLS handshake.
+
 - Windows upgrades preserve notification modes, enabled flags, pairing settings
   and saved collector values across manual and Telegram setup paths. Existing
   config survives Telegram preseeding, and silent server setup honors message-box
