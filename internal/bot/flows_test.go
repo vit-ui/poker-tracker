@@ -1,16 +1,11 @@
 package bot
 
 // Tests for flows.go's pure input helpers: numeric input validation, the
-// comma-decimal normalization /deposit accepts, and the /paths input
-// normalization helpers. Moved verbatim from the former bot_calc_test.go so
-// test files mirror the package's file-per-concern split.
+// comma-decimal normalization /deposit accepts, and threshold validation.
 
 import (
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/money"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -91,95 +86,6 @@ func TestParsePositiveInt(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestIsASCIILetter(t *testing.T) {
-	cases := []struct {
-		input byte
-		want  bool
-	}{
-		{'A', true}, {'Z', true}, {'a', true}, {'z', true},
-		{'0', false}, {'9', false}, {':', false}, {'\\', false}, {' ', false},
-	}
-	for _, c := range cases {
-		t.Run(string(c.input), func(t *testing.T) {
-			got := isASCIILetter(c.input)
-			if got != c.want {
-				t.Errorf("isASCIILetter(%q) = %v, want %v", c.input, got, c.want)
-			}
-		})
-	}
-}
-
-func TestWindowsPathExists(t *testing.T) {
-	dir := t.TempDir()
-	existing := filepath.Join(dir, "exists.txt")
-	if err := os.WriteFile(existing, []byte("x"), 0644); err != nil {
-		t.Fatalf("writing temp file: %v", err)
-	}
-	missing := filepath.Join(dir, "does-not-exist.txt")
-
-	if !windowsPathExists(existing) {
-		t.Errorf("windowsPathExists(%q) = false, want true", existing)
-	}
-	if windowsPathExists(missing) {
-		t.Errorf("windowsPathExists(%q) = true, want false", missing)
-	}
-}
-
-func TestResolveAgainstHomeDir(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("no home directory available: %v", err)
-	}
-
-	t.Run("absolute path is returned unchanged", func(t *testing.T) {
-		got, err := resolveAgainstHomeDir(`C:\Users\VITOR\Hand History`)
-		if err != nil {
-			t.Fatalf("resolveAgainstHomeDir: %v", err)
-		}
-		if got != `C:\Users\VITOR\Hand History` {
-			t.Errorf("got %q, want unchanged absolute path", got)
-		}
-	})
-
-	t.Run("relative path is joined with the home directory", func(t *testing.T) {
-		got, err := resolveAgainstHomeDir("AppData/Local/PokerStars")
-		if err != nil {
-			t.Fatalf("resolveAgainstHomeDir: %v", err)
-		}
-		want := filepath.Join(home, "AppData/Local/PokerStars")
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-}
-
-func TestDisplayRelativeToHome(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("no home directory available: %v", err)
-	}
-
-	t.Run("path under home is shortened", func(t *testing.T) {
-		full := filepath.Join(home, "AppData", "Local", "PokerStars")
-		got := displayRelativeToHome(full)
-		want := filepath.Join("AppData", "Local", "PokerStars")
-		if got != want {
-			t.Errorf("displayRelativeToHome(%q) = %q, want %q", full, got, want)
-		}
-	})
-
-	t.Run("path outside home is returned unchanged", func(t *testing.T) {
-		outside := "/completely/unrelated/path"
-		if strings.HasPrefix(outside, home) {
-			t.Skip("test environment's home directory unexpectedly contains the outside path")
-		}
-		got := displayRelativeToHome(outside)
-		if got != outside {
-			t.Errorf("displayRelativeToHome(%q) = %q, want unchanged", outside, got)
-		}
-	})
 }
 
 func TestParsePositiveMoney(t *testing.T) {

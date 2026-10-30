@@ -229,13 +229,18 @@ type PendingTournaments struct {
 // LoadConfig reads config.json at path. If the file does not exist it is
 // created with all null values and the empty Config is returned.
 func LoadConfig(path string) (*Config, error) {
-	mu.RLock()
-	data, err := os.ReadFile(path)
-	mu.RUnlock() // explicit release so SaveConfig can acquire the write lock below
+	mu.Lock()
+	defer mu.Unlock()
+	cfg, err := loadConfig(path)
 	if errors.Is(err, os.ErrNotExist) {
-		cfg := &Config{}
-		return cfg, SaveConfig(path, cfg)
+		cfg = &Config{}
+		err = saveConfig(path, cfg)
 	}
+	return cfg, err
+}
+
+func loadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
@@ -246,14 +251,36 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// UpdateConfig atomically changes selected fields without overwriting concurrent
+// collector or bot changes. update must not call other config operations.
+func UpdateConfig(path string, update func(*Config) error) (*Config, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	cfg, err := loadConfig(path)
+	if errors.Is(err, os.ErrNotExist) {
+		cfg, err = &Config{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := update(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, saveConfig(path, cfg)
+}
+
 // SaveConfig writes cfg to path atomically (temp file then rename).
 func SaveConfig(path string, cfg *Config) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return saveConfig(path, cfg)
+}
+
+func saveConfig(path string, cfg *Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling config: %w", err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	if err := replaceStateFile(path, data); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}

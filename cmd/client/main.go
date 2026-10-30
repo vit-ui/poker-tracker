@@ -21,7 +21,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/transport"
-	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
 var (
@@ -91,18 +90,6 @@ func runServe() {
 		slog.Error("invalid connection string — re-run --setup", "err", err)
 		os.Exit(1)
 	}
-	hh := filepath.Join(*cfg.Paths.HandHistory, *cfg.Setup.PokerStarsScreenName)
-	ts := filepath.Join(*cfg.Paths.TournamentSummary, *cfg.Setup.PokerStarsScreenName)
-
-	sessionChan := make(chan watcher.FileEvent, 10)
-	watcherControl := watcher.NewControl()
-	go func() {
-		if err := watcher.WatchControlled(make(chan struct{}), hh, ts, sessionChan, watcherControl); err != nil {
-			slog.Error("file watching stopped", "err", err)
-			os.Exit(1)
-		}
-	}()
-
 	// Enforce a still-active lock immediately on startup (e.g. after a restart
 	// mid-lockout), independent of the server connection.
 
@@ -116,9 +103,11 @@ func runServe() {
 	}
 	slog.Info("connected to the server", "addr", info.Address())
 
-	collector := client.NewCollector(link, enforcer, watcherControl.SetPaused)
+	collector := client.NewCollector(link, enforcer, nil)
 	go collector.RunEnforcementLoop(dead)
-	collector.Run(sessionChan, configPath, dead) // blocks until the link drops
+	if err := collector.Serve(configPath, dead); err != nil {
+		slog.Error("collector stopped", "err", err)
+	}
 	slog.Error("server connection lost — exiting for the service manager to restart and reconnect")
 	os.Exit(1)
 }

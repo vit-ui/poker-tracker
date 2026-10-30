@@ -114,6 +114,21 @@ go test ./internal/parsers/...      # one package
   Telegram responses on the bot event loop. A migration waits for the collector's
   process check and ordered drain acknowledgement, flushes pending cash, and
   holds the worker through restart or rollback. Disconnect cannot imply success.
+- Save server-owned limits/schedule/notification fields through atomic config
+  updates. They do not require a collector or screen name. PC folder/name edits
+  use typed authenticated commands and a config-owned `collector_settings.json`
+  queue; only collector validation, persistence and watcher activation acknowledge
+  success. Keep last confirmed values separate from pending edits. Coalesce by
+  field without letting older acknowledgements retire newer revisions; preserve
+  unacknowledged revisions across restart. Failed validation waits for a corrected
+  edit. Never report disconnection as successful application.
+- Both modes use the collector-owned watcher lifecycle: prepare a replacement
+  paused, stop/drain accepted old events using the old screen name, save only
+  collector fields, then activate and acknowledge. Failed replacement restores
+  the previous watcher/settings. Missing startup folders leave collection inactive
+  while commands and enforcement stay available; unexpected runtime watcher exit
+  still fails the process. Resolve relative Windows paths using the active desktop
+  user's profile, never SYSTEM's profile; require a full path when unavailable.
 - Pending question append, refresh, reminder and removal use config's atomic
   queue update API so concurrent reminder and worker changes preserve entries.
 - Money operation IDs use the `money:` namespace. Preserve them through fallback,

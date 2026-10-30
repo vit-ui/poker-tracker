@@ -81,46 +81,29 @@ func (b *Bot) handleSheetCommand(chatID int64, args string) {
 }
 
 // handleScreenNameCommand implements /screenname. With no argument, replies
-// with the current PokerStars screen name. With an argument, changes it —
-// unlike /sheet and /credentials, this takes effect immediately via
-// restartWatcher rather than needing a service restart: the watched folder
-// path is the base path joined with the screen name (see resolvePaths in
-// main.go), resolved once at watcher-start time, so a stale watcher would
-// otherwise keep watching the old screen name's subfolder until restarted
-// — exactly the same reason /paths calls restartWatcher on save.
-//
-// This is the always-available counterpart to ensureScreenName's recovery
-// path, which only ever fires when the screen name is still null — once
-// it's set, ensureScreenName never touches it again, so this was the only
-// way to change an already-configured screen name.
+// with the last PC-confirmed name and pending edits. An argument queues a PC change.
 func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 	args = strings.TrimSpace(args)
-
-	cfg, err := config.LoadConfig(b.configPath)
+	if args != "" {
+		b.saveCollectorChange(chatID, config.CollectorSettings{ScreenName: &args})
+		return
+	}
+	state, err := config.LoadCollectorSettings(filepath.Join(filepath.Dir(b.configPath), "collector_settings.json"))
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		send(b.tg, chatID, "Could not read the PC settings queue. Check logs.")
 		return
 	}
-
-	if args == "" {
-		if cfg.Setup.PokerStarsScreenName == nil {
-			send(b.tg, chatID, "No screen name configured yet. Usage: /screenname <name>")
-			return
-		}
-		send(b.tg, chatID, "Current PokerStars screen name: "+*cfg.Setup.PokerStarsScreenName)
-		return
+	text := "The PC has not reported a screen name. Usage: /screenname <name>"
+	if state.Confirmed != nil && state.Confirmed.ScreenName != nil {
+		text = "Last PC-confirmed screen name: " + *state.Confirmed.ScreenName
 	}
-
-	cfg.Setup.PokerStarsScreenName = &args
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
+	if state.Pending != nil && state.Pending.Settings.ScreenName != nil {
+		text += "\nPending screen name: " + *state.Pending.Settings.ScreenName
 	}
-
-	b.restartWatcher()
-	send(b.tg, chatID, "✅ Screen name updated to "+args+". Watcher restarted.")
+	if state.Error != "" {
+		text += "\nLast PC error: " + state.Error
+	}
+	send(b.tg, chatID, text+"\n\n"+collectorSettingsExplanation)
 }
 
 // startCredentialsFlow implements /credentials: swaps the Google service

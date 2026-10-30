@@ -46,51 +46,6 @@ func TestHeartbeatEvent(t *testing.T) {
 	}
 }
 
-func TestNormalizeWindowsPath(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"forward slashes become backslashes", "C:/Users/VITOR/Hand History", `C:\Users\VITOR\Hand History`},
-		{"surrounding whitespace is trimmed", "  C:\\Users\\VITOR\\Hand History  ", `C:\Users\VITOR\Hand History`},
-		{"trailing forward slash becomes trailing backslash", "C:/Users/VITOR/Hand History/", `C:\Users\VITOR\Hand History\`},
-		{"already backslashes, unchanged", `C:\Users\VITOR\Hand History`, `C:\Users\VITOR\Hand History`},
-		{"forward slashes replaced, existing backslash left alone", "C:/Users/VITOR/Hand\\ History", `C:\Users\VITOR\Hand\ History`},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := NormalizeWindowsPath(c.input)
-			if got != c.want {
-				t.Errorf("NormalizeWindowsPath(%q) = %q, want %q", c.input, got, c.want)
-			}
-		})
-	}
-}
-
-func TestIsAbsoluteWindowsPath(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{"drive letter with backslash is absolute", `C:\Users\VITOR\Hand History`, true},
-		{"different drive letter is absolute", `D:\PokerData\HandHistory`, true},
-		{"drive letter alone is absolute", `C:`, true},
-		{"relative path under user folder is not absolute", `AppData\Local\PokerStars\HandHistory`, false},
-		{"single path component is not absolute", `Desktop`, false},
-		{"empty string is not absolute", "", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := isAbsoluteWindowsPath(c.input)
-			if got != c.want {
-				t.Errorf("isAbsoluteWindowsPath(%q) = %v, want %v", c.input, got, c.want)
-			}
-		})
-	}
-}
-
 func TestExtractSheetIDFromURL(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -200,29 +155,6 @@ func TestValidateNotAbove(t *testing.T) {
 			err := validateNotAbove(c.value, c.other, "alert", "hardstop")
 			if (err != nil) != c.wantErr {
 				t.Errorf("validateNotAbove(%v, %v) error = %v, wantErr %v", c.value, c.other, err, c.wantErr)
-			}
-		})
-	}
-}
-
-func TestFixMissingDriveColon(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"missing colon after drive letter is repaired", `C\Users\VITOR\Desktop\Poker\Poker History\Hand History`, `C:\Users\VITOR\Desktop\Poker\Poker History\Hand History`},
-		{"lowercase drive letter is repaired", `d\PokerData\HandHistory`, `d:\PokerData\HandHistory`},
-		{"already has colon, unchanged", `C:\Users\VITOR\Hand History`, `C:\Users\VITOR\Hand History`},
-		{"relative path under user folder, unchanged", `AppData\Local\PokerStars\HandHistory`, `AppData\Local\PokerStars\HandHistory`},
-		{"single path component, unchanged", `Desktop`, `Desktop`},
-		{"empty string, unchanged", "", ""},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := fixMissingDriveColon(c.input)
-			if got != c.want {
-				t.Errorf("fixMissingDriveColon(%q) = %q, want %q", c.input, got, c.want)
 			}
 		})
 	}

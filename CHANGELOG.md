@@ -8,6 +8,17 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Server limits and schedules save while the poker PC is offline. Folder and
+  screen-name edits queue durably and require PC validation and acknowledgement;
+  replies explain why the PC must apply them. Newer edits survive older replies
+  and lost acknowledgements. Invalid startup folders keep collection inactive
+  while the connected collector accepts corrections and continues enforcement.
+- Combined and split modes share collector-owned watcher replacement, including
+  draining accepted old events and restoring previous settings after failure.
+  Relative Windows folders use the active desktop user's home, with a full path
+  required when no user can be identified. Atomic config updates preserve
+  simultaneous server and collector field changes.
+
 - Money uses integer USD cents throughout parsing, accounting, storage and
   hard-stop fingerprints. Extra fractional cents round up in magnitude at input;
   ledger verification is exact. Monetary names and persisted columns identify

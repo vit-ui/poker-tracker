@@ -63,7 +63,18 @@ Setup:
    Either way it shows a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
 2. On the poker PC, run `PokerTracker-Setup.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
 
-They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired. The all-local install above is unchanged; this is only if you want the split.
+They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired.
+
+Server settings (`/alerts`, `/hardstop` rules and duration, `/schedule`)
+save immediately even while the poker PC is offline. An existing lock keeps its
+full duration. `/paths` and `/screenname` edits are saved in a durable server queue:
+the PC must confirm them before they take effect, because only it can validate
+its folders, save local collection settings and restart its watcher. The bot
+reports pending edits separately from the last PC-confirmed values. Connection
+loss preserves pending edits across restart; a reported validation failure stays
+pending until you send a corrected value. If saved folders are unavailable at
+startup, collection stays inactive and the collector stays connected to accept
+corrections; hard-stop enforcement continues.
 
 Collector-confirmed hard-stop expiry survives server restarts and collector
 disconnects and sent again when the collector reconnects. Reconnecting replaces
@@ -209,7 +220,7 @@ Usage examples:
 <details>
 <summary><code>/screenname [name]</code> — view or change your PokerStars screen name</summary>
 
-With no argument, shows the configured screen name. With one, saves it and restarts the file watcher immediately, since the watched folders include the screen name as a subfolder. Capitalisation matters.
+With no argument, shows the last PC-confirmed screen name and any pending edit. With one, durably queues the change on the server, including while the PC is offline. The PC validates its screen-name subfolders, saves its own settings and activates the watcher before the bot confirms success. Capitalisation matters.
 
 Usage examples:
 - `/screenname` — show the current screen name
@@ -227,7 +238,7 @@ Usage example: `/credentials` — then attach the JSON file
 <details>
 <summary><code>/paths</code> — set your PokerStars folders</summary>
 
-Configures the base Hand History and Tournament Summary folders (the parent folders — not the screen-name subfolder underneath, which is added automatically). Required before any session can be tracked; saving restarts the file watcher. Forward slashes are converted for you, and a path without a drive letter is resolved from your home folder.
+Configures the base Hand History and Tournament Summary folders (the parent folders — not the screen-name subfolder underneath, which is added automatically). Required before any session can be tracked. Edits queue on the server until the PC validates and applies them; they do not change server-local paths. Forward slashes are converted on Windows. Relative paths resolve against the active Windows desktop user’s home, including when the collector runs as SYSTEM. If that user cannot be identified, send a full drive or UNC path. A drive-relative path such as `C:AppData` is rejected. Invalid edits preserve the previous collection settings and remain visible for correction.
 
 Usage example: `/paths` — then tap a field and reply with the folder, e.g. `C:\Users\you\AppData\Local\PokerStars\HandHistory`
 </details>

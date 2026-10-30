@@ -54,7 +54,6 @@ type Bot struct {
 	currentLock        func() (*config.LockFile, error)
 	serviceAccountPath string
 	dbPath             string
-	restartWatcher     func()
 
 	// requestRescan triggers a /scan backfill. The caller
 	// supplies it: both builds send a CommandRescan down the link, which the
@@ -84,7 +83,7 @@ type Bot struct {
 // single configured chat. It is only ever touched from the
 // bot event loop, so no locking is needed.
 type conversation struct {
-	flow  string // "", "screen_name", "menu", "credentials", "storage_credentials", "freeroll_buyin"
+	flow  string // "", "menu", "credentials", "storage_credentials", "freeroll_buyin"
 	field string // field awaiting a text reply within flow, "" if none (freeroll_buyin: the tournament ID)
 
 	// menuMessageID is the message a cascade config menu currently lives in,
@@ -92,10 +91,6 @@ type conversation struct {
 	// reply can edit that same message back to the relevant screen instead of
 	// sending a new one.
 	menuMessageID int
-
-	// resumeFlow names the flow (see ensureScreenName) to start once the
-	// screen-name recovery prompt is answered.
-	resumeFlow string
 }
 
 func (c *conversation) reset() {
@@ -108,14 +103,11 @@ func (c *conversation) reset() {
 // a schedule, and polls Telegram for incoming commands. Blocks until
 // alertChan is closed.
 //
-// restartWatcher is called by the /paths and /screenname saves — it re-joins
-// the base paths with the screen name and restarts the watcher goroutine.
-//
 // serviceAccountPath is only used by /sheet, /credentials, and /storage
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
 // taskName identifies the role/installation Windows task or Linux user unit for restarts.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error)) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error)) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -130,7 +122,6 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		currentLock:        currentLock,
 		serviceAccountPath: serviceAccountPath,
 		dbPath:             dbPath,
-		restartWatcher:     restartWatcher,
 		sendLock:           sendLock,
 		requestRescan:      requestRescan,
 		now:                now,
@@ -371,12 +362,19 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	}
 	senderChatIDStr := strconv.FormatInt(senderChatID, 10)
 	if cfg.Setup.TelegramChatID == nil {
-		cfg.Setup.TelegramChatID = &senderChatIDStr
-		if err := config.SaveConfig(b.configPath, cfg); err != nil {
+		var err error
+		cfg, err = config.UpdateConfig(b.configPath, func(current *config.Config) error {
+			if current.Setup.TelegramChatID == nil {
+				current.Setup.TelegramChatID = &senderChatIDStr
+			}
+			return nil
+		})
+		if err != nil {
 			slog.Error("saving telegram chat id", "err", err)
 			return
 		}
-	} else if *cfg.Setup.TelegramChatID != senderChatIDStr {
+	}
+	if *cfg.Setup.TelegramChatID != senderChatIDStr {
 		return // not the configured chat — ignore silently
 	}
 
@@ -432,8 +430,6 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 
 func (b *Bot) handleFlowReply(msg *tgbotapi.Message) {
 	switch b.flow {
-	case "screen_name":
-		b.handleScreenNameReply(msg.Chat.ID, msg.Text)
 	case "menu":
 		b.handleMenuReply(msg.Chat.ID, msg.Text)
 	case "credentials":

@@ -241,8 +241,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 }
 
 // EnsureSheetID guarantees Setup.GoogleSheetID is set before --serve
-// continues starting up, self-healing the same way ensureScreenName does
-// for pokerstars_screen_name rather than hard-panicking. If it's already
+// continues starting up after the missing setting is supplied. If it's already
 // configured, this returns immediately without touching Telegram at all —
 // the normal case once --setup has run.
 //
@@ -485,27 +484,18 @@ func resolveSheetInput(serviceAccountPath, input string) (name *string, id strin
 // validates it by checking the screen-name-joined path exists on disk, and
 // loops until a valid one is given. Returns the base path (not joined).
 func setupResolvePath(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64, folderLabel, exampleSuffix, screenName string) string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		slog.Error("getting user home directory", "err", err)
-	}
-	send(tgBot, chatID, fmt.Sprintf(
-		"What is the base %s folder path?\nYour home directory is: %s\nYou can type just the subfolder from there (e.g. %s)\nor type a full path starting with a drive letter if your folder is elsewhere.\nDo NOT include your screen name at the end — that part is added automatically.",
-		folderLabel, homeDir, exampleSuffix))
+	send(tgBot, chatID, fmt.Sprintf("What is the base %s folder path? Do not include your screen name. Relative paths (e.g. %s) use the active Windows desktop user's home. Send a full path if no desktop user is available.", folderLabel, exampleSuffix))
 
 	for {
 		reply := readReply(tgBot, updates, chatID)
-		normalized := fixMissingDriveColon(NormalizeWindowsPath(reply))
-		full, err := resolveAgainstHomeDir(normalized)
+		full, err := config.ResolveCollectorPath(reply)
 		if err != nil {
-			slog.Error("resolving home directory", "err", err)
-			send(tgBot, chatID, "Something went wrong. Check logs.")
+			send(tgBot, chatID, err.Error())
 			continue
 		}
-
-		joined := filepath.Join(full, screenName)
-		if !windowsPathExists(joined) {
-			send(tgBot, chatID, fmt.Sprintf("That path doesn't exist: %s\nSend the folder path again.", joined))
+		cfg := &config.Config{Setup: config.Setup{PokerStarsScreenName: &screenName}}
+		if _, err := config.ResolveCollection(cfg, config.CollectorSettings{HandHistory: &full}); err != nil {
+			send(tgBot, chatID, err.Error())
 			continue
 		}
 		return full

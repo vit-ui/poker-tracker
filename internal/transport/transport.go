@@ -37,8 +37,21 @@ type LockReply struct {
 }
 
 type CollectorStatus struct {
-	Lock  *config.LockFile
-	Error string
+	Lock            *config.LockFile
+	Error           string
+	Settings        *config.CollectorSettings
+	Watching        bool
+	CollectionError string
+}
+
+// CollectorConfigReply is sent only after validation, durable configuration and
+// watcher activation (or a reported failure). Socket loss is not an acknowledgement.
+type CollectorConfigReply struct {
+	RequestID       string
+	Settings        config.CollectorSettings
+	Watching        bool
+	Error           string
+	CollectionError string
 }
 
 type Upload struct {
@@ -48,6 +61,7 @@ type Upload struct {
 	FileActivity    time.Time
 	LockReply       *LockReply
 	CollectionReply *CollectionReply
+	ConfigReply     *CollectorConfigReply
 	FileID          string    // stable identity of the source file (its path on the client)
 	Type            string    // "cash" or "tournament" (or ImportStart/ImportDone marker), matching watcher.FileEvent.Type
 	Offset          int64     // byte offset in the file where Bytes begins
@@ -84,14 +98,16 @@ const (
 	CommandPauseCollection  = "pause_collection"
 	CommandDrainCollection  = "drain_collection"
 	CommandResumeCollection = "resume_collection"
+	CommandCollectorConfig  = "collector_config"
 )
 
 // Command is sent from the server to the client.
 type Command struct {
 	Files     []string
 	RequestID string
-	Kind      string           // one of the Command constants
-	Lock      *config.LockFile // set when Kind == CommandLock
+	Kind      string                    // one of the Command constants
+	Lock      *config.LockFile          // set when Kind == CommandLock
+	Settings  *config.CollectorSettings // nil queries current settings
 }
 
 // Link is the in-process connection between one client and one server: uploads

@@ -20,9 +20,10 @@ import (
 // that come back down. It never parses or stores anything — that's the server's
 // job.
 type Collector struct {
-	link     *transport.Link
-	enforcer *Enforcer
-	control  func(bool) ([]watcher.FileEvent, error)
+	link       *transport.Link
+	enforcer   *Enforcer
+	control    func(bool) ([]watcher.FileEvent, error)
+	collection *collection
 }
 
 // NewCollector creates a Collector over the given link, writing enforced locks
@@ -60,18 +61,27 @@ const (
 // then so the caller can exit and let its service manager restart it. In the
 // all-local build the link never drops, so a nil dead is passed and Run blocks
 // until sessionChan is closed.
-func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string, dead <-chan struct{}) {
+func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string, dead <-chan struct{}) error {
 	finished := make(chan struct{})
-	defer close(finished)
 	requests := make(chan transport.Command)
-	go c.applyCommands(dead, finished, requests)
+	commandsDone := make(chan struct{})
+	go func() { defer close(commandsDone); c.applyCommands(dead, finished, requests) }()
+	defer func() { close(finished); <-commandsDone }()
 	lock, err := config.LoadLock(c.enforcer.path)
 	status := &transport.CollectorStatus{Lock: lock}
 	if err != nil {
 		status.Error = err.Error()
 	}
+	if cfg, err := config.LoadConfig(configPath); err == nil {
+		settings := config.CollectionSettings(cfg)
+		status.Settings = &settings
+		status.Watching = c.collection != nil && c.collection.active != nil
+		if c.collection != nil && c.collection.err != nil {
+			status.CollectionError = c.collection.err.Error()
+		}
+	}
 	if !c.send(transport.Upload{Status: status, ClientClock: time.Now()}, dead) {
-		return
+		return nil
 	}
 	sent := make(map[string]*sentEntry)
 	paused := false
@@ -95,16 +105,44 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 		return nil
 	}
 	for {
+		var stopped <-chan struct{}
+		if c.collection != nil {
+			stopped = c.collection.stopped()
+		}
 		var events <-chan watcher.FileEvent
 		if !paused {
 			events = sessionChan
 		}
 		select {
+		case <-stopped:
+			return fmt.Errorf("file watcher stopped: %w", c.collection.active.err)
 		case <-dead:
-			return
+			return nil
 		case cmd := <-requests:
 			var err error
 			switch cmd.Kind {
+			case transport.CommandCollectorConfig:
+				var settings config.CollectorSettings
+				if cmd.Settings != nil {
+					settings, err = c.changeSettings(configPath, *cmd.Settings, upload)
+				} else {
+					var cfg *config.Config
+					cfg, err = config.LoadConfig(configPath)
+					if err == nil {
+						settings = config.CollectionSettings(cfg)
+					}
+				}
+				reply := &transport.CollectorConfigReply{RequestID: cmd.RequestID, Settings: settings, Watching: c.collection != nil && c.collection.active != nil}
+				if c.collection != nil && c.collection.err != nil {
+					reply.CollectionError = c.collection.err.Error()
+				}
+				if err != nil {
+					reply.Error = err.Error()
+				}
+				if !c.send(transport.Upload{ConfigReply: reply, ClientClock: time.Now()}, dead) {
+					return nil
+				}
+				continue
 			case transport.CommandResyncFiles:
 				cfg, err := config.LoadConfig(configPath)
 				if err != nil || cfg.Paths.HandHistory == nil || cfg.Setup.PokerStarsScreenName == nil {
@@ -197,11 +235,11 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 				reply.Error = err.Error()
 			}
 			if !c.send(transport.Upload{CollectionReply: reply, ClientClock: time.Now()}, dead) {
-				return
+				return nil
 			}
 		case event, ok := <-events:
 			if !ok {
-				return
+				return nil
 			}
 			if err := upload(event, false); err != nil {
 				slog.Error("reading file for upload", "err", err)

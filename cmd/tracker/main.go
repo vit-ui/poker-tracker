@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
-	"sync"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/backend"
@@ -19,7 +18,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/transport"
-	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
 // BotToken is injected at build time via -ldflags "-X main.BotToken=...".
@@ -186,61 +184,8 @@ func runServe() {
 		os.Exit(1)
 	}
 
-	// Reload — EnsureSheetID inside Open may have written telegram_chat_id
-	// and/or google_sheet_id back to config.json.
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		os.Exit(1)
-	}
-
 	slog.Info("tracker service starting", "backend", backendName)
-
-	sessionChan := make(chan watcher.FileEvent, 10)
 	alertChan := make(chan string, 20)
-
-	var watcherMu sync.Mutex
-	var watcherDone chan struct{}
-	var watcherControl *watcher.Control
-	startWatcher := func(current *config.Config) {
-		if current.Paths.HandHistory == nil || current.Paths.TournamentSummary == nil {
-			return
-		}
-		hhPath, tsPath := resolvePaths(current)
-		slog.Info("watcher starting", "hand_history", hhPath, "tournament_summary", tsPath)
-		watcherDone = make(chan struct{})
-		watcherControl = watcher.NewControl()
-		go func(done <-chan struct{}, control *watcher.Control) {
-			if err := watcher.WatchControlled(done, hhPath, tsPath, sessionChan, control); err != nil {
-				slog.Error("watcher stopped", "err", err)
-				alertChan <- "⚠️ File watching stopped unexpectedly — I'm no longer seeing new poker sessions. Restart the tracker (or your PC) to recover."
-			}
-		}(watcherDone, watcherControl)
-	}
-	startWatcher(cfg)
-	restartWatcher := func() {
-		current, err := config.LoadConfig(configPath)
-		if err != nil {
-			slog.Error("loading config for watcher restart", "err", err)
-			return
-		}
-		watcherMu.Lock()
-		defer watcherMu.Unlock()
-		if watcherDone != nil {
-			close(watcherDone)
-			watcherDone = nil
-			watcherControl = nil
-		}
-		startWatcher(current)
-	}
-	collectionControl := func(paused bool) ([]watcher.FileEvent, error) {
-		watcherMu.Lock()
-		defer watcherMu.Unlock()
-		if watcherControl == nil {
-			return nil, nil
-		} // setup has not enabled collection
-		return watcherControl.SetPaused(paused)
-	}
 
 	// The collector (watcher-side) and server (brain-side) run in one process
 	// here, connected by an in-process link: file changes go up as uploads, the
@@ -255,10 +200,10 @@ func runServe() {
 	}
 	go func() { err := srv.Run(); slog.Error("server worker stopped", "err", err); os.Exit(1) }()
 
-	collector := client.NewCollector(link, enforcer, collectionControl)
+	collector := client.NewCollector(link, enforcer, nil)
 	go func() {
-		collector.Run(sessionChan, configPath, nil)
-		slog.Error("collector stopped unexpectedly")
+		err := collector.Serve(configPath, nil)
+		slog.Error("collector stopped unexpectedly", "err", err)
 		os.Exit(1)
 	}()
 
@@ -277,7 +222,7 @@ func runServe() {
 	go func() {
 		// All-local: server and collector share this machine's clock, so the
 		// read-side date windows anchor to time.Now — unchanged behavior.
-		err := bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock)
+		err := bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit
@@ -291,11 +236,4 @@ func runServe() {
 	}()
 
 	select {}
-}
-
-// resolvePaths joins the base hand history and tournament summary paths with
-// the player's screen name, which PokerStars uses as a subfolder for all files.
-func resolvePaths(cfg *config.Config) (string, string) {
-	return filepath.Join(*cfg.Paths.HandHistory, *cfg.Setup.PokerStarsScreenName),
-		filepath.Join(*cfg.Paths.TournamentSummary, *cfg.Setup.PokerStarsScreenName)
 }

@@ -1,7 +1,7 @@
 package bot
 
 // The cascading inline-keyboard config menus (/paths, /alerts, /hardstop,
-// /schedule), the screen-name recovery gate they share, /deposit and
+// /schedule), /deposit and
 // /withdraw, and the input parsing/validation helpers.
 //
 // Menu model: every config screen is one message edited in place as the player
@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -152,68 +151,6 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 		}
 		send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%s", label, FormatSignedUSD(ledgerAmountCents), result.BankrollCents))
 	})
-}
-
-// ensureScreenName checks Setup.PokerStarsScreenName before any of the four
-// config flows (paths, alerts, hardstop, schedule) starts. Screen name is
-// normally set once by --setup and never touched again — but --serve no
-// longer requires it to be set at startup, and config.json is re-read from
-// disk on every message, so it can still be null here (fresh install before
-// --setup is fully built, or lost/reset while --serve keeps running). If
-// it's missing, this interrupts with a recovery prompt instead of the
-// caller's own flow, and remembers resumeFlow so the right flow starts once
-// it's answered. Returns true if the caller may proceed immediately.
-func (b *Bot) ensureScreenName(chatID int64, cfg *config.Config, resumeFlow string) bool {
-	if cfg.Setup.PokerStarsScreenName != nil {
-		return true
-	}
-	b.flow = "screen_name"
-	b.field = "screen_name"
-	b.resumeFlow = resumeFlow
-	send(b.tg, chatID, "Your PokerStars screen name isn't set. Send it now (exact spelling, case-sensitive) before continuing.")
-	return false
-}
-
-// handleScreenNameReply saves the PokerStars screen name entered in
-// response to ensureScreenName's recovery prompt, then resumes whichever
-// flow (paths, alerts, hardstop, schedule) triggered it.
-func (b *Bot) handleScreenNameReply(chatID int64, text string) {
-	name := strings.TrimSpace(text)
-	if name == "" {
-		send(b.tg, chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
-		return
-	}
-
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-	cfg.Setup.PokerStarsScreenName = &name
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
-
-	slog.Info("screen name set at runtime", "screen_name", name)
-	send(b.tg, chatID, fmt.Sprintf("✅ Screen name saved: %s", name))
-
-	resumeFlow := b.resumeFlow
-	b.resumeFlow = ""
-	switch resumeFlow {
-	case "paths":
-		b.startPathsFlow(chatID)
-	case "alerts":
-		b.startAlertsFlow(chatID)
-	case "hardstop":
-		b.startHardstopFlow(chatID)
-	case "schedule":
-		b.startScheduleFlow(chatID)
-	}
 }
 
 // --- menu router ---
@@ -591,7 +528,7 @@ func (b *Bot) renderAlertsMenu(chatID int64, messageID int, path string) {
 		rows = append(rows, menuRow(alertLabel(key)+" ["+thresholdDisplay(cfg, "alerts", key)+"]", "menu:"+path+":"+key))
 	}
 	rows = append(rows, navButton(path))
-	b.showMenu(chatID, messageID, "Alert thresholds — tap one to change:", rows)
+	b.showMenu(chatID, messageID, "Alert thresholds — saved on the server even while the poker PC is offline. Tap one to change:", rows)
 }
 
 // renderHardstopMenu shows the hard-stop rules. warning, when non-empty, is
@@ -615,7 +552,7 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 		label = "‹ Back"
 	}
 	rows = append(rows, menuRow(label, "menu:leave:"+path))
-	text := "Hard stop rules — tap one to change:"
+	text := "Hard stop rules — saved on the server even while the poker PC is offline. Existing locks keep their full duration. Tap one to change:"
 	if warning != "" {
 		text = warning + "\n\n" +
 			text
@@ -697,26 +634,43 @@ func hardstopRuleSetWithoutDuration(cfg *config.Config) bool {
 // --- /paths flow ---
 
 func (b *Bot) renderPathsMenu(chatID int64, messageID int, path string) {
-	cfg, err := config.LoadConfig(b.configPath)
+	state, err := config.LoadCollectorSettings(filepath.Join(filepath.Dir(b.configPath), "collector_settings.json"))
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		send(b.tg, chatID, "Could not read the PC settings queue. Check logs.")
 		return
 	}
-	hh := "not set"
-	if cfg.Paths.HandHistory != nil {
-		hh = displayRelativeToHome(*cfg.Paths.HandHistory)
-	}
-	ts := "not set"
-	if cfg.Paths.TournamentSummary != nil {
-		ts = displayRelativeToHome(*cfg.Paths.TournamentSummary)
+	settings := state.Desired()
+	value := func(v *string) string {
+		if v == nil {
+			return "not reported"
+		}
+		return *v
 	}
 	rows := [][]tgbotapi.InlineKeyboardButton{
-		menuRow("Hand History: "+hh, "menu:"+path+":hand_history"),
-		menuRow("Tournament Summary: "+ts, "menu:"+path+":tournament_summary"),
+		menuRow("Hand History: "+value(settings.HandHistory), "menu:"+path+":hand_history"),
+		menuRow("Tournament Summary: "+value(settings.TournamentSummary), "menu:"+path+":tournament_summary"),
 		navButton(path),
 	}
-	b.showMenu(chatID, messageID, "PokerStars folder locations — tap one to change:", rows)
+	text := "PokerStars folders — last confirmed by the PC. Tap to change.\n" + collectorSettingsExplanation
+	if state.Confirmed == nil {
+		text = "The PC has not reported its folders yet. You can queue them now.\n" + collectorSettingsExplanation
+	}
+	if state.Pending != nil {
+		text += "\n\nDisplayed values include pending edits awaiting PC confirmation."
+	}
+	if state.Confirmed != nil && !state.Watching {
+		text += "\nLast PC report: collection inactive."
+	}
+	if state.CollectionError != "" {
+		text += "\nCollection error: " + state.CollectionError
+	}
+	if state.Error != "" {
+		text += "\nLast PC error: " + state.Error
+	}
+	if settings.ScreenName == nil {
+		text += "\nSet /screenname <name> too before collection can start."
+	}
+	b.showMenu(chatID, messageID, text, rows)
 }
 
 func pathPromptText(field string) string {
@@ -739,7 +693,7 @@ func (b *Bot) renderScheduleMenu(chatID int64, messageID int, path string) {
 		menuRow("Poker day start hour ["+intText(cfg.Schedule.DayStartHour)+"]", "menu:"+path+":day_start"),
 		navButton(path),
 	}
-	b.showMenu(chatID, messageID, "Poker day schedule — tap to change (default 6 = 6am):", rows)
+	b.showMenu(chatID, messageID, "Poker day schedule — saved on the server even while the poker PC is offline. Tap to change (default 6 = 6am):", rows)
 }
 
 // --- /notify flow ---
@@ -874,16 +828,9 @@ func (b *Bot) setSummaryMode(chatID int64, messageID int, path string) {
 	itemPath := strings.TrimSuffix(path, ":"+mode)
 	key := segs[len(segs)-2]
 
-	cfg, err := config.LoadConfig(b.configPath)
+	_, err := config.UpdateConfig(b.configPath, func(cfg *config.Config) error { setSummaryModeField(cfg, key, mode); return nil })
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	setSummaryModeField(cfg, key, mode)
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		send(b.tg, chatID, "Could not save settings. Check logs.")
 		return
 	}
 	b.renderSummaryItem(chatID, messageID, itemPath)
@@ -892,17 +839,13 @@ func (b *Bot) setSummaryMode(chatID int64, messageID int, path string) {
 // toggleStakeChange flips the stake-change on/off and re-renders the summaries
 // list. path is the item path, e.g. "notify:summaries:stake".
 func (b *Bot) toggleStakeChange(chatID int64, messageID int, path string) {
-	cfg, err := config.LoadConfig(b.configPath)
+	_, err := config.UpdateConfig(b.configPath, func(cfg *config.Config) error {
+		enabled := !config.NotificationEnabled(cfg.Notifications.StakeChange)
+		cfg.Notifications.StakeChange = &enabled
+		return nil
+	})
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	enabled := !config.NotificationEnabled(cfg.Notifications.StakeChange)
-	cfg.Notifications.StakeChange = &enabled
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		send(b.tg, chatID, "Could not save settings. Check logs.")
 		return
 	}
 	b.renderScreen(chatID, messageID, parentPath(path))
@@ -1073,16 +1016,9 @@ func (b *Bot) doTurnOff(chatID int64, messageID int, target string) {
 	key := segs[len(segs)-1]
 	flow := segs[len(segs)-2]
 
-	cfg, err := config.LoadConfig(b.configPath)
+	_, err := config.UpdateConfig(b.configPath, func(cfg *config.Config) error { setThresholdEnabled(cfg, flow, key, false); return nil })
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	setThresholdEnabled(cfg, flow, key, false)
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
+		send(b.tg, chatID, "Could not save settings. Check logs.")
 		return
 	}
 	b.renderThresholdItem(chatID, messageID, target)
@@ -1097,20 +1033,15 @@ func (b *Bot) turnOn(chatID int64, messageID int, target string) {
 	key := segs[len(segs)-1]
 	flow := segs[len(segs)-2]
 
-	cfg, err := config.LoadConfig(b.configPath)
+	_, err := config.UpdateConfig(b.configPath, func(cfg *config.Config) error {
+		if err := validateActivate(cfg, flow, key); err != nil {
+			return err
+		}
+		setThresholdEnabled(cfg, flow, key, true)
+		return nil
+	})
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if err := validateActivate(cfg, flow, key); err != nil {
 		send(b.tg, chatID, err.Error())
-		return
-	}
-	setThresholdEnabled(cfg, flow, key, true)
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
 		return
 	}
 	b.renderThresholdItem(chatID, messageID, target)
@@ -1177,68 +1108,44 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 		return
 	}
 
-	cfg, err := config.LoadConfig(b.configPath)
+	if flow == "paths" {
+		value := strings.TrimSpace(text)
+		var change config.CollectorSettings
+		if key == "hand_history" {
+			change.HandHistory = &value
+		} else {
+			change.TournamentSummary = &value
+		}
+		b.saveCollectorChange(chatID, change)
+		return
+	}
+	_, err := config.UpdateConfig(b.configPath, func(cfg *config.Config) error {
+		switch flow {
+		case "alerts":
+			return saveAlertValue(cfg, key, text)
+		case "hardstop":
+			return saveHardstopValue(cfg, key, text)
+		case "schedule":
+			return saveScheduleValue(cfg, text)
+		}
+		return fmt.Errorf("unknown setting")
+	})
 	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
+		send(b.tg, chatID, err.Error())
 		return
 	}
-
-	pathsWasComplete := cfg.Paths.HandHistory != nil && cfg.Paths.TournamentSummary != nil
-
-	var saveErr error
-	switch flow {
-	case "alerts":
-		saveErr = saveAlertValue(cfg, key, text)
-	case "hardstop":
-		saveErr = saveHardstopValue(cfg, key, text)
-	case "paths":
-		saveErr = savePathValue(cfg, key, text)
-	case "schedule":
-		saveErr = saveScheduleValue(cfg, text)
-	}
-	if saveErr != nil {
-		send(b.tg, chatID, saveErr.Error())
-		return
-	}
-	if err := config.SaveConfig(b.configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		b.reset()
-		return
-	}
+	send(b.tg, chatID, "✅ Saved on the server. Limits and schedules work while the poker PC is offline; an active lock keeps its full duration.")
 
 	messageID := b.menuMessageID
 	b.reset()
-
-	if flow == "paths" {
-		b.afterPathSave(chatID, cfg, pathsWasComplete)
-	}
 
 	switch flow {
 	case "alerts", "hardstop":
 		b.renderThresholdItem(chatID, messageID, target)
 	default:
-		// paths / schedule: back to their list, at whatever depth it sits
+		// Schedule: back to its list, at whatever depth it sits
 		// (root, or nested under the /menu hub).
 		b.renderScreen(chatID, messageID, parentPath(target))
-	}
-}
-
-// afterPathSave restarts the watcher once both base paths are set (its only
-// requirement), reporting first-time activation vs a re-config, and prompts for
-// the other folder when only one is set — replacing the old paths "Done".
-func (b *Bot) afterPathSave(chatID int64, cfg *config.Config, wasComplete bool) {
-	if cfg.Paths.HandHistory == nil || cfg.Paths.TournamentSummary == nil {
-		send(b.tg, chatID, "Saved. Set the other folder too before the tracker can start.")
-		return
-	}
-	b.restartWatcher()
-	if wasComplete {
-		send(b.tg, chatID, "✅ Paths saved. Watcher restarted.")
-	} else {
-		send(b.tg, chatID, "✅ Paths saved. Tracker is now active.")
 	}
 }
 
@@ -1360,28 +1267,6 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 	return nil
 }
 
-func savePathValue(cfg *config.Config, key, text string) error {
-	if cfg.Setup.PokerStarsScreenName == nil {
-		return fmt.Errorf("Screen name isn't set. Run /paths again.")
-	}
-	full, err := resolveAgainstHomeDir(fixMissingDriveColon(NormalizeWindowsPath(text)))
-	if err != nil {
-		slog.Error("resolving home directory", "err", err)
-		return fmt.Errorf("Something went wrong resolving that path. Send it again.")
-	}
-	joined := filepath.Join(full, *cfg.Setup.PokerStarsScreenName)
-	if !windowsPathExists(joined) {
-		return fmt.Errorf("That path doesn't exist: %s\nSend the folder path again.", joined)
-	}
-	switch key {
-	case "hand_history":
-		cfg.Paths.HandHistory = &full
-	case "tournament_summary":
-		cfg.Paths.TournamentSummary = &full
-	}
-	return nil
-}
-
 func saveScheduleValue(cfg *config.Config, text string) error {
 	v, err := strconv.Atoi(strings.TrimSpace(text))
 	if err != nil || v < 0 || v > 23 {
@@ -1393,57 +1278,10 @@ func saveScheduleValue(cfg *config.Config, text string) error {
 
 // --- flow entry points (commands) ---
 
-func (b *Bot) startPathsFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if !b.ensureScreenName(chatID, cfg, "paths") {
-		return
-	}
-	b.renderPathsMenu(chatID, 0, "paths")
-}
-
-func (b *Bot) startAlertsFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if !b.ensureScreenName(chatID, cfg, "alerts") {
-		return
-	}
-	b.renderAlertsMenu(chatID, 0, "alerts")
-}
-
-func (b *Bot) startHardstopFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if !b.ensureScreenName(chatID, cfg, "hardstop") {
-		return
-	}
-	b.renderHardstopMenu(chatID, 0, "hardstop", "")
-}
-
-func (b *Bot) startScheduleFlow(chatID int64) {
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config", "err", err)
-		send(b.tg, chatID, "Something went wrong. Check logs.")
-		return
-	}
-	if !b.ensureScreenName(chatID, cfg, "schedule") {
-		return
-	}
-	b.renderScheduleMenu(chatID, 0, "schedule")
-}
+func (b *Bot) startPathsFlow(chatID int64)    { b.renderPathsMenu(chatID, 0, "paths") }
+func (b *Bot) startAlertsFlow(chatID int64)   { b.renderAlertsMenu(chatID, 0, "alerts") }
+func (b *Bot) startHardstopFlow(chatID int64) { b.renderHardstopMenu(chatID, 0, "hardstop", "") }
+func (b *Bot) startScheduleFlow(chatID int64) { b.renderScheduleMenu(chatID, 0, "schedule") }
 
 // handleHardstopCommand implements /hardstop. "trigger" fires a manual hard
 // stop; anything else opens the hard-stop menu.
@@ -1481,83 +1319,6 @@ func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 		return
 	}
 	b.startHardstopFlow(chatID)
-}
-
-// --- path helpers ---
-
-func NormalizeWindowsPath(input string) string {
-	return strings.ReplaceAll(strings.TrimSpace(input), "/", "\\")
-}
-
-// windowsPathExists reports whether path exists. Uses os.Stat directly
-// rather than shelling out to cmd.exe's "if exist" — paths containing
-// spaces require embedding quotes in the shelled-out command, but Go's
-// Windows argument escaping then wraps the whole string in its own outer
-// quotes too, producing more than the two quote characters cmd.exe's /C
-// handling can cleanly preserve. It falls back to stripping only the first
-// and last quote character in the line, leaving the inner backslash-escaped
-// quotes (and their backslashes) in place, which corrupts the path.
-func windowsPathExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-// isAbsoluteWindowsPath reports whether path already starts with a drive
-// letter (e.g. "C:\..."), meaning it should be used as typed rather than
-// resolved against the user's home directory.
-func isAbsoluteWindowsPath(path string) bool {
-	return len(path) >= 2 && path[1] == ':'
-}
-
-// fixMissingDriveColon repairs a path typed as a drive letter without its
-// colon (e.g. "C/Users/..." normalizes to "C\Users\..." with no ":"). A
-// single letter immediately followed by a separator is never a legitimate
-// first-level folder name under the player's home directory, so this is
-// unambiguous: it's a drive letter, not a relative path starting with a
-// folder literally named "C". Without this, such a path would silently be
-// treated as relative and double-joined onto the home directory instead of
-// failing (or working) cleanly.
-func fixMissingDriveColon(path string) string {
-	if len(path) >= 2 && isASCIILetter(path[0]) && path[1] == '\\' {
-		return path[:1] + ":" + path[1:]
-	}
-	return path
-}
-
-func isASCIILetter(b byte) bool {
-	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
-}
-
-// resolveAgainstHomeDir resolves a path the player typed relative to their
-// own Windows user folder — e.g. "AppData\Local\PokerStars\HandHistory"
-// becomes "C:\Users\<them>\AppData\Local\PokerStars\HandHistory". PokerStars
-// always writes under the player's profile, so this is the common case and
-// saves them from typing (and mistyping) "C:\Users\<name>\" every time. A
-// path that's already absolute (starts with a drive letter) is returned
-// unchanged, so a full path still works if the data lives elsewhere.
-func resolveAgainstHomeDir(path string) (string, error) {
-	if isAbsoluteWindowsPath(path) {
-		return path, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("getting user home directory: %w", err)
-	}
-	return filepath.Join(home, path), nil
-}
-
-// displayRelativeToHome shortens path for display by stripping the user's
-// home directory prefix, if present, so keyboard confirmation messages stay
-// short enough to read comfortably on a phone screen.
-func displayRelativeToHome(path string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	if rel, err := filepath.Rel(home, path); err == nil && !strings.HasPrefix(rel, "..") {
-		return rel
-	}
-	return path
 }
 
 func parsePositiveMoney(text string) (money.Cents, error) {

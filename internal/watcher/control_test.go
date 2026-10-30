@@ -106,3 +106,38 @@ func TestWatcherStopsWithUndeliveredEvent(t *testing.T) {
 		t.Fatal("stopped watcher acknowledged pause")
 	}
 }
+
+func TestPausedReplacementStopsAndDrainsWithoutEmitting(t *testing.T) {
+	root := t.TempDir()
+	control := NewPausedControl()
+	stopped := make(chan error, 1)
+	events := make(chan FileEvent, 10)
+	go func() { stopped <- WatchControlled(nil, root, root, events, control) }()
+	if _, err := control.SetPaused(true); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "accepted.txt")
+	if err := os.WriteFile(path, []byte("pending"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	// Stopping an already paused watcher must still drain its accepted events.
+	drained, err := control.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	if len(drained) != 1 || drained[0].Path != path {
+		t.Fatalf("drained %+v", drained)
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("replacement emitted before activation: %+v", event)
+	default:
+	}
+	if _, err := control.SetPaused(false); err == nil {
+		t.Fatal("stopped watcher acknowledged resume")
+	}
+}

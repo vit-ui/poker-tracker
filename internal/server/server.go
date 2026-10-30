@@ -177,6 +177,12 @@ func (s *Server) reconstruct(up transport.Upload) (string, error) {
 // the link's Uploads channel is closed.
 func (s *Server) Run() error {
 	defer os.RemoveAll(s.workDir)
+	settingsQueue := collectorSettingsQueue{path: filepath.Join(filepath.Dir(s.configPath), "collector_settings.json")}
+	var settingsErr error
+	settingsQueue.state, settingsErr = config.LoadCollectorSettings(settingsQueue.path)
+	if settingsErr != nil {
+		return settingsErr
+	}
 	// summaryTimers holds one quiet-period timer per cash table (FileID). A new
 	// hand resets its table's timer; when the table goes quiet the timer signals
 	// sessionEndChan, and the worker writes the session and runs the
@@ -401,6 +407,15 @@ func (s *Server) Run() error {
 				command = pendingCollection.command
 			}
 		}
+		if pendingCollection == nil && offlinePreparation == nil && heldOperation == nil {
+			select {
+			case <-s.link.CollectorDone():
+			default:
+				if next := settingsQueue.command(); next != nil {
+					commands, command = s.link.Commands, *next
+				}
+			}
+		}
 		select {
 		case <-s.link.CollectorDone():
 		default:
@@ -441,6 +456,7 @@ func (s *Server) Run() error {
 		var up transport.Upload
 		select {
 		case <-s.link.ConnectionChanged:
+			settingsQueue.inflight = nil
 			sentLocks = make(map[string]bool)
 			restoredLockSent = false
 			resyncRequested = false
@@ -456,6 +472,8 @@ func (s *Server) Run() error {
 				} else {
 					sentLocks[command.Lock.TriggerID] = true
 				}
+			} else if command.Kind == transport.CommandCollectorConfig {
+				settingsQueue.inflight = &config.CollectorChange{ID: command.RequestID, Settings: *command.Settings}
 			} else {
 				pendingCollection.sent = true
 			}
@@ -475,6 +493,20 @@ func (s *Server) Run() error {
 			heldOperation = nil
 			continue
 		case operation := <-operations:
+			if operation.CollectorSettings {
+				var err error
+				if operation.CollectorChange != nil {
+					err = settingsQueue.accept(*operation.CollectorChange)
+				}
+				online := true
+				select {
+				case <-s.link.CollectorDone():
+					online = false
+				default:
+				}
+				operation.Reply <- storage.OperationResult{CollectorSettings: settingsQueue.state, CollectorOnline: online, Err: err}
+				continue
+			}
 			if !operation.PrepareMigration && !operation.PrepareRestart {
 
 				if operation.RetryHardstops {
@@ -538,12 +570,31 @@ func (s *Server) Run() error {
 		}
 
 		connection, current := s.link.UploadConnection(up)
-		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil) && !current {
+		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil || up.ConfigReply != nil) && !current {
 			continue
 		}
 		if status := up.Status; status != nil {
 			s.updateClock(up.ClientClock)
 			s.observeCollectorLock(status.Lock, status.Error, connection)
+			if status.Settings != nil {
+				if err := settingsQueue.observe(*status.Settings, status.Watching, status.CollectionError); err != nil {
+					return err
+				}
+				if status.CollectionError != "" {
+					s.alertChan <- "⚠️ Collection is inactive on the poker PC: " + status.CollectionError + "\nThe collector remains connected so /paths and /screenname can correct it. Hard-stop enforcement remains active."
+				}
+			}
+			continue
+		}
+		if reply := up.ConfigReply; reply != nil {
+			s.updateClock(up.ClientClock)
+			message, err := settingsQueue.acknowledge(*reply)
+			if err != nil {
+				return err
+			}
+			if message != "" {
+				s.alertChan <- message
+			}
 			continue
 		}
 		if reply := up.LockReply; reply != nil {

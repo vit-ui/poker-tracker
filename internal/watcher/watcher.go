@@ -71,6 +71,7 @@ func WatchControlled(done <-chan struct{}, handHistoryPath, tournamentPath strin
 	var requests <-chan pauseRequest
 	if control != nil {
 		requests = control.requests
+		paused = control.initiallyPaused
 	}
 	schedule := func(entry *pendingFile) {
 		if entry.timer != nil {
@@ -133,7 +134,7 @@ func WatchControlled(done <-chan struct{}, handHistoryPath, tournamentPath strin
 			}
 		case request := <-requests:
 			var drained []FileEvent
-			if request.paused && !paused {
+			if request.stop || request.paused && !paused {
 				// Include fsnotify events already accepted into its delivery channel.
 				// Unreceived source bytes remain recoverable from the source histories.
 			drain:
@@ -165,6 +166,9 @@ func WatchControlled(done <-chan struct{}, handHistoryPath, tournamentPath strin
 				}
 			}
 			request.reply <- pauseResult{events: drained}
+			if request.stop {
+				return nil
+			}
 		case event, ok := <-w.Events:
 			if !ok {
 				return nil
