@@ -8,6 +8,10 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Telegram reinstalls keep the saved chat ID and wait for contact from that chat;
+  another sender cannot redirect setup. Fresh installs still detect their chat
+  from the first message. Settings changed while setup waits are retained.
+
 - Linux upgrades stage and atomically replace running executables, then restart
   the intended user service. Setup preserves a configured backend; fresh Linux
   Sheets choices start on SQLite so credentials and verified migration can be

@@ -114,6 +114,9 @@ go test ./internal/parsers/...      # one package
   Telegram responses on the bot event loop. A migration waits for the collector's
   process check and ordered drain acknowledgement, flushes pending cash, and
   holds the worker through restart or rollback. Disconnect cannot imply success.
+- Telegram setup filters initial reinstall contact to the saved chat ID. Fresh
+  setup may detect the first text sender. Never overwrite a configured chat with
+  another sender, and refresh config after waiting so concurrent settings survive.
 - Save server-owned limits/schedule/notification fields through atomic config
   updates. They do not require a collector or screen name. PC folder/name edits
   use typed authenticated commands and a config-owned `collector_settings.json`

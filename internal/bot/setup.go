@@ -37,25 +37,47 @@ import (
 // gating exactly (SheetAlreadySet/ScreenNameAlreadySet/HandHistoryAlreadySet/
 // TournamentAlreadySet/CredentialsAlreadySet there). A rerun over a complete
 // install then does nothing but the chat handshake and a "still all set"
-// confirmation. Chat ID detection itself is never skipped — it's not a
-// question being asked, it's how this process learns who to talk to at all
-// for this run, regardless of whether a chat ID was already known.
+// confirmation. Reinstalls wait for contact from the saved chat; fresh installs
+// detect their chat from the first text message.
 func RunSetup(token, configPath, serviceAccountPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("loading setup config", "err", err)
+		return
+	}
+	var allowedChatID int64
+	if cfg.Setup.TelegramChatID != nil {
+		allowedChatID, err = strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)
+		if err != nil || allowedChatID == 0 {
+			slog.Error("invalid saved setup chat id")
+			return
+		}
+	}
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(token, apiEndpoint)
 	if err != nil {
 		slog.Error("starting telegram bot", "err", err)
 		return
 	}
-
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
-
-	chatID := waitForFirstMessage(updates)
-
-	cfg, err := config.LoadConfig(configPath)
+	defer tgBot.StopReceivingUpdates()
+	chatID := waitForFirstMessage(updates, allowedChatID)
+	if chatID == 0 {
+		slog.Error("setup update stream closed before chat contact")
+		return
+	}
+	chatIDStr := strconv.FormatInt(chatID, 10)
+	cfg, err = config.UpdateConfig(configPath, func(current *config.Config) error {
+		if current.Setup.TelegramChatID == nil {
+			current.Setup.TelegramChatID = &chatIDStr
+		} else if *current.Setup.TelegramChatID != chatIDStr {
+			return fmt.Errorf("saved setup chat changed while waiting for contact")
+		}
+		return nil
+	})
 	if err != nil {
-		slog.Error("loading config", "err", err)
+		slog.Error("saving setup chat", "err", err)
 		return
 	}
 	_, credentialsErr := os.Stat(serviceAccountPath)
@@ -68,12 +90,6 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		cfg.Setup.PokerStarsScreenName != nil || cfg.Paths.HandHistory != nil ||
 		cfg.Paths.TournamentSummary != nil || credentialsErr == nil
 
-	chatIDStr := strconv.FormatInt(chatID, 10)
-	cfg.Setup.TelegramChatID = &chatIDStr
-	if err := config.SaveConfig(configPath, cfg); err != nil {
-		slog.Error("saving config", "err", err)
-		return
-	}
 	if isUpgrade {
 		send(tgBot, chatID, "Welcome back! I found your existing configuration — I'll only ask about what's missing.")
 	} else {
@@ -302,7 +318,7 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 			return "", fmt.Errorf("parsing telegram chat id: %w", err)
 		}
 	} else {
-		chatID = waitForFirstMessage(updates)
+		chatID = waitForFirstMessage(updates, 0)
 		chatIDStr := strconv.FormatInt(chatID, 10)
 		cfg.Setup.TelegramChatID = &chatIDStr
 		if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -339,10 +355,11 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 }
 
 // waitForFirstMessage blocks until the first text message arrives on
-// updates and returns its sender's chat ID.
-func waitForFirstMessage(updates tgbotapi.UpdatesChannel) int64 {
+// updates from allowedChatID, or any chat when it is zero, and returns its ID.
+func waitForFirstMessage(updates tgbotapi.UpdatesChannel, allowedChatID int64) int64 {
 	for update := range updates {
-		if update.Message == nil || update.Message.Text == "" {
+		if update.Message == nil || update.Message.Chat == nil || update.Message.Text == "" ||
+			allowedChatID != 0 && update.Message.Chat.ID != allowedChatID {
 			continue
 		}
 		return update.Message.Chat.ID
