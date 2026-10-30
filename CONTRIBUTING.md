@@ -122,6 +122,13 @@ go test ./internal/parsers/...      # one package
   field without letting older acknowledgements retire newer revisions; preserve
   unacknowledged revisions across restart. Failed validation waits for a corrected
   edit. Never report disconnection as successful application.
+- Linux installer upgrades stage beside the destination and rename atomically;
+  never copy over a running executable. Re-registering the user unit must restart
+  that exact installation identity, including when it is already enabled/running.
+  Fresh Linux Sheets selection bootstraps SQLite so Telegram credential upload
+  and verified migration are available. Setup cannot silently replace an existing
+  backend selection. Verify with disposable user units; do not change global linger
+  settings as a side effect of tests.
 - Both modes use the collector-owned watcher lifecycle: prepare a replacement
   paused, stop/drain accepted old events using the old screen name, save only
   collector fields, then activate and acknowledge. Failed replacement restores

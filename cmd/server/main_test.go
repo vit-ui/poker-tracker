@@ -1,6 +1,8 @@
 package main
 
 import (
+	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -23,8 +25,9 @@ func deref(s *string) string {
 // re-install-preserve paths are covered (they never reach the interactive
 // chooseBackend); the terminal/dialog prompt stays manually verified.
 func TestApplyStorageChoice(t *testing.T) {
-	// p is never invoked on any path this test drives (each returns before
-	// chooseBackend), but applyStorageChoice requires a non-nil Prompter.
+	// Prompts are not needed for flag choices; Linux Sheets reports its bootstrap.
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
 	p := uiprompt.New()
 
 	preset := func(backend string) *config.Config {
@@ -76,6 +79,9 @@ func TestApplyStorageChoice(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
+		if runtime.GOOS == "linux" && c.backend == "sheets" {
+			c.wantBackend = "sqlite"
+		}
 		t.Run(c.name, func(t *testing.T) {
 			applyStorageChoice(c.cfg, p, c.backend, c.sheetName, c.sheetID)
 			if got := deref(c.cfg.Setup.StorageBackend); got != c.wantBackend {
@@ -88,5 +94,18 @@ func TestApplyStorageChoice(t *testing.T) {
 				t.Errorf("GoogleSheetID = %q, want %q", got, c.wantID)
 			}
 		})
+	}
+}
+
+func TestSetupChoiceCannotSwitchConfiguredStorage(t *testing.T) {
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	name, token, screen, backend := "Existing sheet", "pairing-identity", "Hero", "sqlite"
+	hour, enabled := 9, false
+	cfg := config.Config{Setup: config.Setup{StorageBackend: &backend, GoogleSheetName: &name, PairToken: &token, PokerStarsScreenName: &screen}, Schedule: config.Schedule{DayStartHour: &hour}, Notifications: config.Notifications{StakeChange: &enabled}}
+	before := cfg
+	applyStorageChoice(&cfg, uiprompt.New(), "sheets", "New sheet", "new-id")
+	if !reflect.DeepEqual(before, cfg) {
+		t.Fatalf("setup changed configured installation: %+v", cfg)
 	}
 }

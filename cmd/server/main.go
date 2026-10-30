@@ -230,8 +230,14 @@ func runSetup(backend, sheetName, sheetID string) {
 // backend keeps it — LoadConfig read the existing config, so a re-run preserves
 // the backend and the pairing token rather than resetting them.
 func applyStorageChoice(cfg *config.Config, p *uiprompt.Prompter, backend, sheetName, sheetID string) {
+	if cfg.Setup.StorageBackend != nil {
+		return
+	}
 	if backend == "sqlite" || backend == "sheets" {
 		b := backend
+		if backend == "sheets" && runtime.GOOS == "linux" {
+			b = sheetsBootstrap(p)
+		}
 		cfg.Setup.StorageBackend = &b
 		if backend == "sheets" {
 			if sheetName != "" {
@@ -256,7 +262,7 @@ func applyStorageChoice(cfg *config.Config, p *uiprompt.Prompter, backend, sheet
 // they'd rather set storage here, they pick SQLite or Google Sheets; Sheets is
 // finished from Telegram since it needs the sheet shared and the key uploaded.
 func chooseBackend(p *uiprompt.Prompter) *string {
-	sqlite, sheets := "sqlite", "sheets"
+	sqlite := "sqlite"
 	// Skip the prompt only on Windows: there the server is set up by the Inno
 	// installer, which runs this in a hidden console with no interactive stdin,
 	// so a terminal-mode read could block the installer — default to SQLite
@@ -274,15 +280,21 @@ func chooseBackend(p *uiprompt.Prompter) *string {
 		return &sqlite
 	}
 	pick, err := p.Choose("Storage backend", "Where should your poker data live?",
-		[]string{"A local file on this server (SQLite)", "Google Sheets"})
+		[]string{"A local file on this server (SQLite)", "Google Sheets (finish in Telegram)"})
 	if err == nil && strings.Contains(pick, "Sheets") {
-		p.Info("Google Sheets",
-			"Storage set to Google Sheets. Finish connecting the sheet from Telegram: "+
-				"message your bot and send /storage — it walks you through sharing the "+
-				"sheet with the service account and uploading the key.")
-		return &sheets
+		bootstrap := sheetsBootstrap(p)
+		return &bootstrap
 	}
 	return &sqlite
+}
+
+func sheetsBootstrap(p *uiprompt.Prompter) string {
+	p.Info("Google Sheets setup",
+		"The server will start with a working local SQLite database so the bot is available. "+
+			"Then use /storage sheets <sheet name or URL> in Telegram: upload the service-account key when asked, "+
+			"share an empty sheet with that account as Editor, and confirm the verified migration. "+
+			"The poker PC must be connected, with PokerStars closed, for the migration.")
+	return "sqlite"
 }
 
 func runPair() {

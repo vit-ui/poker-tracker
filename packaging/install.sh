@@ -26,8 +26,14 @@ fi
 
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/poker-tracker"
 mkdir -p "$DEST"
-cp "$BIN" "$DEST/tracker-server"
-chmod +x "$DEST/tracker-server"
+# Replacing a running executable in place fails with ETXTBSY. Stage on the same
+# filesystem, then rename so the old process keeps its inode until restart.
+STAGED_SERVER="$(mktemp "$DEST/.tracker-server.XXXXXX")"
+trap 'rm -f "$STAGED_SERVER"' 0
+trap 'exit 1' HUP INT TERM
+cp "$BIN" "$STAGED_SERVER"
+chmod +x "$STAGED_SERVER"
+mv -f "$STAGED_SERVER" "$DEST/tracker-server"
 
 echo "Installed the Poker Tracker server to $DEST/tracker-server"
 echo
@@ -37,7 +43,7 @@ echo
 # terminal on a headless box.
 "$DEST/tracker-server" --setup
 
-# Register the per-user systemd service (no root) and offer to enable start-on-boot.
+# Register/restart the intended per-user service and offer start-on-boot.
 "$DEST/tracker-server" --install
 
 echo

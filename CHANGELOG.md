@@ -8,6 +8,11 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Linux upgrades stage and atomically replace running executables, then restart
+  the intended user service. Setup preserves a configured backend; fresh Linux
+  Sheets choices start on SQLite so credentials and verified migration can be
+  completed through the working bot.
+
 - Server limits and schedules save while the poker PC is offline. Folder and
   screen-name edits queue durably and require PC validation and acknowledgement;
   replies explain why the PC must apply them. Newer edits survive older replies

@@ -53,7 +53,8 @@ WantedBy=default.target
 	}
 	for _, args := range [][]string{
 		{"--user", "daemon-reload"},
-		{"--user", "enable", "--now", serviceName},
+		{"--user", "enable", serviceName},
+		{"--user", "restart", serviceName},
 	} {
 		cmd := exec.Command("systemctl", args...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
