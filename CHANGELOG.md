@@ -8,6 +8,11 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Windows upgrades preserve notification modes, enabled flags, pairing settings
+  and saved collector values across manual and Telegram setup paths. Existing
+  config survives Telegram preseeding, and silent server setup honors message-box
+  suppression instead of waiting at its completion dialog.
+
 - Telegram reinstalls keep the saved chat ID and wait for contact from that chat;
   another sender cannot redirect setup. Fresh installs still detect their chat
   from the first message. Settings changed while setup waits are retained.

@@ -139,7 +139,8 @@ var
   // path both running RunTelegramSetup for the same visit to PageWaiting —
   // see CurPageChanged and the PageWaiting branch of NextButtonClick.
   TelegramSetupDone: Boolean;
-  // Raw text of {app}\config.json, read once at wizard startup — '' means
+  // Raw text of {app}\config.json, read at startup and refreshed after stopping
+  // the previous process before writing — '' means
   // no existing install (fresh install: behave exactly as before). The
   // four config-field booleans are computed from it once and drive both
   // ShouldSkipPage (skip a page whose field is already configured) and
@@ -429,7 +430,7 @@ end;
 // skipped (already set) — the two don't skip together.
 function CurrentScreenName(): String;
 begin
-  if ScreenNameAlreadySet then
+  if ScreenNameAlreadySet and not IsClientMode() then
     Result := JSONExtractStringValue(ExistingConfigJSON, 'pokerstars_screen_name')
   else
     Result := PageScreenName.Values[0];
@@ -455,6 +456,18 @@ begin
   if Role = 'client' then PageRole.SelectedValueIndex := 1
   else if Role = 'server' then PageRole.SelectedValueIndex := 2
   else if Role = 'combined' then PageRole.SelectedValueIndex := 0;
+
+  Answer := ExpandConstant('{param:TESTMETHOD|}');
+  if Answer = 'telegram' then
+  begin
+    PageMethod.SelectedValueIndex := 0;
+    UsingTelegram := True;
+  end
+  else if Answer = 'manual' then
+  begin
+    PageMethod.SelectedValueIndex := 1;
+    UsingTelegram := False;
+  end;
 
   ServerMethod := ExpandConstant('{param:TESTSERVERMETHOD|}');
   if ServerMethod = 'telegram' then
@@ -619,6 +632,7 @@ begin
     'Paste the connection string your server printed',
     'Your server printed a line starting with tracker:// when you ran its setup. Paste the whole line.');
   PageConnection.Add('Connection string:', False);
+  PageConnection.Values[0] := JSONExtractStringValue(ExistingConfigJSON, 'connection_string');
 
   // Run-a-server only (ShouldSkipPage): the same choice the Linux server offers
   // in chooseBackend — defer storage/alerts/rules to Telegram (defaults SQLite,
@@ -677,6 +691,7 @@ begin
     'Enter your PokerStars screen name',
     'Exact capitalisation matters.');
   PageScreenName.Add('PokerStars screen name:', False);
+  PageScreenName.Values[0] := JSONExtractStringValue(ExistingConfigJSON, 'pokerstars_screen_name');
 
   PageHandHistoryDir := CreateInputDirPage(PageScreenName.ID,
     'Hand History Folder',
@@ -684,6 +699,7 @@ begin
     'Do NOT browse into your screen name''s subfolder underneath it — that part is added automatically.',
     False, '');
   PageHandHistoryDir.Add('Parent HandHistory folder:');
+  PageHandHistoryDir.Values[0] := JSONExtractStringValue(ExistingConfigJSON, 'hand_history');
 
   PageTournamentDir := CreateInputDirPage(PageHandHistoryDir.ID,
     'Tournament Summary Folder',
@@ -691,6 +707,7 @@ begin
     'Do NOT browse into your screen name''s subfolder underneath it — that part is added automatically.',
     False, '');
   PageTournamentDir.Add('Parent TournamentSummaries folder:');
+  PageTournamentDir.Values[0] := JSONExtractStringValue(ExistingConfigJSON, 'tournament_summary');
 
   // Inert unless the local installer test passes TEST* params; see ApplyTestAnswers.
   ApplyTestAnswers();
@@ -858,13 +875,13 @@ end;
 // already-set, the matching raw fragment out of ExistingConfigJSON. This is
 // what makes a rerun over a complete install a no-op write: every fragment
 // passed in is just the existing file's own content, copied back unchanged.
-// AlertsBlock/HardstopBlock/ScheduleBlock are always preserved-or-default
-// this way, never collected — no wizard page asks about them.
+// Threshold/schedule objects, notifications, and pairing identity are preserved
+// from Existing; no wizard page collects these operational preferences.
 // StorageBackendRaw sits second, matching config.Config's field order
 // (internal/config/config.go: telegram_chat_id, storage_backend,
 // google_sheet_id, google_sheet_name, pokerstars_screen_name).
-function BuildConfigJSON(const TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
-  HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String): String;
+function BuildConfigJSON(const Existing, TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
+  HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock, ConnectionStringRaw: String): String;
 begin
   Result :=
     '{' + #13#10 +
@@ -873,7 +890,9 @@ begin
     '    "storage_backend": ' + StorageBackendRaw + ',' + #13#10 +
     '    "google_sheet_id": ' + SheetIDRaw + ',' + #13#10 +
     '    "google_sheet_name": ' + SheetNameRaw + ',' + #13#10 +
-    '    "pokerstars_screen_name": ' + ScreenNameRaw + #13#10 +
+    '    "pokerstars_screen_name": ' + ScreenNameRaw + ',' + #13#10 +
+    '    "connection_string": ' + ConnectionStringRaw + ',' + #13#10 +
+    '    "pair_token": ' + JSONFieldRaw(Existing, 'pair_token') + #13#10 +
     '  },' + #13#10 +
     '  "paths": {' + #13#10 +
     '    "hand_history": ' + HandHistoryRaw + ',' + #13#10 +
@@ -881,7 +900,8 @@ begin
     '  },' + #13#10 +
     '  "alerts": ' + AlertsBlock + ',' + #13#10 +
     '  "hardstop": ' + HardstopBlock + ',' + #13#10 +
-    '  "schedule": ' + ScheduleBlock + #13#10 +
+    '  "schedule": ' + ScheduleBlock + ',' + #13#10 +
+    '  "notifications": ' + PreservedObjectOrDefault(Existing, 'notifications', '{}') + #13#10 +
     '}' + #13#10;
 end;
 
@@ -924,32 +944,18 @@ begin
     '  }';
 end;
 
-// BuildClientConfigJSON writes the split client's config.json: the connection
-// string, screen name, and the two base folders it needs, with everything the
-// server owns (telegram, storage backend, sheet, pair token) left null. Alerts,
-// hard stop, and schedule are the same all-null default blocks — the client
-// enforces the locks the server decides but configures none of them itself.
-function BuildClientConfigJSON(const ConnectionStringRaw, ScreenNameRaw, HandHistoryRaw, TournamentRaw: String): String;
+// Collector upgrades retain the complete existing configuration while replacing
+// only fields collected by this wizard. Fresh installs leave server fields null.
+function BuildClientConfigJSON(const Existing, ConnectionStringRaw, ScreenNameRaw, HandHistoryRaw, TournamentRaw: String): String;
 begin
-  Result :=
-    '{' + #13#10 +
-    '  "setup": {' + #13#10 +
-    '    "telegram_chat_id": null,' + #13#10 +
-    '    "storage_backend": null,' + #13#10 +
-    '    "google_sheet_id": null,' + #13#10 +
-    '    "google_sheet_name": null,' + #13#10 +
-    '    "pokerstars_screen_name": ' + ScreenNameRaw + ',' + #13#10 +
-    '    "connection_string": ' + ConnectionStringRaw + ',' + #13#10 +
-    '    "pair_token": null' + #13#10 +
-    '  },' + #13#10 +
-    '  "paths": {' + #13#10 +
-    '    "hand_history": ' + HandHistoryRaw + ',' + #13#10 +
-    '    "tournament_summary": ' + TournamentRaw + #13#10 +
-    '  },' + #13#10 +
-    '  "alerts": ' + DefaultAlertsBlock() + ',' + #13#10 +
-    '  "hardstop": ' + DefaultHardstopBlock() + ',' + #13#10 +
-    '  "schedule": ' + DefaultScheduleBlock() + #13#10 +
-    '}' + #13#10;
+  Result := BuildConfigJSON(Existing,
+    JSONFieldRaw(Existing, 'telegram_chat_id'),
+    JSONFieldRaw(Existing, 'storage_backend'),
+    JSONFieldRaw(Existing, 'google_sheet_name'),
+    JSONFieldRaw(Existing, 'google_sheet_id'), ScreenNameRaw, HandHistoryRaw, TournamentRaw,
+    PreservedObjectOrDefault(Existing, 'alerts', DefaultAlertsBlock()),
+    PreservedObjectOrDefault(Existing, 'hardstop', DefaultHardstopBlock()),
+    PreservedObjectOrDefault(Existing, 'schedule', DefaultScheduleBlock()), ConnectionStringRaw);
 end;
 
 // UTF16Bytes converts S to raw UTF-16LE bytes with a leading byte-order
@@ -1117,54 +1123,17 @@ end;
 // backend page (ShouldSkipPage) and bot.RunSetup asks the backend itself — it
 // prompts whenever the field is null (internal/bot/setup.go). So this leaves
 // storage_backend null on a fresh config and preserves whatever is on disk for
-// an existing one. Two cases:
-//
-// - config.json doesn't exist yet (fresh install): write an all-null stub so
-//   --setup has a file to start from; the bot fills in the backend and the rest.
-// - config.json already exists: rebuild it field by field via the same
-//   JSONFieldRaw/PreservedObjectOrDefault/BuildConfigJSON combination
-//   CurStepChanged's manual path uses, splicing every field — including
-//   storage_backend — back byte-for-byte. Covers an upgrade (a working
-//   sheet/screen-name/paths setup) and a retried RunTelegramSetup
-//   (CurPageChanged's automatic attempt failed, the player clicks Next on
-//   PageWaiting again) — by then --setup's first, failed run may already have
-//   written real progress (backend, chat ID, sheet, screen name) that must
-//   survive; a still-null backend stays null so the bot asks.
-//
-// Reads config.json fresh off disk (Existing) rather than the global
-// ExistingConfigJSON, which is a one-time snapshot taken before the wizard
-// even started and would miss exactly the retried-setup case above.
+// an existing one. Existing bytes are left intact; the Go setup owns field
+// updates and reads the latest progress on every retry. Only a fresh install
+// needs a default stub before setup begins.
 procedure WritePreSeedConfig();
-var
-  Backend, Existing: String;
-  TelegramChatIDRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw: String;
-  HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock: String;
 begin
-  Existing := ReadFileAsString(ExpandConstant('{app}\config.json'));
-  if Existing = '' then
-  begin
-    SaveStringToFile(ExpandConstant('{app}\config.json'),
-      BuildConfigJSON('null', 'null', 'null', 'null', 'null', 'null', 'null',
-        DefaultAlertsBlock(), DefaultHardstopBlock(), DefaultScheduleBlock()),
-      False);
+  if FileExists(ExpandConstant('{app}\config.json')) then
     Exit;
-  end;
-
-  Backend := JSONFieldRaw(Existing, 'storage_backend');
-  TelegramChatIDRaw := JSONFieldRaw(Existing, 'telegram_chat_id');
-  SheetNameRaw := JSONFieldRaw(Existing, 'google_sheet_name');
-  SheetIDRaw := JSONFieldRaw(Existing, 'google_sheet_id');
-  ScreenNameRaw := JSONFieldRaw(Existing, 'pokerstars_screen_name');
-  HandHistoryRaw := JSONFieldRaw(Existing, 'hand_history');
-  TournamentRaw := JSONFieldRaw(Existing, 'tournament_summary');
-  AlertsBlock := PreservedObjectOrDefault(Existing, 'alerts', DefaultAlertsBlock());
-  HardstopBlock := PreservedObjectOrDefault(Existing, 'hardstop', DefaultHardstopBlock());
-  ScheduleBlock := PreservedObjectOrDefault(Existing, 'schedule', DefaultScheduleBlock());
-
-  SaveStringToFile(ExpandConstant('{app}\config.json'),
-    BuildConfigJSON(TelegramChatIDRaw, Backend, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
-      HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock),
-    False);
+  if not SaveStringToFile(ExpandConstant('{app}\config.json'),
+    BuildConfigJSON('', 'null', 'null', 'null', 'null', 'null', 'null', 'null',
+      DefaultAlertsBlock(), DefaultHardstopBlock(), DefaultScheduleBlock(), 'null'), False) then
+    RaiseException('Could not create this installation''s configuration.');
 end;
 
 // RunTelegramSetup runs tracker.exe --setup from {app} — PreInstallFiles
@@ -1411,12 +1380,12 @@ begin
     DeleteFile(ConnPath);
   end;
   if Conn <> '' then
-    MsgBox('Your Poker Tracker server is installed and running.' + #13#10 + #13#10 +
+    SuppressibleMsgBox('Your Poker Tracker server is installed and running.' + #13#10 + #13#10 +
       'Pair your poker PC by choosing "Connect to a server" in its installer and pasting this:'
-      + #13#10 + #13#10 + Conn, mbInformation, MB_OK)
+      + #13#10 + #13#10 + Conn, mbInformation, MB_OK, IDOK)
   else
-    MsgBox('Your Poker Tracker server is installed and running. To get the pairing line, run ' +
-      'tracker-server.exe --pair in ' + ExpandConstant('{app}') + '.', mbInformation, MB_OK);
+    SuppressibleMsgBox('Your Poker Tracker server is installed and running. To get the pairing line, run ' +
+      'tracker-server.exe --pair in ' + ExpandConstant('{app}') + '.', mbInformation, MB_OK, IDOK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -1430,6 +1399,7 @@ begin
     StopInstallation();
   if CurStep = ssPostInstall then
   begin
+    ExistingConfigJSON := ReadFileAsString(ExpandConstant('{app}\config.json'));
     // Connect-to-server: the client binary is already installed as tracker.exe
     // ([Files] Check: IsClientMode). Write its config (connection string +
     // paths + screen name; everything the server owns stays null) and register
@@ -1439,7 +1409,7 @@ begin
     if IsClientMode() then
     begin
       SaveStringToFile(ExpandConstant('{app}\config.json'),
-        BuildClientConfigJSON(
+        BuildClientConfigJSON(ExistingConfigJSON,
           '"' + JSONEscape(PageConnection.Values[0]) + '"',
           '"' + JSONEscape(PageScreenName.Values[0]) + '"',
           '"' + JSONEscape(PageHandHistoryDir.Values[0]) + '"',
@@ -1461,6 +1431,12 @@ begin
     // RunTelegramSetup); the only time it matters is manual setup, where
     // this is the first and only time it runs.
     PreInstallFiles();
+    if UsingTelegram and not TelegramSetupDone then
+    begin
+      if not RunTelegramSetup() then
+        RaiseException('Telegram setup did not finish. Existing installation files have been kept.');
+      TelegramSetupDone := True;
+    end;
     if not UsingTelegram then
     begin
       // Never asked by this wizard — always carried over from the
@@ -1517,8 +1493,9 @@ begin
       ScheduleBlock := PreservedObjectOrDefault(ExistingConfigJSON, 'schedule', DefaultScheduleBlock());
 
       SaveStringToFile(ExpandConstant('{app}\config.json'),
-        BuildConfigJSON(TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
-          HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock),
+        BuildConfigJSON(ExistingConfigJSON, TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
+          HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock,
+          JSONFieldRaw(ExistingConfigJSON, 'connection_string')),
         False);
       RegisterScheduledTask();
     end

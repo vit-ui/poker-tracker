@@ -125,6 +125,11 @@ go test ./internal/parsers/...      # one package
   field without letting older acknowledgements retire newer revisions; preserve
   unacknowledged revisions across restart. Failed validation waits for a corrected
   edit. Never report disconnection as successful application.
+- Windows installer writes must preserve every config field, including raw
+  notification/threshold flag objects and pairing settings. Telegram preseeding
+  must leave an existing config intact; collector pages start from saved values.
+  Extend the ignored native role/upgrade checks when config fields change. Keep
+  ordinary interactive pairing dialogs while honoring silent suppression flags.
 - Linux installer upgrades stage beside the destination and rename atomically;
   never copy over a running executable. Re-registering the user unit must restart
   that exact installation identity, including when it is already enabled/running.

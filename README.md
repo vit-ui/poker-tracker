@@ -21,6 +21,9 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 
 Telegram setup keeps your saved chat during reinstall and waits for a message from that chat. Messages from other chats cannot replace it. A fresh install still identifies your chat from the first message.
 
+Windows upgrades keep saved preferences, credentials, pairing identity, history and pending cash/questions. Existing collector values are prefilled rather than replaced with empty answers. Unattended server setup respects `/SUPPRESSMSGBOXES`; interactive setup still displays its pairing information.
+
+
 Download **`PokerTracker-Setup.exe`** from [Releases](../../releases) and run it — one installer for every PC (it detects your CPU, Intel/AMD or ARM, and installs the right build; there's no separate download to pick). The installer first asks **how you'd like to set up**:
 
 - **Telegram (recommended)** — the installer launches the bot and you finish setup by chatting with it, **including choosing where your data lives**.
