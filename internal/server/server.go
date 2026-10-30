@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,6 +20,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -96,8 +96,13 @@ type Server struct {
 	// Upload.ClientClock.Location(): over the network the client's UTC offset
 	// survives the RFC3339 JSON round-trip as a fixed zone; in-process it's the
 	// client's actual time.Local.
-	clockMu   sync.Mutex
-	clientLoc *time.Location
+	clockMu                 sync.Mutex
+	clientLoc               *time.Location
+	lockMu                  sync.Mutex
+	collectorLock           *config.LockFile
+	collectorLockKnown      bool
+	collectorLockError      string
+	collectorLockConnection <-chan struct{}
 }
 
 // NewServer creates a Server with a fresh working directory for reconstructed
@@ -250,6 +255,14 @@ func (s *Server) Run() error {
 		return err
 	}
 	sentLocks := make(map[string]bool)
+	var confirmedLock *config.LockFile
+	for _, entry := range deliveries {
+		if lock := entry.EffectiveLock; entry.Confirmed && lock != nil && lock.ExpiresAt.After(time.Now()) && (confirmedLock == nil || lock.ExpiresAt.After(confirmedLock.ExpiresAt)) {
+			copy := *lock
+			confirmedLock = &copy
+		}
+	}
+	restoredLockSent := false
 	lockFailures := make(map[string]bool)
 	deliveriesDirty := false
 	saveDeliveries := func() error {
@@ -370,6 +383,7 @@ func (s *Server) Run() error {
 		var release <-chan struct{}
 		var commands chan<- transport.Command
 		var command transport.Command
+		restoringLock := false
 		var disconnected <-chan struct{}
 		if heldOperation == nil {
 			uploads = s.link.Uploads
@@ -390,6 +404,12 @@ func (s *Server) Run() error {
 		select {
 		case <-s.link.CollectorDone():
 		default:
+			if confirmedLock != nil && confirmedLock.ExpiresAt.After(time.Now()) && !restoredLockSent {
+				copy := *confirmedLock
+				commands = s.link.Commands
+				command = transport.Command{Kind: transport.CommandLock, Lock: &copy}
+				restoringLock = true
+			}
 			ids := make([]string, 0)
 			for id, entry := range deliveries {
 				if !entry.Confirmed && !sentLocks[id] {
@@ -401,6 +421,7 @@ func (s *Server) Run() error {
 				lock := deliveries[ids[0]].Lock
 				commands = s.link.Commands
 				command = transport.Command{Kind: transport.CommandLock, Lock: &lock}
+				restoringLock = false
 			}
 		}
 		var resync chan<- transport.Command
@@ -421,6 +442,7 @@ func (s *Server) Run() error {
 		select {
 		case <-s.link.ConnectionChanged:
 			sentLocks = make(map[string]bool)
+			restoredLockSent = false
 			resyncRequested = false
 			continue
 		case resync <- resyncCommand:
@@ -429,7 +451,11 @@ func (s *Server) Run() error {
 
 		case commands <- command:
 			if command.Kind == transport.CommandLock {
-				sentLocks[command.Lock.TriggerID] = true
+				if restoringLock {
+					restoredLockSent = true
+				} else {
+					sentLocks[command.Lock.TriggerID] = true
+				}
 			} else {
 				pendingCollection.sent = true
 			}
@@ -454,6 +480,7 @@ func (s *Server) Run() error {
 				if operation.RetryHardstops {
 					refreshDeliveries()
 					sentLocks = make(map[string]bool)
+					restoredLockSent = false
 					if deliveriesDirty {
 						if err := saveDeliveries(); err == nil {
 							deliveriesDirty = false
@@ -510,8 +537,18 @@ func (s *Server) Run() error {
 			up = u
 		}
 
+		connection, current := s.link.UploadConnection(up)
+		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil) && !current {
+			continue
+		}
+		if status := up.Status; status != nil {
+			s.updateClock(up.ClientClock)
+			s.observeCollectorLock(status.Lock, status.Error, connection)
+			continue
+		}
 		if reply := up.LockReply; reply != nil {
 			s.updateClock(up.ClientClock)
+			s.observeCollectorLock(reply.Lock, reply.Error, connection)
 			refreshDeliveries()
 			entry, known := deliveries[reply.TriggerID]
 			if !known || entry.Confirmed {
@@ -530,6 +567,7 @@ func (s *Server) Run() error {
 			}
 			previous := entry
 			entry.Confirmed = true
+			entry.EffectiveLock = reply.Lock
 			deliveries[reply.TriggerID] = entry
 			if err := saveDeliveries(); err != nil {
 				deliveries[reply.TriggerID] = previous
@@ -538,6 +576,13 @@ func (s *Server) Run() error {
 				continue
 			}
 			deliveriesDirty = false
+			if lock := reply.Lock; lock != nil && (confirmedLock == nil || lock.ExpiresAt.After(confirmedLock.ExpiresAt)) {
+				copy := *lock
+				confirmedLock = &copy
+			}
+			if reply.Lock != nil && confirmedLock != nil && !confirmedLock.ExpiresAt.After(reply.Lock.ExpiresAt) {
+				restoredLockSent = true
+			}
 			if reply.Lock != nil {
 				s.alertChan <- hardstop.LockMessage(*reply.Lock, s.ClientNow().Location())
 			}
@@ -740,9 +785,9 @@ func (s *Server) Run() error {
 				// a hand that doesn't breach costs no store I/O. The session isn't
 				// written yet, so the live bankroll is the stored (prior) bankroll
 				// plus this session's in-memory net.
-				bot.EvaluateSessionLossAlert(*session, &evalCfg, func() float64 {
-					prior, _ := s.store.GetCurrentBankroll()
-					return prior + session.NetUSD
+				bot.EvaluateSessionLossAlert(*session, &evalCfg, func() money.Cents {
+					priorCents, _ := s.store.GetCurrentBankroll()
+					return priorCents + session.NetCents
 				}, s.alertChan)
 
 				// Remember the latest parse for this table and (re)arm its
@@ -759,7 +804,7 @@ func (s *Server) Run() error {
 				armCashSessionEnd(summaryTimers, up.FileID, remainingCashQuiet(s.QuietPeriod, lastActivity, time.Now()), sessionEndChan, workerDone)
 			} else if tourneyStats != nil {
 				before := sheetsPending(s.store)
-				if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
+				if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyCents, tourneyStats.IsKnockout); err != nil {
 					recordDrainFailure(err)
 					slog.Error("updating tournament hand stats", "err", err, "tournament_id", tourneyStats.TournamentID)
 					if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
@@ -809,7 +854,7 @@ func (s *Server) Run() error {
 			switch {
 			case t.LikelySatellite:
 				reason = config.PendingSatellite
-			case t.BuyInUSD == 0:
+			case t.BuyInCents == 0:
 				reason = config.PendingFreerollBuyin
 			}
 			if reason != "" {
@@ -825,7 +870,7 @@ func (s *Server) Run() error {
 			}
 
 			before := sheetsPending(s.store)
-			netUSD, err := s.store.AppendTournament(t)
+			netCents, err := s.store.AppendTournament(t)
 			if err != nil {
 				recordDrainFailure(err)
 				slog.Error("appending tournament to sheets", "err", err,
@@ -841,15 +886,15 @@ func (s *Server) Run() error {
 			// needs the bankroll (its last running total) regardless of what's
 			// configured.
 			ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
-			bankroll := ledgerBankroll(ledger)
+			bankrollCents := ledgerBankroll(ledger)
 			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, evalNow, automaticEnforcement(&evalCfg, evalNow, nil, &t, ledger, dayTournaments, enforce)); err != nil {
 				recordDrainFailure(err)
 				slog.Error("evaluating hard stop", "err", err)
 			}
-			bot.EvaluateDownswingAlert(t.BuyInUSD, &evalCfg, ledger, bankroll, evalNow, s.alertChan)
-			evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, evalNow, s.alertChan, firedAlerts, "tournament:"+t.TournamentID)
-			if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.TournamentSummary), netUSD) {
-				s.alertChan <- tournamentAlertText(t, netUSD, bankroll)
+			bot.EvaluateDownswingAlert(t.BuyInCents, &evalCfg, ledger, bankrollCents, evalNow, s.alertChan)
+			evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankrollCents, evalNow, s.alertChan, firedAlerts, "tournament:"+t.TournamentID)
+			if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.TournamentSummary), netCents) {
+				s.alertChan <- tournamentAlertText(t, netCents, bankrollCents)
 			}
 		}
 	}
@@ -901,21 +946,21 @@ func blipMessage(before, after int) string {
 // daily-loss alert evaluators, each deduped via firedAlerts (per session for the
 // streak, per poker day for the two daily checks) since a cash file fires an
 // event per hand.
-func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, bankroll float64, now time.Time, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
+func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, bankrollCents money.Cents, now time.Time, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
 	if !firedAlerts["streak:"+sessionKey] {
-		if bot.EvaluateLosingStreakAlert(cfg, ledger, bankroll, alertChan) {
+		if bot.EvaluateLosingStreakAlert(cfg, ledger, bankrollCents, alertChan) {
 			firedAlerts["streak:"+sessionKey] = true
 		}
 	}
 
 	dayKey := hardstop.PokerDayStart(cfg, now).Format(time.RFC3339)
 	if !firedAlerts["daily:"+dayKey] {
-		if bot.EvaluateDailyLossAlert(cfg, ledger, bankroll, now, alertChan) {
+		if bot.EvaluateDailyLossAlert(cfg, ledger, bankrollCents, now, alertChan) {
 			firedAlerts["daily:"+dayKey] = true
 		}
 	}
 	if !firedAlerts["spingo_daily:"+dayKey] {
-		if bot.EvaluateSpingoDailyLossAlert(cfg, dayTournaments, bankroll, alertChan) {
+		if bot.EvaluateSpingoDailyLossAlert(cfg, dayTournaments, bankrollCents, alertChan) {
 			firedAlerts["spingo_daily:"+dayKey] = true
 		}
 	}
@@ -933,8 +978,8 @@ func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forceLed
 	a, h := cfg.Alerts, cfg.Hardstop
 	needLedger := forceLedger ||
 		a.SessionLossBuyins != nil || a.DownswingBuyins != nil || a.LosingStreakCount != nil ||
-		a.DailyLossUSD != nil || a.SpingoDailyLossUSD != nil ||
-		h.ConsecutiveLosses != nil || h.DownswingBuyins != nil || h.DailyLossUSD != nil
+		a.DailyLossCents != nil || a.SpingoDailyLossCents != nil ||
+		h.ConsecutiveLosses != nil || h.DownswingBuyins != nil || h.DailyLossCents != nil
 	if needLedger {
 		var err error
 		ledger, err = sc.GetLedgerEntriesSince(time.Time{})
@@ -942,7 +987,7 @@ func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forceLed
 			slog.Error("reading bankroll ledger for alert evaluation", "err", err)
 		}
 	}
-	if a.SpingoDailyLossUSD != nil || h.SpingoDailyLossUSD != nil {
+	if a.SpingoDailyLossCents != nil || h.SpingoDailyLossCents != nil {
 		var err error
 		dayTournaments, err = sc.GetTournamentsSince(hardstop.PokerDayStart(cfg, now))
 		if err != nil {
@@ -957,11 +1002,11 @@ func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forceLed
 // storage.Store.GetCurrentBankroll reads, without a second store call. 0 for an
 // empty (or unfetched) ledger, matching GetCurrentBankroll's empty-ledger
 // behavior.
-func ledgerBankroll(ledger []storage.LedgerEntry) float64 {
+func ledgerBankroll(ledger []storage.LedgerEntry) money.Cents {
 	if len(ledger) == 0 {
 		return 0
 	}
-	return ledger[len(ledger)-1].RunningTotal
+	return ledger[len(ledger)-1].RunningTotalCents
 }
 
 // tournamentAlreadyHandled reports whether tournament t has already been queued
@@ -1038,7 +1083,7 @@ func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournam
 		// reproduce (a satellite answered "used a ticket", or a freeroll whose
 		// file never carries a buy-in). In either case fall back to finish +
 		// field size (ignore buy-in).
-		if recorded.BuyInUSD == 0 || t.BuyInUSD == 0 {
+		if recorded.BuyInCents == 0 || t.BuyInCents == 0 {
 			return t.FinishPos == recorded.FinishPos && t.TotalPlayers == recorded.TotalPlayers, -1
 		}
 		return sameTournamentContent(t, recorded), -1
@@ -1052,7 +1097,7 @@ func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournam
 // buy-in is a sum, and the sheets backend's number round-trip is not guaranteed
 // to preserve the last bit.
 func sameTournamentContent(a, b parsers.Tournament) bool {
-	return math.Abs(a.BuyInUSD-b.BuyInUSD) < 0.005 &&
+	return a.BuyInCents == b.BuyInCents &&
 		a.FinishPos == b.FinishPos &&
 		a.TotalPlayers == b.TotalPlayers
 }
@@ -1142,11 +1187,11 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 	// bankroll regardless of what alerts/hard stops are configured. The fetch is
 	// after the write, so the ledger includes the session just recorded.
 	ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
-	bankroll := ledgerBankroll(ledger)
+	bankrollCents := ledgerBankroll(ledger)
 	if err := hardstop.Evaluate(session, &evalCfg, ledger, dayTournaments, evalNow, automaticEnforcement(&evalCfg, evalNow, &session, nil, ledger, dayTournaments, enforce)); err != nil {
 		slog.Error("evaluating hard stop", "err", err)
 	}
-	bot.EvaluateDownswingAlert(session.BuyInUSD, &evalCfg, ledger, bankroll, evalNow, s.alertChan)
+	bot.EvaluateDownswingAlert(session.BuyInCents, &evalCfg, ledger, bankrollCents, evalNow, s.alertChan)
 	sessionKey := "cash:" + session.FirstHandID
 	if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
 		if err := bot.EvaluateStakeChangeAlert(session, s.store, s.alertChan); err != nil {
@@ -1157,12 +1202,12 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 			firedAlerts["stake:"+sessionKey] = true
 		}
 	}
-	evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankroll, evalNow, s.alertChan, firedAlerts, sessionKey)
+	evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankrollCents, evalNow, s.alertChan, firedAlerts, sessionKey)
 
 	// Post-session summary, gated by its notification mode against the final
 	// net (raw cfg — the effective copy blanks thresholds, not notifications).
-	if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.CashSessionSummary), session.NetUSD) {
-		s.alertChan <- cashSessionSummaryText(session, bankroll)
+	if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.CashSessionSummary), session.NetCents) {
+		s.alertChan <- cashSessionSummaryText(session, bankrollCents)
 	}
 	return nil
 }
@@ -1198,7 +1243,7 @@ func (s *Server) importUpload(path string, up transport.Upload, screenName strin
 			}
 			tally.cash++
 		case tourneyStats != nil:
-			if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyUSD, tourneyStats.IsKnockout); err != nil {
+			if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyCents, tourneyStats.IsKnockout); err != nil {
 				slog.Error("import: updating tournament hand stats", "tournament_id", tourneyStats.TournamentID, "err", err)
 				return err
 			}
@@ -1213,7 +1258,7 @@ func (s *Server) importUpload(path string, up transport.Upload, screenName strin
 		// recording them without the answer would corrupt bankroll (a ticket
 		// counted as cash) or store a wrong zero buy-in. Skipping also protects
 		// any already-answered row from being clobbered on a re-scan.
-		if t.LikelySatellite || t.BuyInUSD == 0 {
+		if t.LikelySatellite || t.BuyInCents == 0 {
 			tally.skipped++
 			return nil
 		}
@@ -1239,26 +1284,22 @@ func importReport(t importTally) string {
 // tournamentAlertText formats the post-tournament summary alert. When the
 // summary reports re-entries, a trailing line makes clear this is a re-entry
 // bust and supersedes the earlier alert for the same tournament.
-func tournamentAlertText(t parsers.Tournament, netUSD, bankroll float64) string {
+func tournamentAlertText(t parsers.Tournament, netCents, bankrollCents money.Cents) string {
 	var msg string
 	if t.BaseType() == "spingo" {
-		msg = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%.2f\nPrize pool: %s\nFinish: %s\nNet: %s\nBankroll: $%.2f",
-			t.BuyInUSD, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), bot.FormatSignedUSD(netUSD), bankroll)
+		msg = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%s\nPrize pool: %s\nFinish: %s\nNet: %s\nBankroll: $%s", t.BuyInCents, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), bot.FormatSignedUSD(netCents), bankrollCents)
 	} else {
-		msg = fmt.Sprintf("🏆 MTT\nBuy-in: $%.2f\nFinish: %s / %d\nNet: %s\nBankroll: $%.2f",
-			t.BuyInUSD, bot.Ordinal(t.FinishPos), t.TotalPlayers, bot.FormatSignedUSD(netUSD), bankroll)
+		msg = fmt.Sprintf("🏆 MTT\nBuy-in: $%s\nFinish: %s / %d\nNet: %s\nBankroll: $%s", t.BuyInCents, bot.Ordinal(t.FinishPos), t.TotalPlayers, bot.FormatSignedUSD(netCents), bankrollCents)
 	}
 	if t.ReEntries > 0 {
-		msg += fmt.Sprintf("\n🔁 Re-entered %d× — %d entries total for this tournament; buy-in and net cover all of them, updating the earlier alert.",
-			t.ReEntries, t.ReEntries+1)
+		msg += fmt.Sprintf("\n🔁 Re-entered %d× — %d entries total for this tournament; buy-in and net cover all of them, updating the earlier alert.", t.ReEntries, t.ReEntries+1)
 	}
 	return msg
 }
 
 // cashSessionSummaryText formats the post-session summary alert.
-func cashSessionSummaryText(session parsers.CashSession, bankroll float64) string {
-	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nBankroll: $%.2f",
-		session.Stake, bot.FormatSignedUSD(session.NetUSD), session.Hands, session.DurationMin, bankroll)
+func cashSessionSummaryText(session parsers.CashSession, bankrollCents money.Cents) string {
+	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nBankroll: $%s", session.Stake, bot.FormatSignedUSD(session.NetCents), session.Hands, session.DurationMin, bankrollCents)
 }
 
 func remainingCashQuiet(quiet time.Duration, lastActivity, now time.Time) time.Duration {

@@ -67,7 +67,7 @@ func TestIsNonCashPrize(t *testing.T) {
 
 // TestParseTournamentFile_TournamentDollarsPayout confirms a T$
 // (Tournament Dollars) payout is treated as non-cash end to end: excluded
-// from NetUSD and flagged as LikelySatellite, the same as a Ticket/Pass
+// from NetCents and flagged as LikelySatellite, the same as a Ticket/Pass
 // payout — even though "T$11.00" starts with a recognizable amount, it's
 // PokerStars' own tournament-only currency, not real cash.
 func TestParseTournamentFile_TournamentDollarsPayout(t *testing.T) {
@@ -84,8 +84,8 @@ Total Prize Pool: $45.00
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
-	if !approxEqual(tourn.NetUSD, -5.50) {
-		t.Errorf("NetUSD = %v, want -5.50 (T$ is not real cash — only the buy-in lost)", tourn.NetUSD)
+	if !approxEqual(tourn.NetCents, -550) {
+		t.Errorf("NetCents = %v, want -5.50 (T$ is not real cash — only the buy-in lost)", tourn.NetCents)
 	}
 	if !tourn.LikelySatellite {
 		t.Error("LikelySatellite = false, want true — hero's own payout is T$ (Tournament Dollars), not cash")
@@ -118,8 +118,8 @@ You finished the tournament (eliminated at hand #261468132892).
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
-	if tourn.PrizePoolUSD != 330.00 {
-		t.Errorf("PrizePoolUSD = %v, want 330.00 (a real cash pool, not the satellite signal)", tourn.PrizePoolUSD)
+	if tourn.PrizePoolCents != 33000 {
+		t.Errorf("PrizePoolCents = %v, want 330.00 (a real cash pool, not the satellite signal)", tourn.PrizePoolCents)
 	}
 	if !tourn.LikelySatellite {
 		t.Error("LikelySatellite = false, want true — the 'Super Satellite' title is the only signal, no row has a non-cash payout")
@@ -190,11 +190,11 @@ Tournament finished 2025/01/15 9:35:12 ET
 	if tourn.Type != "spingo" {
 		t.Errorf("Type = %q, want spingo", tourn.Type)
 	}
-	if !approxEqual(tourn.BuyInUSD, 1.10) {
-		t.Errorf("BuyInUSD = %v, want 1.10", tourn.BuyInUSD)
+	if !approxEqual(tourn.BuyInCents, 110) {
+		t.Errorf("BuyInCents = %v, want 1.10", tourn.BuyInCents)
 	}
-	if !approxEqual(tourn.PrizePoolUSD, 3.00) {
-		t.Errorf("PrizePoolUSD = %v, want 3.00", tourn.PrizePoolUSD)
+	if !approxEqual(tourn.PrizePoolCents, 300) {
+		t.Errorf("PrizePoolCents = %v, want 3.00", tourn.PrizePoolCents)
 	}
 	if tourn.Multiplier == nil {
 		t.Fatal("expected non-nil Multiplier for a 3-player game")
@@ -209,8 +209,8 @@ Tournament finished 2025/01/15 9:35:12 ET
 	if tourn.TotalPlayers != 3 {
 		t.Errorf("TotalPlayers = %d, want 3", tourn.TotalPlayers)
 	}
-	if !approxEqual(tourn.NetUSD, 4.90) {
-		t.Errorf("NetUSD = %v, want 4.90", tourn.NetUSD)
+	if !approxEqual(tourn.NetCents, 490) {
+		t.Errorf("NetCents = %v, want 4.90", tourn.NetCents)
 	}
 	if tourn.LikelySatellite {
 		t.Error("LikelySatellite = true, want false for a cash payout")
@@ -252,8 +252,8 @@ Tournament started 2025/02/01 14:05:00 ET
 	if tourn.TotalPlayers != 9 {
 		t.Errorf("TotalPlayers = %d, want 9", tourn.TotalPlayers)
 	}
-	if !approxEqual(tourn.NetUSD, 2.80) {
-		t.Errorf("NetUSD = %v, want 2.80", tourn.NetUSD)
+	if !approxEqual(tourn.NetCents, 280) {
+		t.Errorf("NetCents = %v, want 2.80", tourn.NetCents)
 	}
 	if !tourn.LikelySatellite {
 		t.Error("LikelySatellite = false, want true — winner's payout says 'Ticket'")
@@ -266,11 +266,11 @@ Tournament started 2025/02/01 14:05:00 ET
 // TestParseTournamentFile_TicketPrizePool confirms a "Total Prize Pool" line
 // suffixed with ticket text (e.g. "$1.00 Power Path Step 2 Ticket", the real
 // PokerStars format for a Power Path Spin & Go satellite) is never parsed as
-// a real dollar amount — PrizePoolUSD stays 0, the raw text is captured in
+// a real dollar amount — PrizePoolCents stays 0, the raw text is captured in
 // PrizePoolDescription instead, and Multiplier stays nil since there's no
-// real cash pool to divide by BuyInUSD — confirmed against a real summary
+// real cash pool to divide by BuyInCents — confirmed against a real summary
 // file. (TestParseTournamentFile_SpinGoWin covers the real-cash-pool case,
-// where PrizePoolUSD and Multiplier are populated normally.)
+// where PrizePoolCents and Multiplier are populated normally.)
 func TestParseTournamentFile_TicketPrizePool(t *testing.T) {
 	contents := `PokerStars Tournament #9000000022, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
@@ -287,8 +287,8 @@ Tournament started 2026/07/14 17:04:07 ET
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
 
-	if tourn.PrizePoolUSD != 0 {
-		t.Errorf("PrizePoolUSD = %v, want 0 (a ticket-denominated pool is not real cash)", tourn.PrizePoolUSD)
+	if tourn.PrizePoolCents != 0 {
+		t.Errorf("PrizePoolCents = %v, want 0 (a ticket-denominated pool is not real cash)", tourn.PrizePoolCents)
 	}
 	if tourn.PrizePoolDescription != "$1.00 Power Path Step 2 Ticket" {
 		t.Errorf("PrizePoolDescription = %q, want %q", tourn.PrizePoolDescription, "$1.00 Power Path Step 2 Ticket")
@@ -297,7 +297,7 @@ Tournament started 2026/07/14 17:04:07 ET
 		t.Fatalf("Type = %q, want spingo", tourn.Type)
 	}
 	if tourn.Multiplier != nil {
-		t.Errorf("Multiplier = %v, want nil — no real cash prize pool to divide by BuyInUSD", *tourn.Multiplier)
+		t.Errorf("Multiplier = %v, want nil — no real cash prize pool to divide by BuyInCents", *tourn.Multiplier)
 	}
 }
 
@@ -305,7 +305,7 @@ Tournament started 2026/07/14 17:04:07 ET
 // where hero themselves finishes 1st and wins a ticket, not cash — the exact
 // PokerStars text still starts with a dollar sign (the ticket's own
 // face-value name, e.g. "$1.00 Power Path Step 2 Ticket"), which must not be
-// parsed as a real cash payout: NetUSD should reflect only the lost buy-in,
+// parsed as a real cash payout: NetCents should reflect only the lost buy-in,
 // the same as winning nothing at all, confirmed against a real hand history.
 func TestParseTournamentFile_HeroWinsTicket(t *testing.T) {
 	contents := `PokerStars Tournament #9000000022, No Limit Hold'em
@@ -329,8 +329,8 @@ You finished in 1st place (eliminated at hand #261437820632).
 	if tourn.FinishPos != 1 {
 		t.Errorf("FinishPos = %d, want 1", tourn.FinishPos)
 	}
-	if !approxEqual(tourn.NetUSD, -0.50) {
-		t.Errorf("NetUSD = %v, want -0.50 (only the buy-in lost — the ticket has no cash value)", tourn.NetUSD)
+	if !approxEqual(tourn.NetCents, -50) {
+		t.Errorf("NetCents = %v, want -0.50 (only the buy-in lost — the ticket has no cash value)", tourn.NetCents)
 	}
 	if !tourn.LikelySatellite {
 		t.Error("LikelySatellite = false, want true — hero's own payout says 'Ticket'")
@@ -370,8 +370,8 @@ You finished in 3rd place (eliminated at hand #261439247515).
 	if tourn.FinishPos != 3 {
 		t.Errorf("FinishPos = %d, want 3", tourn.FinishPos)
 	}
-	if !approxEqual(tourn.NetUSD, -1.00) {
-		t.Errorf("NetUSD = %v, want -1.00 (only the buy-in lost — the ticket has no cash value)", tourn.NetUSD)
+	if !approxEqual(tourn.NetCents, -100) {
+		t.Errorf("NetCents = %v, want -1.00 (only the buy-in lost — the ticket has no cash value)", tourn.NetCents)
 	}
 	if !tourn.LikelySatellite {
 		t.Error("LikelySatellite = false, want true — hero's own payout says 'Tournament Ticket', even though position 1 hasn't finished yet")
@@ -433,8 +433,8 @@ Total Prize Pool: $15.36 USD
 	if tourn.FinishPos != 5 {
 		t.Errorf("FinishPos = %d, want 5", tourn.FinishPos)
 	}
-	if !approxEqual(tourn.NetUSD, -1.00) {
-		t.Errorf("NetUSD = %v, want -1.00 (hero won nothing at all)", tourn.NetUSD)
+	if !approxEqual(tourn.NetCents, -100) {
+		t.Errorf("NetCents = %v, want -1.00 (hero won nothing at all)", tourn.NetCents)
 	}
 	if !tourn.LikelySatellite {
 		t.Error("LikelySatellite = false, want true — position 3's already-decided ticket is a valid satellite signal even though it's neither position 1 nor hero")
@@ -468,13 +468,13 @@ Tournament started 2025/03/10 20:00:00 ET
 	if tourn.FinishPos != 4 {
 		t.Errorf("FinishPos = %d, want 4", tourn.FinishPos)
 	}
-	if !approxEqual(tourn.NetUSD, -5.50) {
-		t.Errorf("NetUSD = %v, want -5.50 (full buy-in lost)", tourn.NetUSD)
+	if !approxEqual(tourn.NetCents, -550) {
+		t.Errorf("NetCents = %v, want -5.50 (full buy-in lost)", tourn.NetCents)
 	}
 }
 
 // TestParseTournamentFile_Freeroll covers the zero-buy-in path: no "Buy-In: $"
-// line anywhere in the file leaves BuyInUSD at 0, and the file parses to a
+// line anywhere in the file leaves BuyInCents at 0, and the file parses to a
 // normal Tournament (no error) so the worker can ask for the entry cost. A
 // 3-player freeroll classifies as spingo but must not divide by a zero buy-in
 // to compute a Multiplier.
@@ -491,8 +491,8 @@ Tournament started 2025/03/01 10:00:00 ET
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if tourn.BuyInUSD != 0 {
-		t.Errorf("BuyInUSD = %v, want 0", tourn.BuyInUSD)
+	if tourn.BuyInCents != 0 {
+		t.Errorf("BuyInCents = %v, want 0", tourn.BuyInCents)
 	}
 	if tourn.Type != "spingo" {
 		t.Errorf("Type = %q, want spingo (3 players)", tourn.Type)

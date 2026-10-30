@@ -7,93 +7,94 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 func TestSessionLossExceeds(t *testing.T) {
 	cases := []struct {
-		name      string
-		loss      float64
-		buyInUSD  float64
-		threshold float64
-		want      bool
+		name       string
+		lossCents  money.Cents
+		buyInCents money.Cents
+		threshold  float64
+		want       bool
 	}{
-		{"under threshold", 4.00, 5.00, 1, false},
-		{"exactly at threshold does not fire", 5.00, 5.00, 1, false},
-		{"just over threshold fires", 5.01, 5.00, 1, true},
-		{"well over threshold fires", 11.58, 5.00, 1, true},
-		{"under a higher threshold", 11.58, 5.00, 3, false},
+		{"under threshold", 400, 500, 1, false},
+		{"exactly at threshold does not fire", 500, 500, 1, false},
+		{"just over threshold fires", 501, 500, 1, true},
+		{"well over threshold fires", 1158, 500, 1, true},
+		{"under a higher threshold", 1158, 500, 3, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := sessionLossExceeds(c.loss, c.buyInUSD, c.threshold)
+			got := money.LossExceeds(-c.lossCents, c.buyInCents, c.threshold)
 			if got != c.want {
-				t.Errorf("sessionLossExceeds(loss=%.2f, buyIn=%.2f, threshold=%.0f) = %v, want %v",
-					c.loss, c.buyInUSD, c.threshold, got, c.want)
+				t.Errorf("money.LossExceeds(loss=%v, buyIn=%v, threshold=%v) = %v, want %v",
+					c.lossCents, c.buyInCents, c.threshold, got, c.want)
 			}
 		})
 	}
 }
 
 func TestConsecutiveLossStreak(t *testing.T) {
-	entriesOf := func(amounts ...float64) []storage.LedgerEntry {
-		entries := make([]storage.LedgerEntry, len(amounts))
-		for i, a := range amounts {
-			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: a}
+	entriesOf := func(amountsCents ...money.Cents) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(amountsCents))
+		for i, aCents := range amountsCents {
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountCents: aCents}
 		}
 		return entries
 	}
 
 	cases := []struct {
-		name    string
-		amounts []float64
-		want    int
+		name         string
+		amountsCents []money.Cents
+		want         int
 	}{
-		{"all losses", []float64{-1, -2, -3}, 3},
-		{"streak broken by a win", []float64{-1, 2, -3}, 1},
-		{"all wins", []float64{1, 2, 3}, 0},
-		{"win in the middle, two trailing losses", []float64{-1, -2, 1, -3, -4}, 2},
-		{"empty", []float64{}, 0},
+		{"all losses", []money.Cents{-100, -200, -300}, 3},
+		{"streak broken by a win", []money.Cents{-100, 200, -300}, 1},
+		{"all wins", []money.Cents{100, 200, 300}, 0},
+		{"win in the middle, two trailing losses", []money.Cents{-100, -200, 100, -300, -400}, 2},
+		{"empty", []money.Cents{}, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := consecutiveLossStreak(entriesOf(c.amounts...))
+			got := consecutiveLossStreak(entriesOf(c.amountsCents...))
 			if got != c.want {
-				t.Errorf("consecutiveLossStreak(%v) = %d, want %d", c.amounts, got, c.want)
+				t.Errorf("consecutiveLossStreak(%v) = %d, want %d", c.amountsCents, got, c.want)
 			}
 		})
 	}
 }
 
 func TestDailyLossExceeds(t *testing.T) {
-	entriesOf := func(nets ...float64) []storage.LedgerEntry {
-		entries := make([]storage.LedgerEntry, len(nets))
-		for i, n := range nets {
-			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: n}
+	entriesOf := func(netsCents ...money.Cents) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(netsCents))
+		for i, nCents := range netsCents {
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountCents: nCents}
 		}
 		return entries
 	}
 
 	cases := []struct {
-		name      string
-		nets      []float64
-		threshold float64
-		want      bool
+		name           string
+		netsCents      []money.Cents
+		thresholdCents money.Cents
+		want           bool
 	}{
-		{"net loss equals threshold, does not fire", []float64{-0.50, -0.50}, 1.00, false},
-		{"net loss exceeds threshold, fires", []float64{-0.50, -0.50, -0.50}, 1.00, true},
-		{"big win offsets losses into net profit", []float64{-1.00, -1.00, 4.00}, 1.00, false},
-		{"small win doesn't fully offset losses", []float64{-1.00, 0.25, -1.00}, 1.00, true},
-		{"net loss exceeds a smaller threshold", []float64{-0.50, 0.25, -0.50}, 0.50, true},
-		{"no entries today", []float64{}, 1.00, false},
+		{"net loss equals threshold, does not fire", []money.Cents{-50, -50}, 100, false},
+		{"net loss exceeds threshold, fires", []money.Cents{-50, -50, -50}, 100, true},
+		{"big win offsets losses into net profit", []money.Cents{-100, -100, 400}, 100, false},
+		{"small win doesn't fully offset losses", []money.Cents{-100, 25, -100}, 100, true},
+		{"net loss exceeds a smaller threshold", []money.Cents{-50, 25, -50}, 50, true},
+		{"no entries today", []money.Cents{}, 100, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := DailyLossExceeds(entriesOf(c.nets...), c.threshold)
+			got := DailyLossExceeds(entriesOf(c.netsCents...), c.thresholdCents)
 			if got != c.want {
-				t.Errorf("DailyLossExceeds(nets=%v, threshold=%.2f) = %v, want %v",
-					c.nets, c.threshold, got, c.want)
+				t.Errorf("DailyLossExceeds(nets=%v, threshold=%v) = %v, want %v",
+					c.netsCents, c.thresholdCents, got, c.want)
 			}
 		})
 	}
@@ -105,46 +106,46 @@ func TestDailyLossExceeds(t *testing.T) {
 // tournament isn't silently excluded from this check.
 func TestSpingoOnly(t *testing.T) {
 	tournaments := []parsers.Tournament{
-		{Type: "spingo", NetUSD: -1},
-		{Type: "spingo" + parsers.KnockoutSuffix, NetUSD: -2},
-		{Type: "mtt", NetUSD: -3},
-		{Type: "mtt" + parsers.KnockoutSuffix, NetUSD: -4},
+		{Type: "spingo", NetCents: -100},
+		{Type: "spingo" + parsers.KnockoutSuffix, NetCents: -200},
+		{Type: "mtt", NetCents: -300},
+		{Type: "mtt" + parsers.KnockoutSuffix, NetCents: -400},
 	}
 	got := SpingoOnly(tournaments)
 	if len(got) != 2 {
 		t.Fatalf("len(SpingoOnly(...)) = %d, want 2", len(got))
 	}
-	if got[0].NetUSD != -1 || got[1].NetUSD != -2 {
+	if got[0].NetCents != -100 || got[1].NetCents != -200 {
 		t.Errorf("SpingoOnly(...) = %+v, want the two spingo/spingo-ko rows only", got)
 	}
 }
 
 func TestSpingoDailyLossExceeds(t *testing.T) {
-	tournamentsOf := func(nets ...float64) []parsers.Tournament {
-		tourns := make([]parsers.Tournament, len(nets))
-		for i, n := range nets {
-			tourns[i] = parsers.Tournament{Type: "spingo", NetUSD: n}
+	tournamentsOf := func(netsCents ...money.Cents) []parsers.Tournament {
+		tourns := make([]parsers.Tournament, len(netsCents))
+		for i, nCents := range netsCents {
+			tourns[i] = parsers.Tournament{Type: "spingo", NetCents: nCents}
 		}
 		return tourns
 	}
 
 	cases := []struct {
-		name      string
-		nets      []float64
-		threshold float64
-		want      bool
+		name           string
+		netsCents      []money.Cents
+		thresholdCents money.Cents
+		want           bool
 	}{
-		{"net loss equals threshold, does not fire", []float64{-0.50, -0.50}, 1.00, false},
-		{"net loss exceeds threshold, fires", []float64{-0.50, -0.50, -0.50}, 1.00, true},
-		{"big win offsets losses into net profit", []float64{-1.00, -1.00, 4.00}, 1.00, false},
-		{"no spingo tournaments today", []float64{}, 1.00, false},
+		{"net loss equals threshold, does not fire", []money.Cents{-50, -50}, 100, false},
+		{"net loss exceeds threshold, fires", []money.Cents{-50, -50, -50}, 100, true},
+		{"big win offsets losses into net profit", []money.Cents{-100, -100, 400}, 100, false},
+		{"no spingo tournaments today", []money.Cents{}, 100, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := SpingoDailyLossExceeds(tournamentsOf(c.nets...), c.threshold)
+			got := SpingoDailyLossExceeds(tournamentsOf(c.netsCents...), c.thresholdCents)
 			if got != c.want {
-				t.Errorf("SpingoDailyLossExceeds(nets=%v, threshold=%.2f) = %v, want %v",
-					c.nets, c.threshold, got, c.want)
+				t.Errorf("SpingoDailyLossExceeds(nets=%v, threshold=%v) = %v, want %v",
+					c.netsCents, c.thresholdCents, got, c.want)
 			}
 		})
 	}
@@ -155,73 +156,73 @@ func TestSpingoDailyLossExceeds(t *testing.T) {
 // session must not mask a Spin & Go-specific breach, and vice versa.
 func TestDailyLossIndependence(t *testing.T) {
 	cases := []struct {
-		name           string
-		cashNet        float64
-		spingoNet      float64
-		spingoThresh   float64
-		dailyThresh    float64
-		wantSpingoFire bool
-		wantDailyFire  bool
+		name              string
+		cashNetCents      money.Cents
+		spingoNetCents    money.Cents
+		spingoThreshCents money.Cents
+		dailyThreshCents  money.Cents
+		wantSpingoFire    bool
+		wantDailyFire     bool
 	}{
-		{"spingo fires despite a net-positive day", 10.00, -0.50, 0.40, 100, true, false},
-		{"neither fires, spingo under its own threshold", 10.00, -0.30, 0.40, 100, false, false},
-		{"neither fires, daily threshold effectively disabled", -50.00, -0.30, 0.40, 100, false, false},
-		{"spingo fires even though daily threshold is nowhere close", -50.00, -0.50, 0.40, 100, true, false},
+		{"spingo fires despite a net-positive day", 1000, -50, 40, 10000, true, false},
+		{"neither fires, spingo under its own threshold", 1000, -30, 40, 10000, false, false},
+		{"neither fires, daily threshold effectively disabled", -5000, -30, 40, 10000, false, false},
+		{"spingo fires even though daily threshold is nowhere close", -5000, -50, 40, 10000, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			spingoEntries := []parsers.Tournament{{Type: "spingo", NetUSD: c.spingoNet}}
-			if got := SpingoDailyLossExceeds(spingoEntries, c.spingoThresh); got != c.wantSpingoFire {
-				t.Errorf("SpingoDailyLossExceeds(spingoNet=%.2f, threshold=%.2f) = %v, want %v",
-					c.spingoNet, c.spingoThresh, got, c.wantSpingoFire)
+			spingoEntries := []parsers.Tournament{{Type: "spingo", NetCents: c.spingoNetCents}}
+			if got := SpingoDailyLossExceeds(spingoEntries, c.spingoThreshCents); got != c.wantSpingoFire {
+				t.Errorf("SpingoDailyLossExceeds(spingoNet=%v, threshold=%v) = %v, want %v",
+					c.spingoNetCents, c.spingoThreshCents, got, c.wantSpingoFire)
 			}
 
 			dailyEntries := []storage.LedgerEntry{
-				{Type: "cash_session", AmountUSD: c.cashNet},
-				{Type: "tournament", AmountUSD: c.spingoNet},
+				{Type: "cash_session", AmountCents: c.cashNetCents},
+				{Type: "tournament", AmountCents: c.spingoNetCents},
 			}
-			if got := DailyLossExceeds(dailyEntries, c.dailyThresh); got != c.wantDailyFire {
-				t.Errorf("DailyLossExceeds(cashNet=%.2f, spingoNet=%.2f, threshold=%.2f) = %v, want %v",
-					c.cashNet, c.spingoNet, c.dailyThresh, got, c.wantDailyFire)
+			if got := DailyLossExceeds(dailyEntries, c.dailyThreshCents); got != c.wantDailyFire {
+				t.Errorf("DailyLossExceeds(cashNet=%v, spingoNet=%v, threshold=%v) = %v, want %v",
+					c.cashNetCents, c.spingoNetCents, c.dailyThreshCents, got, c.wantDailyFire)
 			}
 		})
 	}
 }
 
 // TestRollingPeak confirms the downswing peak is the highest point reached
-// on the results-only equity curve (cumulative AmountUSD), not the highest
-// RunningTotal — RunningTotal includes deposits/withdrawals and would read
+// on the results-only equity curve (cumulative AmountCents), not the highest
+// RunningTotalCents — RunningTotalCents includes deposits/withdrawals and would read
 // a large withdrawal as an equally large downswing (see
 // TestDownswingExcludesTransfers for that specific case).
 func TestRollingPeak(t *testing.T) {
-	entriesOf := func(amounts ...float64) []storage.LedgerEntry {
-		entries := make([]storage.LedgerEntry, len(amounts))
-		for i, a := range amounts {
-			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: a}
+	entriesOf := func(amountsCents ...money.Cents) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(amountsCents))
+		for i, aCents := range amountsCents {
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountCents: aCents}
 		}
 		return entries
 	}
 
 	cases := []struct {
-		name          string
-		amounts       []float64
-		wantPeak      float64
-		wantCurrent   float64
-		wantDownswing float64
+		name               string
+		amountsCents       []money.Cents
+		wantPeakCents      money.Cents
+		wantCurrentCents   money.Cents
+		wantDownswingCents money.Cents
 	}{
-		{"peak in the middle of the curve", []float64{10, -3, 5, -8}, 12, 4, 8},
-		{"peak at the very start, before any session", []float64{-1, -2, -3}, 0, -6, 6},
-		{"peak at the end, no downswing", []float64{1, 2, 3}, 6, 6, 0},
+		{"peak in the middle of the curve", []money.Cents{1000, -300, 500, -800}, 1200, 400, 800},
+		{"peak at the very start, before any session", []money.Cents{-100, -200, -300}, 0, -600, 600},
+		{"peak at the end, no downswing", []money.Cents{100, 200, 300}, 600, 600, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			peak, current := ComputeEquityCurve(entriesOf(c.amounts...))
-			if peak != c.wantPeak || current != c.wantCurrent {
+			peakCents, currentCents := ComputeEquityCurve(entriesOf(c.amountsCents...))
+			if peakCents != c.wantPeakCents || currentCents != c.wantCurrentCents {
 				t.Errorf("ComputeEquityCurve(%v) = (peak=%v, current=%v), want (peak=%v, current=%v)",
-					c.amounts, peak, current, c.wantPeak, c.wantCurrent)
+					c.amountsCents, peakCents, currentCents, c.wantPeakCents, c.wantCurrentCents)
 			}
-			if downswing := peak - current; downswing != c.wantDownswing {
-				t.Errorf("peak-current = %v, want downswing %v", downswing, c.wantDownswing)
+			if downswingCents := peakCents - currentCents; downswingCents != c.wantDownswingCents {
+				t.Errorf("peak-current = %v, want downswing %v", downswingCents, c.wantDownswingCents)
 			}
 		})
 	}
@@ -232,39 +233,39 @@ func TestRollingPeak(t *testing.T) {
 // filter them out before ComputeEquityCurve ever sees them.
 func TestDownswingExcludesTransfers(t *testing.T) {
 	cases := []struct {
-		name          string
-		entries       []storage.LedgerEntry
-		wantPeak      float64
-		wantCurrent   float64
-		wantDownswing float64
+		name               string
+		entries            []storage.LedgerEntry
+		wantPeakCents      money.Cents
+		wantCurrentCents   money.Cents
+		wantDownswingCents money.Cents
 	}{
 		{
 			"deposit in window is ignored",
 			[]storage.LedgerEntry{
-				{Type: "cash_session", AmountUSD: 10},
-				{Type: "deposit", AmountUSD: 100},
-				{Type: "cash_session", AmountUSD: -3},
+				{Type: "cash_session", AmountCents: 1000},
+				{Type: "deposit", AmountCents: 10000},
+				{Type: "cash_session", AmountCents: -300},
 			},
-			10, 7, 3,
+			1000, 700, 300,
 		},
 		{
 			"withdrawal in window is ignored",
 			[]storage.LedgerEntry{
-				{Type: "cash_session", AmountUSD: -5},
-				{Type: "withdrawal", AmountUSD: -50},
-				{Type: "cash_session", AmountUSD: -5},
+				{Type: "cash_session", AmountCents: -500},
+				{Type: "withdrawal", AmountCents: -5000},
+				{Type: "cash_session", AmountCents: -500},
 			},
-			0, -10, 10,
+			0, -1000, 1000,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			peak, current := ComputeEquityCurve(sessionOnly(c.entries))
-			if peak != c.wantPeak || current != c.wantCurrent {
-				t.Errorf("got peak=%v current=%v, want peak=%v current=%v", peak, current, c.wantPeak, c.wantCurrent)
+			peakCents, currentCents := ComputeEquityCurve(sessionOnly(c.entries))
+			if peakCents != c.wantPeakCents || currentCents != c.wantCurrentCents {
+				t.Errorf("got peak=%v current=%v, want peak=%v current=%v", peakCents, currentCents, c.wantPeakCents, c.wantCurrentCents)
 			}
-			if downswing := peak - current; downswing != c.wantDownswing {
-				t.Errorf("peak-current = %v, want downswing %v", downswing, c.wantDownswing)
+			if downswingCents := peakCents - currentCents; downswingCents != c.wantDownswingCents {
+				t.Errorf("peak-current = %v, want downswing %v", downswingCents, c.wantDownswingCents)
 			}
 		})
 	}
@@ -273,32 +274,32 @@ func TestDownswingExcludesTransfers(t *testing.T) {
 // TestComputeEquityCurve exercises the peak/current equity-curve math in
 // isolation, independent of any type filtering or windowing.
 func TestComputeEquityCurve(t *testing.T) {
-	entriesOf := func(amounts ...float64) []storage.LedgerEntry {
-		entries := make([]storage.LedgerEntry, len(amounts))
-		for i, a := range amounts {
-			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountUSD: a}
+	entriesOf := func(amountsCents ...money.Cents) []storage.LedgerEntry {
+		entries := make([]storage.LedgerEntry, len(amountsCents))
+		for i, aCents := range amountsCents {
+			entries[i] = storage.LedgerEntry{Type: "cash_session", AmountCents: aCents}
 		}
 		return entries
 	}
 
 	cases := []struct {
-		name        string
-		amounts     []float64
-		wantPeak    float64
-		wantCurrent float64
+		name             string
+		amountsCents     []money.Cents
+		wantPeakCents    money.Cents
+		wantCurrentCents money.Cents
 	}{
-		{"peak in the middle", []float64{10, -3, 5, -8}, 12, 4},
-		{"all wins, peak at the end", []float64{5, 5, 5}, 15, 15},
-		{"all losses, peak stays at the starting point", []float64{-5, -5, -5}, 0, -15},
-		{"empty, curve never leaves the starting point", []float64{}, 0, 0},
-		{"recovery after a big loss doesn't reach the earlier peak", []float64{10, -15, 3}, 10, -2},
+		{"peak in the middle", []money.Cents{1000, -300, 500, -800}, 1200, 400},
+		{"all wins, peak at the end", []money.Cents{500, 500, 500}, 1500, 1500},
+		{"all losses, peak stays at the starting point", []money.Cents{-500, -500, -500}, 0, -1500},
+		{"empty, curve never leaves the starting point", []money.Cents{}, 0, 0},
+		{"recovery after a big loss doesn't reach the earlier peak", []money.Cents{1000, -1500, 300}, 1000, -200},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			peak, current := ComputeEquityCurve(entriesOf(c.amounts...))
-			if peak != c.wantPeak || current != c.wantCurrent {
+			peakCents, currentCents := ComputeEquityCurve(entriesOf(c.amountsCents...))
+			if peakCents != c.wantPeakCents || currentCents != c.wantCurrentCents {
 				t.Errorf("ComputeEquityCurve(%v) = (peak=%v, current=%v), want (peak=%v, current=%v)",
-					c.amounts, peak, current, c.wantPeak, c.wantCurrent)
+					c.amountsCents, peakCents, currentCents, c.wantPeakCents, c.wantCurrentCents)
 			}
 		})
 	}
@@ -315,23 +316,23 @@ func TestDownswingEquityCurve(t *testing.T) {
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.Local)
 	cutoff := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC) // now's digits minus 30 days
 
-	dated := func(entryType string, amount float64, date time.Time) storage.LedgerEntry {
-		return storage.LedgerEntry{Type: entryType, AmountUSD: amount, Date: date}
+	dated := func(entryType string, amountCents money.Cents, date time.Time) storage.LedgerEntry {
+		return storage.LedgerEntry{Type: entryType, AmountCents: amountCents, Date: date}
 	}
 	entries := []storage.LedgerEntry{
-		dated("cash_session", 50, time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)), // outside window
-		dated("cash_session", 10, cutoff),                                       // exactly at cutoff — excluded
-		dated("cash_session", 10, cutoff.Add(time.Minute)),                      // just inside
-		dated("deposit", 100, time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)),    // transfer — excluded
-		dated("cash_session", -3, time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)),
-		dated("withdrawal", -40, time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)), // transfer — excluded
-		dated("tournament", -2, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)),
+		dated("cash_session", 5000, time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)), // outside window
+		dated("cash_session", 1000, cutoff),                                       // exactly at cutoff — excluded
+		dated("cash_session", 1000, cutoff.Add(time.Minute)),                      // just inside
+		dated("deposit", 10000, time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)),    // transfer — excluded
+		dated("cash_session", -300, time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)),
+		dated("withdrawal", -4000, time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)), // transfer — excluded
+		dated("tournament", -200, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)),
 	}
 
 	// Curve over the three included rows (+10, -3, -2): 10 → 7 → 5.
-	peak, current := DownswingEquityCurve(entries, now)
-	if peak != 10 || current != 5 {
-		t.Errorf("DownswingEquityCurve(...) = (peak=%v, current=%v), want (peak=10, current=5)", peak, current)
+	peakCents, currentCents := DownswingEquityCurve(entries, now)
+	if peakCents != 1000 || currentCents != 500 {
+		t.Errorf("DownswingEquityCurve(...) = (peak=%v, current=%v), want (peak=10, current=5)", peakCents, currentCents)
 	}
 }
 
@@ -344,21 +345,21 @@ func TestPokerDaySessionEntries(t *testing.T) {
 	now := time.Date(2026, 7, 13, 15, 0, 0, 0, time.Local)
 	dayStart := time.Date(2026, 7, 13, 6, 0, 0, 0, time.UTC)
 
-	dated := func(entryType string, amount float64, date time.Time) storage.LedgerEntry {
-		return storage.LedgerEntry{Type: entryType, AmountUSD: amount, Date: date}
+	dated := func(entryType string, amountCents money.Cents, date time.Time) storage.LedgerEntry {
+		return storage.LedgerEntry{Type: entryType, AmountCents: amountCents, Date: date}
 	}
 	entries := []storage.LedgerEntry{
-		dated("cash_session", -5, dayStart.Add(-time.Minute)), // previous poker day — dropped
-		dated("deposit", 100, dayStart.Add(2*time.Hour)),      // in the day but a transfer — dropped
-		dated("cash_session", -3, dayStart),                   // exactly at the boundary — kept (inclusive)
-		dated("tournament", -2, dayStart.Add(6*time.Hour)),
+		dated("cash_session", -500, dayStart.Add(-time.Minute)), // previous poker day — dropped
+		dated("deposit", 10000, dayStart.Add(2*time.Hour)),      // in the day but a transfer — dropped
+		dated("cash_session", -300, dayStart),                   // exactly at the boundary — kept (inclusive)
+		dated("tournament", -200, dayStart.Add(6*time.Hour)),
 	}
 
 	got := PokerDaySessionEntries(entries, cfg, now)
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2", len(got))
 	}
-	if got[0].AmountUSD != -3 || got[1].AmountUSD != -2 {
+	if got[0].AmountCents != -300 || got[1].AmountCents != -200 {
 		t.Errorf("got = %+v, want the boundary session (-3) and the tournament (-2)", got)
 	}
 }
@@ -410,8 +411,8 @@ func lockWriter(lockPath string, ch chan string) func(reason string, durationHou
 func TestEvaluateTriggers(t *testing.T) {
 	duration := 12
 	stored := storage.AsStoredClock(time.Now())
-	sessionRow := func(amount float64, age time.Duration) storage.LedgerEntry {
-		return storage.LedgerEntry{Type: "cash_session", AmountUSD: amount, Date: stored.Add(-age)}
+	sessionRow := func(amountCents money.Cents, age time.Duration) storage.LedgerEntry {
+		return storage.LedgerEntry{Type: "cash_session", AmountCents: amountCents, Date: stored.Add(-age)}
 	}
 
 	assertLocked := func(t *testing.T, lockPath, wantReason string, ch chan string) {
@@ -445,8 +446,8 @@ func TestEvaluateTriggers(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	pi := func(v int) *int { return &v }
 
-	losingSession := parsers.CashSession{BuyInUSD: 5, NetUSD: -12}
-	calmSession := parsers.CashSession{BuyInUSD: 5, NetUSD: 0}
+	losingSession := parsers.CashSession{BuyInCents: 500, NetCents: -1200}
+	calmSession := parsers.CashSession{BuyInCents: 500, NetCents: 0}
 
 	cases := []struct {
 		name           string
@@ -468,7 +469,7 @@ func TestEvaluateTriggers(t *testing.T) {
 			name:       "consecutive losses",
 			cfg:        &config.Config{Hardstop: config.Hardstop{ConsecutiveLosses: pi(2), DurationHours: pi(duration)}},
 			session:    calmSession,
-			ledger:     []storage.LedgerEntry{sessionRow(-3, 2*time.Hour), sessionRow(-2, time.Hour)},
+			ledger:     []storage.LedgerEntry{sessionRow(-300, 2*time.Hour), sessionRow(-200, time.Hour)},
 			wantReason: "consecutive_losses",
 		},
 		{
@@ -476,36 +477,36 @@ func TestEvaluateTriggers(t *testing.T) {
 			name:       "downswing",
 			cfg:        &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2), DurationHours: pi(duration)}},
 			session:    calmSession,
-			ledger:     []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)},
+			ledger:     []storage.LedgerEntry{sessionRow(10000, 2*time.Hour), sessionRow(-3000, time.Hour)},
 			wantReason: "downswing_buyins",
 		},
 		{
 			// Spin net -1.20 < -$1.00.
 			name:           "spin & go daily loss",
-			cfg:            &config.Config{Hardstop: config.Hardstop{SpingoDailyLossUSD: pf(1), DurationHours: pi(duration)}},
+			cfg:            &config.Config{Hardstop: config.Hardstop{SpingoDailyLossCents: centsPtr(100), DurationHours: pi(duration)}},
 			session:        calmSession,
-			dayTournaments: []parsers.Tournament{{Type: "spingo", NetUSD: -0.60}, {Type: "spingo", NetUSD: -0.60}},
-			wantReason:     "spingo_daily_loss_usd",
+			dayTournaments: []parsers.Tournament{{Type: "spingo", NetCents: -60}, {Type: "spingo", NetCents: -60}},
+			wantReason:     "spingo_daily_loss_cents",
 		},
 		{
 			// Day net -6 < -$5.
 			name:       "unified daily loss",
-			cfg:        &config.Config{Hardstop: config.Hardstop{DailyLossUSD: pf(5), DurationHours: pi(duration)}},
+			cfg:        &config.Config{Hardstop: config.Hardstop{DailyLossCents: centsPtr(500), DurationHours: pi(duration)}},
 			session:    calmSession,
-			ledger:     []storage.LedgerEntry{sessionRow(-3, 2*time.Hour), sessionRow(-3, time.Hour)},
-			wantReason: "daily_loss_usd",
+			ledger:     []storage.LedgerEntry{sessionRow(-300, 2*time.Hour), sessionRow(-300, time.Hour)},
+			wantReason: "daily_loss_cents",
 		},
 		{
 			name:    "nothing configured never triggers",
 			cfg:     &config.Config{},
 			session: losingSession,
-			ledger:  []storage.LedgerEntry{sessionRow(-100, time.Hour)},
+			ledger:  []storage.LedgerEntry{sessionRow(-10000, time.Hour)},
 		},
 		{
 			name:    "thresholds not breached",
-			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(10), DailyLossUSD: pf(500), DurationHours: pi(duration)}},
+			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(10), DailyLossCents: centsPtr(50000), DurationHours: pi(duration)}},
 			session: losingSession,
-			ledger:  []storage.LedgerEntry{sessionRow(-12, time.Hour)},
+			ledger:  []storage.LedgerEntry{sessionRow(-1200, time.Hour)},
 		},
 	}
 	for _, c := range cases {
@@ -532,8 +533,8 @@ func TestEvaluateTriggers(t *testing.T) {
 		lockPath := filepath.Join(t.TempDir(), "lockfile.json")
 		ch := make(chan string, 2)
 		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2), DurationHours: pi(duration)}}
-		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
-		if err := EvaluateTournament(parsers.Tournament{BuyInUSD: 5}, cfg, ledger, nil, time.Now(), lockWriter(lockPath, ch)); err != nil {
+		ledger := []storage.LedgerEntry{sessionRow(10000, 2*time.Hour), sessionRow(-3000, time.Hour)}
+		if err := EvaluateTournament(parsers.Tournament{BuyInCents: 500}, cfg, ledger, nil, time.Now(), lockWriter(lockPath, ch)); err != nil {
 			t.Fatalf("EvaluateTournament: %v", err)
 		}
 		assertLocked(t, lockPath, "downswing_buyins", ch)
@@ -543,7 +544,7 @@ func TestEvaluateTriggers(t *testing.T) {
 		lockPath := filepath.Join(t.TempDir(), "lockfile.json")
 		ch := make(chan string, 2)
 		cfg := &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2)}}
-		ledger := []storage.LedgerEntry{sessionRow(100, 2*time.Hour), sessionRow(-30, time.Hour)}
+		ledger := []storage.LedgerEntry{sessionRow(10000, 2*time.Hour), sessionRow(-3000, time.Hour)}
 		err := Evaluate(calmSession, cfg, ledger, nil, time.Now(), lockWriter(lockPath, ch))
 		if err == nil {
 			t.Fatal("Evaluate = nil error, want the missing-duration error")
@@ -574,53 +575,53 @@ func TestEvaluateSessionLoss(t *testing.T) {
 			// Loss 12 > 1 × $5 buy-in.
 			name:     "breach locks",
 			cfg:      &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
-			session:  parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+			session:  parsers.CashSession{BuyInCents: 500, NetCents: -1200},
 			wantLock: true,
 		},
 		{
 			// Loss 12 < 10 × $5 = $50.
 			name:    "within threshold does not lock",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(10), DurationHours: pi(duration)}},
-			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+			session: parsers.CashSession{BuyInCents: 500, NetCents: -1200},
 		},
 		{
-			// Boundary: loss exactly == 1 × $5. sessionLossExceeds uses a strict
+			// Boundary: loss exactly == 1 × $5. money.LossExceeds uses a strict
 			// ">", so equality must NOT lock — a flip to ">=" would be caught here.
-			// Covered at the pure sessionLossExceeds level (TestSessionLossExceeds)
+			// Covered at the pure money.LossExceeds level (TestSessionLossExceeds)
 			// but never through this wrapper until now.
 			name:    "loss exactly at the threshold does not lock",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
-			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -5},
+			session: parsers.CashSession{BuyInCents: 500, NetCents: -500},
 		},
 		{
 			// Zero buy-in makes the threshold 1 × $0 = $0, so any loss exceeds it
 			// and locks. This is an arithmetic consequence, not a desired rule:
-			// unlike EvaluateSessionLossAlert (which guards session.BuyInUSD == 0)
-			// and evaluateDownswing (which skips buyInUSD == 0), the per-hand
+			// unlike EvaluateSessionLossAlert (which guards session.BuyInCents == 0)
+			// and evaluateDownswing (which skips buyInCents == 0), the per-hand
 			// session-loss hard stop has no zero guard — and needs none, because a
-			// real cash header always carries non-zero blinds (BuyInUSD =
+			// real cash header always carries non-zero blinds (BuyInCents =
 			// bigBlind × 100) and the parser errors rather than emitting a
 			// zero-buy-in session, so this path is unreachable in production. Pinned
 			// so the divergence from the alert is understood, not accidental.
 			name:     "zero buy-in makes any loss exceed the zero threshold",
 			cfg:      &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
-			session:  parsers.CashSession{BuyInUSD: 0, NetUSD: -0.01},
+			session:  parsers.CashSession{BuyInCents: 0, NetCents: -1},
 			wantLock: true,
 		},
 		{
 			name:    "winning session does not lock",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
-			session: parsers.CashSession{BuyInUSD: 5, NetUSD: 20},
+			session: parsers.CashSession{BuyInCents: 500, NetCents: 2000},
 		},
 		{
 			name:    "unset threshold does not lock",
 			cfg:     &config.Config{Hardstop: config.Hardstop{DurationHours: pi(duration)}},
-			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+			session: parsers.CashSession{BuyInCents: 500, NetCents: -1200},
 		},
 		{
 			name:    "breach without duration errors",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1)}},
-			session: parsers.CashSession{BuyInUSD: 5, NetUSD: -12},
+			session: parsers.CashSession{BuyInCents: 500, NetCents: -1200},
 			wantErr: true,
 		},
 	}
@@ -728,8 +729,8 @@ func TestReasonPhrase(t *testing.T) {
 		{"session_loss_buyins", "Session loss limit reached"},
 		{"consecutive_losses", "Too many losing sessions in a row"},
 		{"downswing_buyins", "30-day downswing limit reached"},
-		{"daily_loss_usd", "Daily loss limit reached"},
-		{"spingo_daily_loss_usd", "Spin & Go daily loss limit reached"},
+		{"daily_loss_cents", "Daily loss limit reached"},
+		{"spingo_daily_loss_cents", "Spin & Go daily loss limit reached"},
 		{"manual", "Triggered manually"},
 		{"some_future_reason", "some_future_reason"},
 	}
@@ -741,3 +742,5 @@ func TestReasonPhrase(t *testing.T) {
 		})
 	}
 }
+
+func centsPtr(valueCents money.Cents) *money.Cents { return &valueCents }

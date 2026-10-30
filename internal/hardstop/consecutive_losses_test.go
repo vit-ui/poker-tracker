@@ -3,14 +3,15 @@ package hardstop
 import (
 	"testing"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // entry is a terse constructor for a storage.LedgerEntry used only to build
 // test fixtures — entries are listed oldest first, matching the chronological
 // order GetLedgerEntriesSince returns.
-func entry(entryType string, amount float64) storage.LedgerEntry {
-	return storage.LedgerEntry{Type: entryType, AmountUSD: amount}
+func entry(entryType string, amountCents money.Cents) storage.LedgerEntry {
+	return storage.LedgerEntry{Type: entryType, AmountCents: amountCents}
 }
 
 // TestLosingStreakTriggered exercises the fixed decision end to end:
@@ -28,9 +29,9 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "clean N-loss streak fires",
 			entries: []storage.LedgerEntry{
-				entry("cash_session", -5),
-				entry("cash_session", -3),
-				entry("cash_session", -2),
+				entry("cash_session", -500),
+				entry("cash_session", -300),
+				entry("cash_session", -200),
 			},
 			n:    3,
 			want: true,
@@ -38,10 +39,10 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "N-loss streak with a deposit interleaved still fires — this is the bug this fix addresses",
 			entries: []storage.LedgerEntry{
-				entry("cash_session", -5),
-				entry("deposit", 50),
-				entry("cash_session", -3),
-				entry("cash_session", -2),
+				entry("cash_session", -500),
+				entry("deposit", 5000),
+				entry("cash_session", -300),
+				entry("cash_session", -200),
 			},
 			n:    3,
 			want: true,
@@ -49,9 +50,9 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "streak broken by a winning session does not fire",
 			entries: []storage.LedgerEntry{
-				entry("cash_session", -5),
-				entry("cash_session", 3),
-				entry("cash_session", -2),
+				entry("cash_session", -500),
+				entry("cash_session", 300),
+				entry("cash_session", -200),
 			},
 			n:    3,
 			want: false,
@@ -59,10 +60,10 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "N-loss streak with a withdrawal interleaved still fires, even though the withdrawal amount is itself negative",
 			entries: []storage.LedgerEntry{
-				entry("cash_session", -5),
-				entry("cash_session", -3),
-				entry("withdrawal", -20),
-				entry("cash_session", -2),
+				entry("cash_session", -500),
+				entry("cash_session", -300),
+				entry("withdrawal", -2000),
+				entry("cash_session", -200),
 			},
 			n:    3,
 			want: true,
@@ -70,8 +71,8 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "fewer than N sessions total never fires, even if every one is a loss",
 			entries: []storage.LedgerEntry{
-				entry("cash_session", -5),
-				entry("cash_session", -3),
+				entry("cash_session", -500),
+				entry("cash_session", -300),
 			},
 			n:    3,
 			want: false,
@@ -79,10 +80,10 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "an older win outside the N-row window doesn't block the current streak",
 			entries: []storage.LedgerEntry{
-				entry("cash_session", 10), // old win, outside the last-3 window
-				entry("cash_session", -5),
-				entry("cash_session", -3),
-				entry("cash_session", -2),
+				entry("cash_session", 1000), // old win, outside the last-3 window
+				entry("cash_session", -500),
+				entry("cash_session", -300),
+				entry("cash_session", -200),
 			},
 			n:    3,
 			want: true,
@@ -90,8 +91,8 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "only deposits and withdrawals, no sessions at all, never fires",
 			entries: []storage.LedgerEntry{
-				entry("deposit", 100),
-				entry("withdrawal", -20),
+				entry("deposit", 10000),
+				entry("withdrawal", -2000),
 			},
 			n:    3,
 			want: false,
@@ -120,10 +121,10 @@ func TestLosingStreakTriggered(t *testing.T) {
 func TestRecentSessionRows(t *testing.T) {
 	t.Run("deposit is filtered out before windowing, not counted as a slot", func(t *testing.T) {
 		entries := []storage.LedgerEntry{
-			entry("cash_session", -5),
-			entry("deposit", 50),
-			entry("cash_session", -3),
-			entry("cash_session", -2),
+			entry("cash_session", -500),
+			entry("deposit", 5000),
+			entry("cash_session", -300),
+			entry("cash_session", -200),
 		}
 		got := recentSessionRows(entries, 3)
 		if len(got) != 3 {
@@ -134,16 +135,16 @@ func TestRecentSessionRows(t *testing.T) {
 				t.Errorf("recentSessionRows returned a transfer row: %+v", e)
 			}
 		}
-		wantAmounts := []float64{-5, -3, -2}
+		wantAmountsCents := []money.Cents{-500, -300, -200}
 		for i, e := range got {
-			if e.AmountUSD != wantAmounts[i] {
-				t.Errorf("got[%d].AmountUSD = %v, want %v", i, e.AmountUSD, wantAmounts[i])
+			if e.AmountCents != wantAmountsCents[i] {
+				t.Errorf("got[%d].AmountCents = %v, want %v", i, e.AmountCents, wantAmountsCents[i])
 			}
 		}
 	})
 
 	t.Run("returns fewer than n when there aren't enough session rows", func(t *testing.T) {
-		entries := []storage.LedgerEntry{entry("cash_session", -5)}
+		entries := []storage.LedgerEntry{entry("cash_session", -500)}
 		got := recentSessionRows(entries, 3)
 		if len(got) != 1 {
 			t.Errorf("len(got) = %d, want 1", len(got))
@@ -152,15 +153,15 @@ func TestRecentSessionRows(t *testing.T) {
 
 	t.Run("older session rows outside the window are dropped", func(t *testing.T) {
 		entries := []storage.LedgerEntry{
-			entry("cash_session", 999), // far outside the last-2 window
-			entry("cash_session", -5),
-			entry("cash_session", -3),
+			entry("cash_session", 99900), // far outside the last-2 window
+			entry("cash_session", -500),
+			entry("cash_session", -300),
 		}
 		got := recentSessionRows(entries, 2)
 		if len(got) != 2 {
 			t.Fatalf("len(got) = %d, want 2", len(got))
 		}
-		if got[0].AmountUSD != -5 || got[1].AmountUSD != -3 {
+		if got[0].AmountCents != -500 || got[1].AmountCents != -300 {
 			t.Errorf("got = %+v, want last 2 rows only", got)
 		}
 	})

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
@@ -44,33 +45,33 @@ type Paths struct {
 // but blanked out for evaluation by EffectiveAlerts. A null flag defaults to
 // on, so a value that predates this field (or was just set) is active.
 type Alerts struct {
-	DownswingBuyins        *float64 `json:"downswing_buyins"`
-	DownswingEnabled       *bool    `json:"downswing_buyins_enabled"`
-	LosingStreakCount      *int     `json:"losing_streak_count"`
-	LosingStreakEnabled    *bool    `json:"losing_streak_count_enabled"`
-	DailyLossUSD           *float64 `json:"daily_loss_usd"`
-	DailyLossEnabled       *bool    `json:"daily_loss_usd_enabled"`
-	SpingoDailyLossUSD     *float64 `json:"spingo_daily_loss_usd"`
-	SpingoDailyLossEnabled *bool    `json:"spingo_daily_loss_usd_enabled"`
-	SessionLossBuyins      *float64 `json:"session_loss_buyins"`
-	SessionLossEnabled     *bool    `json:"session_loss_buyins_enabled"`
+	DownswingBuyins        *float64     `json:"downswing_buyins"`
+	DownswingEnabled       *bool        `json:"downswing_buyins_enabled"`
+	LosingStreakCount      *int         `json:"losing_streak_count"`
+	LosingStreakEnabled    *bool        `json:"losing_streak_count_enabled"`
+	DailyLossCents         *money.Cents `json:"daily_loss_cents"`
+	DailyLossEnabled       *bool        `json:"daily_loss_cents_enabled"`
+	SpingoDailyLossCents   *money.Cents `json:"spingo_daily_loss_cents"`
+	SpingoDailyLossEnabled *bool        `json:"spingo_daily_loss_cents_enabled"`
+	SessionLossBuyins      *float64     `json:"session_loss_buyins"`
+	SessionLossEnabled     *bool        `json:"session_loss_buyins_enabled"`
 }
 
 // Hardstop holds the hard stop trigger rules and lock duration. The threshold
 // rules carry the same *_enabled flags as Alerts (see EffectiveHardstop);
 // DurationHours has none — it's not a rule that fires, and has no turn-off.
 type Hardstop struct {
-	SessionLossBuyins        *float64 `json:"session_loss_buyins"`
-	SessionLossEnabled       *bool    `json:"session_loss_buyins_enabled"`
-	ConsecutiveLosses        *int     `json:"consecutive_losses"`
-	ConsecutiveLossesEnabled *bool    `json:"consecutive_losses_enabled"`
-	DailyLossUSD             *float64 `json:"daily_loss_usd"`
-	DailyLossEnabled         *bool    `json:"daily_loss_usd_enabled"`
-	SpingoDailyLossUSD       *float64 `json:"spingo_daily_loss_usd"`
-	SpingoDailyLossEnabled   *bool    `json:"spingo_daily_loss_usd_enabled"`
-	DurationHours            *int     `json:"duration_hours"`
-	DownswingBuyins          *float64 `json:"downswing_buyins"`
-	DownswingEnabled         *bool    `json:"downswing_buyins_enabled"`
+	SessionLossBuyins        *float64     `json:"session_loss_buyins"`
+	SessionLossEnabled       *bool        `json:"session_loss_buyins_enabled"`
+	ConsecutiveLosses        *int         `json:"consecutive_losses"`
+	ConsecutiveLossesEnabled *bool        `json:"consecutive_losses_enabled"`
+	DailyLossCents           *money.Cents `json:"daily_loss_cents"`
+	DailyLossEnabled         *bool        `json:"daily_loss_cents_enabled"`
+	SpingoDailyLossCents     *money.Cents `json:"spingo_daily_loss_cents"`
+	SpingoDailyLossEnabled   *bool        `json:"spingo_daily_loss_cents_enabled"`
+	DurationHours            *int         `json:"duration_hours"`
+	DownswingBuyins          *float64     `json:"downswing_buyins"`
+	DownswingEnabled         *bool        `json:"downswing_buyins_enabled"`
 }
 
 // Schedule holds player-specific timing settings.
@@ -107,14 +108,14 @@ func SummaryMode(mode *string) string {
 // "losses" only a net below zero; "every" (and any unrecognized value) always.
 // A breakeven net of exactly zero is neither a win nor a loss, so it sends
 // under neither "wins" nor "losses".
-func ShouldSendSummary(mode string, net float64) bool {
+func ShouldSendSummary(mode string, netCents money.Cents) bool {
 	switch mode {
 	case "off":
 		return false
 	case "wins":
-		return net > 0
+		return netCents > 0
 	case "losses":
-		return net < 0
+		return netCents < 0
 	default:
 		return true
 	}
@@ -144,10 +145,10 @@ func EffectiveAlerts(a Alerts) Alerts {
 		a.LosingStreakCount = nil
 	}
 	if !FlagEnabled(a.DailyLossEnabled) {
-		a.DailyLossUSD = nil
+		a.DailyLossCents = nil
 	}
 	if !FlagEnabled(a.SpingoDailyLossEnabled) {
-		a.SpingoDailyLossUSD = nil
+		a.SpingoDailyLossCents = nil
 	}
 	if !FlagEnabled(a.SessionLossEnabled) {
 		a.SessionLossBuyins = nil
@@ -165,10 +166,10 @@ func EffectiveHardstop(h Hardstop) Hardstop {
 		h.ConsecutiveLosses = nil
 	}
 	if !FlagEnabled(h.DailyLossEnabled) {
-		h.DailyLossUSD = nil
+		h.DailyLossCents = nil
 	}
 	if !FlagEnabled(h.SpingoDailyLossEnabled) {
-		h.SpingoDailyLossUSD = nil
+		h.SpingoDailyLossCents = nil
 	}
 	if !FlagEnabled(h.DownswingEnabled) {
 		h.DownswingBuyins = nil

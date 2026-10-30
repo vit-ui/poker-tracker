@@ -84,21 +84,28 @@ func TestHardstopDeliverySurvivesLostAcknowledgementWithoutExtendingExpiry(t *te
 		time.Sleep(5 * time.Millisecond)
 	}
 	stop()
-	// Recovering the identical financial row again does not even issue a new
-	// lock command once the server's durable acknowledgement exists.
+	// Recovering the identical row restores only the confirmed active clock,
+	// never a new decision or a freshly calculated expiry.
 	if err := config.SavePendingCash(journal, saved); err != nil {
 		t.Fatal(err)
 	}
 	_, link, stop = runRecoveredWorker(t, store, path, time.Second)
 	defer stop()
 	timeout := time.After(80 * time.Millisecond)
+	restored := false
 	for {
 		select {
 		case command := <-link.Commands:
 			if command.Kind == transport.CommandLock {
-				t.Fatal("confirmed trigger was delivered again")
+				if restored || command.Lock.TriggerID != initial.TriggerID || !command.Lock.ExpiresAt.Equal(initial.ExpiresAt) {
+					t.Fatal("confirmed recovery changed or repeated the active clock")
+				}
+				restored = true
 			}
 		case <-timeout:
+			if !restored {
+				t.Fatal("confirmed active lock was not restored")
+			}
 			snapshot, err := store.ExportSnapshot()
 			if err != nil {
 				t.Fatal(err)
@@ -160,7 +167,7 @@ func TestExpiredCollectorReceiptRejectsFreshServerReplayButAllowsNewLoss(t *test
 	link.Uploads <- transport.Upload{LockReply: &transport.LockReply{TriggerID: replay.TriggerID}}
 	stop()
 	session.FirstHandID += "-new-loss"
-	session.NetUSD = -.10
+	session.NetCents = -10
 	if err := config.SavePendingCash(filepath.Join(dir, "pending_cash.json"), []config.PendingCash{{FileID: "new-table", Session: session, LastActivity: oldTime}}); err != nil {
 		t.Fatal(err)
 	}

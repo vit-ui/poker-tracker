@@ -147,7 +147,7 @@ func TestCollectorMigrationPauseDrainAndResume(t *testing.T) {
 				if copied.Snapshot == nil || len(copied.Snapshot.CashSessions) != 1 || len(copied.Snapshot.Ledger) != 1 {
 					t.Fatalf("drained cash missing: %+v", copied.Snapshot)
 				}
-				if net := copied.Snapshot.Ledger[0].AmountUSD; net < -0.030001 || net > -0.029999 {
+				if net := copied.Snapshot.Ledger[0].AmountCents; net != -3 {
 					t.Fatalf("copied net %v, want -.03", net)
 				}
 			case <-time.After(5 * time.Second):

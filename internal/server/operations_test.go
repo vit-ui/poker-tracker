@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
 	"github.com/vit-ui/self-tracker/internal/transport"
@@ -40,7 +41,7 @@ func TestWorkerOperationsSerializeWithUploadsAndBufferedReplies(t *testing.T) {
 	first := storage.Operation{Reply: make(chan storage.OperationResult, 1), Apply: func(s storage.Store) storage.OperationResult {
 		close(entered)
 		<-release
-		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 1, time.Now(), "")}
+		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 100, time.Now(), "")}
 	}}
 	server.Operations <- first
 	<-entered
@@ -52,7 +53,7 @@ func TestWorkerOperationsSerializeWithUploadsAndBufferedReplies(t *testing.T) {
 	link.Uploads <- transport.Upload{Type: transport.ImportDone}
 	accepted := make(chan struct{})
 	second := storage.Operation{Reply: make(chan storage.OperationResult, 1), Apply: func(s storage.Store) storage.OperationResult {
-		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 2, time.Now(), "")}
+		return storage.OperationResult{Err: s.AppendLedgerEntry("deposit", 200, time.Now(), "")}
 	}}
 	go func() {
 		select {
@@ -91,15 +92,15 @@ func TestWorkerOperationsSerializeWithUploadsAndBufferedReplies(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("ledger rows = %d, want 3", len(rows))
 	}
-	var sum float64
+	var sumCents money.Cents
 	for _, row := range rows {
-		sum += row.AmountUSD
-		if !closeEnoughServer(row.RunningTotal, sum) {
-			t.Fatalf("running total = %v, sum = %v", row.RunningTotal, sum)
+		sumCents += row.AmountCents
+		if !closeEnoughServer(row.RunningTotalCents, sumCents) {
+			t.Fatalf("running total = %v, sum = %v", row.RunningTotalCents, sumCents)
 		}
 	}
 	// Two deposits ($1 + $2) and the committed fixture's -$0.03 session.
-	if !closeEnoughServer(sum, 2.97) {
-		t.Fatalf("bankroll = %v, want 2.97", sum)
+	if !closeEnoughServer(sumCents, 297) {
+		t.Fatalf("bankroll = %v, want 2.97", sumCents)
 	}
 }

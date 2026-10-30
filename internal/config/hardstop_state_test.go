@@ -100,3 +100,31 @@ func TestConcurrentHardstopDeliveriesPreserveRequestsAndConfirmation(t *testing.
 		t.Fatalf("concurrent requests lost confirmation or original expiry: %+v", entries)
 	}
 }
+
+func TestHardstopConfirmationPreservesEffectiveClockAgainstStaleMerges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hardstop_deliveries.json")
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	original := HardstopDelivery{Lock: LockFile{TriggerID: "short-request", ExpiresAt: now.Add(time.Hour)}}
+	if _, err := MergeHardstopDeliveries(path, map[string]HardstopDelivery{"short-request": original}); err != nil {
+		t.Fatal(err)
+	}
+	confirmed := original
+	confirmed.Confirmed = true
+	confirmed.EffectiveLock = &LockFile{TriggerID: "existing-long", ExpiresAt: now.Add(3 * time.Hour)}
+	if _, err := MergeHardstopDeliveries(path, map[string]HardstopDelivery{"short-request": confirmed}); err != nil {
+		t.Fatal(err)
+	}
+	for _, staleConfirmed := range []bool{false, true} {
+		stale := original
+		stale.Confirmed = staleConfirmed
+		stale.Lock.ExpiresAt = now.Add(24 * time.Hour)
+		entries, err := MergeHardstopDeliveries(path, map[string]HardstopDelivery{"short-request": stale})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := entries["short-request"]
+		if !got.Confirmed || !got.Lock.ExpiresAt.Equal(now.Add(time.Hour)) || got.EffectiveLock == nil || !got.EffectiveLock.ExpiresAt.Equal(now.Add(3*time.Hour)) || got.EffectiveLock.TriggerID != "existing-long" {
+			t.Fatalf("stale merge lost original/confirmed clocks: %+v", got)
+		}
+	}
+}

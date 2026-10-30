@@ -2,11 +2,12 @@ package parsers
 
 import (
 	"bufio"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
 // fixturePath returns the path to a committed anonymized fixture — sub is
@@ -40,23 +41,23 @@ func firstLine(t *testing.T, path string) string {
 // summaries (see testdata/tournament_summary/), so the values are real.
 func TestFixtureSummaryMoney(t *testing.T) {
 	cases := []struct {
-		file         string
-		typ          string
-		buyIn        float64
-		players      int
-		finishPos    int
-		prizePoolUSD float64
-		satellite    bool
-		reEntries    int
+		file              string
+		typ               string
+		buyInCents        money.Cents
+		players           int
+		finishPos         int
+		prizePoolUSDCents money.Cents
+		satellite         bool
+		reEntries         int
 	}{
-		{"horse_T9000000003.txt", "mtt", 1.10, 69, 41, 75.00, false, 0},
-		{"plo_T9000000004.txt", "mtt", 1.10, 183, 59, 87.84, false, 0},
+		{"horse_T9000000003.txt", "mtt", 110, 69, 41, 7500, false, 0},
+		{"plo_T9000000004.txt", "mtt", 110, 183, 59, 8784, false, 0},
 		// PKO 2-7 draw: "Buy-In: $2.94/$0.36" — the $2.94 half already sums
-		// the base buy-in and the bounty, so BuyInUSD is the full 3.30.
-		{"draw27_pko_T9000000005.txt", "mtt", 3.30, 19, 0, 71.50, false, 0},
+		// the base buy-in and the bounty, so BuyInCents is the full 3.30.
+		{"draw27_pko_T9000000005.txt", "mtt", 330, 19, 0, 7150, false, 0},
 		// PLO re-entry: the hero played 3 entries, busted 43rd of 162, $2.20
 		// across 2 re-entries on top of the $1.10 base.
-		{"plo_reentry_T9000000006.txt", "mtt", 3.30, 162, 43, 77.76, false, 2},
+		{"plo_reentry_T9000000006.txt", "mtt", 330, 162, 43, 7776, false, 2},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -67,8 +68,8 @@ func TestFixtureSummaryMoney(t *testing.T) {
 			if got.Type != c.typ {
 				t.Errorf("Type = %q, want %q", got.Type, c.typ)
 			}
-			if math.Abs(got.BuyInUSD-c.buyIn) > 1e-9 {
-				t.Errorf("BuyInUSD = %.4f, want %.2f", got.BuyInUSD, c.buyIn)
+			if (got.BuyInCents - c.buyInCents) != 0 {
+				t.Errorf("BuyInCents = %v, want %v", got.BuyInCents, c.buyInCents)
 			}
 			if got.TotalPlayers != c.players {
 				t.Errorf("TotalPlayers = %d, want %d", got.TotalPlayers, c.players)
@@ -76,8 +77,8 @@ func TestFixtureSummaryMoney(t *testing.T) {
 			if c.finishPos != 0 && got.FinishPos != c.finishPos {
 				t.Errorf("FinishPos = %d, want %d", got.FinishPos, c.finishPos)
 			}
-			if math.Abs(got.PrizePoolUSD-c.prizePoolUSD) > 1e-9 {
-				t.Errorf("PrizePoolUSD = %.4f, want %.2f", got.PrizePoolUSD, c.prizePoolUSD)
+			if (got.PrizePoolCents - c.prizePoolUSDCents) != 0 {
+				t.Errorf("PrizePoolCents = %v, want %v", got.PrizePoolCents, c.prizePoolUSDCents)
 			}
 			if got.LikelySatellite != c.satellite {
 				t.Errorf("LikelySatellite = %v, want %v", got.LikelySatellite, c.satellite)

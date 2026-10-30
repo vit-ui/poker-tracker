@@ -9,6 +9,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -34,13 +35,13 @@ func TestIsDuplicateTournament(t *testing.T) {
 	}
 	// tourney builds a parsed/recorded tournament with the money-relevant
 	// fields isDuplicateTournament compares.
-	tourney := func(id string, buyIn float64, finishPos, players int) parsers.Tournament {
-		return parsers.Tournament{TournamentID: id, BuyInUSD: buyIn, FinishPos: finishPos, TotalPlayers: players}
+	tourney := func(id string, buyInCents money.Cents, finishPos, players int) parsers.Tournament {
+		return parsers.Tournament{TournamentID: id, BuyInCents: buyInCents, FinishPos: finishPos, TotalPlayers: players}
 	}
 
 	// The first bust of a re-entry MTT, as already recorded (buy-in $1.10,
 	// busted 50th of 126).
-	firstBust := tourney("111", 1.10, 50, 126)
+	firstBust := tourney("111", 110, 50, 126)
 	// A satellite the player answered "used a ticket" for: RecoverTicketPayout
 	// zeroed the recorded buy-in, but a re-parse of the unchanged file still
 	// reads the real $0.50.
@@ -56,34 +57,32 @@ func TestIsDuplicateTournament(t *testing.T) {
 		want          bool
 		wantRefresh   int
 	}{
-		{"brand new tournament, neither pending nor recorded", tourney("111", 1.10, 50, 126), nil, none, false, false, -1},
-		{"already awaiting a satellite/ticket answer, unchanged content", tourney("111", 0.50, 3, 3), pendingOf(tourney("111", 0.50, 3, 3)), none, false, true, -1},
-		{"pending + re-entry rewrite: still handled but queue must refresh", tourney("111", 2.20, 60, 140), pendingOf(tourney("111", 1.10, 50, 126)), none, false, true, 0},
-		{"pending + re-entry rewrite at a later index", tourney("111", 2.20, 60, 140), pendingOf(tourney("999", 5, 1, 3), tourney("111", 1.10, 50, 126)), none, false, true, 1},
+		{"brand new tournament, neither pending nor recorded", tourney("111", 110, 50, 126), nil, none, false, false, -1},
+		{"already awaiting a satellite/ticket answer, unchanged content", tourney("111", 50, 3, 3), pendingOf(tourney("111", 50, 3, 3)), none, false, true, -1},
+		{"pending + re-entry rewrite: still handled but queue must refresh", tourney("111", 220, 60, 140), pendingOf(tourney("111", 110, 50, 126)), none, false, true, 0},
+		{"pending + re-entry rewrite at a later index", tourney("111", 220, 60, 140), pendingOf(tourney("999", 500, 1, 3), tourney("111", 110, 50, 126)), none, false, true, 1},
 		{"identical re-parse of a recorded tournament is a duplicate", firstBust, nil, firstBust, true, true, -1},
-		{"re-entry rewrite: larger buy-in is not a duplicate", tourney("111", 2.20, 60, 140), nil, firstBust, true, false, -1},
-		{"re-entry rewrite: final $3.30 / 43rd of 162 is not a duplicate", tourney("111", 3.30, 43, 162), nil, firstBust, true, false, -1},
-		{"only finish position changed is not a duplicate", tourney("111", 1.10, 43, 126), nil, firstBust, true, false, -1},
-		{"only field size changed is not a duplicate", tourney("111", 1.10, 50, 162), nil, firstBust, true, false, -1},
-		{"a different tournament pending doesn't false-positive", tourney("111", 1.10, 50, 126), pendingOf(tourney("222", 1.10, 50, 126)), none, false, false, -1},
+		{"re-entry rewrite: larger buy-in is not a duplicate", tourney("111", 220, 60, 140), nil, firstBust, true, false, -1},
+		{"re-entry rewrite: final $3.30 / 43rd of 162 is not a duplicate", tourney("111", 330, 43, 162), nil, firstBust, true, false, -1},
+		{"only finish position changed is not a duplicate", tourney("111", 110, 43, 126), nil, firstBust, true, false, -1},
+		{"only field size changed is not a duplicate", tourney("111", 110, 50, 162), nil, firstBust, true, false, -1},
+		{"a different tournament pending doesn't false-positive", tourney("111", 110, 50, 126), pendingOf(tourney("222", 110, 50, 126)), none, false, false, -1},
 		// The ticket-answer regression: recorded buy-in is 0 (satellite
 		// resolved as a ticket entry), the file re-parses as $0.50 — an
 		// unchanged file must still be a duplicate, or every ticket-resolved
 		// tournament gets re-queued and re-asked on any stray event.
-		{"ticket-resolved satellite, unchanged file re-parse is a duplicate", tourney("111", 0.50, 3, 3), nil, ticketResolved, true, true, -1},
-		{"ticket-resolved satellite, re-entry rewrite (new finish) is not a duplicate", tourney("111", 1.00, 2, 3), nil, ticketResolved, true, false, -1},
-		// Buy-in comparison is a half-cent tolerance, not float equality: a
-		// re-entry sum (1.10+2.20) is not exactly 3.30 in float64, and the
-		// sheets backend's number round-trip may not preserve the last bit.
-		{"float-noise buy-in difference still matches", tourney("111", 1.10+2.20, 43, 162), nil, tourney("111", 3.30, 43, 162), true, true, -1},
+		{"ticket-resolved satellite, unchanged file re-parse is a duplicate", tourney("111", 50, 3, 3), nil, ticketResolved, true, true, -1},
+		{"ticket-resolved satellite, re-entry rewrite (new finish) is not a duplicate", tourney("111", 100, 2, 3), nil, ticketResolved, true, false, -1},
+		// Re-entry components and recorded buy-ins compare as exact cents.
+		{"summed buy-in cents still match", tourney("111", 110+220, 43, 162), nil, tourney("111", 330, 43, 162), true, true, -1},
 		// Freeroll/Kick-Off: the summary never carries a buy-in, so a parse is
 		// always $0. After the player answers "paid $X" the recorded buy-in is
 		// X > 0; a stray re-trigger re-parses $0 and must still be a duplicate
 		// on finish + field, or the entry-cost question gets re-asked and a
 		// wrong second answer overwrites the recorded row.
-		{"freeroll answered paid, unchanged file re-parse is a duplicate", tourney("111", 0, 3, 4), nil, tourney("111", 1.00, 3, 4), true, true, -1},
+		{"freeroll answered paid, unchanged file re-parse is a duplicate", tourney("111", 0, 3, 4), nil, tourney("111", 100, 3, 4), true, true, -1},
 		{"freeroll answered free, unchanged file re-parse is a duplicate", tourney("111", 0, 3, 4), nil, tourney("111", 0, 3, 4), true, true, -1},
-		{"freeroll re-entry with a new finish is not a duplicate", tourney("111", 0, 2, 4), nil, tourney("111", 1.00, 3, 4), true, false, -1},
+		{"freeroll re-entry with a new finish is not a duplicate", tourney("111", 0, 2, 4), nil, tourney("111", 100, 3, 4), true, false, -1},
 		{"freeroll still awaiting its buy-in answer, unchanged content", tourney("111", 0, 3, 4), pendingOf(tourney("111", 0, 3, 4)), none, false, true, -1},
 	}
 	for _, c := range cases {
@@ -174,31 +173,29 @@ func TestServer_ScreenNameRecovery(t *testing.T) {
 
 func TestCashSessionSummaryText(t *testing.T) {
 	cases := []struct {
-		name     string
-		session  parsers.CashSession
-		bankroll float64
-		want     string
+		name          string
+		session       parsers.CashSession
+		bankrollCents money.Cents
+		want          string
 	}{
 		{
 			name: "winning session",
 			session: parsers.CashSession{
-				Stake: "NL10", NetUSD: 5.5, Hands: 42, DurationMin: 37,
+				Stake: "NL10", NetCents: 550, Hands: 42, DurationMin: 37,
 			},
-			bankroll: 105.5,
-			want:     "✅ Cash Session\nStake: NL10\nNet: +$5.50\nHands: 42\nDuration: 37 min\nBankroll: $105.50",
-		},
+			bankrollCents: 10550,
+			want:          "✅ Cash Session\nStake: NL10\nNet: +$5.50\nHands: 42\nDuration: 37 min\nBankroll: $105.50"},
 		{
 			name: "losing session",
 			session: parsers.CashSession{
-				Stake: "NL25", NetUSD: -12.75, Hands: 10, DurationMin: 5,
+				Stake: "NL25", NetCents: -1275, Hands: 10, DurationMin: 5,
 			},
-			bankroll: 87.25,
-			want:     "✅ Cash Session\nStake: NL25\nNet: -$12.75\nHands: 10\nDuration: 5 min\nBankroll: $87.25",
-		},
+			bankrollCents: 8725,
+			want:          "✅ Cash Session\nStake: NL25\nNet: -$12.75\nHands: 10\nDuration: 5 min\nBankroll: $87.25"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := cashSessionSummaryText(c.session, c.bankroll)
+			got := cashSessionSummaryText(c.session, c.bankrollCents)
 			if got != c.want {
 				t.Errorf("cashSessionSummaryText() = %q, want %q", got, c.want)
 			}
@@ -221,10 +218,10 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	}
 	defer store.Close()
 	date := time.Date(2026, 7, 21, 23, 21, 0, 0, time.UTC)
-	tourney := func(id string, buyIn float64, finishPos, players int, net float64) parsers.Tournament {
+	tourney := func(id string, buyInCents money.Cents, finishPos, players int, netCents money.Cents) parsers.Tournament {
 		return parsers.Tournament{
 			Date: date, Type: "mtt", TournamentID: id,
-			BuyInUSD: buyIn, FinishPos: finishPos, TotalPlayers: players, NetUSD: net,
+			BuyInCents: buyInCents, FinishPos: finishPos, TotalPlayers: players, NetCents: netCents,
 		}
 	}
 	handled := func(tt parsers.Tournament) bool {
@@ -236,7 +233,7 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 		return got
 	}
 
-	firstBust := tourney("111", 1.10, 50, 126, -1.10)
+	firstBust := tourney("111", 110, 50, 126, -110)
 	if handled(firstBust) {
 		t.Error("fresh tournament reported as already handled")
 	}
@@ -246,7 +243,7 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	if !handled(firstBust) {
 		t.Error("identical re-parse of a recorded tournament not reported as duplicate")
 	}
-	rewrite := tourney("111", 2.20, 60, 140, -2.20)
+	rewrite := tourney("111", 220, 60, 140, -220)
 	if handled(rewrite) {
 		t.Error("re-entry rewrite wrongly reported as duplicate — the frozen-at-first-bust bug")
 	}
@@ -260,11 +257,11 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	// Ticket-resolved satellite: recorded with buy-in zeroed (as
 	// bot.RecoverTicketPayout stores it); the unchanged file still parses
 	// the real $0.50 — must be a duplicate, not a re-queue + second question.
-	satRecorded := parsers.Tournament{Date: date, Type: "spingo", TournamentID: "555", BuyInUSD: 0, FinishPos: 3, TotalPlayers: 3, NetUSD: 0}
+	satRecorded := parsers.Tournament{Date: date, Type: "spingo", TournamentID: "555", BuyInCents: 0, FinishPos: 3, TotalPlayers: 3, NetCents: 0}
 	if _, err := store.AppendTournament(satRecorded); err != nil {
 		t.Fatalf("AppendTournament(satellite): %v", err)
 	}
-	satParse := parsers.Tournament{Date: date, Type: "spingo", TournamentID: "555", BuyInUSD: 0.50, FinishPos: 3, TotalPlayers: 3, NetUSD: -0.50}
+	satParse := parsers.Tournament{Date: date, Type: "spingo", TournamentID: "555", BuyInCents: 50, FinishPos: 3, TotalPlayers: 3, NetCents: -50}
 	if !handled(satParse) {
 		t.Error("ticket-resolved satellite's unchanged file re-parse not reported as duplicate — would re-ask the answered question")
 	}
@@ -273,11 +270,11 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	// is unanswered is still handled (no second question) but must replace
 	// the queued stale snapshot with the current money.
 	pendingPath := filepath.Join(dir, "pending_tournaments.json")
-	stale := tourney("777", 1.10, 50, 126, -1.10)
+	stale := tourney("777", 110, 50, 126, -110)
 	if err := config.SavePendingTournaments(pendingPath, []config.PendingTournament{{Tournament: stale, FirstQueuedAt: date, LastRemindedAt: date}}); err != nil {
 		t.Fatalf("SavePendingTournaments: %v", err)
 	}
-	rewrite777 := tourney("777", 2.20, 60, 140, -2.20)
+	rewrite777 := tourney("777", 220, 60, 140, -220)
 	if !handled(rewrite777) {
 		t.Error("rewrite of a pending tournament not reported as handled — would queue a second entry")
 	}
@@ -285,7 +282,7 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPendingTournaments: %v", err)
 	}
-	if len(pending) != 1 || pending[0].Tournament.BuyInUSD != 2.20 || pending[0].Tournament.FinishPos != 60 {
+	if len(pending) != 1 || pending[0].Tournament.BuyInCents != 220 || pending[0].Tournament.FinishPos != 60 {
 		t.Errorf("pending queue not refreshed with the rewrite: %+v", pending)
 	}
 	if !pending[0].FirstQueuedAt.Equal(date) || !pending[0].LastRemindedAt.Equal(date) {
@@ -297,7 +294,7 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	if err := store.UpdateTournamentHandStats("888", 20, 10, 50, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
-	if handled(tourney("888", 1.10, 12, 90, -1.10)) {
+	if handled(tourney("888", 110, 12, 90, -110)) {
 		t.Error("partial hand-file-only row wrongly reported as handled — its summary would never be recorded")
 	}
 }
@@ -308,8 +305,8 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 // the worker's per-event path.
 func TestLedgerBankroll(t *testing.T) {
 	t.Run("empty ledger is 0", func(t *testing.T) {
-		if got := ledgerBankroll(nil); got != 0 {
-			t.Errorf("ledgerBankroll(nil) = %v, want 0", got)
+		if gotCents := ledgerBankroll(nil); gotCents != 0 {
+			t.Errorf("ledgerBankroll(nil) = %v, want 0", gotCents)
 		}
 	})
 
@@ -320,10 +317,10 @@ func TestLedgerBankroll(t *testing.T) {
 		}
 		defer store.Close()
 
-		if err := store.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+		if err := store.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 			t.Fatalf("AppendLedgerEntry: %v", err)
 		}
-		session := parsers.CashSession{Date: storage.AsStoredClock(time.Now()), Stake: "NL5", NetUSD: -6, FirstHandID: "h1"}
+		session := parsers.CashSession{Date: storage.AsStoredClock(time.Now()), Stake: "NL5", NetCents: -600, FirstHandID: "h1"}
 		if err := store.AppendCashSession(session); err != nil {
 			t.Fatalf("AppendCashSession: %v", err)
 		}
@@ -332,12 +329,12 @@ func TestLedgerBankroll(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetLedgerEntriesSince: %v", err)
 		}
-		want, err := store.GetCurrentBankroll()
+		wantCents, err := store.GetCurrentBankroll()
 		if err != nil {
 			t.Fatalf("GetCurrentBankroll: %v", err)
 		}
-		if got := ledgerBankroll(ledger); got != want || got != 94 {
-			t.Errorf("ledgerBankroll = %v, GetCurrentBankroll = %v, want both 94", got, want)
+		if gotCents := ledgerBankroll(ledger); gotCents != wantCents || gotCents != 9400 {
+			t.Errorf("ledgerBankroll = %v, GetCurrentBankroll = %v, want both 94", gotCents, wantCents)
 		}
 	})
 }
@@ -362,11 +359,11 @@ func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 
 	sessionLoss := 1.0
 	streak := 2
-	daily := 5.0
+	dailyCents := money.Cents(500)
 	cfg := &config.Config{Alerts: config.Alerts{
 		SessionLossBuyins: &sessionLoss,
 		LosingStreakCount: &streak,
-		DailyLossUSD:      &daily,
+		DailyLossCents:    &dailyCents,
 	}}
 
 	alertChan := make(chan string, 10)
@@ -395,63 +392,60 @@ func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 		}
 	}
 
-	if err := store.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+	if err := store.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 
 	now := storage.AsStoredClock(time.Now())
-	session1 := parsers.CashSession{Date: now, Stake: "NL5", BuyInUSD: 5, NetUSD: -6, Hands: 40, FirstHandID: "h1"}
+	session1 := parsers.CashSession{Date: now, Stake: "NL5", BuyInCents: 500, NetCents: -600, Hands: 40, FirstHandID: "h1"}
 	if err := store.AppendCashSession(session1); err != nil {
 		t.Fatalf("AppendCashSession(session1): %v", err)
 	}
 
 	ledger, dayTournaments := fetchEvalData(store, cfg, time.Now(), false)
-	bankroll := ledgerBankroll(ledger)
-	if bankroll != 94 {
-		t.Fatalf("bankroll after session 1 = %v, want 94", bankroll)
+	bankrollCents := ledgerBankroll(ledger)
+	if bankrollCents != 9400 {
+		t.Fatalf("bankroll after session 1 = %v, want 94", bankrollCents)
 	}
-	bot.EvaluateSessionLossAlert(session1, cfg, func() float64 { return bankroll }, alertChan)
-	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, time.Now(), alertChan, firedAlerts, "cash:h1")
+	bot.EvaluateSessionLossAlert(session1, cfg, func() money.Cents { return bankrollCents }, alertChan)
+	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankrollCents, time.Now(), alertChan, firedAlerts, "cash:h1")
 	assertMsgs("session 1", []string{
-		"⚠️ Session loss alert\nLost 1.2 buy-ins this session ($6.00)\nBankroll: $94.00",
-		"⚠️ Daily loss alert\nDown $6.00 across all games this poker day\nBankroll: $94.00",
-	})
+		"⚠️ Session loss alert\nLost 1.2 buy-ins this session ($6.00)\nBankroll: $94.00", "⚠️ Daily loss alert\nDown $6.00 across all games this poker day\nBankroll: $94.00"})
 
-	session2 := parsers.CashSession{Date: now.Add(time.Minute), Stake: "NL5", BuyInUSD: 5, NetUSD: -4, Hands: 30, FirstHandID: "h2"}
+	session2 := parsers.CashSession{Date: now.Add(time.Minute), Stake: "NL5", BuyInCents: 500, NetCents: -400, Hands: 30, FirstHandID: "h2"}
 	if err := store.AppendCashSession(session2); err != nil {
 		t.Fatalf("AppendCashSession(session2): %v", err)
 	}
 
 	ledger, dayTournaments = fetchEvalData(store, cfg, time.Now(), false)
-	bankroll = ledgerBankroll(ledger)
-	if bankroll != 90 {
-		t.Fatalf("bankroll after session 2 = %v, want 90", bankroll)
+	bankrollCents = ledgerBankroll(ledger)
+	if bankrollCents != 9000 {
+		t.Fatalf("bankroll after session 2 = %v, want 90", bankrollCents)
 	}
-	bot.EvaluateSessionLossAlert(session2, cfg, func() float64 { return bankroll }, alertChan)
-	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankroll, time.Now(), alertChan, firedAlerts, "cash:h2")
+	bot.EvaluateSessionLossAlert(session2, cfg, func() money.Cents { return bankrollCents }, alertChan)
+	evaluateOncePerKeyAlerts(cfg, ledger, dayTournaments, bankrollCents, time.Now(), alertChan, firedAlerts, "cash:h2")
 	assertMsgs("session 2", []string{
-		"⚠️ Losing streak alert\n2 losing sessions in a row\nBankroll: $90.00",
-	})
+		"⚠️ Losing streak alert\n2 losing sessions in a row\nBankroll: $90.00"})
 }
 
 func TestTournamentAlertText(t *testing.T) {
-	mtt := func(finish, players, reEntries int, buyIn float64) parsers.Tournament {
-		return parsers.Tournament{Type: "mtt", BuyInUSD: buyIn, FinishPos: finish, TotalPlayers: players, ReEntries: reEntries}
+	mtt := func(finish, players, reEntries int, buyInCents money.Cents) parsers.Tournament {
+		return parsers.Tournament{Type: "mtt", BuyInCents: buyInCents, FinishPos: finish, TotalPlayers: players, ReEntries: reEntries}
 	}
 	cases := []struct {
-		name    string
-		t       parsers.Tournament
-		netUSD  float64
-		bank    float64
-		wantHas string // substring the re-entry line must (not) contain
-		reEntry bool
+		name      string
+		t         parsers.Tournament
+		netCents  money.Cents
+		bankCents money.Cents
+		wantHas   string // substring the re-entry line must (not) contain
+		reEntry   bool
 	}{
 		{
-			name: "plain MTT has no re-entry line", t: mtt(50, 126, 0, 1.10), netUSD: -1.10, bank: 22.00,
+			name: "plain MTT has no re-entry line", t: mtt(50, 126, 0, 110), netCents: -110, bankCents: 2200,
 			reEntry: false,
 		},
 		{
-			name: "re-entry MTT names the entry count", t: mtt(43, 162, 2, 3.30), netUSD: -3.30, bank: 19.80,
+			name: "re-entry MTT names the entry count", t: mtt(43, 162, 2, 330), netCents: -330, bankCents: 1980,
 			wantHas: "🔁 Re-entered 2× — 3 entries total", reEntry: true,
 		},
 	}
@@ -460,51 +454,48 @@ func TestTournamentAlertText(t *testing.T) {
 	// when formatted directly, so both pool shapes are pinned in full here.
 	mult := 2.0
 	spingoCases := []struct {
-		name   string
-		t      parsers.Tournament
-		netUSD float64
-		bank   float64
-		want   string
+		name      string
+		t         parsers.Tournament
+		netCents  money.Cents
+		bankCents money.Cents
+		want      string
 	}{
 		{
 			name: "spingo with a real cash pool",
 			t: parsers.Tournament{
-				Type: "spingo", BuyInUSD: 0.50, PrizePoolUSD: 1.00,
+				Type: "spingo", BuyInCents: 50, PrizePoolCents: 100,
 				Multiplier: &mult, FinishPos: 1, TotalPlayers: 3,
 			},
-			netUSD: 0.50, bank: 23.58,
-			want: "🎰 Spin & Go\nBuy-in: $0.50\nPrize pool: $1.00 (2x)\nFinish: 1st\nNet: +$0.50\nBankroll: $23.58",
-		},
+			netCents: 50, bankCents: 2358,
+			want: "🎰 Spin & Go\nBuy-in: $0.50\nPrize pool: $1.00 (2x)\nFinish: 1st\nNet: +$0.50\nBankroll: $23.58"},
 		{
 			name: "spingo with a ticket-denominated pool (nil multiplier)",
 			t: parsers.Tournament{
-				Type: "spingo", BuyInUSD: 0.50,
+				Type: "spingo", BuyInCents: 50,
 				PrizePoolDescription: "$1.00 Power Path Step 2 Ticket",
 				FinishPos:            3, TotalPlayers: 3,
 			},
-			netUSD: -0.50, bank: 23.08,
-			want: "🎰 Spin & Go\nBuy-in: $0.50\nPrize pool: $1.00 Power Path Step 2 Ticket\nFinish: 3rd\nNet: -$0.50\nBankroll: $23.08",
-		},
+			netCents: -50, bankCents: 2308,
+			want: "🎰 Spin & Go\nBuy-in: $0.50\nPrize pool: $1.00 Power Path Step 2 Ticket\nFinish: 3rd\nNet: -$0.50\nBankroll: $23.08"},
 		{
 			name: "knockout spingo re-entry keeps the spingo format plus the re-entry line",
 			t: parsers.Tournament{
-				Type: "spingo-ko", BuyInUSD: 1.00, PrizePoolUSD: 2.00,
+				Type: "spingo-ko", BuyInCents: 100, PrizePoolCents: 200,
 				Multiplier: &mult, FinishPos: 2, TotalPlayers: 3, ReEntries: 1,
 			},
-			netUSD: -1.00, bank: 22.08,
-			want: "🎰 Spin & Go\nBuy-in: $1.00\nPrize pool: $2.00 (2x)\nFinish: 2nd\nNet: -$1.00\nBankroll: $22.08\n🔁 Re-entered 1× — 2 entries total for this tournament; buy-in and net cover all of them, updating the earlier alert.",
-		},
+			netCents: -100, bankCents: 2208,
+			want: "🎰 Spin & Go\nBuy-in: $1.00\nPrize pool: $2.00 (2x)\nFinish: 2nd\nNet: -$1.00\nBankroll: $22.08\n🔁 Re-entered 1× — 2 entries total for this tournament; buy-in and net cover all of them, updating the earlier alert."},
 	}
 	for _, c := range spingoCases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := tournamentAlertText(c.t, c.netUSD, c.bank); got != c.want {
+			if got := tournamentAlertText(c.t, c.netCents, c.bankCents); got != c.want {
 				t.Errorf("tournamentAlertText() =\n%q\nwant\n%q", got, c.want)
 			}
 		})
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := tournamentAlertText(c.t, c.netUSD, c.bank)
+			got := tournamentAlertText(c.t, c.netCents, c.bankCents)
 			has := strings.Contains(got, "🔁")
 			if has != c.reEntry {
 				t.Errorf("re-entry line present = %v, want %v\ngot: %q", has, c.reEntry, got)
@@ -642,20 +633,20 @@ func TestServer_ImportBackfill(t *testing.T) {
 	// sign flip, a dropped bounty fold, a double-count) can't pass on row counts
 	// alone. nlhe_cash nets -$0.03 (NL2, 4 hands); the horse MTT nets -$1.10;
 	// with no deposit the bankroll is their sum, -$1.13. Compared with a
-	// tolerance because -0.03 + -1.10 isn't exact in float64 and running_total
+	// tolerance because -0.03 + -1.10 isn't exact in float64 and running_total_cents
 	// round-trips through sqlite REAL.
-	if got := sessions[0].NetUSD; !closeEnoughServer(got, -0.03) {
-		t.Errorf("imported cash session net = %.4f, want -0.03", got)
+	if gotCents := sessions[0].NetCents; !closeEnoughServer(gotCents, -3) {
+		t.Errorf("imported cash session net = %v, want -0.03", gotCents)
 	}
-	if got := mtt.NetUSD; !closeEnoughServer(got, -1.10) {
-		t.Errorf("imported MTT net = %.4f, want -1.10", got)
+	if gotCents := mtt.NetCents; !closeEnoughServer(gotCents, -110) {
+		t.Errorf("imported MTT net = %v, want -1.10", gotCents)
 	}
-	bankroll, err := store.GetCurrentBankroll()
+	bankrollCents, err := store.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnoughServer(bankroll, -1.13) {
-		t.Errorf("bankroll after import = %.4f, want -1.13", bankroll)
+	if !closeEnoughServer(bankrollCents, -113) {
+		t.Errorf("bankroll after import = %v, want -1.13", bankrollCents)
 	}
 }
 
@@ -751,17 +742,17 @@ func TestServer_ImportFreerollHandFileLeavesNoMoney(t *testing.T) {
 	if stub == nil {
 		t.Fatal("partial tournament row not created by the hand file, want a stats-only stub")
 	}
-	if stub.NetUSD != 0 || stub.BuyInUSD != 0 {
-		t.Errorf("partial row carries money: net=%.4f buy-in=%.4f, want both 0", stub.NetUSD, stub.BuyInUSD)
+	if stub.NetCents != 0 || stub.BuyInCents != 0 {
+		t.Errorf("partial row carries money: net=%v buy-in=%v, want both 0", stub.NetCents, stub.BuyInCents)
 	}
 	// The decisive property: the ledger (bankroll) is untouched, so the
 	// incomplete tournament costs the player nothing until it's really recorded.
-	bankroll, err := store.GetCurrentBankroll()
+	bankrollCents, err := store.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if bankroll != 0 {
-		t.Errorf("bankroll = %.4f after a skipped freeroll, want 0 (no ledger impact)", bankroll)
+	if bankrollCents != 0 {
+		t.Errorf("bankroll = %v after a skipped freeroll, want 0 (no ledger impact)", bankrollCents)
 	}
 }
 
@@ -775,15 +766,15 @@ func TestServer_ImportIdempotent(t *testing.T) {
 		importUp(t, "ts/horse.txt", "tournament", "tournament_summary", "horse_T9000000003.txt"),
 	}
 	first := feedImport(t, link, alertChan, ups...)
-	bankroll1, _ := store.GetCurrentBankroll()
+	bankroll1Cents, _ := store.GetCurrentBankroll()
 	second := feedImport(t, link, alertChan, ups...)
-	bankroll2, _ := store.GetCurrentBankroll()
+	bankroll2Cents, _ := store.GetCurrentBankroll()
 
 	if first != second {
 		t.Errorf("report changed on re-scan:\n first: %q\nsecond: %q", first, second)
 	}
-	if !closeEnoughServer(bankroll1, bankroll2) {
-		t.Errorf("bankroll drifted on re-scan: %.2f → %.2f", bankroll1, bankroll2)
+	if !closeEnoughServer(bankroll1Cents, bankroll2Cents) {
+		t.Errorf("bankroll drifted on re-scan: %v → %v", bankroll1Cents, bankroll2Cents)
 	}
 	sessions, _ := store.GetAllCashSessions()
 	if len(sessions) != 1 {
@@ -794,13 +785,7 @@ func TestServer_ImportIdempotent(t *testing.T) {
 	}
 }
 
-func closeEnoughServer(a, b float64) bool {
-	d := a - b
-	if d < 0 {
-		d = -d
-	}
-	return d < 0.005
-}
+func closeEnoughServer(aCents, bCents money.Cents) bool { return aCents == bCents }
 
 // waitForCommand blocks until a command arrives on ch or timeout elapses.
 func waitForCommand(t *testing.T, ch <-chan transport.Command, timeout time.Duration) (transport.Command, bool) {
@@ -841,7 +826,7 @@ func TestServer_SessionEndLedgerHardStop(t *testing.T) {
 	// Pre-seed one losing cash session so the incoming one makes two in a row.
 	prev := parsers.CashSession{
 		Date:  storage.AsStoredClock(time.Now()).Add(-time.Hour),
-		Stake: "NL2", BuyInUSD: 2, NetUSD: -1.50, Hands: 20, DurationMin: 15, FirstHandID: "prevloss1",
+		Stake: "NL2", BuyInCents: 200, NetCents: -150, Hands: 20, DurationMin: 15, FirstHandID: "prevloss1",
 	}
 	if err := store.AppendCashSession(prev); err != nil {
 		t.Fatalf("pre-seeding losing session: %v", err)
@@ -920,7 +905,7 @@ func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 	for i, hid := range []string{"prevloss1", "prevloss2"} {
 		prev := parsers.CashSession{
 			Date:  storage.AsStoredClock(time.Now()).Add(-time.Duration(2-i) * time.Hour),
-			Stake: "NL2", BuyInUSD: 2, NetUSD: -1.50, Hands: 20, DurationMin: 15, FirstHandID: hid,
+			Stake: "NL2", BuyInCents: 200, NetCents: -150, Hands: 20, DurationMin: 15, FirstHandID: hid,
 		}
 		if err := store.AppendCashSession(prev); err != nil {
 			t.Fatalf("pre-seeding losing session %s: %v", hid, err)
@@ -1064,7 +1049,7 @@ func TestEndCashSession_PrunesTimer(t *testing.T) {
 	timer := summaryTimers[fileID]
 
 	pendingSessions := map[string]parsers.CashSession{
-		fileID: {Date: storage.AsStoredClock(time.Now()), Stake: "NL2", BuyInUSD: 2, NetUSD: -1, Hands: 10, DurationMin: 8, FirstHandID: "h1"},
+		fileID: {Date: storage.AsStoredClock(time.Now()), Stake: "NL2", BuyInCents: 200, NetCents: -100, Hands: 10, DurationMin: 8, FirstHandID: "h1"},
 	}
 	firedAlerts := make(map[string]bool)
 	srv.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, func(string, int, string) {})
@@ -1299,9 +1284,9 @@ func TestServer_RewriteSelfHealsThroughServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reference parse: %v", err)
 	}
-	if got.Hands != want.Hands || got.NetUSD != want.NetUSD {
-		t.Fatalf("rewrite not self-healed: stored {hands:%d net:%.4f} want {hands:%d net:%.4f}",
-			got.Hands, got.NetUSD, want.Hands, want.NetUSD)
+	if got.Hands != want.Hands || got.NetCents != want.NetCents {
+		t.Fatalf("rewrite not self-healed: stored {hands:%d net:%v} want {hands:%d net:%v}",
+			got.Hands, got.NetCents, want.Hands, want.NetCents)
 	}
 	if got.SessionID == "" {
 		t.Fatal("self-healed session has no Session ID persisted")
@@ -1314,7 +1299,7 @@ func handHeaderOffsetsBytes(data []byte) []int64 {
 	var offs []int64
 	var off int64
 	for _, raw := range splitKeepNL(data) {
-		line := strings.TrimRight(string(raw), "\r\n")
+		line := strings.TrimRight(string(raw), "\n")
 		if len(line) >= 3 && line[0] == '\xef' && line[1] == '\xbb' && line[2] == '\xbf' {
 			line = line[3:]
 		}

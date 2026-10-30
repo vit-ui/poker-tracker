@@ -12,6 +12,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -25,8 +26,8 @@ CREATE TABLE IF NOT EXISTS cash_sessions (
 	stake TEXT NOT NULL,
 	hands INTEGER NOT NULL,
 	duration_min INTEGER NOT NULL,
-	net_usd REAL NOT NULL,
-	rake_usd REAL NOT NULL,
+	net_cents INTEGER NOT NULL,
+	rake_cents INTEGER NOT NULL,
 	bb100 REAL NOT NULL,
 	vpip REAL NOT NULL,
 	pfr REAL NOT NULL,
@@ -38,17 +39,17 @@ CREATE TABLE IF NOT EXISTS tournaments (
 	date TEXT,
 	type TEXT NOT NULL,
 	tournament_id TEXT NOT NULL UNIQUE,
-	buy_in_usd REAL,
-	prize_pool_usd REAL,
+	buy_in_cents INTEGER,
+	prize_pool_cents INTEGER,
 	prize_pool_description TEXT,
 	multiplier REAL,
 	finish_pos INTEGER,
 	total_players INTEGER,
-	net_usd REAL,
+	net_cents INTEGER,
 	vpip REAL,
 	pfr REAL,
-	bounty_usd REAL,
-	prize_won_usd REAL,
+	bounty_cents INTEGER,
+	prize_won_cents INTEGER,
 	hands INTEGER
 );
 
@@ -56,8 +57,8 @@ CREATE TABLE IF NOT EXISTS bankroll_ledger (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	date TEXT NOT NULL,
 	type TEXT NOT NULL,
-	amount_usd REAL NOT NULL,
-	running_total REAL NOT NULL,
+	amount_cents INTEGER NOT NULL,
+	running_total_cents INTEGER NOT NULL,
 	session_id TEXT
 );
 `
@@ -92,19 +93,19 @@ type tableDef struct {
 var expectedColumns = []tableDef{
 	{"cash_sessions", []columnDef{
 		{"date", "TEXT"}, {"stake", "TEXT"}, {"hands", "INTEGER"},
-		{"duration_min", "INTEGER"}, {"net_usd", "REAL"}, {"rake_usd", "REAL"},
+		{"duration_min", "INTEGER"}, {"net_cents", "INTEGER"}, {"rake_cents", "INTEGER"},
 		{"bb100", "REAL"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"session_id", "TEXT"},
 	}},
 	{"tournaments", []columnDef{
 		{"date", "TEXT"}, {"type", "TEXT"}, {"tournament_id", "TEXT"},
-		{"buy_in_usd", "REAL"}, {"prize_pool_usd", "REAL"}, {"prize_pool_description", "TEXT"},
+		{"buy_in_cents", "INTEGER"}, {"prize_pool_cents", "INTEGER"}, {"prize_pool_description", "TEXT"},
 		{"multiplier", "REAL"}, {"finish_pos", "INTEGER"}, {"total_players", "INTEGER"},
-		{"net_usd", "REAL"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"bounty_usd", "REAL"},
-		{"prize_won_usd", "REAL"}, {"hands", "INTEGER"},
+		{"net_cents", "INTEGER"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"bounty_cents", "INTEGER"},
+		{"prize_won_cents", "INTEGER"}, {"hands", "INTEGER"},
 	}},
 	{"bankroll_ledger", []columnDef{
-		{"date", "TEXT"}, {"type", "TEXT"}, {"amount_usd", "REAL"},
-		{"running_total", "REAL"}, {"session_id", "TEXT"},
+		{"date", "TEXT"}, {"type", "TEXT"}, {"amount_cents", "INTEGER"},
+		{"running_total_cents", "INTEGER"}, {"session_id", "TEXT"},
 	}},
 }
 
@@ -259,19 +260,19 @@ func (s *Store) appendCashSession(tx *sql.Tx, session parsers.CashSession) error
 	if err := s.upsertCashSessionsRow(tx, id, session); err != nil {
 		return err
 	}
-	return s.upsertLedgerCashSessionRow(tx, id, session.Date, session.NetUSD)
+	return s.upsertLedgerCashSessionRow(tx, id, session.Date, session.NetCents)
 }
 
 func (s *Store) upsertCashSessionsRow(tx *sql.Tx, id string, session parsers.CashSession) error {
 	_, err := tx.Exec(`
-		INSERT INTO cash_sessions (date, stake, hands, duration_min, net_usd, rake_usd, bb100, vpip, pfr, session_id)
+		INSERT INTO cash_sessions (date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id) DO UPDATE SET
 			date = excluded.date, stake = excluded.stake, hands = excluded.hands,
-			duration_min = excluded.duration_min, net_usd = excluded.net_usd,
-			rake_usd = excluded.rake_usd, bb100 = excluded.bb100, vpip = excluded.vpip, pfr = excluded.pfr
+			duration_min = excluded.duration_min, net_cents = excluded.net_cents,
+			rake_cents = excluded.rake_cents, bb100 = excluded.bb100, vpip = excluded.vpip, pfr = excluded.pfr
 	`, session.Date.UTC().Format(dateFormat), session.Stake, session.Hands, session.DurationMin,
-		session.NetUSD, session.RakeUSD, session.BB100, session.VPIP, session.PFR, id)
+		session.NetCents, session.RakeCents, session.BB100, session.VPIP, session.PFR, id)
 	if err != nil {
 		return fmt.Errorf("upserting cash session row: %w", err)
 	}
@@ -281,8 +282,8 @@ func (s *Store) upsertCashSessionsRow(tx *sql.Tx, id string, session parsers.Cas
 // upsertLedgerCashSessionRow writes (or corrects, if it already exists) the
 // cash session's own bankroll_ledger row, keyed by the session ID — the same
 // upsert semantics as upsertCashSessionsRow.
-func (s *Store) upsertLedgerCashSessionRow(tx *sql.Tx, id string, date time.Time, netUSD float64) error {
-	return s.upsertLedgerRow(tx, id, date, "cash_session", netUSD)
+func (s *Store) upsertLedgerCashSessionRow(tx *sql.Tx, id string, date time.Time, netCents money.Cents) error {
+	return s.upsertLedgerRow(tx, id, date, "cash_session", netCents)
 }
 
 // upsertLedgerTournamentRow corrects the tournament's own bankroll_ledger row
@@ -291,27 +292,31 @@ func (s *Store) upsertLedgerCashSessionRow(tx *sql.Tx, id string, date time.Time
 // duplicate file event), so this is idempotency, not a hand-to-hand
 // correction — without it the ledger would double-count a tournament whose
 // tournaments row stays correctly deduplicated by tournament_id.
-func (s *Store) upsertLedgerTournamentRow(tx *sql.Tx, tournamentID string, date time.Time, netUSD float64) error {
-	return s.upsertLedgerRow(tx, tournamentID, date, "tournament", netUSD)
+func (s *Store) upsertLedgerTournamentRow(tx *sql.Tx, tournamentID string, date time.Time, netCents money.Cents) error {
+	return s.upsertLedgerRow(tx, tournamentID, date, "tournament", netCents)
 }
 
 // upsertLedgerRow finds the ledger row previously written for sessionID (the
 // Session ID column — a cash session ID or a TournamentID) and corrects its
-// amount and running total in place, cascading the running-total recompute to
+// amountCents and running total in place, cascading the running-total recompute to
 // every later row (see cascadeRunningTotals). If no such row exists yet, it
 // appends a fresh one built off the ledger's current last running total.
-func (s *Store) upsertLedgerRow(tx *sql.Tx, sessionID string, date time.Time, entryType string, amount float64) error {
+func (s *Store) upsertLedgerRow(tx *sql.Tx, sessionID string, date time.Time, entryType string, amountCents money.Cents) error {
 	var rowID int64
 	err := tx.QueryRow(`SELECT id FROM bankroll_ledger WHERE session_id = ?`, sessionID).Scan(&rowID)
 	if err == sql.ErrNoRows {
-		prev, err := lastRunningTotal(tx.QueryRow(lastRunningTotalQuery))
+		prevCents, err := lastRunningTotal(tx.QueryRow(lastRunningTotalQuery))
+		if err != nil {
+			return err
+		}
+		totalCents, err := money.Add(prevCents, amountCents)
 		if err != nil {
 			return err
 		}
 		_, err = tx.Exec(`
-			INSERT INTO bankroll_ledger (date, type, amount_usd, running_total, session_id)
+			INSERT INTO bankroll_ledger (date, type, amount_cents, running_total_cents, session_id)
 			VALUES (?, ?, ?, ?, ?)
-		`, date.UTC().Format(dateFormat), entryType, amount, prev+amount, sessionID)
+		`, date.UTC().Format(dateFormat), entryType, amountCents, totalCents, sessionID)
 		if err != nil {
 			return fmt.Errorf("appending ledger row for %s: %w", sessionID, err)
 		}
@@ -320,42 +325,42 @@ func (s *Store) upsertLedgerRow(tx *sql.Tx, sessionID string, date time.Time, en
 	if err != nil {
 		return fmt.Errorf("looking up ledger row for %s: %w", sessionID, err)
 	}
-	return s.cascadeLedgerUpdate(tx, rowID, amount)
+	return s.cascadeLedgerUpdate(tx, rowID, amountCents)
 }
 
 // cascadeLedgerUpdate sets the bankroll_ledger row identified by rowID to
-// newAmount and recomputes running_total for that row and every row after it
+// newAmountCents and recomputes running_total_cents for that row and every row after it
 // (by insertion order). A plain update of rowID alone is only correct when
 // it's already the ledger's last row — with more than one table open at once,
 // a second table's session row (or a mid-session deposit) can land after this
 // row while it's still being corrected, and that later row's stored running
-// total was computed from this row's old amount.
-func (s *Store) cascadeLedgerUpdate(tx *sql.Tx, rowID int64, newAmount float64) error {
-	var base float64
+// total was computed from this row's old amountCents.
+func (s *Store) cascadeLedgerUpdate(tx *sql.Tx, rowID int64, newAmountCents money.Cents) error {
+	var baseCents money.Cents
 	err := tx.QueryRow(`
-		SELECT running_total FROM bankroll_ledger WHERE id < ? ORDER BY id DESC LIMIT 1
-	`, rowID).Scan(&base)
+		SELECT running_total_cents FROM bankroll_ledger WHERE id < ? ORDER BY id DESC LIMIT 1
+	`, rowID).Scan(&baseCents)
 	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("reading running total before row %d: %w", rowID, err)
+		return fmt.Errorf("reading runningCents totalCents before row %d: %w", rowID, err)
 	}
 
 	rows, err := tx.Query(`
-		SELECT id, amount_usd FROM bankroll_ledger WHERE id >= ? ORDER BY id ASC
+		SELECT id, amount_cents FROM bankroll_ledger WHERE id >= ? ORDER BY id ASC
 	`, rowID)
 	if err != nil {
 		return fmt.Errorf("reading ledger rows from %d: %w", rowID, err)
 	}
 	var ids []int64
-	var amounts []float64
+	var amountsCents []money.Cents
 	for rows.Next() {
 		var id int64
-		var amt float64
-		if err := rows.Scan(&id, &amt); err != nil {
+		var amountCents money.Cents
+		if err := rows.Scan(&id, &amountCents); err != nil {
 			rows.Close()
 			return fmt.Errorf("scanning ledger row: %w", err)
 		}
 		ids = append(ids, id)
-		amounts = append(amounts, amt)
+		amountsCents = append(amountsCents, amountCents)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -363,56 +368,59 @@ func (s *Store) cascadeLedgerUpdate(tx *sql.Tx, rowID int64, newAmount float64) 
 	}
 	rows.Close()
 
-	totals := storage.CascadeRunningTotals(amounts, newAmount, base)
+	totalsCents, err := storage.CascadeRunningTotals(amountsCents, newAmountCents, baseCents)
+	if err != nil {
+		return err
+	}
 
 	for i, id := range ids {
-		amt := amounts[i]
+		amountCents := amountsCents[i]
 		if i == 0 {
-			amt = newAmount
+			amountCents = newAmountCents
 		}
-		if _, err := tx.Exec(`UPDATE bankroll_ledger SET amount_usd = ?, running_total = ? WHERE id = ?`,
-			amt, totals[i], id); err != nil {
+		if _, err := tx.Exec("UPDATE bankroll_ledger SET amount_cents = ?, running_total_cents = ? WHERE id = ?",
+			amountCents, totalsCents[i], id); err != nil {
 			return fmt.Errorf("cascading ledger update: %w", err)
 		}
 	}
 	return nil
 }
 
-const lastRunningTotalQuery = `SELECT running_total FROM bankroll_ledger ORDER BY id DESC LIMIT 1`
+const lastRunningTotalQuery = "SELECT running_total_cents FROM bankroll_ledger ORDER BY id DESC LIMIT 1"
 
-func lastRunningTotal(row *sql.Row) (float64, error) {
-	var total float64
-	err := row.Scan(&total)
+func lastRunningTotal(row *sql.Row) (money.Cents, error) {
+	var totalCents money.Cents
+	err := row.Scan(&totalCents)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("reading last running total: %w", err)
+		return 0, fmt.Errorf("reading last runningCents totalCents: %w", err)
 	}
-	return total, nil
+	return totalCents, nil
 }
 
 // tournamentSnapshot holds the subset of an existing tournaments row needed
-// to reconcile NetUSD/Type against knockout-bounty data, which is only ever
+// to reconcile NetCents/Type against knockout-bounty data, which is only ever
 // known from the hand history file and never from the summary file
 // AppendTournament parses its other fields from. Mirrors
 // sheets.tournamentRowSnapshot.
 type tournamentSnapshot struct {
-	date      string // RFC3339, empty if NULL (summary hasn't arrived)
-	typeVal   string
-	buyInUSD  float64
-	hasNetUSD bool // false while the row is still a hand-file-only partial row
-	netUSD    float64
-	bountyUSD float64
+	date        string // RFC3339, empty if NULL (summary hasn't arrived)
+	typeVal     string
+	buyInCents  money.Cents
+	hasNetUSD   bool // false while the row is still a hand-file-only partial row
+	netCents    money.Cents
+	bountyCents money.Cents
 }
 
 func (s *Store) readTournamentSnapshot(tx *sql.Tx, tournamentID string) (snap tournamentSnapshot, found bool, err error) {
 	var date sql.NullString
-	var buyIn, netUSD, bountyUSD sql.NullFloat64
+	var buyInCents, netCents, bountyCents sql.NullInt64
 	row := tx.QueryRow(`
-		SELECT date, type, buy_in_usd, net_usd, bounty_usd FROM tournaments WHERE tournament_id = ?
+		SELECT date, type, buy_in_cents, net_cents, bounty_cents FROM tournaments WHERE tournament_id = ?
 	`, tournamentID)
-	if err := row.Scan(&date, &snap.typeVal, &buyIn, &netUSD, &bountyUSD); err != nil {
+	if err := row.Scan(&date, &snap.typeVal, &buyInCents, &netCents, &bountyCents); err != nil {
 		if err == sql.ErrNoRows {
 			return tournamentSnapshot{}, false, nil
 		}
@@ -421,15 +429,15 @@ func (s *Store) readTournamentSnapshot(tx *sql.Tx, tournamentID string) (snap to
 	if date.Valid {
 		snap.date = date.String
 	}
-	if buyIn.Valid {
-		snap.buyInUSD = buyIn.Float64
+	if buyInCents.Valid {
+		snap.buyInCents = money.Cents(buyInCents.Int64)
 	}
-	if netUSD.Valid {
+	if netCents.Valid {
 		snap.hasNetUSD = true
-		snap.netUSD = netUSD.Float64
+		snap.netCents = money.Cents(netCents.Int64)
 	}
-	if bountyUSD.Valid {
-		snap.bountyUSD = bountyUSD.Float64
+	if bountyCents.Valid {
+		snap.bountyCents = money.Cents(bountyCents.Int64)
 	}
 	return snap, true, nil
 }
@@ -438,32 +446,32 @@ func (s *Store) readTournamentSnapshot(tx *sql.Tx, tournamentID string) (snap to
 // upserts its bankroll_ledger row. If the tournaments row already exists
 // (created by UpdateTournamentHandStats), it folds in whatever bounty
 // winnings that row already has recorded and carries forward the knockout
-// signal into a real "<base>-ko" Type. Leaves vpip/pfr/bounty_usd untouched.
-// Returns the final NetUSD (baseline net plus any bounty). Mirrors
+// signal into a real "<base>-ko" Type. Leaves vpip/pfr/bounty_cents untouched.
+// Returns the final NetCents (baseline net plus any bounty). Mirrors
 // sheets.Client.AppendTournament.
-func (s *Store) AppendTournament(t parsers.Tournament) (float64, error) {
+func (s *Store) AppendTournament(t parsers.Tournament) (money.Cents, error) {
 	if err := storage.ValidateTournament(t); err != nil {
 		return 0, err
 	}
-	var netUSD float64
+	var netCents money.Cents
 	err := s.write(func(tx *sql.Tx) error {
 		var err error
-		netUSD, err = s.appendTournament(tx, t)
+		netCents, err = s.appendTournament(tx, t)
 		return err
 	})
 	if err != nil {
 		return 0, err
 	}
-	return netUSD, nil
+	return netCents, nil
 }
 
-func (s *Store) appendTournament(tx *sql.Tx, t parsers.Tournament) (float64, error) {
-	var prizePoolUSD sql.NullFloat64
+func (s *Store) appendTournament(tx *sql.Tx, t parsers.Tournament) (money.Cents, error) {
+	var prizePoolCents sql.NullInt64
 	var prizePoolDesc sql.NullString
 	if t.PrizePoolDescription != "" {
 		prizePoolDesc = sql.NullString{String: t.PrizePoolDescription, Valid: true}
 	} else {
-		prizePoolUSD = sql.NullFloat64{Float64: t.PrizePoolUSD, Valid: true}
+		prizePoolCents = sql.NullInt64{Int64: int64(t.PrizePoolCents), Valid: true}
 	}
 	var multiplier sql.NullFloat64
 	if t.Multiplier != nil {
@@ -475,41 +483,44 @@ func (s *Store) appendTournament(tx *sql.Tx, t parsers.Tournament) (float64, err
 		return 0, err
 	}
 
-	var bounty float64
+	var bountyCents money.Cents
 	typeOut := t.Type
 	if found {
-		bounty = snap.bountyUSD
+		bountyCents = snap.bountyCents
 		typeOut = storage.ReconcileKnockoutType(t.Type, snap.typeVal)
 	}
-	netUSD, prizeWon := storage.FoldBountyIntoNet(t.NetUSD, bounty, t.BuyInUSD)
+	netCents, prizeWonCents, err := storage.FoldBountyIntoNet(t.NetCents, bountyCents, t.BuyInCents)
+	if err != nil {
+		return 0, err
+	}
 
 	if found {
 		_, err := tx.Exec(`
 			UPDATE tournaments SET
-				date = ?, type = ?, buy_in_usd = ?, prize_pool_usd = ?, prize_pool_description = ?,
-				multiplier = ?, finish_pos = ?, total_players = ?, net_usd = ?, prize_won_usd = ?
+				date = ?, type = ?, buy_in_cents = ?, prize_pool_cents = ?, prize_pool_description = ?,
+				multiplier = ?, finish_pos = ?, total_players = ?, net_cents = ?, prize_won_cents = ?
 			WHERE tournament_id = ?
-		`, t.Date.UTC().Format(dateFormat), typeOut, t.BuyInUSD, prizePoolUSD, prizePoolDesc,
-			multiplier, t.FinishPos, t.TotalPlayers, netUSD, prizeWon, t.TournamentID)
+		`, t.Date.UTC().Format(dateFormat), typeOut, t.BuyInCents, prizePoolCents, prizePoolDesc,
+			multiplier, t.FinishPos, t.TotalPlayers, netCents, prizeWonCents, t.TournamentID)
 		if err != nil {
 			return 0, fmt.Errorf("updating tournament row: %w", err)
 		}
 	} else {
 		_, err := tx.Exec(`
-			INSERT INTO tournaments (date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
-				multiplier, finish_pos, total_players, net_usd, prize_won_usd)
+			INSERT INTO tournaments (date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
+				multiplier, finish_pos, total_players, net_cents, prize_won_cents)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, t.Date.UTC().Format(dateFormat), typeOut, t.TournamentID, t.BuyInUSD, prizePoolUSD, prizePoolDesc,
-			multiplier, t.FinishPos, t.TotalPlayers, netUSD, prizeWon)
+		`, t.Date.UTC().Format(dateFormat), typeOut, t.TournamentID, t.BuyInCents, prizePoolCents, prizePoolDesc,
+			multiplier, t.FinishPos, t.TotalPlayers, netCents, prizeWonCents)
 		if err != nil {
 			return 0, fmt.Errorf("inserting tournament row: %w", err)
 		}
 	}
 
-	if err := s.upsertLedgerTournamentRow(tx, t.TournamentID, t.Date, netUSD); err != nil {
+	if err := s.upsertLedgerTournamentRow(tx, t.TournamentID, t.Date, netCents); err != nil {
 		return 0, err
 	}
-	return netUSD, nil
+	return netCents, nil
 }
 
 // UpdateTournamentHandStats writes VPIP, PFR, hand count, and knockout-bounty
@@ -520,19 +531,19 @@ func (s *Store) appendTournament(tx *sql.Tx, t parsers.Tournament) (float64, err
 // row exists yet, creates a partial one and stops there — AppendTournament
 // completes it once the summary file arrives. If a row exists but the
 // summary hasn't landed yet either, only type/vpip/pfr/hands/bounty are
-// written. If a row exists and already has summary data, NetUSD and Prize
+// written. If a row exists and already has summary data, NetCents and Prize
 // Won are reconciled and the tournament's bankroll_ledger row is corrected
 // to match. Mirrors sheets.Client.UpdateTournamentHandStats.
-func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
-	if err := storage.ValidateNumbers(vpip, pfr, bountyUSD); err != nil {
+func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error {
+	if err := storage.ValidateNumbers(vpip, pfr); err != nil {
 		return err
 	}
 	return s.write(func(tx *sql.Tx) error {
-		return s.updateTournamentHandStats(tx, tournamentID, vpip, pfr, hands, bountyUSD, isKnockout)
+		return s.updateTournamentHandStats(tx, tournamentID, vpip, pfr, hands, bountyCents, isKnockout)
 	})
 }
 
-func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
+func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error {
 	snap, found, err := s.readTournamentSnapshot(tx, tournamentID)
 	if err != nil {
 		return err
@@ -544,9 +555,9 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 			typeCell = storage.KnockoutPlaceholder
 		}
 		_, err := tx.Exec(`
-			INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_usd)
+			INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_cents)
 			VALUES (?, ?, ?, ?, ?, ?)
-		`, typeCell, tournamentID, vpip, pfr, hands, bountyUSD)
+		`, typeCell, tournamentID, vpip, pfr, hands, bountyCents)
 		if err != nil {
 			return fmt.Errorf("creating partial tournament row for %s: %w", tournamentID, err)
 		}
@@ -559,8 +570,8 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 	}
 
 	if _, err := tx.Exec(`
-		UPDATE tournaments SET type = ?, vpip = ?, pfr = ?, hands = ?, bounty_usd = ? WHERE tournament_id = ?
-	`, typeOut, vpip, pfr, hands, bountyUSD, tournamentID); err != nil {
+		UPDATE tournaments SET type = ?, vpip = ?, pfr = ?, hands = ?, bounty_cents = ? WHERE tournament_id = ?
+	`, typeOut, vpip, pfr, hands, bountyCents, tournamentID); err != nil {
 		return fmt.Errorf("updating hand stats for tournament %s: %w", tournamentID, err)
 	}
 
@@ -569,11 +580,14 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 		return nil
 	}
 
-	netUSD, prizeWon := storage.ReconcileTournamentBounty(snap.netUSD, snap.bountyUSD, bountyUSD, snap.buyInUSD)
+	netCents, prizeWonCents, err := storage.ReconcileTournamentBounty(snap.netCents, snap.bountyCents, bountyCents, snap.buyInCents)
+	if err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(`
-		UPDATE tournaments SET net_usd = ?, prize_won_usd = ? WHERE tournament_id = ?
-	`, netUSD, prizeWon, tournamentID); err != nil {
+		UPDATE tournaments SET net_cents = ?, prize_won_cents = ? WHERE tournament_id = ?
+	`, netCents, prizeWonCents, tournamentID); err != nil {
 		return fmt.Errorf("reconciling net for tournament %s: %w", tournamentID, err)
 	}
 
@@ -581,26 +595,23 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 	if err != nil {
 		return fmt.Errorf("parsing stored date for tournament %s: %w", tournamentID, err)
 	}
-	return s.upsertLedgerTournamentRow(tx, tournamentID, date, netUSD)
+	return s.upsertLedgerTournamentRow(tx, tournamentID, date, netCents)
 }
 
 // AppendLedgerEntry appends a deposit or withdrawal row to bankroll_ledger.
-// For withdrawals, the caller passes a negative amountUSD. The date is
+// For withdrawals, the caller passes a negative amountCents. The date is
 // stored via storage.AsStoredClock — local wall-clock digits, not the true
 // UTC instant — so deposit/withdrawal rows live in the same date coordinate
 // system as session rows (whose dates come from PokerStars' zone-less local
 // timestamps) and window queries treat both alike.
-func (s *Store) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error {
+func (s *Store) AppendLedgerEntry(entryType string, amountCents money.Cents, now time.Time, operationID string) error {
 	if err := storage.ValidateMoneyOperationID(operationID); err != nil {
 		return err
 	}
-	if err := storage.ValidateNumbers(amountUSD); err != nil {
-		return err
-	}
-	return s.write(func(tx *sql.Tx) error { return s.appendLedgerEntry(tx, entryType, amountUSD, now, operationID) })
+	return s.write(func(tx *sql.Tx) error { return s.appendLedgerEntry(tx, entryType, amountCents, now, operationID) })
 }
 
-func (s *Store) appendLedgerEntry(tx *sql.Tx, entryType string, amountUSD float64, now time.Time, operationID string) error {
+func (s *Store) appendLedgerEntry(tx *sql.Tx, entryType string, amountCents money.Cents, now time.Time, operationID string) error {
 	if operationID != "" {
 		var exists int
 		err := tx.QueryRow("SELECT 1 FROM bankroll_ledger WHERE session_id = ?", operationID).Scan(&exists)
@@ -612,13 +623,17 @@ func (s *Store) appendLedgerEntry(tx *sql.Tx, entryType string, amountUSD float6
 		}
 	}
 
-	prev, err := lastRunningTotal(tx.QueryRow(lastRunningTotalQuery))
+	prevCents, err := lastRunningTotal(tx.QueryRow(lastRunningTotalQuery))
+	if err != nil {
+		return err
+	}
+	totalCents, err := money.Add(prevCents, amountCents)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(`
-		INSERT INTO bankroll_ledger (date, type, amount_usd, running_total,session_id) VALUES (?, ?, ?, ?,?)
-	`, storage.AsStoredClock(now).Format(dateFormat), entryType, amountUSD, prev+amountUSD, operationID)
+		INSERT INTO bankroll_ledger (date, type, amount_cents, running_total_cents,session_id) VALUES (?, ?, ?, ?,?)
+	`, storage.AsStoredClock(now).Format(dateFormat), entryType, amountCents, totalCents, operationID)
 	if err != nil {
 		return fmt.Errorf("appending ledger entry: %w", err)
 	}
@@ -627,7 +642,7 @@ func (s *Store) appendLedgerEntry(tx *sql.Tx, entryType string, amountUSD float6
 
 // GetCurrentBankroll returns the running total of the last bankroll_ledger
 // row. Returns 0 if the ledger is empty.
-func (s *Store) GetCurrentBankroll() (float64, error) {
+func (s *Store) GetCurrentBankroll() (money.Cents, error) {
 	return lastRunningTotal(s.db.QueryRow(lastRunningTotalQuery))
 }
 
@@ -641,7 +656,7 @@ func (s *Store) GetSheetURL() string {
 // GetLedgerEntriesSince returns all bankroll_ledger rows where Date >= t.
 func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT date, type, amount_usd, running_total, session_id FROM bankroll_ledger WHERE date >= ? ORDER BY id ASC
+		SELECT date, type, amount_cents, running_total_cents, session_id FROM bankroll_ledger WHERE date >= ? ORDER BY id ASC
 	`, t.UTC().Format(dateFormat))
 	if err != nil {
 		return nil, fmt.Errorf("reading bankroll ledger: %w", err)
@@ -651,9 +666,9 @@ func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error
 	var result []storage.LedgerEntry
 	for rows.Next() {
 		var dateStr, entryType string
-		var amount, running float64
+		var amountCents, runningCents money.Cents
 		var sessionID sql.NullString
-		if err := rows.Scan(&dateStr, &entryType, &amount, &running, &sessionID); err != nil {
+		if err := rows.Scan(&dateStr, &entryType, &amountCents, &runningCents, &sessionID); err != nil {
 			return nil, fmt.Errorf("scanning ledger row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
@@ -661,10 +676,10 @@ func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error
 			return nil, fmt.Errorf("parsing ledger date %q: %w", dateStr, err)
 		}
 		entry := storage.LedgerEntry{
-			Date:         date,
-			Type:         entryType,
-			AmountUSD:    amount,
-			RunningTotal: running,
+			Date:              date,
+			Type:              entryType,
+			AmountCents:       amountCents,
+			RunningTotalCents: runningCents,
 		}
 		if sessionID.Valid {
 			entry.SessionID = sessionID.String
@@ -682,7 +697,7 @@ func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error
 // Session ID kept or discarded.
 func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT date, stake, hands, duration_min, net_usd, rake_usd, bb100, vpip, pfr, session_id
+		SELECT date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id
 		FROM cash_sessions WHERE date >= ? ORDER BY id ASC
 	`, since.UTC().Format(dateFormat))
 	if err != nil {
@@ -695,8 +710,9 @@ func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord,
 		var dateStr, stake string
 		var sessionID sql.NullString // NULL on migrated pre-v1.4 sheets rows
 		var hands, durationMin int
-		var netUSD, rakeUSD, bb100, vpip, pfr float64
-		if err := rows.Scan(&dateStr, &stake, &hands, &durationMin, &netUSD, &rakeUSD, &bb100, &vpip, &pfr, &sessionID); err != nil {
+		var netCents, rakeCents money.Cents
+		var bb100, vpip, pfr float64
+		if err := rows.Scan(&dateStr, &stake, &hands, &durationMin, &netCents, &rakeCents, &bb100, &vpip, &pfr, &sessionID); err != nil {
 			return nil, fmt.Errorf("scanning cash session row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
@@ -709,8 +725,8 @@ func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord,
 				Stake:       stake,
 				Hands:       hands,
 				DurationMin: durationMin,
-				NetUSD:      netUSD,
-				RakeUSD:     rakeUSD,
+				NetCents:    netCents,
+				RakeCents:   rakeCents,
 				BB100:       bb100,
 				VPIP:        vpip,
 				PFR:         pfr,
@@ -722,7 +738,7 @@ func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord,
 }
 
 // GetCashSessionsSince returns all cash_sessions rows where Date >= t.
-// BuyInUSD is not stored and will be zero in returned structs, matching the
+// BuyInCents is not stored and will be zero in returned structs, matching the
 // sheets backend.
 func (s *Store) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error) {
 	records, err := s.queryCashSessions(t)
@@ -757,10 +773,11 @@ func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, e
 // GetTournamentByID share; where is ANDed onto the partial-row skip.
 func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
-			multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd, hands
+		SELECT date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
+			multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands
 		FROM tournaments
-		WHERE date IS NOT NULL AND `+where+`
+		WHERE date IS NOT NULL AND `+
+		where+`
 		ORDER BY id ASC
 	`, args...)
 	if err != nil {
@@ -771,14 +788,15 @@ func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.Tourna
 	var result []storage.TournamentRecord
 	for rows.Next() {
 		var dateStr, typeVal, tournamentID string
-		var buyIn, netUSD float64
-		var prizePoolUSD, vpip, pfr, bountyUSD, prizeWonUSD sql.NullFloat64
+		var buyInCents, netCents money.Cents
+		var prizePoolCents, bountyCents, prizeWonCents sql.NullInt64
+		var vpip, pfr sql.NullFloat64
 		var prizePoolDesc sql.NullString
 		var multiplier sql.NullFloat64
 		var hands sql.NullInt64
 		var finishPos, totalPlayers int
-		if err := rows.Scan(&dateStr, &typeVal, &tournamentID, &buyIn, &prizePoolUSD, &prizePoolDesc,
-			&multiplier, &finishPos, &totalPlayers, &netUSD, &vpip, &pfr, &bountyUSD, &prizeWonUSD, &hands); err != nil {
+		if err := rows.Scan(&dateStr, &typeVal, &tournamentID, &buyInCents, &prizePoolCents, &prizePoolDesc,
+			&multiplier, &finishPos, &totalPlayers, &netCents, &vpip, &pfr, &bountyCents, &prizeWonCents, &hands); err != nil {
 			return nil, fmt.Errorf("scanning tournament row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
@@ -790,16 +808,16 @@ func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.Tourna
 				Date:         date,
 				Type:         typeVal,
 				TournamentID: tournamentID,
-				BuyInUSD:     buyIn,
+				BuyInCents:   buyInCents,
 				FinishPos:    finishPos,
 				TotalPlayers: totalPlayers,
-				NetUSD:       netUSD,
+				NetCents:     netCents,
 			},
 		}
 		if prizePoolDesc.Valid && prizePoolDesc.String != "" {
 			rec.PrizePoolDescription = prizePoolDesc.String
-		} else if prizePoolUSD.Valid {
-			rec.PrizePoolUSD = prizePoolUSD.Float64
+		} else if prizePoolCents.Valid {
+			rec.PrizePoolCents = money.Cents(prizePoolCents.Int64)
 		}
 		if multiplier.Valid {
 			m := multiplier.Float64
@@ -813,11 +831,11 @@ func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.Tourna
 			p := pfr.Float64
 			rec.PFR = &p
 		}
-		if bountyUSD.Valid {
-			rec.BountyWonUSD = bountyUSD.Float64
+		if bountyCents.Valid {
+			rec.BountyWonCents = money.Cents(bountyCents.Int64)
 		}
-		if prizeWonUSD.Valid {
-			rec.PrizeWonUSD = prizeWonUSD.Float64
+		if prizeWonCents.Valid {
+			rec.PrizeWonCents = money.Cents(prizeWonCents.Int64)
 		}
 		if hands.Valid {
 			h := int(hands.Int64)
@@ -891,8 +909,8 @@ func (s *Store) ExportSnapshot() (storage.Snapshot, error) {
 // partials out and scans those columns non-nullably.
 func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
-			multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd, hands
+		SELECT date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
+			multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands
 		FROM tournaments ORDER BY id ASC
 	`)
 	if err != nil {
@@ -904,10 +922,11 @@ func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 	for rows.Next() {
 		var date, prizePoolDesc sql.NullString
 		var typeVal, tournamentID string
-		var buyIn, prizePoolUSD, multiplier, netUSD, vpip, pfr, bountyUSD, prizeWonUSD sql.NullFloat64
+		var buyInCents, prizePoolCents, netCents, bountyCents, prizeWonCents sql.NullInt64
+		var multiplier, vpip, pfr sql.NullFloat64
 		var finishPos, totalPlayers, hands sql.NullInt64
-		if err := rows.Scan(&date, &typeVal, &tournamentID, &buyIn, &prizePoolUSD, &prizePoolDesc,
-			&multiplier, &finishPos, &totalPlayers, &netUSD, &vpip, &pfr, &bountyUSD, &prizeWonUSD, &hands); err != nil {
+		if err := rows.Scan(&date, &typeVal, &tournamentID, &buyInCents, &prizePoolCents, &prizePoolDesc,
+			&multiplier, &finishPos, &totalPlayers, &netCents, &vpip, &pfr, &bountyCents, &prizeWonCents, &hands); err != nil {
 			return nil, fmt.Errorf("scanning tournament row: %w", err)
 		}
 		rec := storage.TournamentRecord{
@@ -920,13 +939,13 @@ func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 			}
 			rec.Date = d
 		}
-		if buyIn.Valid {
-			rec.BuyInUSD = buyIn.Float64
+		if buyInCents.Valid {
+			rec.BuyInCents = money.Cents(buyInCents.Int64)
 		}
 		if prizePoolDesc.Valid && prizePoolDesc.String != "" {
 			rec.PrizePoolDescription = prizePoolDesc.String
-		} else if prizePoolUSD.Valid {
-			rec.PrizePoolUSD = prizePoolUSD.Float64
+		} else if prizePoolCents.Valid {
+			rec.PrizePoolCents = money.Cents(prizePoolCents.Int64)
 		}
 		if multiplier.Valid {
 			m := multiplier.Float64
@@ -938,8 +957,8 @@ func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 		if totalPlayers.Valid {
 			rec.TotalPlayers = int(totalPlayers.Int64)
 		}
-		if netUSD.Valid {
-			rec.NetUSD = netUSD.Float64
+		if netCents.Valid {
+			rec.NetCents = money.Cents(netCents.Int64)
 		}
 		if vpip.Valid {
 			v := vpip.Float64
@@ -949,11 +968,11 @@ func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 			p := pfr.Float64
 			rec.PFR = &p
 		}
-		if bountyUSD.Valid {
-			rec.BountyWonUSD = bountyUSD.Float64
+		if bountyCents.Valid {
+			rec.BountyWonCents = money.Cents(bountyCents.Int64)
 		}
-		if prizeWonUSD.Valid {
-			rec.PrizeWonUSD = prizeWonUSD.Float64
+		if prizeWonCents.Valid {
+			rec.PrizeWonCents = money.Cents(prizeWonCents.Int64)
 		}
 		if hands.Valid {
 			h := int(hands.Int64)
@@ -986,9 +1005,9 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 	// upsert can ever match them — live writes always carry a computed ID.
 	for _, c := range snap.CashSessions {
 		if _, err := tx.Exec(`
-			INSERT INTO cash_sessions (date, stake, hands, duration_min, net_usd, rake_usd, bb100, vpip, pfr, session_id)
+			INSERT INTO cash_sessions (date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, c.Date.UTC().Format(dateFormat), c.Stake, c.Hands, c.DurationMin, c.NetUSD, c.RakeUSD,
+		`, c.Date.UTC().Format(dateFormat), c.Stake, c.Hands, c.DurationMin, c.NetCents, c.RakeCents,
 			c.BB100, c.VPIP, c.PFR, nullString(c.SessionID)); err != nil {
 			return fmt.Errorf("importing cash session %s: %w", c.SessionID, err)
 		}
@@ -1000,36 +1019,36 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 			// UpdateTournamentHandStats's partial INSERT writes them, so the
 			// row's Net stays NULL and can't be mistaken for summary data.
 			if _, err := tx.Exec(`
-				INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_usd)
+				INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_cents)
 				VALUES (?, ?, ?, ?, ?, ?)
-			`, t.Type, t.TournamentID, nullFloat(t.VPIP), nullFloat(t.PFR), nullInt(t.Hands), t.BountyWonUSD); err != nil {
+			`, t.Type, t.TournamentID, nullFloat(t.VPIP), nullFloat(t.PFR), nullInt(t.Hands), t.BountyWonCents); err != nil {
 				return fmt.Errorf("importing partial tournament %s: %w", t.TournamentID, err)
 			}
 			continue
 		}
-		var prizePoolUSD sql.NullFloat64
+		var prizePoolCents sql.NullInt64
 		var prizePoolDesc sql.NullString
 		if t.PrizePoolDescription != "" {
 			prizePoolDesc = sql.NullString{String: t.PrizePoolDescription, Valid: true}
 		} else {
-			prizePoolUSD = sql.NullFloat64{Float64: t.PrizePoolUSD, Valid: true}
+			prizePoolCents = sql.NullInt64{Int64: int64(t.PrizePoolCents), Valid: true}
 		}
 		if _, err := tx.Exec(`
-			INSERT INTO tournaments (date, type, tournament_id, buy_in_usd, prize_pool_usd, prize_pool_description,
-				multiplier, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd, hands)
+			INSERT INTO tournaments (date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
+				multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInUSD, prizePoolUSD, prizePoolDesc,
-			nullFloat(t.Multiplier), t.FinishPos, t.TotalPlayers, t.NetUSD, nullFloat(t.VPIP), nullFloat(t.PFR),
-			t.BountyWonUSD, t.PrizeWonUSD, nullInt(t.Hands)); err != nil {
+		`, t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInCents, prizePoolCents, prizePoolDesc,
+			nullFloat(t.Multiplier), t.FinishPos, t.TotalPlayers, t.NetCents, nullFloat(t.VPIP), nullFloat(t.PFR),
+			t.BountyWonCents, t.PrizeWonCents, nullInt(t.Hands)); err != nil {
 			return fmt.Errorf("importing tournament %s: %w", t.TournamentID, err)
 		}
 	}
 
 	for _, e := range snap.Ledger {
 		if _, err := tx.Exec(`
-			INSERT INTO bankroll_ledger (date, type, amount_usd, running_total, session_id)
+			INSERT INTO bankroll_ledger (date, type, amount_cents, running_total_cents, session_id)
 			VALUES (?, ?, ?, ?, ?)
-		`, e.Date.UTC().Format(dateFormat), e.Type, e.AmountUSD, e.RunningTotal, nullString(e.SessionID)); err != nil {
+		`, e.Date.UTC().Format(dateFormat), e.Type, e.AmountCents, e.RunningTotalCents, nullString(e.SessionID)); err != nil {
 			return fmt.Errorf("importing ledger entry: %w", err)
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -59,8 +60,7 @@ func (b *Bot) sendSatelliteMenu(t parsers.Tournament) {
 	if t.BaseType() == "spingo" {
 		gameType = "Spin & Go"
 	}
-	text := fmt.Sprintf("🎫 Satellite/qualifier detected\n%s #%s\nDate: %s\nBuy-in: $%.2f\nFinish: %s / %d\nPrize: %s\nDid you pay cash for your entry, or use a ticket?",
-		gameType, t.TournamentID, t.Date.Local().Format("2006-01-02 15:04"), t.BuyInUSD, Ordinal(t.FinishPos), t.TotalPlayers, t.WinnerPrizeDescription)
+	text := fmt.Sprintf("🎫 Satellite/qualifier detected\n%s #%s\nDate: %s\nBuy-in: $%s\nFinish: %s / %d\nPrize: %s\nDid you pay cash for your entry, or use a ticket?", gameType, t.TournamentID, t.Date.Format("2006-01-02 15:04"), t.BuyInCents, Ordinal(t.FinishPos), t.TotalPlayers, t.WinnerPrizeDescription)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("💵 Paid cash", "satellite_cash:"+t.TournamentID),
@@ -70,12 +70,12 @@ func (b *Bot) sendSatelliteMenu(t parsers.Tournament) {
 	b.sendMessageWithKeyboard(text, markup)
 }
 
-// RecoverTicketPayout computes the corrected BuyInUSD/NetUSD for a
+// RecoverTicketPayout computes the corrected BuyInCents/NetCents for a
 // LikelySatellite tournament once the player confirms they paid with a
-// ticket rather than cash. NetUSD was originally computed as payout minus
+// ticket rather than cash. NetCents was originally computed as payout minus
 // buy-in, so adding them back recovers the payout before zeroing the buy-in.
-func RecoverTicketPayout(buyInUSD, netUSD float64) (newBuyInUSD, newNetUSD float64) {
-	return 0, netUSD + buyInUSD
+func RecoverTicketPayout(buyInCents, netCents money.Cents) (newBuyInCents, newNetCents money.Cents) {
+	return 0, netCents + buyInCents
 }
 
 // resolveSatellite handles a tap on the satellite/ticket confirmation menu.
@@ -83,7 +83,7 @@ func (b *Bot) resolveSatellite(chatID int64, messageID int, tournamentID string,
 	b.queueOperation(func(store storage.Store) storage.OperationResult {
 		return recordPendingTournament(store, b.configPath, tournamentID, func(t parsers.Tournament) parsers.Tournament {
 			if !paidCash {
-				t.BuyInUSD, t.NetUSD = RecoverTicketPayout(t.BuyInUSD, t.NetUSD)
+				t.BuyInCents, t.NetCents = RecoverTicketPayout(t.BuyInCents, t.NetCents)
 			}
 			return t
 		})

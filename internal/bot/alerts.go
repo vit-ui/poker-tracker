@@ -25,52 +25,53 @@ package bot
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 // EvaluateSessionLossAlert sends a warning (not a hard stop) if the cash
-// session's net loss exceeds Alerts.SessionLossBuyins × BuyInUSD. It runs per
+// session's net loss exceeds Alerts.SessionLossBuyins × BuyInCents. It runs per
 // hand, so bankroll is a function evaluated only when the alert actually fires
 // — the common (non-firing) hand then costs no store read for a bankroll it
 // wouldn't display.
-func EvaluateSessionLossAlert(session parsers.CashSession, cfg *config.Config, bankroll func() float64, alertChan chan<- string) {
-	if cfg.Alerts.SessionLossBuyins == nil || session.BuyInUSD == 0 || session.NetUSD >= 0 {
+func EvaluateSessionLossAlert(session parsers.CashSession, cfg *config.Config, bankrollCents func() money.Cents, alertChan chan<- string) {
+	if cfg.Alerts.SessionLossBuyins == nil || session.BuyInCents == 0 || session.NetCents >= 0 {
 		return
 	}
 
-	loss := -session.NetUSD
-	if loss <= *cfg.Alerts.SessionLossBuyins*session.BuyInUSD {
+	if !money.LossExceeds(session.NetCents, session.BuyInCents, *cfg.Alerts.SessionLossBuyins) {
 		return
 	}
 
-	buyins := loss / session.BuyInUSD
-	alertChan <- fmt.Sprintf("⚠️ Session loss alert\nLost %.1f buy-ins this session ($%.2f)\nBankroll: $%.2f", buyins, loss, bankroll())
+	buyins := -money.Ratio(session.NetCents, session.BuyInCents)
+	alertChan <- fmt.Sprintf("⚠️ Session loss alert\nLost %.1f buy-ins this session ($%s)\nBankroll: $%s", buyins, strings.TrimPrefix(session.NetCents.String(), "-"), bankrollCents())
 }
 
 // EvaluateDownswingAlert sends a warning (not a hard stop) if the rolling
 // 30-day results-only equity curve (see hardstop.ComputeEquityCurve) has
-// dropped from its peak by more than Alerts.DownswingBuyins × buyInUSD.
+// dropped from its peak by more than Alerts.DownswingBuyins × buyInCents.
 // Called after any session — cash or tournament. Fires independently of the
 // downswing hard stop; since cross-validation enforces alert ≤ hardstop for
 // this field, the alert always fires at or before the hard stop's own
 // threshold, never after.
-func EvaluateDownswingAlert(buyInUSD float64, cfg *config.Config, ledger []storage.LedgerEntry, bankroll float64, now time.Time, alertChan chan<- string) {
-	if cfg.Alerts.DownswingBuyins == nil || buyInUSD == 0 {
+func EvaluateDownswingAlert(buyInCents money.Cents, cfg *config.Config, ledger []storage.LedgerEntry, bankrollCents money.Cents, now time.Time, alertChan chan<- string) {
+	if cfg.Alerts.DownswingBuyins == nil || buyInCents == 0 {
 		return
 	}
 
-	peak, current := hardstop.DownswingEquityCurve(ledger, now)
-	if !hardstop.DownswingExceeds(peak, current, buyInUSD, *cfg.Alerts.DownswingBuyins) {
+	peakCents, currentCents := hardstop.DownswingEquityCurve(ledger, now)
+	if !hardstop.DownswingExceeds(peakCents, currentCents, buyInCents, *cfg.Alerts.DownswingBuyins) {
 		return
 	}
 
-	buyins := (peak - current) / buyInUSD
-	alertChan <- fmt.Sprintf("⚠️ Downswing alert\nDown %.1f buy-ins from your 30-day peak\nPeak: $%.2f  Current: $%.2f\nBankroll: $%.2f", buyins, peak, current, bankroll)
+	buyins := money.Ratio(peakCents, buyInCents) - money.Ratio(currentCents, buyInCents)
+	alertChan <- fmt.Sprintf("⚠️ Downswing alert\nDown %.1f buy-ins from your 30-day peak\nPeak: $%s  Current: $%s\nBankroll: $%s", buyins, peakCents, currentCents, bankrollCents)
 }
 
 // EvaluateLosingStreakAlert sends a warning (not a hard stop) when the
@@ -78,7 +79,7 @@ func EvaluateDownswingAlert(buyInUSD float64, cfg *config.Config, ledger []stora
 // losses — the same streak definition as the consecutive-losses hard stop,
 // via the shared hardstop.LosingStreakTriggered, just against the alert's
 // own (lower or equal) threshold.
-func EvaluateLosingStreakAlert(cfg *config.Config, ledger []storage.LedgerEntry, bankroll float64, alertChan chan<- string) (fired bool) {
+func EvaluateLosingStreakAlert(cfg *config.Config, ledger []storage.LedgerEntry, bankrollCents money.Cents, alertChan chan<- string) (fired bool) {
 	if cfg.Alerts.LosingStreakCount == nil {
 		return false
 	}
@@ -87,52 +88,52 @@ func EvaluateLosingStreakAlert(cfg *config.Config, ledger []storage.LedgerEntry,
 		return false
 	}
 
-	alertChan <- fmt.Sprintf("⚠️ Losing streak alert\n%d losing sessions in a row\nBankroll: $%.2f", *cfg.Alerts.LosingStreakCount, bankroll)
+	alertChan <- fmt.Sprintf("⚠️ Losing streak alert\n%d losing sessions in a row\nBankroll: $%s", *cfg.Alerts.LosingStreakCount, bankrollCents)
 	return true
 }
 
 // EvaluateDailyLossAlert sends a warning (not a hard stop) when the current
 // poker day's net P&L across all game types falls below
-// -Alerts.DailyLossUSD — the same window, filtering, and comparison as the
+// -Alerts.DailyLossCents — the same window, filtering, and comparison as the
 // daily-loss hard stop (hardstop.PokerDaySessionEntries /
 // hardstop.DailyLossExceeds), just against the alert's own threshold.
-func EvaluateDailyLossAlert(cfg *config.Config, ledger []storage.LedgerEntry, bankroll float64, now time.Time, alertChan chan<- string) (fired bool) {
-	if cfg.Alerts.DailyLossUSD == nil {
+func EvaluateDailyLossAlert(cfg *config.Config, ledger []storage.LedgerEntry, bankrollCents money.Cents, now time.Time, alertChan chan<- string) (fired bool) {
+	if cfg.Alerts.DailyLossCents == nil {
 		return false
 	}
 
 	entries := hardstop.PokerDaySessionEntries(ledger, cfg, now)
-	if !hardstop.DailyLossExceeds(entries, *cfg.Alerts.DailyLossUSD) {
+	if !hardstop.DailyLossExceeds(entries, *cfg.Alerts.DailyLossCents) {
 		return false
 	}
 
-	var net float64
+	var netCents money.Cents
 	for _, e := range entries {
-		net += e.AmountUSD
+		netCents += e.AmountCents
 	}
-	alertChan <- fmt.Sprintf("⚠️ Daily loss alert\nDown $%.2f across all games this poker day\nBankroll: $%.2f", -net, bankroll)
+	alertChan <- fmt.Sprintf("⚠️ Daily loss alert\nDown $%s across all games this poker day\nBankroll: $%s", strings.TrimPrefix(netCents.String(), "-"), bankrollCents)
 	return true
 }
 
 // EvaluateSpingoDailyLossAlert is EvaluateDailyLossAlert's Spin & Go-only
-// counterpart, against Alerts.SpingoDailyLossUSD — same shared filter and
+// counterpart, against Alerts.SpingoDailyLossCents — same shared filter and
 // comparison as the Spin & Go daily-loss hard stop, applied to the
 // worker-fetched poker-day tournaments.
-func EvaluateSpingoDailyLossAlert(cfg *config.Config, dayTournaments []parsers.Tournament, bankroll float64, alertChan chan<- string) (fired bool) {
-	if cfg.Alerts.SpingoDailyLossUSD == nil {
+func EvaluateSpingoDailyLossAlert(cfg *config.Config, dayTournaments []parsers.Tournament, bankrollCents money.Cents, alertChan chan<- string) (fired bool) {
+	if cfg.Alerts.SpingoDailyLossCents == nil {
 		return false
 	}
 
 	spingos := hardstop.SpingoOnly(dayTournaments)
-	if !hardstop.SpingoDailyLossExceeds(spingos, *cfg.Alerts.SpingoDailyLossUSD) {
+	if !hardstop.SpingoDailyLossExceeds(spingos, *cfg.Alerts.SpingoDailyLossCents) {
 		return false
 	}
 
-	var net float64
+	var netCents money.Cents
 	for _, t := range spingos {
-		net += t.NetUSD
+		netCents += t.NetCents
 	}
-	alertChan <- fmt.Sprintf("⚠️ Spin & Go drain alert\nDown $%.2f on Spin & Gos this poker day\nBankroll: $%.2f", -net, bankroll)
+	alertChan <- fmt.Sprintf("⚠️ Spin & Go drain alert\nDown $%s on Spin & Gos this poker day\nBankroll: $%s", strings.TrimPrefix(netCents.String(), "-"), bankrollCents)
 	return true
 }
 

@@ -467,6 +467,7 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 			return
 		}
 		if f.Upload != nil {
+			f.Upload.collector = framed.done
 			if reply := f.Upload.LockReply; reply != nil && reply.Error == "" {
 				st.mu.Lock()
 				if st.current == framed {

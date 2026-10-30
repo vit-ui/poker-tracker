@@ -75,7 +75,7 @@ func migrationReply(t *testing.T, reply <-chan storage.OperationResult) storage.
 
 func TestMigrationDrainsCashAndHoldsWorkerUntilResume(t *testing.T) {
 	server, link, source := migrationWorker(t)
-	if err := source.AppendLedgerEntry("deposit", 1, time.Now(), ""); err != nil {
+	if err := source.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
 		t.Fatal(err)
 	}
 	destination, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "destination.db"))
@@ -107,11 +107,11 @@ func TestMigrationDrainsCashAndHoldsWorkerUntilResume(t *testing.T) {
 	if result.Snapshot == nil || len(result.Snapshot.CashSessions) != 1 || len(result.Snapshot.Ledger) != 2 {
 		t.Fatalf("pending cash missing from copy: %+v", result.Snapshot)
 	}
-	if got := result.Snapshot.Ledger[1].RunningTotal; got < .969999 || got > .970001 {
-		t.Fatalf("copied bankroll %v, want .97", got)
+	if gotCents := result.Snapshot.Ledger[1].RunningTotalCents; gotCents < 97 || gotCents > 98 {
+		t.Fatalf("copied bankroll %v, want .97", gotCents)
 	}
 	next := storage.Operation{Reply: make(chan storage.OperationResult, 1), Apply: func(store storage.Store) storage.OperationResult {
-		return storage.OperationResult{Err: store.AppendLedgerEntry("deposit", 2, time.Now(), "")}
+		return storage.OperationResult{Err: store.AppendLedgerEntry("deposit", 200, time.Now(), "")}
 	}}
 	accepted := make(chan struct{})
 	cancel := make(chan struct{})
@@ -151,9 +151,9 @@ func TestMigrationDrainsCashAndHoldsWorkerUntilResume(t *testing.T) {
 	if result := migrationReply(t, next.Reply); result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	total, err := source.GetCurrentBankroll()
-	if err != nil || total < 2.969999 || total > 2.970001 {
-		t.Fatalf("resumed source total %v, error %v", total, err)
+	totalCents, err := source.GetCurrentBankroll()
+	if err != nil || totalCents < 297 || totalCents > 298 {
+		t.Fatalf("resumed source total %v, error %v", totalCents, err)
 	}
 }
 
@@ -205,7 +205,7 @@ func TestFailedCashPersistenceRetainsPendingSnapshot(t *testing.T) {
 	}
 	defer os.RemoveAll(server.workDir)
 	store.Close()
-	pending := map[string]parsers.CashSession{"table": {Date: time.Now(), FirstHandID: "pending-hand", NetUSD: -1, BuyInUSD: 2}}
+	pending := map[string]parsers.CashSession{"table": {Date: time.Now(), FirstHandID: "pending-hand", NetCents: -100, BuyInCents: 200}}
 	timers := map[string]*cashTimer{"table": &cashTimer{Timer: time.NewTimer(time.Hour)}}
 	defer timers["table"].Stop()
 	if err := server.endCashSession("table", pending, timers, map[string]bool{}, func(string, int, string) { t.Fatal("failed persistence evaluated enforcement") }); err == nil {

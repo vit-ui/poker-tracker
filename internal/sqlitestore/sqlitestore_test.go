@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -15,8 +16,11 @@ import (
 // closeEnough reports whether a and b differ by less than half a cent — USD
 // amounts derived from chained float64 arithmetic can land a few ULPs off an
 // exact decimal value.
-func closeEnough(a, b float64) bool {
-	return math.Abs(a-b) < 0.005
+func closeEnough[T ~int64 | ~float64](a, b T) bool {
+	if _, ok := any(a).(money.Cents); ok {
+		return a == b
+	}
+	return math.Abs(float64(a-b)) < 0.005
 }
 
 func newTestStore(t *testing.T) *Store {
@@ -111,7 +115,7 @@ func TestNewStore_ReopenExistingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first NewStore: %v", err)
 	}
-	if err := s1.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+	if err := s1.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 	s1.Close()
@@ -122,12 +126,12 @@ func TestNewStore_ReopenExistingDatabase(t *testing.T) {
 	}
 	defer s2.Close()
 
-	bankroll, err := s2.GetCurrentBankroll()
+	bankrollCents, err := s2.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, 100) {
-		t.Errorf("bankroll after reopen = %v, want 100 (data must survive reopen, schema creation must be idempotent)", bankroll)
+	if !closeEnough(bankrollCents, 10000) {
+		t.Errorf("bankroll after reopen = %v, want 100 (data must survive reopen, schema creation must be idempotent)", bankrollCents)
 	}
 }
 
@@ -159,25 +163,25 @@ func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
 			date TEXT,
 			type TEXT NOT NULL,
 			tournament_id TEXT NOT NULL UNIQUE,
-			buy_in_usd REAL,
-			prize_pool_usd REAL,
+			buy_in_cents INTEGER,
+			prize_pool_cents INTEGER,
 			prize_pool_description TEXT,
 			multiplier REAL,
 			finish_pos INTEGER,
 			total_players INTEGER,
-			net_usd REAL,
+			net_cents INTEGER,
 			vpip REAL,
 			pfr REAL,
-			bounty_usd REAL,
-			prize_won_usd REAL
+			bounty_cents INTEGER,
+			prize_won_cents INTEGER
 		)
 	`); err != nil {
 		t.Fatalf("creating pre-migration tournaments table: %v", err)
 	}
 	if _, err := oldDB.Exec(`
-		INSERT INTO tournaments (date, type, tournament_id, buy_in_usd, prize_pool_usd, finish_pos, total_players, net_usd, vpip, pfr, bounty_usd, prize_won_usd)
+		INSERT INTO tournaments (date, type, tournament_id, buy_in_cents, prize_pool_cents, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, "2026-07-10T20:00:00Z", "mtt", "9000000001", 5.00, 100.0, 3, 50, -5.00, 22.0, 10.0, 0.0, 0.0); err != nil {
+	`, "2026-07-10T20:00:00Z", "mtt", "9000000001", 500, 10000, 3, 50, -500, 22.0, 10.0, 0, 0); err != nil {
 		t.Fatalf("seeding pre-migration row: %v", err)
 	}
 	if err := oldDB.Close(); err != nil {
@@ -202,16 +206,17 @@ func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
 	// no hand file was ever parsed under the old schema, so there's nothing
 	// to backfill it with.
 	var typeVal, tournamentID string
-	var buyIn, netUSD, vpip, pfr float64
+	var buyInCents, netCents money.Cents
+	var vpip, pfr float64
 	var hands sql.NullInt64
 	err = s.db.QueryRow(`
-		SELECT type, tournament_id, buy_in_usd, net_usd, vpip, pfr, hands FROM tournaments WHERE tournament_id = ?
-	`, "9000000001").Scan(&typeVal, &tournamentID, &buyIn, &netUSD, &vpip, &pfr, &hands)
+		SELECT type, tournament_id, buy_in_cents, net_cents, vpip, pfr, hands FROM tournaments WHERE tournament_id = ?
+	`, "9000000001").Scan(&typeVal, &tournamentID, &buyInCents, &netCents, &vpip, &pfr, &hands)
 	if err != nil {
 		t.Fatalf("reading migrated row: %v", err)
 	}
-	if typeVal != "mtt" || tournamentID != "9000000001" || !closeEnough(buyIn, 5.00) || !closeEnough(netUSD, -5.00) {
-		t.Errorf("existing row data changed by migration: type=%q id=%q buyIn=%v netUSD=%v", typeVal, tournamentID, buyIn, netUSD)
+	if typeVal != "mtt" || tournamentID != "9000000001" || !closeEnough(buyInCents, 500) || !closeEnough(netCents, -500) {
+		t.Errorf("existing row data changed by migration: type=%q id=%q buyIn=%v netCents=%v", typeVal, tournamentID, buyInCents, netCents)
 	}
 	if !closeEnough(vpip, 22.0) || !closeEnough(pfr, 10.0) {
 		t.Errorf("existing VPIP/PFR changed by migration: vpip=%v pfr=%v", vpip, pfr)
@@ -239,7 +244,7 @@ func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
 func TestMigrateSchema_Idempotent(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
-	if err := s.AppendCashSession(buildCashSession(date, "M0001", 10, -1)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "M0001", 10, -100)); err != nil {
 		t.Fatalf("AppendCashSession: %v", err)
 	}
 
@@ -260,16 +265,16 @@ func TestMigrateSchema_Idempotent(t *testing.T) {
 // Cash sessions
 // ---------------------------------------------------------------------------
 
-func buildCashSession(date time.Time, firstHandID string, hands int, netUSD float64) parsers.CashSession {
+func buildCashSession(date time.Time, firstHandID string, hands int, netCents money.Cents) parsers.CashSession {
 	return parsers.CashSession{
 		Date:        date,
 		Stake:       "NL10",
-		BuyInUSD:    10, // never stored — GetCashSessionsSince must return 0
+		BuyInCents:  1000, // never stored — GetCashSessionsSince must return 0
 		Hands:       hands,
 		DurationMin: hands * 2,
-		NetUSD:      netUSD,
-		RakeUSD:     float64(hands) * 0.05,
-		BB100:       netUSD / 10 / float64(hands) * 100,
+		NetCents:    netCents,
+		RakeCents:   money.Cents(hands) * 5,
+		BB100:       money.Ratio(netCents, 1000) / float64(hands) * 100,
 		VPIP:        24.5,
 		PFR:         18.2,
 		FirstHandID: firstHandID,
@@ -279,7 +284,7 @@ func buildCashSession(date time.Time, firstHandID string, hands int, netUSD floa
 func TestAppendCashSession_InsertsNewSession(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
-	session := buildCashSession(date, "200000000001", 50, -5.25)
+	session := buildCashSession(date, "200000000001", 50, -525)
 
 	if err := s.AppendCashSession(session); err != nil {
 		t.Fatalf("AppendCashSession: %v", err)
@@ -293,38 +298,38 @@ func TestAppendCashSession_InsertsNewSession(t *testing.T) {
 		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
 	}
 	got := sessions[0]
-	if got.BuyInUSD != 0 {
-		t.Errorf("BuyInUSD = %v, want 0 (never stored)", got.BuyInUSD)
+	if got.BuyInCents != 0 {
+		t.Errorf("BuyInCents = %v, want 0 (never stored)", got.BuyInCents)
 	}
-	if got.Stake != "NL10" || got.Hands != 50 || !closeEnough(got.NetUSD, -5.25) {
+	if got.Stake != "NL10" || got.Hands != 50 || !closeEnough(got.NetCents, -525) {
 		t.Errorf("session = %+v, unexpected", got)
 	}
 	if !got.Date.Equal(date) {
 		t.Errorf("Date = %v, want %v", got.Date, date)
 	}
 
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, -5.25) {
-		t.Errorf("bankroll = %v, want -5.25", bankroll)
+	if !closeEnough(bankrollCents, -525) {
+		t.Errorf("bankroll = %v, want -5.25", bankrollCents)
 	}
 }
 
 // TestAppendCashSession_ReparseUpdatesInPlace mirrors a PokerStars hand
 // history file growing hand-by-hand: the same file is re-parsed from scratch
-// on every hand, so Hands/NetUSD/etc. keep changing for the *same* session ID
+// on every hand, so Hands/NetCents/etc. keep changing for the *same* session ID
 // (Date + FirstHandID are fixed from the file's first hand). Every table's
 // row for that session must be corrected in place, never appended twice.
 func TestAppendCashSession_ReparseUpdatesInPlace(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 
-	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 10, -1.00)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 10, -100)); err != nil {
 		t.Fatalf("first AppendCashSession: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 25, 3.50)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 25, 350)); err != nil {
 		t.Fatalf("second AppendCashSession: %v", err)
 	}
 
@@ -335,16 +340,16 @@ func TestAppendCashSession_ReparseUpdatesInPlace(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("len(sessions) = %d, want 1 (re-parse must update in place, not append)", len(sessions))
 	}
-	if sessions[0].Hands != 25 || !closeEnough(sessions[0].NetUSD, 3.50) {
+	if sessions[0].Hands != 25 || !closeEnough(sessions[0].NetCents, 350) {
 		t.Errorf("session = %+v, want latest snapshot (25 hands, net 3.50)", sessions[0])
 	}
 
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, 3.50) {
-		t.Errorf("bankroll = %v, want 3.50 (ledger must reflect latest net, not sum of both parses)", bankroll)
+	if !closeEnough(bankrollCents, 350) {
+		t.Errorf("bankroll = %v, want 3.50 (ledger must reflect latest net, not sum of both parses)", bankrollCents)
 	}
 
 	var ledgerRowCount int
@@ -361,10 +366,10 @@ func TestAppendCashSession_DistinctSessionsAppend(t *testing.T) {
 	d1 := mustTime(t, "2026-07-10T20:00:00Z")
 	d2 := mustTime(t, "2026-07-11T20:00:00Z")
 
-	if err := s.AppendCashSession(buildCashSession(d1, "200000000001", 10, -1.00)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(d1, "200000000001", 10, -100)); err != nil {
 		t.Fatalf("session 1: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(d2, "200000000002", 20, 2.00)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(d2, "200000000002", 20, 200)); err != nil {
 		t.Fatalf("session 2: %v", err)
 	}
 
@@ -376,12 +381,12 @@ func TestAppendCashSession_DistinctSessionsAppend(t *testing.T) {
 		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
 	}
 
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, 1.00) {
-		t.Errorf("bankroll = %v, want 1.00 (-1.00 + 2.00)", bankroll)
+	if !closeEnough(bankrollCents, 100) {
+		t.Errorf("bankroll = %v, want 1.00 (-1.00 + 2.00)", bankrollCents)
 	}
 }
 
@@ -395,17 +400,17 @@ func TestLedgerCascade_InterleavedTables(t *testing.T) {
 	tableA := mustTime(t, "2026-07-10T20:00:00Z")
 	tableB := mustTime(t, "2026-07-10T20:05:00Z")
 
-	if err := s.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(tableA, "A0001", 5, -5)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(tableA, "A0001", 5, -500)); err != nil {
 		t.Fatalf("table A hand 1: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(tableB, "B0001", 3, -3)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(tableB, "B0001", 3, -300)); err != nil {
 		t.Fatalf("table B hand 1: %v", err)
 	}
 	// Table A's second hand arrives, cumulative net now -8.
-	if err := s.AppendCashSession(buildCashSession(tableA, "A0001", 10, -8)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(tableA, "A0001", 10, -800)); err != nil {
 		t.Fatalf("table A hand 2: %v", err)
 	}
 
@@ -417,15 +422,15 @@ func TestLedgerCascade_InterleavedTables(t *testing.T) {
 		t.Fatalf("len(entries) = %d, want 3 (deposit, table A, table B)", len(entries))
 	}
 	// Order is insertion order: deposit, table A, table B.
-	if !closeEnough(entries[0].RunningTotal, 100) {
-		t.Errorf("deposit running total = %v, want 100", entries[0].RunningTotal)
+	if !closeEnough(entries[0].RunningTotalCents, 10000) {
+		t.Errorf("deposit running total = %v, want 100", entries[0].RunningTotalCents)
 	}
-	if !closeEnough(entries[1].AmountUSD, -8) || !closeEnough(entries[1].RunningTotal, 92) {
-		t.Errorf("table A row = (amount %v, total %v), want (-8, 92)", entries[1].AmountUSD, entries[1].RunningTotal)
+	if !closeEnough(entries[1].AmountCents, -800) || !closeEnough(entries[1].RunningTotalCents, 9200) {
+		t.Errorf("table A row = (amount %v, total %v), want (-8, 92)", entries[1].AmountCents, entries[1].RunningTotalCents)
 	}
-	if !closeEnough(entries[2].AmountUSD, -3) || !closeEnough(entries[2].RunningTotal, 89) {
+	if !closeEnough(entries[2].AmountCents, -300) || !closeEnough(entries[2].RunningTotalCents, 8900) {
 		t.Errorf("table B row = (amount %v, total %v), want (-3, 89) — must shift even though its own amount is unchanged",
-			entries[2].AmountUSD, entries[2].RunningTotal)
+			entries[2].AmountCents, entries[2].RunningTotalCents)
 	}
 }
 
@@ -435,10 +440,10 @@ func TestGetCashSessionsSince_DateFiltering(t *testing.T) {
 	late := mustTime(t, "2026-07-15T10:00:00Z")
 	cutoff := mustTime(t, "2026-07-10T00:00:00Z")
 
-	if err := s.AppendCashSession(buildCashSession(early, "E0001", 5, -1)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(early, "E0001", 5, -100)); err != nil {
 		t.Fatalf("early session: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(late, "L0001", 5, 1)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(late, "L0001", 5, 100)); err != nil {
 		t.Fatalf("late session: %v", err)
 	}
 
@@ -458,7 +463,7 @@ func TestGetCashSessionsSince_DateFiltering(t *testing.T) {
 func TestGetCashSessionsSince_CutoffIsInclusive(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T00:00:00Z")
-	if err := s.AppendCashSession(buildCashSession(date, "X0001", 5, 1)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "X0001", 5, 100)); err != nil {
 		t.Fatalf("AppendCashSession: %v", err)
 	}
 	sessions, err := s.GetCashSessionsSince(date)
@@ -478,23 +483,23 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	tourn := parsers.Tournament{
-		Date:         date,
-		Type:         "spingo",
-		TournamentID: "1000000001",
-		BuyInUSD:     0.55,
-		PrizePoolUSD: 1.65,
-		Multiplier:   floatPtr(3),
-		FinishPos:    1,
-		TotalPlayers: 3,
-		NetUSD:       1.10, // 1.65 payout - 0.55 buyin
+		Date:           date,
+		Type:           "spingo",
+		TournamentID:   "1000000001",
+		BuyInCents:     55,
+		PrizePoolCents: 165,
+		Multiplier:     floatPtr(3),
+		FinishPos:      1,
+		TotalPlayers:   3,
+		NetCents:       110, // 1.65 payout - 0.55 buyin
 	}
 
-	netUSD, err := s.AppendTournament(tourn)
+	netCents, err := s.AppendTournament(tourn)
 	if err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
-	if !closeEnough(netUSD, 1.10) {
-		t.Errorf("netUSD = %v, want 1.10 (no hand stats yet, no bounty to fold in)", netUSD)
+	if !closeEnough(netCents, 110) {
+		t.Errorf("netCents = %v, want 1.10 (no hand stats yet, no bounty to fold in)", netCents)
 	}
 
 	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 45.0, 20.0, 100, 0, false); err != nil {
@@ -509,7 +514,7 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 		t.Fatalf("len(tournaments) = %d, want 1", len(tournaments))
 	}
 	got := tournaments[0]
-	if got.Type != "spingo" || got.TournamentID != "1000000001" || !closeEnough(got.NetUSD, 1.10) {
+	if got.Type != "spingo" || got.TournamentID != "1000000001" || !closeEnough(got.NetCents, 110) {
 		t.Errorf("tournament = %+v, unexpected", got)
 	}
 	if got.Multiplier == nil || !closeEnough(*got.Multiplier, 3) {
@@ -525,12 +530,12 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 		t.Errorf("Hands = %v, want 100", got.Hands)
 	}
 
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, 1.10) {
-		t.Errorf("bankroll = %v, want 1.10", bankroll)
+	if !closeEnough(bankrollCents, 110) {
+		t.Errorf("bankroll = %v, want 1.10", bankrollCents)
 	}
 }
 
@@ -543,7 +548,7 @@ func TestGetTournamentByID(t *testing.T) {
 	date := mustTime(t, "2026-07-21T20:00:00Z")
 	tourn := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "5000000001",
-		BuyInUSD: 1.10, PrizePoolUSD: 60, FinishPos: 9, TotalPlayers: 40, NetUSD: -1.10,
+		BuyInCents: 110, PrizePoolCents: 6000, FinishPos: 9, TotalPlayers: 40, NetCents: -110,
 	}
 	if _, err := s.AppendTournament(tourn); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
@@ -553,7 +558,7 @@ func TestGetTournamentByID(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("GetTournamentByID = (found %v, err %v), want found", found, err)
 	}
-	if got.TournamentID != "5000000001" || !closeEnough(got.BuyInUSD, 1.10) || got.FinishPos != 9 || got.TotalPlayers != 40 {
+	if got.TournamentID != "5000000001" || !closeEnough(got.BuyInCents, 110) || got.FinishPos != 9 || got.TotalPlayers != 40 {
 		t.Errorf("GetTournamentByID = %+v, unexpected fields", got)
 	}
 
@@ -581,23 +586,23 @@ func TestGetTournamentByID(t *testing.T) {
 func TestAppendTournament_ReEntryRewriteUpsertsInPlace(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-21T23:21:00Z")
-	base := func(buyIn float64, finishPos, players int, net float64) parsers.Tournament {
+	base := func(buyInCents money.Cents, finishPos, players int, netCents money.Cents) parsers.Tournament {
 		return parsers.Tournament{
-			Date:         date,
-			Type:         "mtt",
-			TournamentID: "T9000000006",
-			BuyInUSD:     buyIn,
-			PrizePoolUSD: 77.76,
-			FinishPos:    finishPos,
-			TotalPlayers: players,
-			NetUSD:       net,
+			Date:           date,
+			Type:           "mtt",
+			TournamentID:   "T9000000006",
+			BuyInCents:     buyInCents,
+			PrizePoolCents: 7776,
+			FinishPos:      finishPos,
+			TotalPlayers:   players,
+			NetCents:       netCents,
 		}
 	}
 	// The three busts, as the rewritten summary parses each time.
 	sequence := []parsers.Tournament{
-		base(1.10, 50, 126, -1.10), // original entry busts
-		base(2.20, 60, 140, -2.20), // one re-entry busts
-		base(3.30, 43, 162, -3.30), // second re-entry busts (final summary)
+		base(110, 50, 126, -110), // original entry busts
+		base(220, 60, 140, -220), // one re-entry busts
+		base(330, 43, 162, -330), // second re-entry busts (final summary)
 	}
 	for i, tourn := range sequence {
 		if _, err := s.AppendTournament(tourn); err != nil {
@@ -613,22 +618,22 @@ func TestAppendTournament_ReEntryRewriteUpsertsInPlace(t *testing.T) {
 		t.Fatalf("len(tournaments) = %d, want 1 (upsert, not a new row per bust)", len(tournaments))
 	}
 	got := tournaments[0]
-	if !closeEnough(got.BuyInUSD, 3.30) {
-		t.Errorf("BuyInUSD = %v, want 3.30 (all three entries)", got.BuyInUSD)
+	if !closeEnough(got.BuyInCents, 330) {
+		t.Errorf("BuyInCents = %v, want 3.30 (all three entries)", got.BuyInCents)
 	}
 	if got.FinishPos != 43 || got.TotalPlayers != 162 {
 		t.Errorf("finish = %d/%d, want 43/162 (final summary, not the 50/126 first bust)", got.FinishPos, got.TotalPlayers)
 	}
-	if !closeEnough(got.NetUSD, -3.30) {
-		t.Errorf("NetUSD = %v, want -3.30", got.NetUSD)
+	if !closeEnough(got.NetCents, -330) {
+		t.Errorf("NetCents = %v, want -3.30", got.NetCents)
 	}
 
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, -3.30) {
-		t.Errorf("bankroll = %v, want -3.30 (ledger corrected in place, not stuck at -1.10)", bankroll)
+	if !closeEnough(bankrollCents, -330) {
+		t.Errorf("bankroll = %v, want -3.30 (ledger corrected in place, not stuck at -1.10)", bankrollCents)
 	}
 }
 
@@ -652,21 +657,21 @@ func TestAppendTournament_HandStatsFirstThenSummary(t *testing.T) {
 
 	date := mustTime(t, "2026-07-10T21:00:00Z")
 	tourn := parsers.Tournament{
-		Date:         date,
-		Type:         "mtt",
-		TournamentID: tournamentID,
-		BuyInUSD:     5.00,
-		PrizePoolUSD: 100,
-		FinishPos:    2,
-		TotalPlayers: 20,
-		NetUSD:       10.00,
+		Date:           date,
+		Type:           "mtt",
+		TournamentID:   tournamentID,
+		BuyInCents:     500,
+		PrizePoolCents: 10000,
+		FinishPos:      2,
+		TotalPlayers:   20,
+		NetCents:       1000,
 	}
-	netUSD, err := s.AppendTournament(tourn)
+	netCents, err := s.AppendTournament(tourn)
 	if err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
-	if !closeEnough(netUSD, 10.00) {
-		t.Errorf("netUSD = %v, want 10.00 (no bounty for a non-knockout tournament)", netUSD)
+	if !closeEnough(netCents, 1000) {
+		t.Errorf("netCents = %v, want 10.00 (no bounty for a non-knockout tournament)", netCents)
 	}
 
 	tournaments, err = s.GetTournamentsSince(time.Time{})
@@ -686,20 +691,20 @@ func TestKnockout_SummaryFirstThenHandStats(t *testing.T) {
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	tourn := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "2000000001",
-		BuyInUSD: 5.00, PrizePoolUSD: 100, FinishPos: 3, TotalPlayers: 50, NetUSD: -5.00,
+		BuyInCents: 500, PrizePoolCents: 10000, FinishPos: 3, TotalPlayers: 50, NetCents: -500,
 	}
 	if _, err := s.AppendTournament(tourn); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
 	// Hand file reveals it's a knockout tournament, screenName won a bounty.
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 120, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 120, 90, true); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
 
 	var typeVal string
-	var netUSD, prizeWon float64
-	err := s.db.QueryRow(`SELECT type, net_usd, prize_won_usd FROM tournaments WHERE tournament_id = ?`,
-		tourn.TournamentID).Scan(&typeVal, &netUSD, &prizeWon)
+	var netCents, prizeWonCents money.Cents
+	err := s.db.QueryRow("SELECT type, net_cents, prize_won_cents FROM tournaments WHERE tournament_id = ?",
+		tourn.TournamentID).Scan(&typeVal, &netCents, &prizeWonCents)
 	if err != nil {
 		t.Fatalf("reading tournament row: %v", err)
 	}
@@ -707,19 +712,19 @@ func TestKnockout_SummaryFirstThenHandStats(t *testing.T) {
 		t.Errorf("Type = %q, want %q", typeVal, "mtt-ko")
 	}
 	// -5.00 (baseline loss) + 0.90 (bounty) = -4.10; prize won = -4.10 + 5.00 = 0.90
-	if !closeEnough(netUSD, -4.10) {
-		t.Errorf("NetUSD = %v, want -4.10 (loss on paper, bounty makes it less bad)", netUSD)
+	if !closeEnough(netCents, -410) {
+		t.Errorf("NetCents = %v, want -4.10 (loss on paper, bounty makes it less bad)", netCents)
 	}
-	if !closeEnough(prizeWon, 0.90) {
-		t.Errorf("PrizeWon = %v, want 0.90", prizeWon)
+	if !closeEnough(prizeWonCents, 90) {
+		t.Errorf("PrizeWon = %v, want 0.90", prizeWonCents)
 	}
 
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, -4.10) {
-		t.Errorf("bankroll = %v, want -4.10 (ledger must reconcile too)", bankroll)
+	if !closeEnough(bankrollCents, -410) {
+		t.Errorf("bankroll = %v, want -4.10 (ledger must reconcile too)", bankrollCents)
 	}
 }
 
@@ -727,7 +732,7 @@ func TestKnockout_HandStatsFirstThenSummary(t *testing.T) {
 	s := newTestStore(t)
 	tournamentID := "2000000002"
 
-	if err := s.UpdateTournamentHandStats(tournamentID, 22.0, 10.0, 120, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tournamentID, 22.0, 10.0, 120, 90, true); err != nil {
 		t.Fatalf("UpdateTournamentHandStats (partial, knockout): %v", err)
 	}
 
@@ -742,15 +747,15 @@ func TestKnockout_HandStatsFirstThenSummary(t *testing.T) {
 	date := mustTime(t, "2026-07-10T22:00:00Z")
 	tourn := parsers.Tournament{
 		Date: date, Type: "spingo", TournamentID: tournamentID,
-		PrizePoolUSD: 3.30, Multiplier: floatPtr(2), BuyInUSD: 1.65, FinishPos: 1, TotalPlayers: 3, NetUSD: 1.65,
+		PrizePoolCents: 330, Multiplier: floatPtr(2), BuyInCents: 165, FinishPos: 1, TotalPlayers: 3, NetCents: 165,
 	}
-	netUSD, err := s.AppendTournament(tourn)
+	netCents, err := s.AppendTournament(tourn)
 	if err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
 	// 1.65 (baseline) + 0.90 (bounty already recorded) = 2.55
-	if !closeEnough(netUSD, 2.55) {
-		t.Errorf("netUSD = %v, want 2.55 (placeholder-recorded bounty must be folded in)", netUSD)
+	if !closeEnough(netCents, 255) {
+		t.Errorf("netCents = %v, want 2.55 (placeholder-recorded bounty must be folded in)", netCents)
 	}
 
 	var typeVal string
@@ -770,37 +775,37 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	tourn := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "3000000001",
-		BuyInUSD: 5.00, PrizePoolUSD: 4.88, FinishPos: 1, TotalPlayers: 50, NetUSD: -0.12,
+		BuyInCents: 500, PrizePoolCents: 488, FinishPos: 1, TotalPlayers: 50, NetCents: -12,
 	}
 	if _, err := s.AppendTournament(tourn); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
 
 	// First KO.
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 50, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 50, 90, true); err != nil {
 		t.Fatalf("first reparse: %v", err)
 	}
-	bankroll, _ := s.GetCurrentBankroll()
-	if !closeEnough(bankroll, 0.78) { // -0.12 + 0.90
-		t.Errorf("bankroll after 1st KO = %v, want 0.78", bankroll)
+	bankrollCents, _ := s.GetCurrentBankroll()
+	if !closeEnough(bankrollCents, 78) { // -0.12 + 0.90
+		t.Errorf("bankroll after 1st KO = %v, want 0.78", bankrollCents)
 	}
 
 	// Second KO — cumulative bounty grows to 1.80 (not incremented, recomputed).
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 1.80, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 180, true); err != nil {
 		t.Fatalf("second reparse: %v", err)
 	}
-	bankroll, _ = s.GetCurrentBankroll()
-	if !closeEnough(bankroll, 1.68) { // -0.12 + 1.80
-		t.Errorf("bankroll after 2nd KO = %v, want 1.68 (must replace, not add, the previous bounty)", bankroll)
+	bankrollCents, _ = s.GetCurrentBankroll()
+	if !closeEnough(bankrollCents, 168) { // -0.12 + 1.80
+		t.Errorf("bankroll after 2nd KO = %v, want 1.68 (must replace, not add, the previous bounty)", bankrollCents)
 	}
 
 	// Unchanged reparse (no new KO since last hand) must be a no-op.
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 1.80, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 180, true); err != nil {
 		t.Fatalf("third (unchanged) reparse: %v", err)
 	}
-	bankroll, _ = s.GetCurrentBankroll()
-	if !closeEnough(bankroll, 1.68) {
-		t.Errorf("bankroll after unchanged reparse = %v, want 1.68 (unchanged)", bankroll)
+	bankrollCents, _ = s.GetCurrentBankroll()
+	if !closeEnough(bankrollCents, 168) {
+		t.Errorf("bankroll after unchanged reparse = %v, want 1.68 (unchanged)", bankrollCents)
 	}
 
 	var ledgerRowCount int
@@ -819,49 +824,49 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 // $0) and a paid answer, and regardless of whether the hand file arrives before
 // or after the answer.
 //
-// The parser gives a freeroll BuyInUSD 0, NetUSD 0 (no cash payout row); the
-// bot's recordFreerollEntry then sets BuyInUSD = X and NetUSD -= X before
+// The parser gives a freeroll BuyInCents 0, NetCents 0 (no cash payout row); the
+// bot's recordFreerollEntry then sets BuyInCents = X and NetCents -= X before
 // AppendTournament (mirrored here). Expected finals, both orders:
 //
 //	free (X=0):  net = 0 + B      = 0.88,  prize = 0.88
 //	paid (X=1):  net = -1 + B     = -0.12, prize = 0.88
 func TestFreeroll_BuyInAnswer(t *testing.T) {
-	const bounty = 0.88 // the hero's three KOs: $0.33 + $0.22 + $0.33
+	const bountyCents money.Cents = 88 // the hero's three KOs: $0.33 + $0.22 + $0.33
 	date := mustTime(t, "2026-07-25T00:10:09Z")
 	// A freeroll as parsed: 4-player MTT, no buy-in, no cash payout row.
 	parsed := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "T9000000001",
-		BuyInUSD: 0, FinishPos: 1, TotalPlayers: 4, NetUSD: 0,
+		BuyInCents: 0, FinishPos: 1, TotalPlayers: 4, NetCents: 0,
 	}
 	// answered applies recordFreerollEntry's arithmetic for buy-in X.
-	answered := func(buyIn float64) parsers.Tournament {
+	answered := func(buyInCents money.Cents) parsers.Tournament {
 		t := parsed
-		t.NetUSD -= buyIn
-		t.BuyInUSD = buyIn
+		t.NetCents -= buyInCents
+		t.BuyInCents = buyInCents
 		return t
 	}
 
 	cases := []struct {
 		name                 string
-		buyIn                float64
+		buyInCents           money.Cents
 		handStatsAfterAnswer bool
-		wantNet              float64
+		wantNetCents         money.Cents
 	}{
-		{"free, hand file first", 0, false, 0.88},
-		{"free, answer first", 0, true, 0.88},
-		{"paid $1, hand file first", 1.00, false, -0.12},
-		{"paid $1, answer first", 1.00, true, -0.12},
+		{"free, hand file first", 0, false, 88},
+		{"free, answer first", 0, true, 88},
+		{"paid $1, hand file first", 100, false, -12},
+		{"paid $1, answer first", 100, true, -12},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := newTestStore(t)
 			record := func() {
-				if _, err := s.AppendTournament(answered(c.buyIn)); err != nil {
+				if _, err := s.AppendTournament(answered(c.buyInCents)); err != nil {
 					t.Fatalf("AppendTournament: %v", err)
 				}
 			}
 			handStats := func() {
-				if err := s.UpdateTournamentHandStats(parsed.TournamentID, 20, 10, 20, bounty, true); err != nil {
+				if err := s.UpdateTournamentHandStats(parsed.TournamentID, 20, 10, 20, 88, true); err != nil {
 					t.Fatalf("UpdateTournamentHandStats: %v", err)
 				}
 			}
@@ -874,26 +879,26 @@ func TestFreeroll_BuyInAnswer(t *testing.T) {
 			}
 
 			var typeVal string
-			var netUSD, prizeWon float64
-			if err := s.db.QueryRow(`SELECT type, net_usd, prize_won_usd FROM tournaments WHERE tournament_id = ?`,
-				parsed.TournamentID).Scan(&typeVal, &netUSD, &prizeWon); err != nil {
+			var netCents, prizeWonCents money.Cents
+			if err := s.db.QueryRow("SELECT type, net_cents, prize_won_cents FROM tournaments WHERE tournament_id = ?",
+				parsed.TournamentID).Scan(&typeVal, &netCents, &prizeWonCents); err != nil {
 				t.Fatalf("reading tournament row: %v", err)
 			}
 			if typeVal != "mtt-ko" {
 				t.Errorf("Type = %q, want mtt-ko", typeVal)
 			}
-			if !closeEnough(netUSD, c.wantNet) {
-				t.Errorf("NetUSD = %v, want %v", netUSD, c.wantNet)
+			if !closeEnough(netCents, c.wantNetCents) {
+				t.Errorf("NetCents = %v, want %v", netCents, c.wantNetCents)
 			}
-			if !closeEnough(prizeWon, bounty) {
-				t.Errorf("PrizeWon = %v, want %v (bounty, buy-in netted out)", prizeWon, bounty)
+			if !closeEnough(prizeWonCents, bountyCents) {
+				t.Errorf("PrizeWon = %v, want %v (bounty, buy-in netted out)", prizeWonCents, bountyCents)
 			}
-			bankroll, err := s.GetCurrentBankroll()
+			bankrollCents, err := s.GetCurrentBankroll()
 			if err != nil {
 				t.Fatalf("GetCurrentBankroll: %v", err)
 			}
-			if !closeEnough(bankroll, c.wantNet) {
-				t.Errorf("bankroll = %v, want %v (ledger must reconcile)", bankroll, c.wantNet)
+			if !closeEnough(bankrollCents, c.wantNetCents) {
+				t.Errorf("bankroll = %v, want %v (ledger must reconcile)", bankrollCents, c.wantNetCents)
 			}
 			var ledgerRows int
 			if err := s.db.QueryRow(`SELECT COUNT(*) FROM bankroll_ledger`).Scan(&ledgerRows); err != nil {
@@ -916,7 +921,7 @@ func TestAppendTournament_DuplicateCallIsIdempotent(t *testing.T) {
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	tourn := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "4000000001",
-		BuyInUSD: 2.00, PrizePoolUSD: 40, FinishPos: 5, TotalPlayers: 40, NetUSD: 3.00,
+		BuyInCents: 200, PrizePoolCents: 4000, FinishPos: 5, TotalPlayers: 40, NetCents: 300,
 	}
 
 	if _, err := s.AppendTournament(tourn); err != nil {
@@ -934,12 +939,12 @@ func TestAppendTournament_DuplicateCallIsIdempotent(t *testing.T) {
 		t.Fatalf("len(tournaments) = %d, want 1 (tournament_id is UNIQUE)", len(tournaments))
 	}
 
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, 3.00) {
-		t.Errorf("bankroll = %v, want 3.00 (duplicate call must not double-count the ledger)", bankroll)
+	if !closeEnough(bankrollCents, 300) {
+		t.Errorf("bankroll = %v, want 3.00 (duplicate call must not double-count the ledger)", bankrollCents)
 	}
 
 	var ledgerRowCount int
@@ -956,11 +961,11 @@ func TestAppendTournament_PrizePoolMutualExclusivity(t *testing.T) {
 
 	cashPool := parsers.Tournament{
 		Date: mustTime(t, "2026-07-10T20:00:00Z"), Type: "spingo", TournamentID: "5000000001",
-		BuyInUSD: 0.55, PrizePoolUSD: 1.65, Multiplier: floatPtr(3), FinishPos: 1, TotalPlayers: 3, NetUSD: 1.10,
+		BuyInCents: 55, PrizePoolCents: 165, Multiplier: floatPtr(3), FinishPos: 1, TotalPlayers: 3, NetCents: 110,
 	}
 	ticketPool := parsers.Tournament{
 		Date: mustTime(t, "2026-07-10T20:05:00Z"), Type: "spingo", TournamentID: "5000000002",
-		PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", BuyInUSD: 0.25, FinishPos: 1, TotalPlayers: 3, NetUSD: -0.25,
+		PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", BuyInCents: 25, FinishPos: 1, TotalPlayers: 3, NetCents: -25,
 	}
 
 	if _, err := s.AppendTournament(cashPool); err != nil {
@@ -987,8 +992,8 @@ func TestAppendTournament_PrizePoolMutualExclusivity(t *testing.T) {
 	if cash.PrizePoolDescription != "" {
 		t.Errorf("cash pool PrizePoolDescription = %q, want empty", cash.PrizePoolDescription)
 	}
-	if !closeEnough(cash.PrizePoolUSD, 1.65) {
-		t.Errorf("cash pool PrizePoolUSD = %v, want 1.65", cash.PrizePoolUSD)
+	if !closeEnough(cash.PrizePoolCents, 165) {
+		t.Errorf("cash pool PrizePoolCents = %v, want 1.65", cash.PrizePoolCents)
 	}
 	if cash.Multiplier == nil || !closeEnough(*cash.Multiplier, 3) {
 		t.Errorf("cash pool Multiplier = %v, want 3", cash.Multiplier)
@@ -998,8 +1003,8 @@ func TestAppendTournament_PrizePoolMutualExclusivity(t *testing.T) {
 	if ticket.PrizePoolDescription != "$1.00 Power Path Step 2 Ticket" {
 		t.Errorf("ticket pool PrizePoolDescription = %q, want the ticket text", ticket.PrizePoolDescription)
 	}
-	if ticket.PrizePoolUSD != 0 {
-		t.Errorf("ticket pool PrizePoolUSD = %v, want 0 (mutually exclusive with description)", ticket.PrizePoolUSD)
+	if ticket.PrizePoolCents != 0 {
+		t.Errorf("ticket pool PrizePoolCents = %v, want 0 (mutually exclusive with description)", ticket.PrizePoolCents)
 	}
 	if ticket.Multiplier != nil {
 		t.Errorf("ticket pool Multiplier = %v, want nil (no real cash pool to divide by)", ticket.Multiplier)
@@ -1010,7 +1015,7 @@ func TestAppendTournament_MultiplierNilForMTT(t *testing.T) {
 	s := newTestStore(t)
 	mtt := parsers.Tournament{
 		Date: mustTime(t, "2026-07-10T20:00:00Z"), Type: "mtt", TournamentID: "6000000001",
-		BuyInUSD: 5, PrizePoolUSD: 500, FinishPos: 10, TotalPlayers: 100, NetUSD: 45,
+		BuyInCents: 500, PrizePoolCents: 50000, FinishPos: 10, TotalPlayers: 100, NetCents: 4500,
 	}
 	if _, err := s.AppendTournament(mtt); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
@@ -1028,11 +1033,11 @@ func TestGetTournamentsSince_DateFiltering(t *testing.T) {
 	s := newTestStore(t)
 	early := parsers.Tournament{
 		Date: mustTime(t, "2026-07-01T10:00:00Z"), Type: "mtt", TournamentID: "7000000001",
-		BuyInUSD: 5, PrizePoolUSD: 100, FinishPos: 1, TotalPlayers: 10, NetUSD: 20,
+		BuyInCents: 500, PrizePoolCents: 10000, FinishPos: 1, TotalPlayers: 10, NetCents: 2000,
 	}
 	late := parsers.Tournament{
 		Date: mustTime(t, "2026-07-15T10:00:00Z"), Type: "mtt", TournamentID: "7000000002",
-		BuyInUSD: 5, PrizePoolUSD: 100, FinishPos: 1, TotalPlayers: 10, NetUSD: 20,
+		BuyInCents: 500, PrizePoolCents: 10000, FinishPos: 1, TotalPlayers: 10, NetCents: 2000,
 	}
 	if _, err := s.AppendTournament(early); err != nil {
 		t.Fatalf("early: %v", err)
@@ -1057,18 +1062,18 @@ func TestGetTournamentsSince_DateFiltering(t *testing.T) {
 
 func TestAppendLedgerEntry_DepositAndWithdrawalAccumulate(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendLedgerEntry("withdrawal", -30, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("withdrawal", -3000, time.Now(), ""); err != nil {
 		t.Fatalf("withdrawal: %v", err)
 	}
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, 70) {
-		t.Errorf("bankroll = %v, want 70", bankroll)
+	if !closeEnough(bankrollCents, 7000) {
+		t.Errorf("bankroll = %v, want 70", bankrollCents)
 	}
 }
 
@@ -1078,46 +1083,46 @@ func TestAppendLedgerEntry_DepositAndWithdrawalAccumulate(t *testing.T) {
 // ledger must reflect that honestly rather than clamping.
 func TestAppendLedgerEntry_RunningTotalCanGoNegative(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendLedgerEntry("deposit", 20, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 2000, time.Now(), ""); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendLedgerEntry("withdrawal", -50, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("withdrawal", -5000, time.Now(), ""); err != nil {
 		t.Fatalf("withdrawal: %v", err)
 	}
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, -30) {
-		t.Errorf("bankroll = %v, want -30 (negative running totals are valid, not clamped)", bankroll)
+	if !closeEnough(bankrollCents, -3000) {
+		t.Errorf("bankroll = %v, want -30 (negative running totals are valid, not clamped)", bankrollCents)
 	}
 
 	entries, err := s.GetLedgerEntriesSince(time.Time{})
 	if err != nil {
 		t.Fatalf("GetLedgerEntriesSince: %v", err)
 	}
-	if len(entries) != 2 || !closeEnough(entries[1].RunningTotal, -30) {
+	if len(entries) != 2 || !closeEnough(entries[1].RunningTotalCents, -3000) {
 		t.Errorf("entries = %+v, want second row's running total -30", entries)
 	}
 }
 
 func TestGetCurrentBankroll_EmptyLedger(t *testing.T) {
 	s := newTestStore(t)
-	bankroll, err := s.GetCurrentBankroll()
+	bankrollCents, err := s.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if bankroll != 0 {
-		t.Errorf("bankroll = %v, want 0 for an empty ledger", bankroll)
+	if bankrollCents != 0 {
+		t.Errorf("bankroll = %v, want 0 for an empty ledger", bankrollCents)
 	}
 }
 
 func TestGetLedgerEntriesSince_ZeroTimeReturnsWholeLedger(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.AppendLedgerEntry("deposit", 50, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 5000, time.Now(), ""); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendLedgerEntry("deposit", 25, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 2500, time.Now(), ""); err != nil {
 		t.Fatalf("deposit 2: %v", err)
 	}
 	entries, err := s.GetLedgerEntriesSince(time.Time{})
@@ -1159,14 +1164,14 @@ func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 
-	if err := s.AppendCashSession(buildCashSession(date, "M0001", 5, -2)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "M0001", 5, -200)); err != nil {
 		t.Fatalf("cash session hand 1: %v", err)
 	}
-	if err := s.AppendLedgerEntry("deposit", 50, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 5000, time.Now(), ""); err != nil {
 		t.Fatalf("mid-session deposit: %v", err)
 	}
 	// The session keeps playing and its net changes.
-	if err := s.AppendCashSession(buildCashSession(date, "M0001", 10, 4)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "M0001", 10, 400)); err != nil {
 		t.Fatalf("cash session hand 2: %v", err)
 	}
 
@@ -1177,12 +1182,12 @@ func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("len(entries) = %d, want 2 (session row upserted, not appended again)", len(entries))
 	}
-	if !closeEnough(entries[0].AmountUSD, 4) || !closeEnough(entries[0].RunningTotal, 4) {
-		t.Errorf("session row = (amount %v, total %v), want (4, 4)", entries[0].AmountUSD, entries[0].RunningTotal)
+	if !closeEnough(entries[0].AmountCents, 400) || !closeEnough(entries[0].RunningTotalCents, 400) {
+		t.Errorf("session row = (amount %v, total %v), want (4, 4)", entries[0].AmountCents, entries[0].RunningTotalCents)
 	}
-	if !closeEnough(entries[1].AmountUSD, 50) || !closeEnough(entries[1].RunningTotal, 54) {
+	if !closeEnough(entries[1].AmountCents, 5000) || !closeEnough(entries[1].RunningTotalCents, 5400) {
 		t.Errorf("deposit row = (amount %v, total %v), want (50, 54) — must shift to follow the corrected session row",
-			entries[1].AmountUSD, entries[1].RunningTotal)
+			entries[1].AmountCents, entries[1].RunningTotalCents)
 	}
 }
 
@@ -1193,7 +1198,7 @@ func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 func TestGetAllCashSessions_IncludesSessionID(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
-	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 50, -5.25)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 50, -525)); err != nil {
 		t.Fatalf("AppendCashSession: %v", err)
 	}
 
@@ -1208,7 +1213,7 @@ func TestGetAllCashSessions_IncludesSessionID(t *testing.T) {
 	if records[0].SessionID != want {
 		t.Errorf("SessionID = %q, want %q", records[0].SessionID, want)
 	}
-	if records[0].Hands != 50 || !closeEnough(records[0].NetUSD, -5.25) {
+	if records[0].Hands != 50 || !closeEnough(records[0].NetCents, -525) {
 		t.Errorf("record = %+v, unexpected", records[0])
 	}
 }
@@ -1216,10 +1221,10 @@ func TestGetAllCashSessions_IncludesSessionID(t *testing.T) {
 func TestGetAllCashSessions_ReparseStillReturnsOneRow(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
-	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 10, -1.00)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 10, -100)); err != nil {
 		t.Fatalf("first AppendCashSession: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 25, 3.50)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(date, "200000000001", 25, 350)); err != nil {
 		t.Fatalf("second AppendCashSession: %v", err)
 	}
 
@@ -1237,12 +1242,12 @@ func TestGetAllTournaments_IncludesHandStatsAndBounty(t *testing.T) {
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	tourn := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "8000000001",
-		BuyInUSD: 5.00, PrizePoolUSD: 100, FinishPos: 3, TotalPlayers: 50, NetUSD: -5.00,
+		BuyInCents: 500, PrizePoolCents: 10000, FinishPos: 3, TotalPlayers: 50, NetCents: -500,
 	}
 	if _, err := s.AppendTournament(tourn); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
-	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 120, 0.90, true); err != nil {
+	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 120, 90, true); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
 
@@ -1266,15 +1271,15 @@ func TestGetAllTournaments_IncludesHandStatsAndBounty(t *testing.T) {
 	if got.Hands == nil || *got.Hands != 120 {
 		t.Errorf("Hands = %v, want 120", got.Hands)
 	}
-	if !closeEnough(got.BountyWonUSD, 0.90) {
-		t.Errorf("BountyWonUSD = %v, want 0.90", got.BountyWonUSD)
+	if !closeEnough(got.BountyWonCents, 90) {
+		t.Errorf("BountyWonCents = %v, want 0.90", got.BountyWonCents)
 	}
 	// -5.00 baseline + 0.90 bounty = -4.10; prize won = -4.10 + 5.00 = 0.90
-	if !closeEnough(got.NetUSD, -4.10) {
-		t.Errorf("NetUSD = %v, want -4.10", got.NetUSD)
+	if !closeEnough(got.NetCents, -410) {
+		t.Errorf("NetCents = %v, want -4.10", got.NetCents)
 	}
-	if !closeEnough(got.PrizeWonUSD, 0.90) {
-		t.Errorf("PrizeWonUSD = %v, want 0.90", got.PrizeWonUSD)
+	if !closeEnough(got.PrizeWonCents, 90) {
+		t.Errorf("PrizeWonCents = %v, want 0.90", got.PrizeWonCents)
 	}
 }
 
@@ -1297,7 +1302,7 @@ func TestGetAllTournaments_VPIPPFRHandsNilBeforeHandFile(t *testing.T) {
 	date := mustTime(t, "2026-07-10T20:00:00Z")
 	tourn := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "8000000003",
-		BuyInUSD: 5.00, PrizePoolUSD: 100, FinishPos: 3, TotalPlayers: 50, NetUSD: 5.00,
+		BuyInCents: 500, PrizePoolCents: 10000, FinishPos: 3, TotalPlayers: 50, NetCents: 500,
 	}
 	if _, err := s.AppendTournament(tourn); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
@@ -1339,23 +1344,23 @@ func floatPtr(f float64) *float64 { return &f }
 func populateStore(t *testing.T, s *Store) {
 	t.Helper()
 
-	if err := s.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-10T20:00:00Z"), "200000000001", 50, -5.25)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-10T20:00:00Z"), "200000000001", 50, -525)); err != nil {
 		t.Fatalf("cash A: %v", err)
 	}
-	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-11T21:30:00Z"), "200000000002", 80, 12.40)); err != nil {
+	if err := s.AppendCashSession(buildCashSession(mustTime(t, "2026-07-11T21:30:00Z"), "200000000002", 80, 1240)); err != nil {
 		t.Fatalf("cash B: %v", err)
 	}
-	if err := s.AppendLedgerEntry("withdrawal", -20, time.Now(), ""); err != nil {
+	if err := s.AppendLedgerEntry("withdrawal", -2000, time.Now(), ""); err != nil {
 		t.Fatalf("withdrawal: %v", err)
 	}
 
 	// Cash-pool Spin & Go with hand stats.
 	spingo := parsers.Tournament{
 		Date: mustTime(t, "2026-07-12T18:00:00Z"), TournamentID: "T-SPIN-1", Type: "spingo",
-		BuyInUSD: 5, PrizePoolUSD: 30, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3, NetUSD: 25,
+		BuyInCents: 500, PrizePoolCents: 3000, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3, NetCents: 2500,
 	}
 	if _, err := s.AppendTournament(spingo); err != nil {
 		t.Fatalf("spingo summary: %v", err)
@@ -1367,19 +1372,19 @@ func populateStore(t *testing.T, s *Store) {
 	// Ticket-denominated satellite (non-cash prize pool).
 	sat := parsers.Tournament{
 		Date: mustTime(t, "2026-07-13T19:00:00Z"), TournamentID: "T-SAT-1", Type: "spingo",
-		BuyInUSD: 1, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", FinishPos: 2, TotalPlayers: 3, NetUSD: -1,
+		BuyInCents: 100, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", FinishPos: 2, TotalPlayers: 3, NetCents: -100,
 	}
 	if _, err := s.AppendTournament(sat); err != nil {
 		t.Fatalf("sat summary: %v", err)
 	}
 
 	// Knockout MTT, hand stats first then summary — folds bounty into net.
-	if err := s.UpdateTournamentHandStats("T-KO-1", 22, 17, 120, 4.50, true); err != nil {
+	if err := s.UpdateTournamentHandStats("T-KO-1", 22, 17, 120, 450, true); err != nil {
 		t.Fatalf("ko hands: %v", err)
 	}
 	koMTT := parsers.Tournament{
 		Date: mustTime(t, "2026-07-14T20:00:00Z"), TournamentID: "T-KO-1", Type: "mtt",
-		BuyInUSD: 10, PrizePoolUSD: 500, FinishPos: 8, TotalPlayers: 60, NetUSD: 15,
+		BuyInCents: 1000, PrizePoolCents: 50000, FinishPos: 8, TotalPlayers: 60, NetCents: 1500,
 	}
 	if _, err := s.AppendTournament(koMTT); err != nil {
 		t.Fatalf("ko summary: %v", err)
@@ -1388,14 +1393,14 @@ func populateStore(t *testing.T, s *Store) {
 	// Summary-only MTT — no hand file ever arrived, so VPIP/PFR/Hands stay nil.
 	mtt := parsers.Tournament{
 		Date: mustTime(t, "2026-07-15T20:00:00Z"), TournamentID: "T-MTT-2", Type: "mtt",
-		BuyInUSD: 3, PrizePoolUSD: 200, FinishPos: 40, TotalPlayers: 100, NetUSD: -3,
+		BuyInCents: 300, PrizePoolCents: 20000, FinishPos: 40, TotalPlayers: 100, NetCents: -300,
 	}
 	if _, err := s.AppendTournament(mtt); err != nil {
 		t.Fatalf("mtt summary: %v", err)
 	}
 
 	// Hand-file-only partial — summary hasn't arrived (blank date, no ledger row).
-	if err := s.UpdateTournamentHandStats("T-PARTIAL-1", 30, 25, 45, 2.0, true); err != nil {
+	if err := s.UpdateTournamentHandStats("T-PARTIAL-1", 30, 25, 45, 200, true); err != nil {
 		t.Fatalf("partial hands: %v", err)
 	}
 }
@@ -1463,10 +1468,10 @@ func TestExportImportSnapshot_RoundTrip(t *testing.T) {
 	}
 	assertSnapshotsEqual(t, snap, got)
 
-	srcBankroll, _ := src.GetCurrentBankroll()
-	dstBankroll, _ := dst.GetCurrentBankroll()
-	if !closeEnough(srcBankroll, dstBankroll) {
-		t.Errorf("bankroll mismatch: src %.2f, dst %.2f", srcBankroll, dstBankroll)
+	srcBankrollCents, _ := src.GetCurrentBankroll()
+	dstBankrollCents, _ := dst.GetCurrentBankroll()
+	if !closeEnough(srcBankrollCents, dstBankrollCents) {
+		t.Errorf("bankroll mismatch: src %v, dst %v", srcBankrollCents, dstBankrollCents)
 	}
 }
 
@@ -1474,7 +1479,7 @@ func TestMigrate_TwoSqliteStores(t *testing.T) {
 	src := newTestStore(t)
 	populateStore(t, src)
 	srcSnap, _ := src.ExportSnapshot()
-	srcBankroll, _ := src.GetCurrentBankroll()
+	srcBankrollCents, _ := src.GetCurrentBankroll()
 
 	dst := newTestStore(t)
 	migrated, err := storage.Migrate(src, dst)
@@ -1485,9 +1490,9 @@ func TestMigrate_TwoSqliteStores(t *testing.T) {
 	if len(migrated.Ledger) != len(srcSnap.Ledger) {
 		t.Errorf("migrated ledger count = %d, want %d", len(migrated.Ledger), len(srcSnap.Ledger))
 	}
-	dstBankroll, _ := dst.GetCurrentBankroll()
-	if !closeEnough(srcBankroll, dstBankroll) {
-		t.Errorf("bankroll mismatch after Migrate: src %.2f, dst %.2f", srcBankroll, dstBankroll)
+	dstBankrollCents, _ := dst.GetCurrentBankroll()
+	if !closeEnough(srcBankrollCents, dstBankrollCents) {
+		t.Errorf("bankroll mismatch after Migrate: src %v, dst %v", srcBankrollCents, dstBankrollCents)
 	}
 	got, _ := dst.ExportSnapshot()
 	assertSnapshotsEqual(t, srcSnap, got)
@@ -1504,12 +1509,12 @@ func TestImportSnapshot_BlankSessionIDLegacyRows(t *testing.T) {
 	d2 := mustTime(t, "2025-01-11T21:00:00Z")
 	snap := storage.Snapshot{
 		CashSessions: []storage.CashSessionRecord{
-			{CashSession: parsers.CashSession{Date: d1, Stake: "NL10", Hands: 1, DurationMin: 2, NetUSD: -2, RakeUSD: 0.1, BB100: -20, VPIP: 30, PFR: 20}},
-			{CashSession: parsers.CashSession{Date: d2, Stake: "NL10", Hands: 1, DurationMin: 2, NetUSD: 3, RakeUSD: 0.1, BB100: 30, VPIP: 25, PFR: 15}},
+			{CashSession: parsers.CashSession{Date: d1, Stake: "NL10", Hands: 1, DurationMin: 2, NetCents: -200, RakeCents: 10, BB100: -20, VPIP: 30, PFR: 20}},
+			{CashSession: parsers.CashSession{Date: d2, Stake: "NL10", Hands: 1, DurationMin: 2, NetCents: 300, RakeCents: 10, BB100: 30, VPIP: 25, PFR: 15}},
 		},
 		Ledger: []storage.LedgerEntry{
-			{Date: d1, Type: "cash_session", AmountUSD: -2, RunningTotal: -2},
-			{Date: d2, Type: "cash_session", AmountUSD: 3, RunningTotal: 1},
+			{Date: d1, Type: "cash_session", AmountCents: -200, RunningTotalCents: -200},
+			{Date: d2, Type: "cash_session", AmountCents: 300, RunningTotalCents: 100},
 		},
 	}
 
@@ -1524,15 +1529,15 @@ func TestImportSnapshot_BlankSessionIDLegacyRows(t *testing.T) {
 	assertSnapshotsEqual(t, snap, got)
 
 	// A live session written afterwards must coexist with the legacy rows.
-	if err := dst.AppendCashSession(buildCashSession(mustTime(t, "2025-01-12T20:00:00Z"), "200000000009", 10, 5)); err != nil {
+	if err := dst.AppendCashSession(buildCashSession(mustTime(t, "2025-01-12T20:00:00Z"), "200000000009", 10, 500)); err != nil {
 		t.Fatalf("AppendCashSession after legacy import: %v", err)
 	}
-	bankroll, err := dst.GetCurrentBankroll()
+	bankrollCents, err := dst.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	if !closeEnough(bankroll, 6) {
-		t.Errorf("bankroll = %.2f, want 6.00 (1 legacy + 5 live)", bankroll)
+	if !closeEnough(bankrollCents, 600) {
+		t.Errorf("bankroll = %v, want 6.00 (1 legacy + 5 live)", bankrollCents)
 	}
 }
 
@@ -1541,7 +1546,7 @@ func TestMigrate_RefusesNonEmptyDestination(t *testing.T) {
 	populateStore(t, src)
 
 	dst := newTestStore(t)
-	if err := dst.AppendLedgerEntry("deposit", 50, time.Now(), ""); err != nil {
+	if err := dst.AppendLedgerEntry("deposit", 5000, time.Now(), ""); err != nil {
 		t.Fatalf("seeding dst: %v", err)
 	}
 

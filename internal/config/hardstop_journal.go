@@ -10,8 +10,9 @@ import (
 // HardstopDelivery is both the durable outgoing command and its confirmation
 // receipt. Confirmed entries remain to suppress recovery of the same decision.
 type HardstopDelivery struct {
-	Lock      LockFile `json:"lock"`
-	Confirmed bool     `json:"confirmed"`
+	Lock          LockFile  `json:"lock"`
+	Confirmed     bool      `json:"confirmed"`
+	EffectiveLock *LockFile `json:"effective_lock,omitempty"`
 }
 
 func LoadHardstopDeliveries(path string) (map[string]HardstopDelivery, error) {
@@ -67,6 +68,9 @@ func MergeHardstopDeliveries(path string, changes map[string]HardstopDelivery) (
 	}
 	for id, change := range changes {
 		if original, exists := entries[id]; exists {
+			if !original.Confirmed && change.Confirmed {
+				original.EffectiveLock = change.EffectiveLock
+			}
 			original.Confirmed = original.Confirmed || change.Confirmed
 			entries[id] = original
 		} else {

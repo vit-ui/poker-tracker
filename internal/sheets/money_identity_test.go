@@ -2,20 +2,20 @@ package sheets
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"errors"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 func TestIdentifiedMoneyRecoveryReconcilesLostAcknowledgement(t *testing.T) {
 	fake := &fakeSheets{failWrites: true}
 	client := newTestClient(t, fake)
-	err := client.AppendLedgerEntry("deposit", 1, time.Unix(1000, 0), "money:lost-response")
+	err := client.AppendLedgerEntry("deposit", 100, time.Unix(1000, 0), "money:lost-response")
 	var writeErr *storage.WriteError
 	if !errors.As(err, &writeErr) || !writeErr.Queued {
 		t.Fatalf("failed write not durably queued: %v", err)
@@ -53,7 +53,7 @@ func TestIdentifiedMoneyRecoveryReconcilesLostAcknowledgement(t *testing.T) {
 			t.Fatalf("recovery duplicated an accepted write: %+v", request)
 		}
 	}
-	if err := restarted.AppendLedgerEntry("deposit", 1, time.Unix(1000, 0), "money:lost-response"); err != nil {
+	if err := restarted.AppendLedgerEntry("deposit", 100, time.Unix(1000, 0), "money:lost-response"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -62,7 +62,7 @@ func TestMoneyFallbackReportsLocalSaveFailure(t *testing.T) {
 	fake := &fakeSheets{failWrites: true}
 	client := newTestClient(t, fake)
 	client.fallbackPath = filepath.Join(t.TempDir(), "missing", "queue.json")
-	err := client.AppendLedgerEntry("deposit", 1, time.Now(), "money:unsaved")
+	err := client.AppendLedgerEntry("deposit", 100, time.Now(), "money:unsaved")
 	var writeErr *storage.WriteError
 	if !errors.As(err, &writeErr) || writeErr.Queued {
 		t.Fatalf("false durable-queue claim: %v", err)
@@ -73,7 +73,7 @@ func TestIntentionalEqualMoneyMovementsCarryDistinctIDs(t *testing.T) {
 	fake := &fakeSheets{}
 	client := newTestClient(t, fake)
 	for _, id := range []string{"money:first", "money:second"} {
-		if err := client.AppendLedgerEntry("deposit", 1, time.Now(), id); err != nil {
+		if err := client.AppendLedgerEntry("deposit", 100, time.Now(), id); err != nil {
 			t.Fatal(err)
 		}
 	}

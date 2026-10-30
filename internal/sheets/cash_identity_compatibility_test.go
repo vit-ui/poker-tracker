@@ -24,7 +24,7 @@ func TestCashCorrectionRetainsBothHistoricalIdentityFormats(t *testing.T) {
 				return valueRange{}
 			}}
 			client := newTestClient(t, fake)
-			if err := client.AppendCashSession(parsers.CashSession{Date: date, FirstHandID: "owned-hand", NetUSD: -.5, BuyInUSD: 2, Hands: 2}); err != nil {
+			if err := client.AppendCashSession(parsers.CashSession{Date: date, FirstHandID: "owned-hand", NetCents: -50, BuyInCents: 200, Hands: 2}); err != nil {
 				t.Fatal(err)
 			}
 			cashUpdated := false

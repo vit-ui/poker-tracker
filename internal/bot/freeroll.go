@@ -13,6 +13,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -26,8 +27,7 @@ func (b *Bot) sendFreerollBuyInMenu(t parsers.Tournament) {
 	if t.BaseType() == "spingo" {
 		gameType = "Spin & Go"
 	}
-	text := fmt.Sprintf("🎟️ Freeroll / Kick-Off detected — no buy-in recorded\n%s #%s\nDate: %s\nFinish: %s / %d\nDid you enter for free (won your way in), or pay for it?",
-		gameType, t.TournamentID, t.Date.Local().Format("2006-01-02 15:04"), Ordinal(t.FinishPos), t.TotalPlayers)
+	text := fmt.Sprintf("🎟️ Freeroll / Kick-Off detected — no buy-in recorded\n%s #%s\nDate: %s\nFinish: %s / %d\nDid you enter for free (won your way in), or pay for it?", gameType, t.TournamentID, t.Date.Format("2006-01-02 15:04"), Ordinal(t.FinishPos), t.TotalPlayers)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🆓 Free (won my way in)", "freeroll_free:"+t.TournamentID),
@@ -51,7 +51,7 @@ func (b *Bot) beginFreerollBuyInEntry(chatID int64, messageID int, tournamentID 
 // beginFreerollBuyInEntry and records the tournament. On an invalid amount it
 // re-prompts and keeps the flow state so the player can retry.
 func (b *Bot) handleFreerollBuyInReply(chatID int64, text string) {
-	amount, err := parsePositiveFloat(text)
+	amountCents, err := parsePositiveMoney(text)
 	if err != nil {
 		send(b.tg, chatID, "Invalid amount. Send the USD buy-in you paid (a positive number), or 0 isn't accepted here — tap 🆓 Free on the question instead.")
 		return
@@ -59,25 +59,25 @@ func (b *Bot) handleFreerollBuyInReply(chatID int64, text string) {
 	tournamentID := b.field
 	messageID := b.menuMessageID
 	b.reset()
-	b.recordFreerollEntry(chatID, messageID, tournamentID, amount)
+	b.recordFreerollEntry(chatID, messageID, tournamentID, amountCents)
 }
 
 // recordFreerollEntry records a queued freeroll with the resolved buy-in
-// (0 for a free entry) and removes it from the pending queue. NetUSD from the
+// (0 for a free entry) and removes it from the pending queue. NetCents from the
 // parser is the payout with a zero buy-in, so subtracting the answered buy-in
 // folds it in (same as re-entry's cost subtraction); AppendTournament then
 // folds in whatever knockout bounty the hand history file already recorded.
 // messageID is edited to the confirmation (a callback message for the free
 // tap, the remembered menu message for the paid text reply).
-func (b *Bot) recordFreerollEntry(chatID int64, messageID int, tournamentID string, buyInUSD float64) {
+func (b *Bot) recordFreerollEntry(chatID int64, messageID int, tournamentID string, buyInCents money.Cents) {
 	b.queueOperation(func(store storage.Store) storage.OperationResult {
 		result := recordPendingTournament(store, b.configPath, tournamentID, func(t parsers.Tournament) parsers.Tournament {
-			t.NetUSD -= buyInUSD
-			t.BuyInUSD = buyInUSD
+			t.NetCents -= buyInCents
+			t.BuyInCents = buyInCents
 			return t
 		})
 		if result.Err == nil && result.Found {
-			result.Bankroll, result.BankrollErr = store.GetCurrentBankroll()
+			result.BankrollCents, result.BankrollErr = store.GetCurrentBankroll()
 		}
 		return result
 	}, func(result storage.OperationResult) {
@@ -91,15 +91,15 @@ func (b *Bot) recordFreerollEntry(chatID int64, messageID int, tournamentID stri
 			return
 		}
 		var text string
-		if buyInUSD == 0 {
-			text = fmt.Sprintf("✅ Logged as a free entry (buy-in $0).\nNet: %s", FormatSignedUSD(result.NetUSD))
+		if buyInCents == 0 {
+			text = fmt.Sprintf("✅ Logged as a free entry (buy-in $0).\nNet: %s", FormatSignedUSD(result.NetCents))
 		} else {
-			text = fmt.Sprintf("✅ Logged — buy-in $%.2f.\nNet: %s", buyInUSD, FormatSignedUSD(result.NetUSD))
+			text = fmt.Sprintf("✅ Logged — buy-in $%s.\nNet: %s", buyInCents, FormatSignedUSD(result.NetCents))
 		}
 		if result.BankrollErr != nil {
 			slog.Error("getting bankroll", "err", result.BankrollErr)
 		} else {
-			text += fmt.Sprintf("\nBankroll: $%.2f", result.Bankroll)
+			text += fmt.Sprintf("\nBankroll: $%s", result.BankrollCents)
 		}
 		edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, emptyKeyboard)
 		if _, err := b.tg.Send(edit); err != nil {

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -29,7 +30,7 @@ func TestSpinGoPrizePoolText(t *testing.T) {
 	}{
 		{
 			"real cash prize pool",
-			parsers.Tournament{PrizePoolUSD: 3.00, Multiplier: &mult},
+			parsers.Tournament{PrizePoolCents: 300, Multiplier: &mult},
 			"$3.00 (3x)",
 		},
 		{
@@ -39,7 +40,7 @@ func TestSpinGoPrizePoolText(t *testing.T) {
 		},
 		{
 			"real cash prize pool but nil Multiplier defensively doesn't panic",
-			parsers.Tournament{PrizePoolUSD: 3.00, Multiplier: nil},
+			parsers.Tournament{PrizePoolCents: 300, Multiplier: nil},
 			"$3.00 (0x)",
 		},
 	}
@@ -242,29 +243,29 @@ func TestROI(t *testing.T) {
 		{
 			"filters by type",
 			[]parsers.Tournament{
-				{Type: "spingo", NetUSD: 5, BuyInUSD: 10},
-				{Type: "mtt", NetUSD: 100, BuyInUSD: 5},
+				{Type: "spingo", NetCents: 500, BuyInCents: 1000},
+				{Type: "mtt", NetCents: 10000, BuyInCents: 500},
 			},
 			"spingo",
 			50,
 		},
 		{
 			"net loss produces negative ROI",
-			[]parsers.Tournament{{Type: "mtt", NetUSD: -3, BuyInUSD: 6}},
+			[]parsers.Tournament{{Type: "mtt", NetCents: -300, BuyInCents: 600}},
 			"mtt",
 			-50,
 		},
 		{
 			"all buy-ins zero across matching type returns 0",
-			[]parsers.Tournament{{Type: "spingo", NetUSD: 5, BuyInUSD: 0}},
+			[]parsers.Tournament{{Type: "spingo", NetCents: 500, BuyInCents: 0}},
 			"spingo",
 			0,
 		},
 		{
 			"knockout suffix still counts as its base type",
 			[]parsers.Tournament{
-				{Type: "mtt" + parsers.KnockoutSuffix, NetUSD: 5, BuyInUSD: 10},
-				{Type: "spingo", NetUSD: 100, BuyInUSD: 5},
+				{Type: "mtt" + parsers.KnockoutSuffix, NetCents: 500, BuyInCents: 1000},
+				{Type: "spingo", NetCents: 10000, BuyInCents: 500},
 			},
 			"mtt",
 			50,
@@ -282,20 +283,20 @@ func TestROI(t *testing.T) {
 
 func TestFormatSignedUSD(t *testing.T) {
 	cases := []struct {
-		name  string
-		input float64
-		want  string
+		name       string
+		inputCents money.Cents
+		want       string
 	}{
-		{"positive", 12.5, "+$12.50"},
-		{"negative", -12.5, "-$12.50"},
+		{"positive", 1250, "+$12.50"},
+		{"negative", -1250, "-$12.50"},
 		{"zero is shown with a plus sign", 0, "+$0.00"},
-		{"rounds to two decimals", 1.005, "+$1.00"},
+		{"exact cents", 101, "+$1.01"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := FormatSignedUSD(c.input)
+			got := FormatSignedUSD(c.inputCents)
 			if got != c.want {
-				t.Errorf("FormatSignedUSD(%v) = %q, want %q", c.input, got, c.want)
+				t.Errorf("FormatSignedUSD(%v) = %q, want %q", c.inputCents, got, c.want)
 			}
 		})
 	}
@@ -488,34 +489,34 @@ func TestBuildWeeklySummary(t *testing.T) {
 
 	if err := store.AppendCashSession(parsers.CashSession{
 		Date: stored.Add(-24 * time.Hour), Stake: "NL10", Hands: 100, DurationMin: 60,
-		NetUSD: -3.00, BB100: -15, VPIP: 25, PFR: 20, FirstHandID: "w1",
+		NetCents: -300, BB100: -15, VPIP: 25, PFR: 20, FirstHandID: "w1",
 	}); err != nil {
 		t.Fatalf("AppendCashSession(in-window): %v", err)
 	}
 	if err := store.AppendCashSession(parsers.CashSession{
 		Date: stored.Add(-10 * 24 * time.Hour), Stake: "NL10", Hands: 500,
-		NetUSD: 50.00, BB100: 30, FirstHandID: "w2",
+		NetCents: 5000, BB100: 30, FirstHandID: "w2",
 	}); err != nil {
 		t.Fatalf("AppendCashSession(outside window): %v", err)
 	}
 	if _, err := store.AppendTournament(parsers.Tournament{
 		Date: stored.Add(-48 * time.Hour), Type: "spingo", TournamentID: "9001",
-		BuyInUSD: 1.00, FinishPos: 1, TotalPlayers: 3, NetUSD: 2.00,
+		BuyInCents: 100, FinishPos: 1, TotalPlayers: 3, NetCents: 200,
 	}); err != nil {
 		t.Fatalf("AppendTournament(spingo): %v", err)
 	}
 	if _, err := store.AppendTournament(parsers.Tournament{
 		Date: stored.Add(-72 * time.Hour), Type: "mtt", TournamentID: "9002",
-		BuyInUSD: 2.00, FinishPos: 50, TotalPlayers: 100, NetUSD: -2.00,
+		BuyInCents: 200, FinishPos: 50, TotalPlayers: 100, NetCents: -200,
 	}); err != nil {
 		t.Fatalf("AppendTournament(mtt): %v", err)
 	}
 	// Dated now by AppendLedgerEntry — inside the window, excluded by type.
-	if err := store.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+	if err := store.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 
-	got, net, err := buildWeeklySummary(store, now)
+	got, netCents, err := buildWeeklySummary(store, now)
 	if err != nil {
 		t.Fatalf("buildWeeklySummary: %v", err)
 	}
@@ -526,8 +527,8 @@ func TestBuildWeeklySummary(t *testing.T) {
 	if got != want {
 		t.Errorf("buildWeeklySummary =\n%q\nwant\n%q", got, want)
 	}
-	if net != -3.00 {
-		t.Errorf("weekly net = %v, want -3.00", net)
+	if netCents != -300 {
+		t.Errorf("weekly net = %v, want -3.00", netCents)
 	}
 }
 
@@ -540,30 +541,30 @@ func TestBuildMonthlySummary(t *testing.T) {
 
 	if err := store.AppendCashSession(parsers.CashSession{
 		Date: time.Date(2026, 6, 15, 20, 0, 0, 0, time.UTC), Stake: "NL10", Hands: 200,
-		NetUSD: 10.00, BB100: 5, VPIP: 24, PFR: 18, FirstHandID: "m1",
+		NetCents: 1000, BB100: 5, VPIP: 24, PFR: 18, FirstHandID: "m1",
 	}); err != nil {
 		t.Fatalf("AppendCashSession(June): %v", err)
 	}
 	if _, err := store.AppendTournament(parsers.Tournament{
 		Date: time.Date(2026, 6, 20, 21, 0, 0, 0, time.UTC), Type: "spingo", TournamentID: "8001",
-		BuyInUSD: 1.00, FinishPos: 3, TotalPlayers: 3, NetUSD: -1.00,
+		BuyInCents: 100, FinishPos: 3, TotalPlayers: 3, NetCents: -100,
 	}); err != nil {
 		t.Fatalf("AppendTournament(spingo): %v", err)
 	}
 	if _, err := store.AppendTournament(parsers.Tournament{
 		Date: time.Date(2026, 6, 25, 21, 0, 0, 0, time.UTC), Type: "mtt", TournamentID: "8002",
-		BuyInUSD: 2.00, FinishPos: 3, TotalPlayers: 90, NetUSD: 4.00,
+		BuyInCents: 200, FinishPos: 3, TotalPlayers: 90, NetCents: 400,
 	}); err != nil {
 		t.Fatalf("AppendTournament(mtt): %v", err)
 	}
 	if err := store.AppendCashSession(parsers.CashSession{
 		Date: time.Date(2026, 7, 2, 20, 0, 0, 0, time.UTC), Stake: "NL10", Hands: 50,
-		NetUSD: -99.00, BB100: -80, FirstHandID: "m2",
+		NetCents: -9900, BB100: -80, FirstHandID: "m2",
 	}); err != nil {
 		t.Fatalf("AppendCashSession(July): %v", err)
 	}
 
-	got, net, err := buildMonthlySummary(store, now)
+	got, netCents, err := buildMonthlySummary(store, now)
 	if err != nil {
 		t.Fatalf("buildMonthlySummary: %v", err)
 	}
@@ -573,8 +574,8 @@ func TestBuildMonthlySummary(t *testing.T) {
 	if got != want {
 		t.Errorf("buildMonthlySummary =\n%q\nwant\n%q", got, want)
 	}
-	if net != 13.00 {
-		t.Errorf("monthly net = %v, want 13.00", net)
+	if netCents != 1300 {
+		t.Errorf("monthly net = %v, want 13.00", netCents)
 	}
 }
 
@@ -586,13 +587,13 @@ func TestCashStatsMessage(t *testing.T) {
 
 	if err := store.AppendCashSession(parsers.CashSession{
 		Date: stored.Add(-24 * time.Hour), Stake: "NL10", Hands: 100,
-		NetUSD: -3.00, BB100: -15, VPIP: 25, PFR: 20, FirstHandID: "c1",
+		NetCents: -300, BB100: -15, VPIP: 25, PFR: 20, FirstHandID: "c1",
 	}); err != nil {
 		t.Fatalf("AppendCashSession: %v", err)
 	}
 	if err := store.AppendCashSession(parsers.CashSession{
 		Date: stored.Add(-10 * 24 * time.Hour), Stake: "NL10", Hands: 500,
-		NetUSD: 50.00, BB100: 30, VPIP: 22, PFR: 17, FirstHandID: "c2",
+		NetCents: 5000, BB100: 30, VPIP: 22, PFR: 17, FirstHandID: "c2",
 	}); err != nil {
 		t.Fatalf("AppendCashSession(old): %v", err)
 	}
@@ -617,9 +618,9 @@ func TestTournamentStatsMessage(t *testing.T) {
 	date := time.Date(2026, 7, 20, 21, 0, 0, 0, time.UTC)
 
 	seed := []parsers.Tournament{
-		{Date: date, Type: "spingo", TournamentID: "7001", BuyInUSD: 1.00, FinishPos: 1, TotalPlayers: 3, NetUSD: 2.00},
-		{Date: date, Type: "mtt", TournamentID: "7002", BuyInUSD: 2.00, FinishPos: 10, TotalPlayers: 100, NetUSD: -2.00},
-		{Date: date, Type: "mtt", TournamentID: "7003", BuyInUSD: 2.00, FinishPos: 40, TotalPlayers: 200, NetUSD: 4.00},
+		{Date: date, Type: "spingo", TournamentID: "7001", BuyInCents: 100, FinishPos: 1, TotalPlayers: 3, NetCents: 200},
+		{Date: date, Type: "mtt", TournamentID: "7002", BuyInCents: 200, FinishPos: 10, TotalPlayers: 100, NetCents: -200},
+		{Date: date, Type: "mtt", TournamentID: "7003", BuyInCents: 200, FinishPos: 40, TotalPlayers: 200, NetCents: 400},
 	}
 	for _, tt := range seed {
 		if _, err := store.AppendTournament(tt); err != nil {
@@ -656,20 +657,20 @@ func TestTournamentStatsMessage(t *testing.T) {
 // counts.
 func TestNetSince(t *testing.T) {
 	store := newStatsStore(t)
-	if err := store.AppendLedgerEntry("deposit", 100, time.Now(), ""); err != nil {
+	if err := store.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
 	if err := store.AppendCashSession(parsers.CashSession{
-		Date: storage.AsStoredClock(time.Now()), Stake: "NL10", NetUSD: -6.00, FirstHandID: "n1",
+		Date: storage.AsStoredClock(time.Now()), Stake: "NL10", NetCents: -600, FirstHandID: "n1",
 	}); err != nil {
 		t.Fatalf("AppendCashSession: %v", err)
 	}
 
-	got, err := netSince(store, time.Time{})
+	gotCents, err := netSince(store, time.Time{})
 	if err != nil {
 		t.Fatalf("netSince: %v", err)
 	}
-	if got != 94 {
-		t.Errorf("netSince(all time) = %v, want 94 (100 deposit - 6 session)", got)
+	if gotCents != 9400 {
+		t.Errorf("netSince(all time) = %v, want 94 (100 deposit - 6 session)", gotCents)
 	}
 }

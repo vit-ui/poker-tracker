@@ -277,7 +277,7 @@ func runServe() {
 	go func() {
 		// All-local: server and collector share this machine's clock, so the
 		// read-side date windows anchor to time.Now — unchanged behavior.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations)
+		err := bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, restartWatcher, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock)
 		// bot.Run's error return was previously discarded entirely by a
 		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
 		// token, network issue at that instant), the goroutine would exit

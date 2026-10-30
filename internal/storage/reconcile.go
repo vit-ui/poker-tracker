@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
@@ -52,20 +53,27 @@ func AppendKnockoutSuffix(existingTypeCell string) string {
 	return existingTypeCell + parsers.KnockoutSuffix
 }
 
-// FoldBountyIntoNet computes the final NetUSD and Prize Won (USD) once the
+// FoldBountyIntoNet computes the final NetCents and Prize Won (USD) once the
 // summary file's baseline net (payout - buyin) is known, folding in whatever
 // bounty winnings the hand history file has already recorded for this row.
-func FoldBountyIntoNet(baselineNetUSD, bountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
-	netUSD = baselineNetUSD + bountyUSD
-	return netUSD, netUSD + buyInUSD
+func FoldBountyIntoNet(baselineNetCents, bountyCents, buyInCents money.Cents) (netCents, prizeWonCents money.Cents, err error) {
+	netCents, err = money.Add(baselineNetCents, bountyCents)
+	if err != nil {
+		return 0, 0, err
+	}
+	prizeWonCents, err = money.Add(netCents, buyInCents)
+	return netCents, prizeWonCents, err
 }
 
-// ReconcileTournamentBounty computes the corrected NetUSD and Prize Won
+// ReconcileTournamentBounty computes the corrected NetCents and Prize Won
 // (USD) after a freshly reparsed cumulative bounty total replaces whatever
-// this row's previous bounty contribution to storedNetUSD was.
-func ReconcileTournamentBounty(storedNetUSD, storedBountyUSD, newBountyUSD, buyInUSD float64) (netUSD, prizeWonUSD float64) {
-	netUSD = (storedNetUSD - storedBountyUSD) + newBountyUSD
-	return netUSD, netUSD + buyInUSD
+// this row's previous bounty contribution to storedNetCents was.
+func ReconcileTournamentBounty(storedNetCents, storedBountyCents, newBountyCents, buyInCents money.Cents) (netCents, prizeWonCents money.Cents, err error) {
+	baselineCents, err := money.Subtract(storedNetCents, storedBountyCents)
+	if err != nil {
+		return 0, 0, err
+	}
+	return FoldBountyIntoNet(baselineCents, newBountyCents, buyInCents)
 }
 
 // CascadeRunningTotals recomputes running totals for a contiguous tail of
@@ -75,20 +83,24 @@ func ReconcileTournamentBounty(storedNetUSD, storedBountyUSD, newBountyUSD, buyI
 // earlier row shifts every total after it. base is the running total of the
 // ledger row immediately before amounts[0] (0 if amounts[0] is the ledger's
 // first row).
-func CascadeRunningTotals(amounts []float64, newAmount, base float64) []float64 {
-	if len(amounts) == 0 {
-		return nil
+func CascadeRunningTotals(amountsCents []money.Cents, newAmountCents, baseCents money.Cents) ([]money.Cents, error) {
+	if len(amountsCents) == 0 {
+		return nil, nil
 	}
-	totals := make([]float64, len(amounts))
-	running := base
-	for i, amt := range amounts {
+	totalsCents := make([]money.Cents, len(amountsCents))
+	runningCents := baseCents
+	for i, amountCents := range amountsCents {
 		if i == 0 {
-			amt = newAmount
+			amountCents = newAmountCents
 		}
-		running += amt
-		totals[i] = running
+		var err error
+		runningCents, err = money.Add(runningCents, amountCents)
+		if err != nil {
+			return nil, err
+		}
+		totalsCents[i] = runningCents
 	}
-	return totals
+	return totalsCents, nil
 }
 
 // AsStoredClock reinterprets t's own wall-clock reading — the digits in
@@ -114,12 +126,16 @@ func AsStoredClock(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
 }
 
-func ledgerSum(rows []LedgerEntry) float64 {
-	var sum float64
+func ledgerSum(rows []LedgerEntry) (money.Cents, error) {
+	var sumCents money.Cents
 	for _, row := range rows {
-		sum += row.AmountUSD
+		var err error
+		sumCents, err = money.Add(sumCents, row.AmountCents)
+		if err != nil {
+			return 0, err
+		}
 	}
-	return sum
+	return sumCents, nil
 }
 
 func sameNumber(a, b, tolerance float64) bool {
@@ -149,14 +165,11 @@ func ValidateNumbers(values ...float64) error {
 
 // ValidateCashSession checks the numeric fields used by both backends.
 func ValidateCashSession(session parsers.CashSession) error {
-	return ValidateNumbers(session.BuyInUSD, session.NetUSD, session.RakeUSD, session.BB100, session.VPIP, session.PFR)
+	return ValidateNumbers(session.BB100, session.VPIP, session.PFR)
 }
 
 // ValidateTournament preserves optional values while checking every number.
 func ValidateTournament(tournament parsers.Tournament) error {
-	if err := ValidateNumbers(tournament.BuyInUSD, tournament.NetUSD, tournament.PrizePoolUSD); err != nil {
-		return err
-	}
 	for _, value := range []*float64{tournament.Multiplier, tournament.VPIP, tournament.PFR} {
 		if value != nil {
 			if err := ValidateNumbers(*value); err != nil {
@@ -178,16 +191,9 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if err := ValidateTournament(tournament.Tournament); err != nil {
 			return fmt.Errorf("tournament %s: %w", tournament.TournamentID, err)
 		}
-		if err := ValidateNumbers(tournament.BountyWonUSD, tournament.PrizeWonUSD); err != nil {
-			return fmt.Errorf("tournament %s winnings: %w", tournament.TournamentID, err)
-		}
 	}
-	for i, entry := range snapshot.Ledger {
-		if err := ValidateNumbers(entry.AmountUSD, entry.RunningTotal); err != nil {
-			return fmt.Errorf("ledger entry %d: %w", i+1, err)
-		}
-	}
-	return ValidateNumbers(ledgerSum(snapshot.Ledger))
+	_, err := ledgerSum(snapshot.Ledger)
+	return err
 }
 
 func sameOptionalInt(a, b *int) bool {

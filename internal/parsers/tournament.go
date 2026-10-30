@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
 // KnockoutSuffix marks a knockout (bounty) tournament on Tournament.Type,
@@ -23,28 +25,28 @@ type Tournament struct {
 	Date         time.Time
 	Type         string // "spingo" or "mtt", plus KnockoutSuffix if it's a knockout tournament
 	TournamentID string
-	// BuyInUSD is 0 for a freeroll/Kick-Off — a summary with no "Buy-In: $"
+	// BuyInCents is 0 for a freeroll/Kick-Off — a summary with no "Buy-In: $"
 	// line. PokerStars never records how such an entry was obtained (a free
 	// level-up win, a ticket, or cash), so the worker queues these to ask the
 	// player for the real entry cost rather than dropping them; the bounty
 	// cash a knockout freeroll pays out is real money.
-	BuyInUSD     float64
-	PrizePoolUSD float64 // 0 when the pool itself is non-cash-denominated — see PrizePoolDescription
+	BuyInCents     money.Cents
+	PrizePoolCents money.Cents // 0 when the pool itself is non-cash-denominated — see PrizePoolDescription
 
 	// PrizePoolDescription holds the "Total Prize Pool" line's exact text
 	// when it's non-cash rather than a dollar amount (e.g. "$1.00 Power
 	// Path Step 2 Ticket" — the prize's own face-value name, not a real
 	// cash pool). Empty for a normal cash-denominated prize pool, in which
-	// case PrizePoolUSD holds the real amount instead.
+	// case PrizePoolCents holds the real amount instead.
 	PrizePoolDescription string
 	Multiplier           *float64 // non-nil only for spingo with a real cash prize pool (nil if PrizePoolDescription is set)
 	FinishPos            int
 	TotalPlayers         int
-	NetUSD               float64
+	NetCents             money.Cents
 
 	// ReEntries is the number of re-entries/rebuys/add-ons beyond the first
 	// entry, from the "You made N re-entries for a total of $X" line (0 for a
-	// single-entry tournament). BuyInUSD/NetUSD already fold in their cost;
+	// single-entry tournament). BuyInCents/NetCents already fold in their cost;
 	// this count is kept only so the post-session alert can say the row is a
 	// re-entry and how many entries it represents. Not persisted by either
 	// storage backend — it's read straight off the summary each parse.
@@ -94,12 +96,12 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	}
 
 	var (
-		t              Tournament
-		playerCount    int
-		beforeBuyIn    bool    // between the "PokerStars Tournament #" line and "Buy-In:" — the title/subtitle region
-		foundPlayerRow bool    // screenName's best result row has been read (rows are ascending, so the first is best)
-		reEntryCost    float64 // extra buy-ins beyond the first (re-entries / rebuys / add-ons), folded into BuyInUSD after the loop
-		reEntryCount   int     // number of re-entries beyond the first entry (the "N" in "You made N re-entries")
+		t                Tournament
+		playerCount      int
+		beforeBuyIn      bool        // between the "PokerStars Tournament #" line and "Buy-In:" — the title/subtitle region
+		foundPlayerRow   bool        // screenName's best result row has been read (rows are ascending, so the first is best)
+		reEntryCostCents money.Cents // extra buy-ins beyond the first (re-entries / rebuys / add-ons), folded into BuyInCents after the loop
+		reEntryCount     int         // number of re-entries beyond the first entry (the "N" in "You made N re-entries")
 	)
 	// A re-entry lists screenName once per entry, each row after the first
 	// carrying a "[N]" bullet marker between the name and the country paren
@@ -108,6 +110,15 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	// (which has no marker) is ever read.
 	playerParen := ": " + screenName + " ("
 	playerBracket := ": " + screenName + " ["
+
+	var amountErr error
+	parseAmount := func(text string) (money.Cents, bool) {
+		valueCents, ok := parseLeadingAmount(text)
+		if !ok && amountErr == nil {
+			amountErr = fmt.Errorf("invalid tournament amount %q", text)
+		}
+		return valueCents, ok
+	}
 
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, "\r")
@@ -130,10 +141,13 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			rest := line[len("Buy-In: $"):]
 			slashIdx := strings.Index(rest, "/")
 			if slashIdx >= 0 {
-				prize, ok1 := parseLeadingAmount(rest[:slashIdx])
-				rake, ok2 := parseLeadingAmount(rest[slashIdx+1:])
+				prizeCents, ok1 := parseAmount(rest[:slashIdx])
+				rakeCents, ok2 := parseAmount(rest[slashIdx+1:])
 				if ok1 && ok2 {
-					t.BuyInUSD = prize + rake
+					t.BuyInCents, err = money.Add(prizeCents, rakeCents)
+					if err != nil {
+						return Tournament{}, err
+					}
 				}
 			}
 
@@ -142,13 +156,13 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			// ticket-denominated (e.g. "Total Prize Pool: $1.00 Power Path
 			// Step 2 Ticket") — that leading dollar amount is the ticket's
 			// own face-value name, not a real cash pool, so it must never
-			// be parsed as PrizePoolUSD (same distinction the player's own
+			// be parsed as PrizePoolCents (same distinction the player's own
 			// payout and finish-position-1 checks make).
 			rest := strings.TrimRight(line[len("Total Prize Pool: $"):], " \r")
 			if isNonCashPrize(rest) {
 				t.PrizePoolDescription = "$" + rest
-			} else if amt, ok := parseLeadingAmount(rest); ok {
-				t.PrizePoolUSD = amt
+			} else if amtCents, ok := parseAmount(rest); ok {
+				t.PrizePoolCents = amtCents
 			}
 
 		case strings.HasPrefix(line, "Tournament started "):
@@ -167,19 +181,24 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			// Re-entries / rebuys / add-ons are extra money spent beyond the
 			// base buy-in ("You made 1 re-entries for a total of $1.00.").
 			// Anchoring on "for a total of $" (not the word "re-entries")
-			// covers all three uniformly. The total is folded into BuyInUSD
-			// after the loop, so NetUSD ends up as payout − total buy-in.
+			// covers all three uniformly. The total is folded into BuyInCents
+			// after the loop, so NetCents ends up as payout − total buy-in.
 			rest := line[strings.Index(line, "for a total of $")+len("for a total of $"):]
 			// The amount carries a trailing period ("$1.00.") that
 			// parseLeadingAmount would otherwise consume as a digit and fail on.
 			rest = strings.TrimRight(rest, ". \r")
-			if amt, ok := parseLeadingAmount(rest); ok {
-				reEntryCost += amt
+			if amtCents, ok := parseAmount(rest); ok {
+				reEntryCostCents, err = money.Add(reEntryCostCents, amtCents)
+				if err != nil {
+					return Tournament{}, err
+				}
 			}
 			// The count is the leading integer right after "You made "
 			// ("You made 2 re-entries …" → 2), kept only for the alert text.
-			if n, ok := parseLeadingAmount(line[len("You made "):]); ok {
-				reEntryCount += int(n)
+			if fields := strings.Fields(line[len("You made "):]); len(fields) > 0 {
+				if count, err := strconv.Atoi(fields[0]); err == nil {
+					reEntryCount += count
+				}
 			}
 
 		// Only the first matching row wins: rows are in ascending finish-position
@@ -198,18 +217,21 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 			// nothing. A non-cash payout (e.g. "$1.00 Power Path Step 2
 			// Ticket") can still start with a dollar sign — that's the
 			// prize's own face-value name, not a cash credit PokerStars
-			// actually paid out — so it must never be parsed as a NetUSD
+			// actually paid out — so it must never be parsed as a NetCents
 			// amount (the satellite-detection loop below decides whether
 			// it's non-cash). A screenName who wins a non-cash prize has
-			// NetUSD computed the same as a screenName who won nothing at
-			// all: just -BuyInUSD.
+			// NetCents computed the same as a screenName who won nothing at
+			// all: just -BuyInCents.
 			const payoutTextMarker = "), "
-			t.NetUSD = -t.BuyInUSD
+			t.NetCents = -t.BuyInCents
 			if payIdx := strings.Index(line, payoutTextMarker); payIdx >= 0 {
 				payoutText := strings.TrimRight(line[payIdx+len(payoutTextMarker):], " \r")
 				if payoutText != "" && !isNonCashPrize(payoutText) {
-					if payout, ok := parseLeadingAmount(payoutText); ok {
-						t.NetUSD = payout - t.BuyInUSD
+					if payoutCents, ok := parseAmount(payoutText); ok {
+						t.NetCents, err = money.Subtract(payoutCents, t.BuyInCents)
+						if err != nil {
+							return Tournament{}, err
+						}
 					}
 				}
 			}
@@ -266,11 +288,17 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		}
 	}
 
-	// Re-entries make BuyInUSD the sum of every entry's buy-in, and NetUSD the
-	// payout minus that total (NetUSD was computed in-loop against the base
+	// Re-entries make BuyInCents the sum of every entry's buy-in, and NetCents the
+	// payout minus that total (NetCents was computed in-loop against the base
 	// buy-in only). Both are no-ops for a single-entry tournament.
-	t.BuyInUSD += reEntryCost
-	t.NetUSD -= reEntryCost
+	t.BuyInCents, err = money.Add(t.BuyInCents, reEntryCostCents)
+	if err != nil {
+		return Tournament{}, err
+	}
+	t.NetCents, err = money.Subtract(t.NetCents, reEntryCostCents)
+	if err != nil {
+		return Tournament{}, err
+	}
 	t.ReEntries = reEntryCount
 
 	t.TotalPlayers = playerCount
@@ -278,12 +306,12 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	if playerCount == 3 {
 		t.Type = "spingo"
 		// A ticket-denominated prize pool (PrizePoolDescription set) has no
-		// real dollar amount to divide by BuyInUSD — Multiplier stays nil,
-		// same as it already does for every MTT. A freeroll (BuyInUSD 0) has
+		// real dollar amount to divide by BuyInCents — Multiplier stays nil,
+		// same as it already does for every MTT. A freeroll (BuyInCents 0) has
 		// no meaningful multiplier and would divide by zero, so it stays nil
 		// too.
-		if t.PrizePoolDescription == "" && t.BuyInUSD != 0 {
-			m := t.PrizePoolUSD / t.BuyInUSD
+		if t.PrizePoolDescription == "" && t.BuyInCents != 0 {
+			m := money.Ratio(t.PrizePoolCents, t.BuyInCents)
 			t.Multiplier = &m
 		}
 	} else {
@@ -301,6 +329,9 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		t.WinnerPrizeDescription = t.PrizePoolDescription
 	}
 
+	if amountErr != nil {
+		return Tournament{}, amountErr
+	}
 	return t, nil
 }
 
@@ -321,7 +352,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 // "paid cash" and nothing changes. A false negative costs silently wrong
 // bankroll data with no way to notice or recover it. That asymmetry means
 // new candidate words from PokerStars' own terminology are worth adding
-// speculatively here, unlike NetUSD/BuyInUSD parsing elsewhere in this
+// speculatively here, unlike NetCents/BuyInCents parsing elsewhere in this
 // file, where a wrong guess corrupts real numbers with no user-facing
 // signal that anything went wrong at all.
 func isNonCashPrize(payout string) bool {

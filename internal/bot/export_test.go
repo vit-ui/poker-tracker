@@ -95,7 +95,7 @@ func TestFormatFloatPtr(t *testing.T) {
 
 func TestPrizePoolCSVCell(t *testing.T) {
 	t.Run("cash pool renders the numeric amount", func(t *testing.T) {
-		got := prizePoolCSVCell(parsers.Tournament{PrizePoolUSD: 1.65})
+		got := prizePoolCSVCell(parsers.Tournament{PrizePoolCents: 165})
 		if got != "1.65" {
 			t.Errorf("prizePoolCSVCell(cash) = %q, want %q", got, "1.65")
 		}
@@ -113,13 +113,10 @@ func TestCashSessionsCSVRows(t *testing.T) {
 	records := []storage.CashSessionRecord{
 		{
 			CashSession: parsers.CashSession{
-				// NetUSD/RakeUSD/BB100/VPIP/PFR are all chained-arithmetic
-				// results with float64 noise past their meaningful precision
-				// (e.g. 0.1+0.2 = 0.30000000000000004) — same shape as real
-				// running-total/bounty-folding output, to prove rounding,
-				// not just formatting a number that was already round.
+				// Amounts are exact cents; statistical fields still exercise
+				// nonterminating divisions and their own display precision.
 				Date: date, Stake: "NL10", Hands: 50, DurationMin: 60,
-				NetUSD: -(0.1 + 0.2), RakeUSD: 1.0 / 3.0, BB100: 10.0 / 3.0,
+				NetCents: -30, RakeCents: 33, BB100: 10.0 / 3.0,
 				VPIP: 88.0 / 347.0 * 100, PFR: 60.0 / 347.0 * 100,
 			},
 			SessionID: "abc123",
@@ -148,12 +145,12 @@ func TestTournamentsCSVRows(t *testing.T) {
 		records := []storage.TournamentRecord{
 			{
 				Tournament: parsers.Tournament{
-					Date: date, Type: "spingo-ko", TournamentID: "1000000001", BuyInUSD: 0.55,
-					PrizePoolUSD: 1.65, Multiplier: &mult, FinishPos: 1, TotalPlayers: 3,
-					NetUSD: 2.00, VPIP: &vpip, PFR: &pfr, Hands: &hands,
+					Date: date, Type: "spingo-ko", TournamentID: "1000000001", BuyInCents: 55,
+					PrizePoolCents: 165, Multiplier: &mult, FinishPos: 1, TotalPlayers: 3,
+					NetCents: 200, VPIP: &vpip, PFR: &pfr, Hands: &hands,
 				},
-				BountyWonUSD: 0.90,
-				PrizeWonUSD:  2.55,
+				BountyWonCents: 90,
+				PrizeWonCents:  255,
 			},
 		}
 		rows := tournamentsCSVRows(records)
@@ -173,8 +170,8 @@ func TestTournamentsCSVRows(t *testing.T) {
 			{
 				Tournament: parsers.Tournament{
 					Date: date, Type: "spingo", TournamentID: "1000000002",
-					PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", BuyInUSD: 0.25,
-					FinishPos: 1, TotalPlayers: 3, NetUSD: -0.25,
+					PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", BuyInCents: 25,
+					FinishPos: 1, TotalPlayers: 3, NetCents: -25,
 				},
 			},
 		}
@@ -200,12 +197,9 @@ func TestTournamentsCSVRows(t *testing.T) {
 func TestBankrollLedgerCSVRows(t *testing.T) {
 	date := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	entries := []storage.LedgerEntry{
-		// RunningTotal is a chained-arithmetic result carrying float64 noise
-		// past 2 decimal places — the exact shape cascadeLedgerAmounts/
-		// cascadeRunningTotals produce in real use — to prove rounding, not
-		// just formatting a number that was already clean.
-		{Date: date, Type: "cash_session", AmountUSD: -(0.1 + 0.42), RunningTotal: -0.32000000000000006, SessionID: "abc123"},
-		{Date: date, Type: "deposit", AmountUSD: 100, RunningTotal: 100, SessionID: ""},
+		// Stored cent integers render as decimal dollars without rounding.
+		{Date: date, Type: "cash_session", AmountCents: -52, RunningTotalCents: -32, SessionID: "abc123"},
+		{Date: date, Type: "deposit", AmountCents: 10000, RunningTotalCents: 10000, SessionID: ""},
 	}
 	rows := bankrollLedgerCSVRows(entries)
 	if len(rows) != 2 {

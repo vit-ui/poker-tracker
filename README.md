@@ -65,10 +65,16 @@ Setup:
 
 They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired. The all-local install above is unchanged; this is only if you want the split.
 
-An active hard-stop lock is retained by the running server across collector
+Collector-confirmed hard-stop expiry survives server restarts and collector
 disconnects and sent again when the collector reconnects. Reconnecting replaces
 the previous connection; lock replay and ordinary commands use the same frame
 writer. Other commands issued while disconnected are not queued for reconnect.
+`/status` uses the collector’s observed protection state and reports when that
+state is unavailable. Lock times follow the poker PC’s timezone.
+
+Money is accounted for in whole USD cents. Extra fractional cents round up in
+magnitude when entered: $1.001 becomes $1.01. Dollar displays and CSV columns
+keep two decimal places.
 
 New money movements carry an operation ID in the existing ledger identity column,
 including CSV exports. Sheets recovery checks that ID before replaying a write.

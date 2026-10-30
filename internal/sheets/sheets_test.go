@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -16,8 +18,11 @@ import (
 // closeEnough reports whether a and b differ by less than half a cent —
 // USD amounts derived from chained float64 arithmetic (e.g. -0.12 + 0.55)
 // can land a few ULPs off an exact decimal value.
-func closeEnough(a, b float64) bool {
-	return math.Abs(a-b) < 0.005
+func closeEnough[T ~int64 | ~float64](a, b T) bool {
+	if _, ok := any(a).(money.Cents); ok {
+		return a == b
+	}
+	return math.Abs(float64(a-b)) < 0.005
 }
 
 func TestParseInt(t *testing.T) {
@@ -85,10 +90,10 @@ func TestParseLedgerRows(t *testing.T) {
 		if !entries[0].Date.Equal(wantDate0) {
 			t.Errorf("entries[0].Date = %v, want %v", entries[0].Date, wantDate0)
 		}
-		if entries[0].Type != "deposit" || entries[0].AmountUSD != 100 || entries[0].RunningTotal != 100 {
+		if entries[0].Type != "deposit" || entries[0].AmountCents != 10000 || entries[0].RunningTotalCents != 10000 {
 			t.Errorf("entries[0] = %+v, unexpected", entries[0])
 		}
-		if entries[1].Type != "cash_session" || entries[1].AmountUSD != -5.5 || entries[1].RunningTotal != 94.5 {
+		if entries[1].Type != "cash_session" || entries[1].AmountCents != -550 || entries[1].RunningTotalCents != 9450 {
 			t.Errorf("entries[1] = %+v, unexpected", entries[1])
 		}
 	})
@@ -157,7 +162,10 @@ func TestCascadeLedgerAmounts(t *testing.T) {
 	t.Run("single row, last in ledger — matches simple update", func(t *testing.T) {
 		// amounts = [deposit 100, session -5]; correcting the session row
 		// (index 1) to -8 with base = running total before it (100).
-		got := cascadeLedgerAmounts([]float64{100, -5}, 1, -8, 100)
+		got, err := cascadeLedgerAmounts([]money.Cents{10000, -500}, 1, -800, 10000)
+		if err != nil {
+			t.Fatal(err)
+		}
 		want := [][]interface{}{{-8.0, 92.0}}
 		if !equalUpdates(got, want) {
 			t.Errorf("got %v, want %v", got, want)
@@ -172,8 +180,11 @@ func TestCascadeLedgerAmounts(t *testing.T) {
 		// Table A's 2nd hand arrives: cumulative net now -8, correcting row1.
 		// row2 (table B) must be recomputed too — it comes after row1 in the
 		// ledger even though it belongs to a different, unrelated session.
-		amounts := []float64{-5, -3} // row1, row2 (base 100 is the deposit before them)
-		got := cascadeLedgerAmounts(amounts, 0, -8, 100)
+		amountsCents := []money.Cents{-500, -300} // row1, row2 (base 100 is the deposit before them)
+		got, err := cascadeLedgerAmounts(amountsCents, 0, -800, 10000)
+		if err != nil {
+			t.Fatal(err)
+		}
 		want := [][]interface{}{
 			{-8.0, 92.0}, // row1 corrected: 100 - 8
 			{-3.0, 89.0}, // row2 recomputed: 92 - 3, not left at its stale 92
@@ -184,7 +195,10 @@ func TestCascadeLedgerAmounts(t *testing.T) {
 	})
 
 	t.Run("changed row is the only row", func(t *testing.T) {
-		got := cascadeLedgerAmounts([]float64{-5}, 0, -8, 0)
+		got, err := cascadeLedgerAmounts([]money.Cents{-500}, 0, -800, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
 		want := [][]interface{}{{-8.0, -8.0}}
 		if !equalUpdates(got, want) {
 			t.Errorf("got %v, want %v", got, want)
@@ -192,10 +206,10 @@ func TestCascadeLedgerAmounts(t *testing.T) {
 	})
 
 	t.Run("out of range index returns nil", func(t *testing.T) {
-		if got := cascadeLedgerAmounts([]float64{-5}, 5, -8, 0); got != nil {
+		if got, err := cascadeLedgerAmounts([]money.Cents{-500}, 5, -800, 0); err != nil || got != nil {
 			t.Errorf("got %v, want nil", got)
 		}
-		if got := cascadeLedgerAmounts([]float64{-5}, -1, -8, 0); got != nil {
+		if got, err := cascadeLedgerAmounts([]money.Cents{-500}, -1, -800, 0); err != nil || got != nil {
 			t.Errorf("got %v, want nil", got)
 		}
 	})
@@ -218,19 +232,19 @@ func TestRunningTotalAbove(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		rowIndex int
-		want     float64
+		name      string
+		rowIndex  int
+		wantCents money.Cents
 	}{
 		{"first data row has nothing above it", 2, 0},
-		{"second data row reads the first's total", 3, 100},
-		{"last data row reads the middle's total", 4, 95},
+		{"second data row reads the first's total", 3, 10000},
+		{"last data row reads the middle's total", 4, 9500},
 		{"row index past the fetched range", 6, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := runningTotalAbove(values, c.rowIndex); got != c.want {
-				t.Errorf("runningTotalAbove(values, %d) = %v, want %v", c.rowIndex, got, c.want)
+			if gotCents, err := runningTotalAbove(values, c.rowIndex); err != nil || gotCents != c.wantCents {
+				t.Errorf("runningTotalAbove(values, %d) = %v, want %v", c.rowIndex, gotCents, c.wantCents)
 			}
 		})
 	}
@@ -241,8 +255,8 @@ func TestRunningTotalAbove(t *testing.T) {
 			{100.0}, // trailing empty D cell omitted in the response
 			{-5.0, 95.0},
 		}
-		if got := runningTotalAbove(short, 3); got != 0 {
-			t.Errorf("runningTotalAbove(short, 3) = %v, want 0", got)
+		if gotCents, err := runningTotalAbove(short, 3); err != nil || gotCents != 0 {
+			t.Errorf("runningTotalAbove(short, 3) = %v, want 0", gotCents)
 		}
 	})
 }
@@ -255,7 +269,7 @@ func equalUpdates(got, want [][]interface{}) bool {
 		if len(got[i]) != 2 || len(want[i]) != 2 {
 			return false
 		}
-		if got[i][0].(float64) != want[i][0].(float64) || got[i][1].(float64) != want[i][1].(float64) {
+		if !equalMoneyCell(got[i][0], want[i][0]) || !equalMoneyCell(got[i][1], want[i][1]) {
 			return false
 		}
 	}
@@ -366,17 +380,17 @@ func TestFallbackRoundTrip(t *testing.T) {
 	c := &Client{fallbackPath: fbPath, fallback: make(map[string]fallbackEntry)}
 
 	date := time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
-	cash := parsers.CashSession{Date: date, Stake: "NL10", Hands: 42, NetUSD: -3.5, FirstHandID: "H1"}
+	cash := parsers.CashSession{Date: date, Stake: "NL10", Hands: 42, NetCents: -350, FirstHandID: "H1"}
 	cashKey := fallbackKindCash + ":" + CashSessionID(cash.Date, cash.FirstHandID)
 	c.cacheFailed(cashKey, fallbackEntry{Kind: fallbackKindCash, Cash: &cash})
 
 	tid := "T999"
-	tourney := parsers.Tournament{Date: date, Type: "spingo", TournamentID: tid, BuyInUSD: 5, NetUSD: -5}
+	tourney := parsers.Tournament{Date: date, Type: "spingo", TournamentID: tid, BuyInCents: 500, NetCents: -500}
 	summaryKey := fallbackKindSummary + ":" + tid
 	statsKey := fallbackKindStats + ":" + tid
 	c.cacheFailed(summaryKey, fallbackEntry{Kind: fallbackKindSummary, Summary: &tourney})
 	c.cacheFailed(statsKey, fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{
-		TournamentID: tid, VPIP: 25, PFR: 20, Hands: 18, BountyUSD: 2, IsKnockout: true,
+		TournamentID: tid, VPIP: 25, PFR: 20, Hands: 18, BountyCents: 200, IsKnockout: true,
 	}})
 
 	c2 := &Client{fallbackPath: fbPath, fallback: make(map[string]fallbackEntry)}
@@ -427,12 +441,14 @@ func TestFallbackRoundTrip(t *testing.T) {
 // Parsing this — not the raw built row — is what proves the parse* functions
 // decode real API output, since parseInt/parseFloat only handle float64/string.
 func viaWire(row []interface{}) []interface{} {
-	data, err := json.Marshal(row)
+	data, err := json.Marshal(dollarCells([][]interface{}{row})[0])
 	if err != nil {
 		panic(err)
 	}
 	var out []interface{}
-	if err := json.Unmarshal(data, &out); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&out); err != nil {
 		panic(err)
 	}
 	n := len(out)
@@ -458,23 +474,23 @@ func TestBuildTournamentRows_RoundTrip(t *testing.T) {
 		{ // full knockout Spin & Go with hand stats and a cash prize pool
 			Tournament: parsers.Tournament{
 				Date: utc("2026-07-12 18:00"), Type: "spingo-ko", TournamentID: "T-SPIN-1",
-				BuyInUSD: 5, PrizePoolUSD: 30, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3,
-				NetUSD: 29.5, VPIP: floatPtr(40), PFR: floatPtr(33), Hands: intPtr(18),
+				BuyInCents: 500, PrizePoolCents: 3000, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3,
+				NetCents: 2950, VPIP: floatPtr(40), PFR: floatPtr(33), Hands: intPtr(18),
 			},
-			BountyWonUSD: 4.5, PrizeWonUSD: 34.5,
+			BountyWonCents: 450, PrizeWonCents: 3450,
 		},
 		{ // summary-only MTT: nil multiplier, nil VPIP/PFR/Hands
 			Tournament: parsers.Tournament{
 				Date: utc("2026-07-15 20:00"), Type: "mtt", TournamentID: "T-MTT-2",
-				BuyInUSD: 3, PrizePoolUSD: 200, FinishPos: 40, TotalPlayers: 100, NetUSD: -3,
+				BuyInCents: 300, PrizePoolCents: 20000, FinishPos: 40, TotalPlayers: 100, NetCents: -300,
 			},
-			PrizeWonUSD: 0,
+			PrizeWonCents: 0,
 		},
 		{ // ticket-denominated satellite: description prize pool, no cash value
 			Tournament: parsers.Tournament{
 				Date: utc("2026-07-13 19:00"), Type: "spingo", TournamentID: "T-SAT-1",
-				BuyInUSD: 1, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket",
-				FinishPos: 2, TotalPlayers: 3, NetUSD: -1,
+				BuyInCents: 100, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket",
+				FinishPos: 2, TotalPlayers: 3, NetCents: -100,
 			},
 		},
 		{ // hand-file-only partial: blank Date, placeholder Type, no summary cols
@@ -482,7 +498,7 @@ func TestBuildTournamentRows_RoundTrip(t *testing.T) {
 				Type: "ko", TournamentID: "T-PARTIAL-1",
 				VPIP: floatPtr(30), PFR: floatPtr(25), Hands: intPtr(45),
 			},
-			BountyWonUSD: 2,
+			BountyWonCents: 200,
 		},
 	}
 
@@ -491,7 +507,10 @@ func TestBuildTournamentRows_RoundTrip(t *testing.T) {
 		t.Fatalf("built %d rows, want %d", len(rows), len(want))
 	}
 	for i, row := range rows {
-		got, hasDate := parseTournamentRow(viaWire(row))
+		got, hasDate, err := parseTournamentRow(viaWire(row))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if hasDate == want[i].Date.IsZero() {
 			t.Errorf("row %d hasDate = %v, but Date.IsZero = %v", i, hasDate, want[i].Date.IsZero())
 		}
@@ -507,9 +526,9 @@ func TestBuildLedgerRows_RoundTrip(t *testing.T) {
 		return tm
 	}
 	want := []storage.LedgerEntry{
-		{Date: d("2026-07-10 12:00"), Type: "deposit", AmountUSD: 100, RunningTotal: 100},
-		{Date: d("2026-07-11 14:30"), Type: "cash_session", AmountUSD: -5.25, RunningTotal: 94.75, SessionID: "abc123def456"},
-		{Date: d("2026-07-12 09:00"), Type: "withdrawal", AmountUSD: -20, RunningTotal: 74.75},
+		{Date: d("2026-07-10 12:00"), Type: "deposit", AmountCents: 10000, RunningTotalCents: 10000},
+		{Date: d("2026-07-11 14:30"), Type: "cash_session", AmountCents: -525, RunningTotalCents: 9475, SessionID: "abc123def456"},
+		{Date: d("2026-07-12 09:00"), Type: "withdrawal", AmountCents: -2000, RunningTotalCents: 7475},
 	}
 	rows := buildLedgerRows(want)
 	got, err := parseLedgerRows(rows)
@@ -526,12 +545,15 @@ func TestBuildCashRows_RoundTrip(t *testing.T) {
 	want := storage.CashSessionRecord{
 		CashSession: parsers.CashSession{
 			Date: tm, Stake: "NL10", Hands: 50, DurationMin: 100,
-			NetUSD: -5.25, RakeUSD: 2.5, BB100: -10.5, VPIP: 24.5, PFR: 18.2,
+			NetCents: -525, RakeCents: 250, BB100: -10.5, VPIP: 24.5, PFR: 18.2,
 		},
 		SessionID: "abc123def456",
 	}
 	rows := buildCashRows([]storage.CashSessionRecord{want})
-	got, ok := parseCashRow(viaWire(rows[0]))
+	got, ok, err := parseCashRow(viaWire(rows[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok {
 		t.Fatal("parseCashRow returned ok=false")
 	}
@@ -547,12 +569,12 @@ func TestBuildCashRows_RoundTrip(t *testing.T) {
 // Sheets API only omits trailing empty cells and every writer ends rows with
 // a non-empty cell — so these guards only re-exclude corrupt rows.
 func TestParseRowGuards_ShortRowsSkipped(t *testing.T) {
-	if _, ok := parseCashRow([]interface{}{"2026-07-01 20:00", "NL10", float64(50)}); ok {
+	if _, ok, err := parseCashRow([]interface{}{"2026-07-01 20:00", "NL10", float64(50)}); err != nil || ok {
 		t.Error("parseCashRow accepted a 3-cell row")
 	}
 	// The shortest legitimate cash rows — 9-column pre-v1.4 rows (no Session
 	// ID yet) — still parse.
-	if _, ok := parseCashRow(viaWire([]interface{}{"2026-07-01 20:00", "NL10", 50, 100, -5.0, 2.5, -10.0, 24.5, 18.2})); !ok {
+	if _, ok, err := parseCashRow(viaWire([]interface{}{"2026-07-01 20:00", "NL10", 50, 100, -5.0, 2.5, -10.0, 24.5, 18.2})); err != nil || !ok {
 		t.Error("parseCashRow rejected a 9-cell pre-v1.4 row")
 	}
 }
@@ -573,7 +595,7 @@ func TestParseSheetDate(t *testing.T) {
 	// the way Sheets would, then fed back to prove the round-trip.
 	serial := float64(want.Sub(sheetsEpoch)) / float64(24*time.Hour)
 	if got, err := parseSheetDate(serial); err != nil || !got.Equal(want) {
-		t.Errorf("serial form: got %v, err %v; want %v (serial %.10f)", got, err, want, serial)
+		t.Errorf("serial form: got %v, err %v; want %v (serial %v)", got, err, want, serial)
 	}
 
 	// The exact value from the crash must parse (to some sane mid-2026 date)
@@ -594,3 +616,12 @@ func TestParseSheetDate(t *testing.T) {
 
 func floatPtr(f float64) *float64 { return &f }
 func intPtr(i int) *int           { return &i }
+
+func equalMoneyCell(left, right interface{}) bool {
+	aCents, err := parseMoney(left)
+	if err != nil {
+		return false
+	}
+	bCents, err := parseMoney(right)
+	return err == nil && aCents == bCents
+}

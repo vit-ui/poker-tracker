@@ -5,16 +5,17 @@ package storage
 import (
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
 // LedgerEntry represents a row in the Bankroll Ledger.
 type LedgerEntry struct {
-	Date         time.Time
-	Type         string // "deposit" | "withdrawal" | "cash_session" | "tournament"
-	AmountUSD    float64
-	RunningTotal float64
-	SessionID    string // cash/tournament identity, money operation ID, or blank on legacy movements
+	Date              time.Time
+	Type              string // "deposit" | "withdrawal" | "cash_session" | "tournament"
+	AmountCents       money.Cents
+	RunningTotalCents money.Cents
+	SessionID         string // cash/tournament identity, money operation ID, or blank on legacy movements
 }
 
 // CashSessionRecord is a full Cash Sessions row, including the Session ID
@@ -33,8 +34,8 @@ type CashSessionRecord struct {
 // the parser itself. Used only by /export.
 type TournamentRecord struct {
 	parsers.Tournament
-	BountyWonUSD float64
-	PrizeWonUSD  float64
+	BountyWonCents money.Cents
+	PrizeWonCents  money.Cents
 }
 
 // Snapshot is every row of all three data sets, as full records, used only by
@@ -65,10 +66,10 @@ func (s Snapshot) IsEmpty() bool {
 // is exactly the operations the worker, bot, and hardstop code call.
 type Store interface {
 	AppendCashSession(session parsers.CashSession) error
-	AppendTournament(t parsers.Tournament) (float64, error)
-	UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error
-	AppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error
-	GetCurrentBankroll() (float64, error)
+	AppendTournament(t parsers.Tournament) (money.Cents, error)
+	UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error
+	AppendLedgerEntry(entryType string, amountCents money.Cents, now time.Time, operationID string) error
+	GetCurrentBankroll() (money.Cents, error)
 	GetSheetURL() string
 	GetLedgerEntriesSince(t time.Time) ([]LedgerEntry, error)
 	GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error)

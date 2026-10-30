@@ -20,6 +20,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -50,7 +51,7 @@ type Bot struct {
 	tg                 *tgbotapi.BotAPI
 	store              storage.Store
 	configPath         string
-	lockfilePath       string
+	currentLock        func() (*config.LockFile, error)
 	serviceAccountPath string
 	dbPath             string
 	restartWatcher     func()
@@ -114,7 +115,7 @@ func (c *conversation) reset() {
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
 // taskName identifies the role/installation Windows task or Linux user unit for restarts.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, lockfilePath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, restartWatcher func(), sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error)) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -126,7 +127,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		tg:                 tgBot,
 		store:              store,
 		configPath:         configPath,
-		lockfilePath:       lockfilePath,
+		currentLock:        currentLock,
 		serviceAccountPath: serviceAccountPath,
 		dbPath:             dbPath,
 		restartWatcher:     restartWatcher,
@@ -215,22 +216,22 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 				}
 			}
 			if now.Weekday() == time.Monday && inSummaryWindow(now) && !sameDay(lastWeeklySent, now) {
-				summary, net, err := buildWeeklySummary(b.store, now)
+				summary, netCents, err := buildWeeklySummary(b.store, now)
 				if err != nil {
 					slog.Error("building weekly summary", "err", err)
 				} else {
-					if b.summaryModeAllows(net, func(n config.Notifications) *string { return n.WeeklySummary }) {
+					if b.summaryModeAllows(netCents, func(n config.Notifications) *string { return n.WeeklySummary }) {
 						b.sendMessage(summary)
 					}
 					lastWeeklySent = now
 				}
 			}
 			if now.Day() == 1 && inSummaryWindow(now) && !sameDay(lastMonthlySent, now) {
-				summary, net, err := buildMonthlySummary(b.store, now)
+				summary, netCents, err := buildMonthlySummary(b.store, now)
 				if err != nil {
 					slog.Error("building monthly summary", "err", err)
 				} else {
-					if b.summaryModeAllows(net, func(n config.Notifications) *string { return n.MonthlySummary }) {
+					if b.summaryModeAllows(netCents, func(n config.Notifications) *string { return n.MonthlySummary }) {
 						b.sendMessage(summary)
 					}
 					lastMonthlySent = now
@@ -327,13 +328,13 @@ func (b *Bot) sendMessage(text string) {
 // summary with the given net should go out under its configured mode (pick
 // selects which summary's mode from Notifications). On a config read error it
 // fails open — a transient error must never silently drop a summary.
-func (b *Bot) summaryModeAllows(net float64, pick func(config.Notifications) *string) bool {
+func (b *Bot) summaryModeAllows(netCents money.Cents, pick func(config.Notifications) *string) bool {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
 		slog.Error("loading config for summary gate", "err", err)
 		return true
 	}
-	return config.ShouldSendSummary(config.SummaryMode(pick(cfg.Notifications)), net)
+	return config.ShouldSendSummary(config.SummaryMode(pick(cfg.Notifications)), netCents)
 }
 
 // sendMessageWithKeyboard is sendMessage with an inline keyboard attached.

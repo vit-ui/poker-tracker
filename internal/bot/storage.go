@@ -23,15 +23,13 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-const storageUsage = "Usage:\n" +
-	"/storage — show where your data is stored\n" +
-	"/storage local — switch to the local file\n" +
-	"/storage sheets <sheet name or URL> — switch to Google Sheets (needs an empty sheet shared with your service account)"
+const storageUsage = "Usage:\n" + "/storage — show where your data is stored\n" + "/storage local — switch to the local file\n" + "/storage sheets <sheet name or URL> — switch to Google Sheets (needs an empty sheet shared with your service account)"
 
 // pendingBackendSwitch holds the target backend prepared during /storage
 // preflight, kept until the player confirms or cancels. The target store is
@@ -153,17 +151,16 @@ func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 		send(b.tg, chatID, fmt.Sprintf("Couldn't read your current data: %v", err))
 		return
 	}
-	var bankroll float64
+	var bankrollCents money.Cents
 	if n := len(snap.Ledger); n > 0 {
-		bankroll = snap.Ledger[n-1].RunningTotal
+		bankrollCents = snap.Ledger[n-1].RunningTotalCents
 	}
 
 	b.pendingSwitch = &pendingBackendSwitch{target: target, dst: dst, sheetName: sheetName, sheetID: sheetID}
 
 	text := fmt.Sprintf(
-		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\nCurrent bankroll: $%.2f\n\nClose PokerStars first — the collector will check before pausing collection. Proceed?",
-		backendLabel(b.currentBackend()), backendLabel(target),
-		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), bankroll)
+		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\nCurrent bankroll: $%s\n\nClose PokerStars first — the collector will check before pausing collection. Proceed?", backendLabel(b.currentBackend()), backendLabel(target),
+		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), bankrollCents)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✅ Migrate", "storage:yes"),

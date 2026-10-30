@@ -1,24 +1,23 @@
 package storage
 
 import (
-	"math"
 	"testing"
 	"time"
+
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-// closeEnough reports whether a and b differ by less than half a cent — USD
-// amounts derived from chained float64 arithmetic can land a few ULPs off an
-// exact decimal value.
-func closeEnough(a, b float64) bool {
-	return math.Abs(a-b) < 0.005
-}
+func closeEnough(aCents, bCents money.Cents) bool { return aCents == bCents }
 
 func TestCascadeRunningTotals(t *testing.T) {
 	t.Run("single row, last in ledger — matches a simple update", func(t *testing.T) {
-		got := CascadeRunningTotals([]float64{-5}, -8, 100)
-		want := []float64{92}
-		if len(got) != 1 || !closeEnough(got[0], want[0]) {
-			t.Errorf("got %v, want %v", got, want)
+		gotCents, err := CascadeRunningTotals([]money.Cents{-500}, -800, 10000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantCents := []money.Cents{9200}
+		if len(gotCents) != 1 || !closeEnough(gotCents[0], wantCents[0]) {
+			t.Errorf("got %v, want %v", gotCents, wantCents)
 		}
 	})
 
@@ -29,42 +28,51 @@ func TestCascadeRunningTotals(t *testing.T) {
 		//   table B hand 1     -3 -> RT  92
 		// Table A's 2nd hand arrives: cumulative net now -8, correcting row0.
 		// row1 (table B) must be recomputed too.
-		got := CascadeRunningTotals([]float64{-5, -3}, -8, 100)
-		want := []float64{92, 89}
-		if len(got) != len(want) {
-			t.Fatalf("got %v, want %v", got, want)
+		gotCents, err := CascadeRunningTotals([]money.Cents{-500, -300}, -800, 10000)
+		if err != nil {
+			t.Fatal(err)
 		}
-		for i := range want {
-			if !closeEnough(got[i], want[i]) {
-				t.Errorf("got %v, want %v", got, want)
+		wantCents := []money.Cents{9200, 8900}
+		if len(gotCents) != len(wantCents) {
+			t.Fatalf("got %v, want %v", gotCents, wantCents)
+		}
+		for i := range wantCents {
+			if !closeEnough(gotCents[i], wantCents[i]) {
+				t.Errorf("got %v, want %v", gotCents, wantCents)
 			}
 		}
 	})
 
 	t.Run("changed row is the only row, base zero", func(t *testing.T) {
-		got := CascadeRunningTotals([]float64{-5}, -8, 0)
-		want := []float64{-8}
-		if len(got) != 1 || !closeEnough(got[0], want[0]) {
-			t.Errorf("got %v, want %v", got, want)
+		gotCents, err := CascadeRunningTotals([]money.Cents{-500}, -800, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantCents := []money.Cents{-800}
+		if len(gotCents) != 1 || !closeEnough(gotCents[0], wantCents[0]) {
+			t.Errorf("got %v, want %v", gotCents, wantCents)
 		}
 	})
 
 	t.Run("three rows after the changed one", func(t *testing.T) {
-		got := CascadeRunningTotals([]float64{10, 1, 2, 3}, 20, 0)
-		want := []float64{20, 21, 23, 26}
-		if len(got) != len(want) {
-			t.Fatalf("got %v, want %v", got, want)
+		gotCents, err := CascadeRunningTotals([]money.Cents{1000, 100, 200, 300}, 2000, 0)
+		if err != nil {
+			t.Fatal(err)
 		}
-		for i := range want {
-			if !closeEnough(got[i], want[i]) {
-				t.Errorf("index %d: got %v, want %v", i, got[i], want[i])
+		wantCents := []money.Cents{2000, 2100, 2300, 2600}
+		if len(gotCents) != len(wantCents) {
+			t.Fatalf("got %v, want %v", gotCents, wantCents)
+		}
+		for i := range wantCents {
+			if !closeEnough(gotCents[i], wantCents[i]) {
+				t.Errorf("index %d: got %v, want %v", i, gotCents[i], wantCents[i])
 			}
 		}
 	})
 
 	t.Run("empty amounts returns nil", func(t *testing.T) {
-		if got := CascadeRunningTotals(nil, -8, 0); got != nil {
-			t.Errorf("got %v, want nil", got)
+		if gotCents, err := CascadeRunningTotals(nil, -800, 0); err != nil || gotCents != nil {
+			t.Errorf("got %v, want nil", gotCents)
 		}
 	})
 }
@@ -79,41 +87,51 @@ func TestCascadeRunningTotals(t *testing.T) {
 // never diverge" invariant for this path — without live-sheets I/O.
 func TestReEntryRewriteSequenceMath(t *testing.T) {
 	// A re-entry sequence (anonymized T9000000006): three busts, no cashes, no bounties.
-	busts := []struct{ buyIn, summaryNet float64 }{
-		{1.10, -1.10},
-		{2.20, -2.20},
-		{3.30, -3.30},
+	busts := []struct{ buyInCents, summaryNetCents money.Cents }{
+		{110, -110},
+		{220, -220},
+		{330, -330},
 	}
-	var net, prizeWon float64
+	var netCents, prizeWonCents money.Cents
+	var err error
 	for _, b := range busts {
-		net, prizeWon = FoldBountyIntoNet(b.summaryNet, 0, b.buyIn)
+		netCents, prizeWonCents, err = FoldBountyIntoNet(b.summaryNetCents, 0, b.buyInCents)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !closeEnough(net, -3.30) || !closeEnough(prizeWon, 0) {
-		t.Errorf("final fold = (net %.4f, prizeWon %.4f), want (-3.30, 0)", net, prizeWon)
+	if !closeEnough(netCents, -330) || !closeEnough(prizeWonCents, 0) {
+		t.Errorf("final fold = (net %v, prizeWon %v), want (-3.30, 0)", netCents, prizeWonCents)
 	}
 
 	// A knockout variant: a $0.25 bounty already on the row (hand file ran
 	// first) must be re-folded against each successively larger buy-in, not
 	// lost or double-counted across rewrites.
-	var koNet, koPrize float64
+	var koNetCents, koPrizeCents money.Cents
 	for _, b := range busts {
-		koNet, koPrize = FoldBountyIntoNet(b.summaryNet, 0.25, b.buyIn)
+		koNetCents, koPrizeCents, err = FoldBountyIntoNet(b.summaryNetCents, 25, b.buyInCents)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !closeEnough(koNet, -3.05) || !closeEnough(koPrize, 0.25) {
-		t.Errorf("knockout fold = (net %.4f, prizeWon %.4f), want (-3.05, 0.25)", koNet, koPrize)
+	if !closeEnough(koNetCents, -305) || !closeEnough(koPrizeCents, 25) {
+		t.Errorf("knockout fold = (net %v, prizeWon %v), want (-3.05, 0.25)", koNetCents, koPrizeCents)
 	}
 
 	// The ledger side: the tournament's single row is corrected in place on
 	// each bust, cascading over a later row (a cash session that landed
 	// after the first bust). Start bankroll 20.
-	amounts := []float64{-1.10, 2.50} // tournament row, then a later cash win
-	var totals []float64
+	amountsCents := []money.Cents{-110, 250} // tournament row, then a later cash win
+	var totalsCents []money.Cents
 	for _, b := range busts[1:] {
-		totals = CascadeRunningTotals(amounts, b.summaryNet, 20)
-		amounts[0] = b.summaryNet
+		totalsCents, err = CascadeRunningTotals(amountsCents, b.summaryNetCents, 2000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		amountsCents[0] = b.summaryNetCents
 	}
-	if len(totals) != 2 || !closeEnough(totals[0], 16.70) || !closeEnough(totals[1], 19.20) {
-		t.Errorf("cascaded totals = %v, want [16.70 19.20] (20 - 3.30, then + 2.50)", totals)
+	if len(totalsCents) != 2 || !closeEnough(totalsCents[0], 1670) || !closeEnough(totalsCents[1], 1920) {
+		t.Errorf("cascaded totals = %v, want [16.70 19.20] (20 - 3.30, then + 2.50)", totalsCents)
 	}
 }
 
@@ -161,20 +179,23 @@ func TestAppendKnockoutSuffix(t *testing.T) {
 
 func TestFoldBountyIntoNet(t *testing.T) {
 	cases := []struct {
-		name                             string
-		baselineNetUSD, bountyUSD, buyIn float64
-		wantNet, wantPrizeWon            float64
+		name                                      string
+		baselineNetCents, bountyCents, buyInCents money.Cents
+		wantNetCents, wantPrizeWonCents           money.Cents
 	}{
-		{"no bounty yet — hand file hasn't arrived", -0.12, 0, 0.55, -0.12, 0.43},
-		{"real KO tournament — a loss on paper becomes a win", -0.12, 0.90, 0.55, 0.78, 1.33},
-		{"non-knockout tournament, bounty always zero", 2.00, 0, 5.00, 2.00, 7.00},
+		{"no bounty yet — hand file hasn't arrived", -12, 0, 55, -12, 43},
+		{"real KO tournament — a loss on paper becomes a win", -12, 90, 55, 78, 133},
+		{"non-knockout tournament, bounty always zero", 200, 0, 500, 200, 700},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotNet, gotPrizeWon := FoldBountyIntoNet(c.baselineNetUSD, c.bountyUSD, c.buyIn)
-			if !closeEnough(gotNet, c.wantNet) || !closeEnough(gotPrizeWon, c.wantPrizeWon) {
+			gotNetCents, gotPrizeWonCents, err := FoldBountyIntoNet(c.baselineNetCents, c.bountyCents, c.buyInCents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !closeEnough(gotNetCents, c.wantNetCents) || !closeEnough(gotPrizeWonCents, c.wantPrizeWonCents) {
 				t.Errorf("FoldBountyIntoNet(%v, %v, %v) = (%v, %v), want (%v, %v)",
-					c.baselineNetUSD, c.bountyUSD, c.buyIn, gotNet, gotPrizeWon, c.wantNet, c.wantPrizeWon)
+					c.baselineNetCents, c.bountyCents, c.buyInCents, gotNetCents, gotPrizeWonCents, c.wantNetCents, c.wantPrizeWonCents)
 			}
 		})
 	}
@@ -182,20 +203,23 @@ func TestFoldBountyIntoNet(t *testing.T) {
 
 func TestReconcileTournamentBounty(t *testing.T) {
 	cases := []struct {
-		name                                               string
-		storedNetUSD, storedBountyUSD, newBountyUSD, buyIn float64
-		wantNet, wantPrizeWon                              float64
+		name                                                          string
+		storedNetCents, storedBountyCents, newBountyCents, buyInCents money.Cents
+		wantNetCents, wantPrizeWonCents                               money.Cents
 	}{
-		{"bounty grows — more KOs since the last hand-file parse", 0.78, 0.90, 1.26, 0.55, 1.14, 1.69},
-		{"unchanged re-parse is a no-op", 0.78, 0.90, 0.90, 0.55, 0.78, 1.33},
-		{"first bounty applied after summary already landed", -0.12, 0, 0.90, 0.55, 0.78, 1.33},
+		{"bounty grows — more KOs since the last hand-file parse", 78, 90, 126, 55, 114, 169},
+		{"unchanged re-parse is a no-op", 78, 90, 90, 55, 78, 133},
+		{"first bounty applied after summary already landed", -12, 0, 90, 55, 78, 133},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotNet, gotPrizeWon := ReconcileTournamentBounty(c.storedNetUSD, c.storedBountyUSD, c.newBountyUSD, c.buyIn)
-			if !closeEnough(gotNet, c.wantNet) || !closeEnough(gotPrizeWon, c.wantPrizeWon) {
+			gotNetCents, gotPrizeWonCents, err := ReconcileTournamentBounty(c.storedNetCents, c.storedBountyCents, c.newBountyCents, c.buyInCents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !closeEnough(gotNetCents, c.wantNetCents) || !closeEnough(gotPrizeWonCents, c.wantPrizeWonCents) {
 				t.Errorf("ReconcileTournamentBounty(%v, %v, %v, %v) = (%v, %v), want (%v, %v)",
-					c.storedNetUSD, c.storedBountyUSD, c.newBountyUSD, c.buyIn, gotNet, gotPrizeWon, c.wantNet, c.wantPrizeWon)
+					c.storedNetCents, c.storedBountyCents, c.newBountyCents, c.buyInCents, gotNetCents, gotPrizeWonCents, c.wantNetCents, c.wantPrizeWonCents)
 			}
 		})
 	}

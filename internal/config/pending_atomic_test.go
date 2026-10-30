@@ -18,7 +18,7 @@ func TestPendingQueueConcurrentUpdates(t *testing.T) {
 	reminded := queued.Add(time.Hour)
 	if err := config.SavePendingTournaments(path, []config.PendingTournament{
 		{Tournament: parsers.Tournament{TournamentID: "T-REMOVE"}, FirstQueuedAt: queued},
-		{Tournament: parsers.Tournament{TournamentID: "T-REFRESH", BuyInUSD: 1.1}, FirstQueuedAt: queued},
+		{Tournament: parsers.Tournament{TournamentID: "T-REFRESH", BuyInCents: 110}, FirstQueuedAt: queued},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestPendingQueueConcurrentUpdates(t *testing.T) {
 		func(p []config.PendingTournament) ([]config.PendingTournament, bool) {
 			for i := range p {
 				if p[i].Tournament.TournamentID == "T-REFRESH" {
-					p[i].Tournament.BuyInUSD = 2.2
+					p[i].Tournament.BuyInCents = 220
 				}
 			}
 			return p, true
@@ -80,7 +80,7 @@ func TestPendingQueueConcurrentUpdates(t *testing.T) {
 		if !entry.FirstQueuedAt.Equal(queued) {
 			t.Fatal("first-queued timestamp lost")
 		}
-		if id == "T-REFRESH" && (entry.Tournament.BuyInUSD != 2.2 || !entry.LastRemindedAt.Equal(reminded)) {
+		if id == "T-REFRESH" && (entry.Tournament.BuyInCents != 220 || !entry.LastRemindedAt.Equal(reminded)) {
 			t.Fatalf("refresh/reminder lost: %+v", entry)
 		}
 	}
@@ -101,7 +101,8 @@ func TestPendingQueueNoOpAndRejectedUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := config.UpdatePendingTournaments(path, func(p []config.PendingTournament) ([]config.PendingTournament, bool) {
-		p[0].Tournament.BuyInUSD = math.NaN()
+		v := math.NaN()
+		p[0].Tournament.VPIP = &v
 		return p, true
 	}); err == nil {
 		t.Fatal("expected JSON rejection")
@@ -110,7 +111,7 @@ func TestPendingQueueNoOpAndRejectedUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pending) != 1 || pending[0].Tournament.BuyInUSD != 0 {
+	if len(pending) != 1 || pending[0].Tournament.BuyInCents != 0 {
 		t.Fatalf("failed update changed queue: %+v", pending)
 	}
 }

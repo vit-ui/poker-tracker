@@ -112,7 +112,7 @@ func TestFallbackCacheAndReplay(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
 
-	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetUSD: -3, FirstHandID: "h1"}
+	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetCents: -300, FirstHandID: "h1"}
 
 	fake.setFailWrites(true)
 	if err := c.AppendCashSession(session); err == nil {
@@ -128,7 +128,7 @@ func TestFallbackCacheAndReplay(t *testing.T) {
 
 	// The API recovers; the next successful write flushes the queued one.
 	fake.setFailWrites(false)
-	if err := c.AppendCashSession(parsers.CashSession{Stake: "NL10", Hands: 41, NetUSD: -4, FirstHandID: "h2"}); err != nil {
+	if err := c.AppendCashSession(parsers.CashSession{Stake: "NL10", Hands: 41, NetCents: -400, FirstHandID: "h2"}); err != nil {
 		t.Fatalf("AppendCashSession after recovery = %v, want success", err)
 	}
 	if got := c.PendingWrites(); got != 0 {
@@ -148,10 +148,10 @@ func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 	c := newTestClient(t, fake)
 
 	fake.setFailWrites(true)
-	if err := c.AppendLedgerEntry("deposit", 6.57, time.Unix(1000, 0), ""); err == nil {
+	if err := c.AppendLedgerEntry("deposit", 657, time.Unix(1000, 0), ""); err == nil {
 		t.Fatal("AppendLedgerEntry = nil error while the API is failing, want an error")
 	}
-	if err := c.AppendLedgerEntry("withdrawal", -20, time.Unix(2000, 0), ""); err == nil {
+	if err := c.AppendLedgerEntry("withdrawal", -2000, time.Unix(2000, 0), ""); err == nil {
 		t.Fatal("second AppendLedgerEntry = nil error while the API is failing, want an error")
 	}
 	if got := c.PendingWrites(); got != 2 {
@@ -169,7 +169,7 @@ func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 
 	// The API recovers; the next successful write flushes both queued deposits.
 	fake.setFailWrites(false)
-	if err := c.AppendLedgerEntry("deposit", 10, time.Unix(3000, 0), ""); err != nil {
+	if err := c.AppendLedgerEntry("deposit", 1000, time.Unix(3000, 0), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry after recovery = %v, want success", err)
 	}
 	if got := c.PendingWrites(); got != 0 {
@@ -185,7 +185,7 @@ func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 func TestHealth(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
-	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetUSD: -3, FirstHandID: "h1"}
+	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetCents: -300, FirstHandID: "h1"}
 
 	if err := c.AppendCashSession(session); err != nil {
 		t.Fatalf("AppendCashSession = %v, want success", err)
@@ -219,7 +219,7 @@ func TestHealth(t *testing.T) {
 func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
-	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetUSD: -3, FirstHandID: "h1"}
+	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetCents: -300, FirstHandID: "h1"}
 
 	// Queue a 40-hand snapshot by failing its write.
 	fake.setFailWrites(true)
@@ -267,7 +267,7 @@ func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 // backend implements this separately, so the sqlite tests don't exercise it.
 func TestAppendTournamentFindOrAppend(t *testing.T) {
 	tourn := parsers.Tournament{
-		Type: "spingo", TournamentID: "T1", BuyInUSD: 1.0, FinishPos: 1, TotalPlayers: 3, NetUSD: 2.0,
+		Type: "spingo", TournamentID: "T1", BuyInCents: 100, FinishPos: 1, TotalPlayers: 3, NetCents: 200,
 	}
 
 	t.Run("existing row is updated, not appended", func(t *testing.T) {

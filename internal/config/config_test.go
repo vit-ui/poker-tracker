@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
 func TestSaveConfigRejectsNonFiniteWithoutChangingFile(t *testing.T) {
@@ -24,7 +25,7 @@ func TestSaveConfigRejectsNonFiniteWithoutChangingFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.Alerts.DailyLossUSD = &invalid
+			cfg.Alerts.DownswingBuyins = &invalid
 			if err := config.SaveConfig(path, cfg); err == nil {
 				t.Fatal("saved a non-finite threshold")
 			}
@@ -68,8 +69,8 @@ func TestLoadConfig_MissingFileCreatesAllNulls(t *testing.T) {
 	if cfg.Alerts.LosingStreakCount != nil {
 		t.Error("LosingStreakCount should be nil")
 	}
-	if cfg.Alerts.DailyLossUSD != nil {
-		t.Error("DailyLossUSD should be nil")
+	if cfg.Alerts.DailyLossCents != nil {
+		t.Error("DailyLossCents should be nil")
 	}
 	if cfg.Hardstop.SessionLossBuyins != nil {
 		t.Error("SessionLossBuyins should be nil")
@@ -77,8 +78,8 @@ func TestLoadConfig_MissingFileCreatesAllNulls(t *testing.T) {
 	if cfg.Hardstop.ConsecutiveLosses != nil {
 		t.Error("ConsecutiveLosses should be nil")
 	}
-	if cfg.Hardstop.DailyLossUSD != nil {
-		t.Error("DailyLossUSD should be nil")
+	if cfg.Hardstop.DailyLossCents != nil {
+		t.Error("DailyLossCents should be nil")
 	}
 	if cfg.Hardstop.DurationHours != nil {
 		t.Error("DurationHours should be nil")
@@ -219,27 +220,27 @@ func TestDeleteLock_RemovesFile(t *testing.T) {
 
 func TestShouldSendSummary(t *testing.T) {
 	cases := []struct {
-		mode string
-		net  float64
-		want bool
+		mode     string
+		netCents money.Cents
+		want     bool
 	}{
-		{"off", 10, false},
-		{"off", -10, false},
+		{"off", 1000, false},
+		{"off", -1000, false},
 		{"off", 0, false},
-		{"every", 10, true},
-		{"every", -10, true},
+		{"every", 1000, true},
+		{"every", -1000, true},
 		{"every", 0, true},
-		{"wins", 10, true},
-		{"wins", -10, false},
+		{"wins", 1000, true},
+		{"wins", -1000, false},
 		{"wins", 0, false}, // breakeven is not a win
-		{"losses", -10, true},
-		{"losses", 10, false},
+		{"losses", -1000, true},
+		{"losses", 1000, false},
 		{"losses", 0, false}, // breakeven is not a loss
-		{"", 5, true},        // unrecognized/empty falls back to "every"
+		{"", 500, true},      // unrecognized/empty falls back to "every"
 	}
 	for _, c := range cases {
-		if got := config.ShouldSendSummary(c.mode, c.net); got != c.want {
-			t.Errorf("ShouldSendSummary(%q, %v) = %v, want %v", c.mode, c.net, got, c.want)
+		if got := config.ShouldSendSummary(c.mode, c.netCents); got != c.want {
+			t.Errorf("ShouldSendSummary(%q, %v) = %v, want %v", c.mode, c.netCents, got, c.want)
 		}
 	}
 }
@@ -293,9 +294,9 @@ func TestEffectiveAlerts(t *testing.T) {
 	a := config.Alerts{
 		DownswingBuyins: fp(5), DownswingEnabled: bp(false), // off → blanked
 		SessionLossBuyins: fp(3), SessionLossEnabled: bp(true), // on → kept
-		LosingStreakCount: ip(4),                               // nil flag → on → kept
-		DailyLossUSD:      fp(20), DailyLossEnabled: bp(false), // off → blanked
-		// SpingoDailyLossUSD unset → stays nil
+		LosingStreakCount: ip(4),                                       // nil flag → on → kept
+		DailyLossCents:    centsPtr(2000), DailyLossEnabled: bp(false), // off → blanked
+		// SpingoDailyLossCents unset → stays nil
 	}
 	eff := config.EffectiveAlerts(a)
 	if eff.DownswingBuyins != nil {
@@ -307,10 +308,10 @@ func TestEffectiveAlerts(t *testing.T) {
 	if eff.LosingStreakCount == nil || *eff.LosingStreakCount != 4 {
 		t.Error("nil-flag losing streak should stay on")
 	}
-	if eff.DailyLossUSD != nil {
+	if eff.DailyLossCents != nil {
 		t.Error("off daily loss should be blanked to nil")
 	}
-	if eff.SpingoDailyLossUSD != nil {
+	if eff.SpingoDailyLossCents != nil {
 		t.Error("unset spingo daily loss should stay nil")
 	}
 	// The input must not be mutated (value receiver → the caller's config keeps
@@ -353,3 +354,5 @@ func TestIsLockExpired(t *testing.T) {
 		t.Error("expected future expiry to not be expired")
 	}
 }
+
+func centsPtr(valueCents money.Cents) *money.Cents { return &valueCents }

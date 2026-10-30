@@ -897,8 +897,8 @@ begin
     '{' + #13#10 +
     '    "downswing_buyins": null,' + #13#10 +
     '    "losing_streak_count": null,' + #13#10 +
-    '    "daily_loss_usd": null,' + #13#10 +
-    '    "spingo_daily_loss_usd": null,' + #13#10 +
+    '    "daily_loss_cents": null,' + #13#10 +
+    '    "spingo_daily_loss_cents": null,' + #13#10 +
     '    "session_loss_buyins": null' + #13#10 +
     '  }';
 end;
@@ -909,8 +909,8 @@ begin
     '{' + #13#10 +
     '    "session_loss_buyins": null,' + #13#10 +
     '    "consecutive_losses": null,' + #13#10 +
-    '    "daily_loss_usd": null,' + #13#10 +
-    '    "spingo_daily_loss_usd": null,' + #13#10 +
+    '    "daily_loss_cents": null,' + #13#10 +
+    '    "spingo_daily_loss_cents": null,' + #13#10 +
     '    "duration_hours": null,' + #13#10 +
     '    "downswing_buyins": null' + #13#10 +
     '  }';

@@ -36,9 +36,9 @@ func TestMoneyMovementsSerializeReadAndAppend(t *testing.T) {
 	}}
 	c := newTestClient(t, fake)
 	errors := make(chan error, 2)
-	go func() { errors <- c.AppendLedgerEntry("deposit", 1, time.Unix(100, 0), "") }()
+	go func() { errors <- c.AppendLedgerEntry("deposit", 100, time.Unix(100, 0), "") }()
 	<-firstRead
-	go func() { errors <- c.AppendLedgerEntry("deposit", 1, time.Unix(200, 0), "") }()
+	go func() { errors <- c.AppendLedgerEntry("deposit", 100, time.Unix(200, 0), "") }()
 	select {
 	case <-secondRead:
 		close(releaseFirst)
@@ -77,15 +77,14 @@ func TestNonFiniteWritesDoNotChangeSheetOrFallback(t *testing.T) {
 			name  string
 			write func(*Client) error
 		}{
-			{"movement", func(c *Client) error { return c.AppendLedgerEntry("deposit", invalid, time.Now(), "") }},
-			{"cash", func(c *Client) error { return c.AppendCashSession(parsers.CashSession{NetUSD: invalid}) }},
+			{"cash", func(c *Client) error { return c.AppendCashSession(parsers.CashSession{VPIP: invalid}) }},
 			{"tournament", func(c *Client) error {
-				_, err := c.AppendTournament(parsers.Tournament{TournamentID: "T-FINITE", BuyInUSD: invalid})
+				_, err := c.AppendTournament(parsers.Tournament{TournamentID: "T-FINITE", VPIP: &invalid})
 				return err
 			}},
-			{"stats", func(c *Client) error { return c.UpdateTournamentHandStats("T-FINITE", 20, 10, 10, invalid, true) }},
+			{"stats", func(c *Client) error { return c.UpdateTournamentHandStats("T-FINITE", invalid, 10, 10, 0, true) }},
 			{"snapshot", func(c *Client) error {
-				return c.ImportSnapshot(storage.Snapshot{Ledger: []storage.LedgerEntry{{AmountUSD: invalid}}})
+				return c.ImportSnapshot(storage.Snapshot{CashSessions: []storage.CashSessionRecord{{CashSession: parsers.CashSession{VPIP: invalid}}}})
 			}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

@@ -25,7 +25,7 @@ func recordPendingTournament(store storage.Store, configPath, tournamentID strin
 		if entry.Tournament.TournamentID != tournamentID {
 			continue
 		}
-		net, err := store.AppendTournament(resolve(entry.Tournament))
+		netCents, err := store.AppendTournament(resolve(entry.Tournament))
 		if err != nil {
 			return storage.OperationResult{Found: true, Err: err}
 		}
@@ -37,7 +37,7 @@ func recordPendingTournament(store storage.Store, configPath, tournamentID strin
 			}
 			return current, false
 		})
-		return storage.OperationResult{Found: true, NetUSD: net, Err: err}
+		return storage.OperationResult{Found: true, NetCents: netCents, Err: err}
 	}
 	return storage.OperationResult{}
 }

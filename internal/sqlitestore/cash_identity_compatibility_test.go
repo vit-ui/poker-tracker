@@ -16,16 +16,16 @@ func TestCashCorrectionPreservesImportedLegacySheetsIdentity(t *testing.T) {
 	}
 	defer store.Close()
 	date := time.Date(2026, 1, 2, 12, 0, 15, 0, time.UTC)
-	session := parsers.CashSession{Date: date, FirstHandID: "owned-hand", NetUSD: -1, BuyInUSD: 2, Hands: 2}
+	session := parsers.CashSession{Date: date, FirstHandID: "owned-hand", NetCents: -100, BuyInCents: 200, Hands: 2}
 	legacy := storage.CashSessionIdentities(date, session.FirstHandID)[1]
 	snapshot := storage.Snapshot{CashSessions: []storage.CashSessionRecord{{CashSession: session, SessionID: legacy}}, Ledger: []storage.LedgerEntry{
-		{Date: date, Type: "cash_session", SessionID: legacy, AmountUSD: -1, RunningTotal: -1},
-		{Date: date, Type: "deposit", SessionID: "money:later", AmountUSD: 2, RunningTotal: 1},
+		{Date: date, Type: "cash_session", SessionID: legacy, AmountCents: -100, RunningTotalCents: -100},
+		{Date: date, Type: "deposit", SessionID: "money:later", AmountCents: 200, RunningTotalCents: 100},
 	}}
 	if err := store.ImportSnapshot(snapshot); err != nil {
 		t.Fatal(err)
 	}
-	session.NetUSD = -.5
+	session.NetCents = -50
 	if err := store.AppendCashSession(session); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestCashCorrectionPreservesImportedLegacySheetsIdentity(t *testing.T) {
 	if len(after.CashSessions) != 1 || len(after.Ledger) != 2 || after.CashSessions[0].SessionID != legacy || after.Ledger[0].SessionID != legacy {
 		t.Fatalf("legacy correction duplicated/rewrote IDs: %+v", after)
 	}
-	if after.Ledger[0].AmountUSD != -.5 || after.Ledger[1].RunningTotal != 1.5 {
+	if after.Ledger[0].AmountCents != -50 || after.Ledger[1].RunningTotalCents != 150 {
 		t.Fatalf("correction did not cascade: %+v", after.Ledger)
 	}
 }

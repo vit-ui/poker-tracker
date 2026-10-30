@@ -30,6 +30,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
@@ -155,12 +156,12 @@ func (p *pipeline) waitFor(what string, cond func() bool) {
 	p.t.Fatalf("timed out waiting for: %s", what)
 }
 
-func (p *pipeline) bankroll() float64 {
-	b, err := p.store.GetCurrentBankroll()
+func (p *pipeline) bankrollCents() money.Cents {
+	bCents, err := p.store.GetCurrentBankroll()
 	if err != nil {
 		p.t.Fatalf("GetCurrentBankroll: %v", err)
 	}
-	return b
+	return bCents
 }
 
 func (p *pipeline) pending() []config.PendingTournament {
@@ -192,26 +193,20 @@ func (p *pipeline) countAlerts(substr string) int {
 // bountyStub returns the recorded bounty for a tournament ID via ExportSnapshot
 // (which, unlike GetAllTournaments, includes the date-less partial stub row a
 // hand-history-first tournament produces).
-func (p *pipeline) bountyStub(tournamentID string) (float64, bool) {
+func (p *pipeline) bountyStub(tournamentID string) (money.Cents, bool) {
 	snap, err := p.store.ExportSnapshot()
 	if err != nil {
 		p.t.Fatalf("ExportSnapshot: %v", err)
 	}
 	for _, r := range snap.Tournaments {
 		if r.TournamentID == tournamentID {
-			return r.BountyWonUSD, true
+			return r.BountyWonCents, true
 		}
 	}
 	return 0, false
 }
 
-func closeEnough(a, b float64) bool {
-	d := a - b
-	if d < 0 {
-		d = -d
-	}
-	return d < 0.005
-}
+func closeEnough(aCents, bCents money.Cents) bool { return aCents == bCents }
 
 // TestPipeline_WonFreeroll: the hand file writes the knockout-bounty stub
 // ($0.88), and the summary (no buy-in) queues the tournament for the entry-cost
@@ -221,8 +216,8 @@ func TestPipeline_WonFreeroll(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("hand_history", "freeroll_won_T9000000001.txt")
 	p.waitFor("bounty stub written", func() bool {
-		b, ok := p.bountyStub("9000000001")
-		return ok && closeEnough(b, 0.88)
+		bCents, ok := p.bountyStub("9000000001")
+		return ok && closeEnough(bCents, 88)
 	})
 	p.drop("tournament_summary", "freeroll_won_T9000000001.txt")
 	p.waitFor("freeroll queued", func() bool { return len(p.pending()) == 1 })
@@ -234,8 +229,8 @@ func TestPipeline_WonFreeroll(t *testing.T) {
 	if pend[0].Tournament.TournamentID != "9000000001" {
 		t.Errorf("queued TournamentID = %q, want 9000000001", pend[0].Tournament.TournamentID)
 	}
-	if !closeEnough(p.bankroll(), 0) {
-		t.Errorf("bankroll = %.2f, want 0 (deferred until the player answers)", p.bankroll())
+	if !closeEnough(p.bankrollCents(), 0) {
+		t.Errorf("bankroll = %v, want 0 (deferred until the player answers)", p.bankrollCents())
 	}
 	if n := p.countAlerts("Freeroll"); n != 0 {
 		t.Errorf("got %d freeroll alerts from the worker; the bot ticker asks, not the worker", n)
@@ -253,7 +248,7 @@ func TestPipeline_CashSession(t *testing.T) {
 	// bankroll equals its net.
 	p.waitFor("session recorded at session end", func() bool {
 		s, err := p.store.GetAllCashSessions()
-		return err == nil && len(s) == 1 && closeEnough(p.bankroll(), s[0].NetUSD)
+		return err == nil && len(s) == 1 && closeEnough(p.bankrollCents(), s[0].NetCents)
 	})
 	sessions, _ := p.store.GetAllCashSessions()
 	if sessions[0].Stake != "NL2" {
@@ -271,7 +266,7 @@ func TestPipeline_CashSession(t *testing.T) {
 func TestPipeline_SpinGoWin(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "spingo_won_T9000000007.txt")
-	p.waitFor("spin & go recorded", func() bool { return closeEnough(p.bankroll(), 10.00) })
+	p.waitFor("spin & go recorded", func() bool { return closeEnough(p.bankrollCents(), 1000) })
 
 	// The alert is emitted just after the store write, on the worker goroutine,
 	// then appended by the collector — wait for it rather than racing it.
@@ -290,7 +285,7 @@ func TestPipeline_SpinGoWin(t *testing.T) {
 func TestPipeline_MTTLoss(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "horse_T9000000003.txt")
-	p.waitFor("mtt loss recorded", func() bool { return closeEnough(p.bankroll(), -1.10) })
+	p.waitFor("mtt loss recorded", func() bool { return closeEnough(p.bankrollCents(), -110) })
 
 	p.waitFor("mtt alert", func() bool { return p.countAlerts("🏆 MTT") >= 1 })
 	if n := p.countAlerts("🏆 MTT"); n != 1 {
@@ -308,8 +303,8 @@ func TestPipeline_SatelliteQueued(t *testing.T) {
 	if p.pending()[0].Reason != config.PendingSatellite {
 		t.Errorf("Reason = %q, want %q", p.pending()[0].Reason, config.PendingSatellite)
 	}
-	if !closeEnough(p.bankroll(), 0) {
-		t.Errorf("bankroll = %.2f, want 0 (deferred)", p.bankroll())
+	if !closeEnough(p.bankrollCents(), 0) {
+		t.Errorf("bankroll = %v, want 0 (deferred)", p.bankrollCents())
 	}
 }
 
@@ -318,15 +313,15 @@ func TestPipeline_SatelliteQueued(t *testing.T) {
 func TestPipeline_DuplicateEvent(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "spingo_won_T9000000007.txt")
-	p.waitFor("first record", func() bool { return closeEnough(p.bankroll(), 10.00) })
+	p.waitFor("first record", func() bool { return closeEnough(p.bankrollCents(), 1000) })
 
 	// Re-drop the identical file; the debounce fires a fresh event that must be
 	// recognized as a duplicate and skipped.
 	p.drop("tournament_summary", "spingo_won_T9000000007.txt")
 	time.Sleep(4 * time.Second) // 2s debounce + processing margin
 
-	if !closeEnough(p.bankroll(), 10.00) {
-		t.Errorf("bankroll = %.2f, want 10.00 (duplicate must not double-count)", p.bankroll())
+	if !closeEnough(p.bankrollCents(), 1000) {
+		t.Errorf("bankroll = %v, want 10.00 (duplicate must not double-count)", p.bankrollCents())
 	}
 	if n := p.countAlerts("🎰 Spin & Go"); n != 1 {
 		t.Errorf("got %d Spin & Go alerts, want 1 (no second alert for a duplicate)", n)
@@ -339,7 +334,7 @@ func TestPipeline_DuplicateEvent(t *testing.T) {
 func TestPipeline_TwoFileCorrelationKnockout(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "draw27_pko_T9000000005.txt")
-	p.waitFor("mtt recorded", func() bool { return closeEnough(p.bankroll(), -3.30) })
+	p.waitFor("mtt recorded", func() bool { return closeEnough(p.bankrollCents(), -330) })
 	p.drop("hand_history", "draw27_pko_T9000000005.txt")
 	p.waitFor("knockout type reconciled", func() bool {
 		got, found, _ := p.store.GetTournamentByID("9000000005")
@@ -427,7 +422,7 @@ func TestPipeline_IncrementalGrowingFile(t *testing.T) {
 	p.writeHH("nlhe_cash.txt", full)
 	p.waitFor("all four hands recorded, bankroll consistent", func() bool {
 		s, err := p.store.GetAllCashSessions()
-		return err == nil && len(s) == 1 && s[0].Hands == 4 && closeEnough(p.bankroll(), s[0].NetUSD)
+		return err == nil && len(s) == 1 && s[0].Hands == 4 && closeEnough(p.bankrollCents(), s[0].NetCents)
 	})
 
 	// The grown-across-two-events session must match a whole-file parse.
@@ -436,9 +431,9 @@ func TestPipeline_IncrementalGrowingFile(t *testing.T) {
 		t.Fatalf("whole-file parse: %v", err)
 	}
 	got, _ := p.store.GetAllCashSessions()
-	if got[0].Hands != want.Hands || !closeEnough(got[0].NetUSD, want.NetUSD) || !closeEnough(got[0].RakeUSD, want.RakeUSD) {
-		t.Errorf("grown session = {hands %d, net %.4f, rake %.4f}, whole-file = {hands %d, net %.4f, rake %.4f}",
-			got[0].Hands, got[0].NetUSD, got[0].RakeUSD, want.Hands, want.NetUSD, want.RakeUSD)
+	if got[0].Hands != want.Hands || !closeEnough(got[0].NetCents, want.NetCents) || !closeEnough(got[0].RakeCents, want.RakeCents) {
+		t.Errorf("grown session = {hands %d, net %v, rake %v}, whole-file = {hands %d, net %v, rake %v}",
+			got[0].Hands, got[0].NetCents, got[0].RakeCents, want.Hands, want.NetCents, want.RakeCents)
 	}
 }
 

@@ -1,7 +1,6 @@
 package parsers
 
 import (
-	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,11 +61,11 @@ func TestParseTournamentFileReEntry(t *testing.T) {
 	if got.FinishPos != 5 {
 		t.Errorf("FinishPos = %d, want 5 (best row, not the busted 32nd)", got.FinishPos)
 	}
-	if got.BuyInUSD != 2.00 {
-		t.Errorf("BuyInUSD = %.2f, want 2.00 (base 1.00 + re-entry 1.00)", got.BuyInUSD)
+	if got.BuyInCents != 200 {
+		t.Errorf("BuyInCents = %v, want 2.00 (base 1.00 + re-entry 1.00)", got.BuyInCents)
 	}
-	if math.Abs(got.NetUSD-0.07) > 1e-9 {
-		t.Errorf("NetUSD = %.4f, want 0.07 (payout 2.07 - total buy-in 2.00)", got.NetUSD)
+	if (got.NetCents - 7) != 0 {
+		t.Errorf("NetCents = %v, want 0.07 (payout 2.07 - total buy-in 2.00)", got.NetCents)
 	}
 	if got.Type != "mtt" {
 		t.Errorf("Type = %q, want \"mtt\"", got.Type)
@@ -87,14 +86,14 @@ func TestParseTournamentFileSingleEntryUnchanged(t *testing.T) {
 	if got.FinishPos != 3 {
 		t.Errorf("FinishPos = %d, want 3", got.FinishPos)
 	}
-	if got.BuyInUSD != 1.00 {
-		t.Errorf("BuyInUSD = %.2f, want 1.00 (no re-entry)", got.BuyInUSD)
+	if got.BuyInCents != 100 {
+		t.Errorf("BuyInCents = %v, want 1.00 (no re-entry)", got.BuyInCents)
 	}
 	if got.ReEntries != 0 {
 		t.Errorf("ReEntries = %d, want 0 (single entry)", got.ReEntries)
 	}
-	if math.Abs(got.NetUSD-2.00) > 1e-9 {
-		t.Errorf("NetUSD = %.4f, want 2.00 (payout 3.00 - buy-in 1.00)", got.NetUSD)
+	if (got.NetCents - 200) != 0 {
+		t.Errorf("NetCents = %v, want 2.00 (payout 3.00 - buy-in 1.00)", got.NetCents)
 	}
 }
 
@@ -139,7 +138,7 @@ You finished in 1st place (eliminated at hand #261496886217).
 // rebuyAddonSummary exercises the extra-spend accumulation across MULTIPLE
 // "You made … for a total of $" lines — the case arm is deliberately anchored
 // on the money phrase so re-entries, rebuys, and add-ons all fold into
-// BuyInUSD uniformly, and ReEntries sums every line's leading count. Only the
+// BuyInCents uniformly, and ReEntries sums every line's leading count. Only the
 // single-line re-entry form exists in the file fixtures otherwise, so the
 // += accumulation path had no other coverage.
 const rebuyAddonSummary = `PokerStars Tournament #9000000015, No Limit Hold'em
@@ -163,11 +162,11 @@ func TestParseTournamentFileRebuyAddonAccumulation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseTournamentFile: %v", err)
 	}
-	if math.Abs(got.BuyInUSD-4.00) > 1e-9 {
-		t.Errorf("BuyInUSD = %.4f, want 4.00 (base 1.00 + rebuys 2.00 + addon 1.00)", got.BuyInUSD)
+	if (got.BuyInCents - 400) != 0 {
+		t.Errorf("BuyInCents = %v, want 4.00 (base 1.00 + rebuys 2.00 + addon 1.00)", got.BuyInCents)
 	}
-	if math.Abs(got.NetUSD-(-4.00)) > 1e-9 {
-		t.Errorf("NetUSD = %.4f, want -4.00 (won nothing)", got.NetUSD)
+	if (got.NetCents - -400) != 0 {
+		t.Errorf("NetCents = %v, want -4.00 (won nothing)", got.NetCents)
 	}
 	if got.ReEntries != 3 {
 		t.Errorf("ReEntries = %d, want 3 (2 rebuys + 1 addon summed across both lines)", got.ReEntries)
@@ -185,8 +184,8 @@ func TestParseTournamentFileSatelliteBustedPrizePool(t *testing.T) {
 	if got.PrizePoolDescription != "$1.00 Power Path Step 2 Ticket" {
 		t.Errorf("PrizePoolDescription = %q, want %q", got.PrizePoolDescription, "$1.00 Power Path Step 2 Ticket")
 	}
-	if got.PrizePoolUSD != 0 {
-		t.Errorf("PrizePoolUSD = %.2f, want 0 (non-cash pool)", got.PrizePoolUSD)
+	if got.PrizePoolCents != 0 {
+		t.Errorf("PrizePoolCents = %v, want 0 (non-cash pool)", got.PrizePoolCents)
 	}
 	if got.Multiplier != nil {
 		t.Errorf("Multiplier = %v, want nil (non-cash pool)", *got.Multiplier)
@@ -197,11 +196,11 @@ func TestParseTournamentFileSatelliteBustedPrizePool(t *testing.T) {
 	if got.FinishPos != 3 {
 		t.Errorf("FinishPos = %d, want 3", got.FinishPos)
 	}
-	if math.Abs(got.BuyInUSD-0.50) > 1e-9 {
-		t.Errorf("BuyInUSD = %.4f, want 0.50", got.BuyInUSD)
+	if (got.BuyInCents - 50) != 0 {
+		t.Errorf("BuyInCents = %v, want 0.50", got.BuyInCents)
 	}
-	if math.Abs(got.NetUSD-(-0.50)) > 1e-9 {
-		t.Errorf("NetUSD = %.4f, want -0.50 (won nothing; ticket not counted as cash)", got.NetUSD)
+	if (got.NetCents - -50) != 0 {
+		t.Errorf("NetCents = %v, want -0.50 (won nothing; ticket not counted as cash)", got.NetCents)
 	}
 }
 
@@ -225,8 +224,8 @@ func TestParseTournamentFileSatelliteWonPrizePool(t *testing.T) {
 	if got.FinishPos != 1 {
 		t.Errorf("FinishPos = %d, want 1", got.FinishPos)
 	}
-	if math.Abs(got.NetUSD-(-0.50)) > 1e-9 {
-		t.Errorf("NetUSD = %.4f, want -0.50 (ticket win is not cash)", got.NetUSD)
+	if (got.NetCents - -50) != 0 {
+		t.Errorf("NetCents = %v, want -0.50 (ticket win is not cash)", got.NetCents)
 	}
 }
 
@@ -240,11 +239,11 @@ func TestParseTournamentFileFreeroll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want nil (freeroll parses to a zero-buy-in tournament)", err)
 	}
-	if got.BuyInUSD != 0 {
-		t.Errorf("BuyInUSD = %v, want 0", got.BuyInUSD)
+	if got.BuyInCents != 0 {
+		t.Errorf("BuyInCents = %v, want 0", got.BuyInCents)
 	}
-	if got.NetUSD != 0 {
-		t.Errorf("NetUSD = %v, want 0 (no buy-in, no cash payout row)", got.NetUSD)
+	if got.NetCents != 0 {
+		t.Errorf("NetCents = %v, want 0 (no buy-in, no cash payout row)", got.NetCents)
 	}
 	if got.TournamentID != "9000000002" {
 		t.Errorf("TournamentID = %q, want 9000000002", got.TournamentID)

@@ -35,13 +35,6 @@ const fullPrecision = -1
 // column, which keeps full precision.
 const vpipPfrPrecision = 2
 
-// moneyPrecision is the fixed decimal count every USD-denominated CSV
-// column is rounded to, matching how Telegram already displays USD amounts
-// (FormatSignedUSD's "$%.2f") — chained float64 arithmetic (running totals,
-// bounty folding, ...) otherwise leaves values like -0.32000000000000006
-// with no observable meaning beyond a cent.
-const moneyPrecision = 2
-
 // bb100Precision is the fixed decimal count BB/100 is rounded to in CSV
 // output, matching how Telegram already displays it ("%.1f" in
 // cashStatsMessage, buildWeeklySummary, buildMonthlySummary).
@@ -83,7 +76,7 @@ func prizePoolCSVCell(t parsers.Tournament) string {
 	if t.PrizePoolDescription != "" {
 		return t.PrizePoolDescription
 	}
-	return formatFloat(t.PrizePoolUSD, moneyPrecision)
+	return t.PrizePoolCents.String()
 }
 
 func cashSessionsCSVRows(sessions []storage.CashSessionRecord) [][]string {
@@ -94,8 +87,8 @@ func cashSessionsCSVRows(sessions []storage.CashSessionRecord) [][]string {
 			s.Stake,
 			strconv.Itoa(s.Hands),
 			strconv.Itoa(s.DurationMin),
-			formatFloat(s.NetUSD, moneyPrecision),
-			formatFloat(s.RakeUSD, moneyPrecision),
+			s.NetCents.String(),
+			s.RakeCents.String(),
 			formatFloat(s.BB100, bb100Precision),
 			formatFloat(s.VPIP, vpipPfrPrecision),
 			formatFloat(s.PFR, vpipPfrPrecision),
@@ -112,16 +105,16 @@ func tournamentsCSVRows(tournaments []storage.TournamentRecord) [][]string {
 			t.Date.UTC().Format(time.RFC3339),
 			t.Type,
 			t.TournamentID,
-			formatFloat(t.BuyInUSD, moneyPrecision),
+			t.BuyInCents.String(),
 			prizePoolCSVCell(t.Tournament),
 			formatFloatPtr(t.Multiplier, fullPrecision),
 			strconv.Itoa(t.FinishPos),
 			strconv.Itoa(t.TotalPlayers),
-			formatFloat(t.NetUSD, moneyPrecision),
+			t.NetCents.String(),
 			formatFloatPtr(t.VPIP, vpipPfrPrecision),
 			formatFloatPtr(t.PFR, vpipPfrPrecision),
-			formatFloat(t.BountyWonUSD, moneyPrecision),
-			formatFloat(t.PrizeWonUSD, moneyPrecision),
+			t.BountyWonCents.String(),
+			t.PrizeWonCents.String(),
 			formatIntPtr(t.Hands),
 		})
 	}
@@ -134,8 +127,8 @@ func bankrollLedgerCSVRows(entries []storage.LedgerEntry) [][]string {
 		rows = append(rows, []string{
 			e.Date.UTC().Format(time.RFC3339),
 			e.Type,
-			formatFloat(e.AmountUSD, moneyPrecision),
-			formatFloat(e.RunningTotal, moneyPrecision),
+			e.AmountCents.String(),
+			e.RunningTotalCents.String(),
 			e.SessionID,
 		})
 	}

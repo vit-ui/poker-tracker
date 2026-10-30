@@ -24,6 +24,14 @@ func TestUnsupportedCollectorCannotConfirmPokerStarsClosure(t *testing.T) {
 	done, stopped := make(chan struct{}), make(chan struct{})
 	go func() { collector.Run(events, path, done); close(stopped) }()
 	defer func() { close(done); <-stopped }()
+	select {
+	case upload := <-link.Uploads:
+		if upload.Status == nil {
+			t.Fatal("missing initial collector status")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing initial collector status")
+	}
 	link.Commands <- transport.Command{Kind: transport.CommandPauseCollection, RequestID: "check-closed"}
 	select {
 	case upload := <-link.Uploads:

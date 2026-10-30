@@ -43,7 +43,6 @@ const listenPort = 8443
 var (
 	serviceAccountPath string
 	configPath         string
-	lockfilePath       string
 	dbPath             string
 	fallbackPath       string
 	certPath           string
@@ -58,7 +57,6 @@ func init() {
 	dir := filepath.Dir(exe)
 	serviceAccountPath = filepath.Join(dir, "credentials", "google_service_account.json")
 	configPath = filepath.Join(dir, "config.json")
-	lockfilePath = filepath.Join(dir, "lockfile.json")
 	dbPath = filepath.Join(dir, "tracker.db")
 	fallbackPath = filepath.Join(dir, "sheets_fallback.json")
 	certPath = filepath.Join(dir, "server_cert.pem")
@@ -183,7 +181,7 @@ func runServe() {
 		// restart is a no-op here. The bot's read-side date windows anchor to
 		// the server's client-anchored clock, so /status and /stats follow the
 		// player's local day.
-		err := bot.Run(BotToken, alertChan, sc, configPath, lockfilePath, serviceAccountPath, dbPath, func() {}, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations)
+		err := bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, func() {}, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock)
 		slog.Error("bot.Run returned — the bot is no longer listening", "err", err)
 		os.Exit(1)
 	}()

@@ -9,6 +9,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/storage"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/watcher"
@@ -62,7 +63,7 @@ func TestConfigurationRestartDrainsAcceptedCashBeforeChangingSettings(t *testing
 					return storage.OperationResult{Err: err}
 				}
 				if finalize {
-					if len(pending) != 0 || len(snapshot.Ledger) != 1 || snapshot.Ledger[0].AmountUSD != -.03 {
+					if len(pending) != 0 || len(snapshot.Ledger) != 1 || snapshot.Ledger[0].AmountCents != -3 {
 						return storage.OperationResult{Err: fmt.Errorf("sheet change overtook cash finalization: %+v %+v", pending, snapshot)}
 					}
 				} else if len(pending) != 1 || pending[0].Session.Hands != 4 || len(snapshot.Ledger) != 0 {
@@ -78,7 +79,7 @@ func TestConfigurationRestartDrainsAcceptedCashBeforeChangingSettings(t *testing
 			accepted := make(chan struct{})
 			go func() {
 				worker.Operations <- storage.Operation{Reply: next, Apply: func(source storage.Store) storage.OperationResult {
-					return storage.OperationResult{Err: source.AppendLedgerEntry("deposit", 1, time.Now(), "money:after-restart")}
+					return storage.OperationResult{Err: source.AppendLedgerEntry("deposit", 100, time.Now(), "money:after-restart")}
 				}}
 				close(accepted)
 			}()
@@ -99,13 +100,13 @@ func TestConfigurationRestartDrainsAcceptedCashBeforeChangingSettings(t *testing
 			if result := migrationReply(t, next); result.Err != nil {
 				t.Fatal(result.Err)
 			}
-			bankroll, err := store.GetCurrentBankroll()
-			want := 1.
+			bankrollCents, err := store.GetCurrentBankroll()
+			wantCents := money.Cents(100)
 			if finalize {
-				want = .97
+				wantCents = 97
 			}
-			if err != nil || bankroll != want {
-				t.Fatalf("bankroll=%v %v, want %v", bankroll, err, want)
+			if err != nil || bankrollCents != wantCents {
+				t.Fatalf("bankroll=%v %v, want %v", bankrollCents, err, wantCents)
 			}
 		})
 	}

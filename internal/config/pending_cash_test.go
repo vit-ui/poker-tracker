@@ -15,7 +15,7 @@ func TestPendingCashAtomicRoundTripAndFailedReplacement(t *testing.T) {
 	if pending, err := LoadPendingCash(path); err != nil || len(pending) != 0 {
 		t.Fatalf("missing journal: %v, %v", pending, err)
 	}
-	entry := PendingCash{FileID: "table", Session: parsers.CashSession{Date: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC), FirstHandID: "owned-hand", NetUSD: -1}, LastActivity: time.Now().UTC()}
+	entry := PendingCash{FileID: "table", Session: parsers.CashSession{Date: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC), FirstHandID: "owned-hand", NetCents: -100}, LastActivity: time.Now().UTC()}
 	if err := SavePendingCash(path, []PendingCash{entry}); err != nil {
 		t.Fatal(err)
 	}
@@ -24,10 +24,10 @@ func TestPendingCashAtomicRoundTripAndFailedReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending, err := LoadPendingCash(path)
-	if err != nil || len(pending) != 1 || pending[0].Session.NetUSD != -1 || !pending[0].LastActivity.Equal(entry.LastActivity) {
+	if err != nil || len(pending) != 1 || pending[0].Session.NetCents != -100 || !pending[0].LastActivity.Equal(entry.LastActivity) {
 		t.Fatalf("journal round trip: %v, %v", pending, err)
 	}
-	entry.Session.NetUSD = math.NaN()
+	entry.Session.BB100 = math.NaN()
 	if err := SavePendingCash(path, []PendingCash{entry}); err == nil {
 		t.Fatal("nonfinite snapshot saved")
 	}

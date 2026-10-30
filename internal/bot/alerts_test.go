@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -110,17 +111,17 @@ func drainAlerts(ch chan string) []string {
 // a $1.00 threshold ($1.20 net loss), an in-day MTT loss must not count, and
 // an unconfigured threshold stays silent.
 func TestEvaluateSpingoDailyLossAlert(t *testing.T) {
-	threshold := 1.0
+	thresholdCents := money.Cents(100)
 	dayTournaments := []parsers.Tournament{
-		{Type: "spingo", NetUSD: -0.60},
-		{Type: "spingo" + parsers.KnockoutSuffix, NetUSD: -0.60},
-		{Type: "mtt", NetUSD: -50}, // not a spin — must not count toward the drain
+		{Type: "spingo", NetCents: -60},
+		{Type: "spingo" + parsers.KnockoutSuffix, NetCents: -60},
+		{Type: "mtt", NetCents: -5000}, // not a spin — must not count toward the drain
 	}
 
 	t.Run("breach fires with the spin-only net", func(t *testing.T) {
-		cfg := &config.Config{Alerts: config.Alerts{SpingoDailyLossUSD: &threshold}}
+		cfg := &config.Config{Alerts: config.Alerts{SpingoDailyLossCents: &thresholdCents}}
 		ch := make(chan string, 1)
-		if fired := EvaluateSpingoDailyLossAlert(cfg, dayTournaments, 50, ch); !fired {
+		if fired := EvaluateSpingoDailyLossAlert(cfg, dayTournaments, 5000, ch); !fired {
 			t.Fatal("fired = false, want true")
 		}
 		want := "⚠️ Spin & Go drain alert\nDown $1.20 on Spin & Gos this poker day\nBankroll: $50.00"
@@ -130,17 +131,17 @@ func TestEvaluateSpingoDailyLossAlert(t *testing.T) {
 	})
 
 	t.Run("loss equal to the threshold does not fire", func(t *testing.T) {
-		cfg := &config.Config{Alerts: config.Alerts{SpingoDailyLossUSD: &threshold}}
+		cfg := &config.Config{Alerts: config.Alerts{SpingoDailyLossCents: &thresholdCents}}
 		ch := make(chan string, 1)
-		atThreshold := []parsers.Tournament{{Type: "spingo", NetUSD: -1.00}}
-		if fired := EvaluateSpingoDailyLossAlert(cfg, atThreshold, 50, ch); fired {
+		atThreshold := []parsers.Tournament{{Type: "spingo", NetCents: -100}}
+		if fired := EvaluateSpingoDailyLossAlert(cfg, atThreshold, 5000, ch); fired {
 			t.Error("fired = true at exactly the threshold, want false")
 		}
 	})
 
 	t.Run("unconfigured threshold is silent", func(t *testing.T) {
 		ch := make(chan string, 1)
-		if fired := EvaluateSpingoDailyLossAlert(&config.Config{}, dayTournaments, 50, ch); fired {
+		if fired := EvaluateSpingoDailyLossAlert(&config.Config{}, dayTournaments, 5000, ch); fired {
 			t.Error("fired = true with no threshold configured, want false")
 		}
 	})
@@ -158,7 +159,7 @@ func TestEvaluateStakeChangeAlert(t *testing.T) {
 	defer store.Close()
 
 	base := storage.AsStoredClock(time.Now()).Add(-time.Hour)
-	first := parsers.CashSession{Date: base, Stake: "NL2", NetUSD: -1, FirstHandID: "s1"}
+	first := parsers.CashSession{Date: base, Stake: "NL2", NetCents: -100, FirstHandID: "s1"}
 	if err := store.AppendCashSession(first); err != nil {
 		t.Fatalf("AppendCashSession(first): %v", err)
 	}
@@ -173,7 +174,7 @@ func TestEvaluateStakeChangeAlert(t *testing.T) {
 		}
 	})
 
-	moved := parsers.CashSession{Date: base.Add(10 * time.Minute), Stake: "NL5", NetUSD: -1, FirstHandID: "s2"}
+	moved := parsers.CashSession{Date: base.Add(10 * time.Minute), Stake: "NL5", NetCents: -100, FirstHandID: "s2"}
 	if err := store.AppendCashSession(moved); err != nil {
 		t.Fatalf("AppendCashSession(moved): %v", err)
 	}
@@ -189,7 +190,7 @@ func TestEvaluateStakeChangeAlert(t *testing.T) {
 		}
 	})
 
-	same := parsers.CashSession{Date: base.Add(20 * time.Minute), Stake: "NL5", NetUSD: 2, FirstHandID: "s3"}
+	same := parsers.CashSession{Date: base.Add(20 * time.Minute), Stake: "NL5", NetCents: 200, FirstHandID: "s3"}
 	if err := store.AppendCashSession(same); err != nil {
 		t.Fatalf("AppendCashSession(same): %v", err)
 	}

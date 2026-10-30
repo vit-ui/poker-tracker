@@ -1,7 +1,6 @@
 package server
 
 import (
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -49,7 +49,7 @@ func TestRecoveredTablesKeepIndependentDeadlines(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := recoveryFixture(t), recoveryFixture(t)
-	first.NetUSD, second.NetUSD = -.1, -.2
+	first.NetCents, second.NetCents = -10, -20
 	second.FirstHandID = "second-table"
 	if err := config.SavePendingCash(journal, []config.PendingCash{
 		{FileID: "first", Session: first, LastActivity: time.Now().Add(-time.Hour)},
@@ -64,9 +64,9 @@ func TestRecoveredTablesKeepIndependentDeadlines(t *testing.T) {
 	defer store.Close()
 	_, _, stop := runRecoveredWorker(t, store, path, 400*time.Millisecond)
 	defer stop()
-	awaitBankroll(t, store, -.1, 250*time.Millisecond)
+	awaitBankroll(t, store, -10, 250*time.Millisecond)
 	awaitPendingCash(t, journal, func(entries []config.PendingCash) bool { return len(entries) == 1 && entries[0].FileID == "second" })
-	awaitBankroll(t, store, -.1-.2, time.Second)
+	awaitBankroll(t, store, -30, time.Second)
 	snapshot, err := store.ExportSnapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestFailedRecoveredCashWriteRemainsRecoverable(t *testing.T) {
 	defer store.Close()
 	_, _, stop = runRecoveredWorker(t, store, path, time.Second)
 	defer stop()
-	awaitBankroll(t, store, session.NetUSD, time.Second)
+	awaitBankroll(t, store, session.NetCents, time.Second)
 	awaitPendingCash(t, journal, func(entries []config.PendingCash) bool { return len(entries) == 0 })
 }
 
@@ -139,7 +139,7 @@ func TestRecoveredCashShorterReplacementUpdatesSameSession(t *testing.T) {
 	offsets := handHeaderOffsetsBytes(data)
 	link.Uploads <- transport.Upload{FileID: "table", Type: "cash", ScreenName: "AnonHero01", Bytes: data[:offsets[2]], Recovery: true, FileActivity: time.Now(), ClientClock: time.Now()}
 	waitForCashSession(t, store, 2)
-	awaitBankroll(t, store, -.03, time.Second) // first hand big blind .02 + second hand small blind .01
+	awaitBankroll(t, store, -3, time.Second) // first hand big blind .02 + second hand small blind .01
 	snapshot, err := store.ExportSnapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -177,14 +177,14 @@ func TestSitOutUpdateRearmsPendingCash(t *testing.T) {
 	updated := awaitPendingCash(t, journal, func(entries []config.PendingCash) bool {
 		return len(entries) == 1 && entries[0].LastActivity.After(initial.LastActivity)
 	})[0]
-	if updated.Session.Hands != initial.Session.Hands || updated.Session.NetUSD != initial.Session.NetUSD {
+	if updated.Session.Hands != initial.Session.Hands || updated.Session.NetCents != initial.Session.NetCents {
 		t.Fatalf("sit-out hand changed player results: %+v", updated)
 	}
 	time.Sleep(200 * time.Millisecond) // past original deadline, before the rearmed deadline
-	if bankroll, err := store.GetCurrentBankroll(); err != nil || bankroll != 0 {
-		t.Fatalf("old deadline completed rearmed session: %v %v", bankroll, err)
+	if bankrollCents, err := store.GetCurrentBankroll(); err != nil || bankrollCents != 0 {
+		t.Fatalf("old deadline completed rearmed session: %v %v", bankrollCents, err)
 	}
-	awaitBankroll(t, store, initial.Session.NetUSD, time.Second)
+	awaitBankroll(t, store, initial.Session.NetCents, time.Second)
 }
 
 func runRecoveredWorker(t *testing.T, store *sqlitestore.Store, path string, quiet time.Duration) (*Server, *transport.Link, func()) {
@@ -210,16 +210,16 @@ func runRecoveredWorker(t *testing.T, store *sqlitestore.Store, path string, qui
 	}
 }
 
-func awaitBankroll(t *testing.T, store *sqlitestore.Store, want float64, timeout time.Duration) {
+func awaitBankroll(t *testing.T, store *sqlitestore.Store, wantCents money.Cents, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		got, err := store.GetCurrentBankroll()
-		if err == nil && math.Abs(got-want) < 1e-9 {
+		gotCents, err := store.GetCurrentBankroll()
+		if err == nil && gotCents == wantCents {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("bankroll=%v, error=%v; want %v", got, err, want)
+			t.Fatalf("bankroll=%v, error=%v; want %v", gotCents, err, wantCents)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -251,10 +251,10 @@ func TestRecoveredCashRestoresRemainingQuietInterval(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("missing recovered source resync")
 	}
-	if value, err := store.GetCurrentBankroll(); err != nil || value != 0 {
-		t.Fatalf("restored timer finalized prematurely: %v, %v", value, err)
+	if valueCents, err := store.GetCurrentBankroll(); err != nil || valueCents != 0 {
+		t.Fatalf("restored timer finalized prematurely: %v, %v", valueCents, err)
 	}
-	awaitBankroll(t, store, session.NetUSD, 300*time.Millisecond)
+	awaitBankroll(t, store, session.NetCents, 300*time.Millisecond)
 }
 
 func TestExpiredCashRecoveryUpsertsAfterInterruptedJournalRetirement(t *testing.T) {
@@ -276,7 +276,7 @@ func TestExpiredCashRecoveryUpsertsAfterInterruptedJournalRetirement(t *testing.
 			t.Fatal(err)
 		}
 		_, _, stop := runRecoveredWorker(t, store, path, time.Second)
-		awaitBankroll(t, store, session.NetUSD, time.Second)
+		awaitBankroll(t, store, session.NetCents, time.Second)
 		deadline := time.Now().Add(time.Second)
 		for {
 			pending, err := config.LoadPendingCash(journal)
@@ -360,7 +360,7 @@ func TestUnchangedRecoveryReplacementDoesNotRestartQuietPeriod(t *testing.T) {
 		t.Fatal(err)
 	}
 	link.Uploads <- transport.Upload{FileID: "table", Type: "cash", ScreenName: "AnonHero01", Bytes: data, Recovery: true, FileActivity: lastActivity.Add(-time.Second), ClientClock: time.Now()}
-	awaitBankroll(t, store, session.NetUSD, 300*time.Millisecond)
+	awaitBankroll(t, store, session.NetCents, 300*time.Millisecond)
 }
 
 func TestRemainingQuietClampsFutureClockAndMakesExpiredEligible(t *testing.T) {

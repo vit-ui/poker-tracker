@@ -36,7 +36,14 @@ type LockReply struct {
 	Error     string
 }
 
+type CollectorStatus struct {
+	Lock  *config.LockFile
+	Error string
+}
+
 type Upload struct {
+	collector       <-chan struct{} `json:"-"`
+	Status          *CollectorStatus
 	Recovery        bool
 	FileActivity    time.Time
 	LockReply       *LockReply
@@ -53,6 +60,18 @@ type Upload struct {
 	// hard stop, no alerts, no summary, no quiet-period deferral — and skips
 	// tournaments that need a player answer. See Server.importUpload.
 	Import bool
+}
+
+// UploadConnection identifies control state buffered from a replaced connection.
+// File bytes remain recoverable input even if their original connection ended.
+func (l *Link) UploadConnection(upload Upload) (<-chan struct{}, bool) {
+	l.connectionMu.Lock()
+	defer l.connectionMu.Unlock()
+	connection := upload.collector
+	if connection == nil {
+		connection = l.collectorDone
+	}
+	return connection, connection == l.collectorDone
 }
 
 // Commands ask the collector to enforce a lock, scan histories, or pause/resume

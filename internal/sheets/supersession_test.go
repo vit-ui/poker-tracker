@@ -19,7 +19,7 @@ func TestSuccessfulReentryRetiresOlderQueuedSummary(t *testing.T) {
 		t.Run(map[bool]string{false: "same-process", true: "restart"}[restart], func(t *testing.T) {
 			fake := &fakeSheets{failWrites: true}
 			client := newTestClient(t, fake)
-			summary := parsers.Tournament{Date: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC), Type: "spingo", TournamentID: "T-REENTRY", BuyInUSD: 1.1, NetUSD: -1.1, FinishPos: 3, TotalPlayers: 3}
+			summary := parsers.Tournament{Date: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC), Type: "spingo", TournamentID: "T-REENTRY", BuyInCents: 110, NetCents: -110, FinishPos: 3, TotalPlayers: 3}
 			if _, err := client.AppendTournament(summary); err == nil {
 				t.Fatal("expected outage")
 			}
@@ -33,8 +33,8 @@ func TestSuccessfulReentryRetiresOlderQueuedSummary(t *testing.T) {
 			}
 			fake.setFailWrites(false)
 			start := len(fake.calls())
-			summary.BuyInUSD = 2.2
-			summary.NetUSD = -2.2
+			summary.BuyInCents = 220
+			summary.NetCents = -220
 			if _, err := client.AppendTournament(summary); err != nil {
 				t.Fatal(err)
 			}
@@ -65,12 +65,12 @@ func TestSuccessfulReentryRetiresOlderQueuedSummary(t *testing.T) {
 func TestSameHandCountCorrectionRetiresQueuedStatistics(t *testing.T) {
 	fake := &fakeSheets{failWrites: true}
 	client := newTestClient(t, fake)
-	if err := client.UpdateTournamentHandStats("T-STATS", 20, 10, 10, 1, true); err == nil {
+	if err := client.UpdateTournamentHandStats("T-STATS", 20, 10, 10, 100, true); err == nil {
 		t.Fatal("expected outage")
 	}
 	fake.setFailWrites(false)
 	start := len(fake.calls())
-	if err := client.UpdateTournamentHandStats("T-STATS", 30, 20, 10, 2, true); err != nil {
+	if err := client.UpdateTournamentHandStats("T-STATS", 30, 20, 10, 200, true); err != nil {
 		t.Fatal(err)
 	}
 	if client.PendingWrites() != 0 {
@@ -92,13 +92,13 @@ func TestSameHandCountCorrectionRetiresQueuedStatistics(t *testing.T) {
 func TestSameHandCountCashCorrectionRetiresQueuedSnapshot(t *testing.T) {
 	fake := &fakeSheets{failWrites: true}
 	client := newTestClient(t, fake)
-	session := parsers.CashSession{Date: time.Now(), FirstHandID: "cash-correction", Hands: 10, NetUSD: 1, BuyInUSD: 2}
+	session := parsers.CashSession{Date: time.Now(), FirstHandID: "cash-correction", Hands: 10, NetCents: 100, BuyInCents: 200}
 	if err := client.AppendCashSession(session); err == nil {
 		t.Fatal("expected outage")
 	}
 	fake.setFailWrites(false)
 	start := len(fake.calls())
-	session.NetUSD = 2
+	session.NetCents = 200
 	if err := client.AppendCashSession(session); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestSupersessionPersistsNewestBeforeRemoteCorrection(t *testing.T) {
 	}
 	fake := &fakeSheets{failWrites: true}
 	client := newTestClient(t, fake)
-	summary := parsers.Tournament{Date: time.Now(), Type: "mtt", TournamentID: "T-DURABLE", BuyInUSD: 1.1, NetUSD: -1.1}
+	summary := parsers.Tournament{Date: time.Now(), Type: "mtt", TournamentID: "T-DURABLE", BuyInCents: 110, NetCents: -110}
 	if _, err := client.AppendTournament(summary); err == nil {
 		t.Fatal("expected outage")
 	}
@@ -147,8 +147,8 @@ func TestSupersessionPersistsNewestBeforeRemoteCorrection(t *testing.T) {
 	defer server.Close()
 	client.svc.baseURL = server.URL + "/"
 	client.svc.hc = server.Client()
-	summary.BuyInUSD = 2.2
-	summary.NetUSD = -2.2
+	summary.BuyInCents = 220
+	summary.NetCents = -220
 	if _, err := client.AppendTournament(summary); err == nil {
 		t.Fatal("retirement persistence failure was hidden")
 	}
@@ -164,7 +164,7 @@ func TestSupersessionPersistsNewestBeforeRemoteCorrection(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range queue {
-		if entry.Summary == nil || entry.Summary.BuyInUSD != 2.2 {
+		if entry.Summary == nil || entry.Summary.BuyInCents != 220 {
 			t.Fatalf("restart could replay old summary: %s", data)
 		}
 	}

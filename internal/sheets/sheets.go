@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -39,6 +40,13 @@ var sheetsEpoch = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
 // the serial is rounded to the nearest minute — reproducing the exact
 // wall-clock the string form would, with no float dust in the seconds place.
 func parseSheetDate(v interface{}) (time.Time, error) {
+	if number, ok := v.(json.Number); ok {
+		serial, err := number.Float64()
+		if err != nil {
+			return time.Time{}, err
+		}
+		v = serial
+	}
 	if serial, ok := v.(float64); ok {
 		minutes := math.Round(serial * 24 * 60)
 		return sheetsEpoch.Add(time.Duration(minutes) * time.Minute), nil
@@ -234,7 +242,7 @@ func (c *Client) appendRow(tab string, values []interface{}) error {
 
 // getLastRunningTotal reads the last value from the Running Total column of
 // Bankroll Ledger. Returns 0 when the ledger has no data rows.
-func (c *Client) getLastRunningTotal() (float64, error) {
+func (c *Client) getLastRunningTotal() (money.Cents, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!D:D")
 	if err != nil {
 		return 0, fmt.Errorf("reading bankroll ledger: %w", err)
@@ -247,7 +255,7 @@ func (c *Client) getLastRunningTotal() (float64, error) {
 	if len(last) == 0 {
 		return 0, nil
 	}
-	return parseFloat(last[0]), nil
+	return parseMoney(last[0])
 }
 
 // CashSessionID retains the historical Sheets fingerprint for fallback keys
@@ -306,7 +314,7 @@ func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
 	if err := c.upsertCashSessionsRow(id, session, rowIndex); err != nil {
 		return err
 	}
-	return c.upsertLedgerCashSessionRow(id, session.Date, session.NetUSD)
+	return c.upsertLedgerCashSessionRow(id, session.Date, session.NetCents)
 }
 
 func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession, rowIndex int) error {
@@ -315,8 +323,8 @@ func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession, r
 		session.Stake,
 		session.Hands,
 		session.DurationMin,
-		session.NetUSD,
-		session.RakeUSD,
+		session.NetCents,
+		session.RakeCents,
 		session.BB100,
 		session.VPIP,
 		session.PFR,
@@ -337,29 +345,33 @@ func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession, r
 // withdrawals, and tournament entries stay pure appends, never touched again;
 // this is the session's single ledger entry, the same upsert as its Cash
 // Sessions row.
-func (c *Client) upsertLedgerCashSessionRow(id string, date time.Time, netUSD float64) error {
+func (c *Client) upsertLedgerCashSessionRow(id string, date time.Time, netCents money.Cents) error {
 	rowIndex, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", id)
 	if err != nil {
 		return err
 	}
 	if !found {
-		prev, err := c.getLastRunningTotal()
+		prevCents, err := c.getLastRunningTotal()
+		if err != nil {
+			return err
+		}
+		totalCents, err := money.Add(prevCents, netCents)
 		if err != nil {
 			return err
 		}
 		return c.appendRow("Bankroll Ledger", []interface{}{
 			date.Format(dateFormat),
 			"cash_session",
-			netUSD,
-			prev + netUSD,
+			netCents,
+			totalCents,
 			id,
 		})
 	}
 
-	return c.updateLedgerAmountCascading(rowIndex, netUSD)
+	return c.updateLedgerAmountCascading(rowIndex, netCents)
 }
 
-// updateLedgerAmountCascading sets rowIndex's Amount to newAmount and
+// updateLedgerAmountCascading sets rowIndex's Amount to newAmountCents and
 // recomputes Running Total for rowIndex and every row after it through the
 // end of the ledger. A plain update of rowIndex alone is only correct when
 // it's the sheet's last data row — with multiple tables open at once, a
@@ -367,22 +379,34 @@ func (c *Client) upsertLedgerCashSessionRow(id string, date time.Time, netUSD fl
 // first table's row while that row is still being corrected hand-to-hand;
 // those later rows' stored Running Total was computed from this row's old
 // Amount and goes stale the moment this row's Amount changes.
-func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) error {
+func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmountCents money.Cents) error {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!C:D")
 	if err != nil {
 		return fmt.Errorf("reading bankroll ledger for cascade update: %w", err)
 	}
 
-	base := runningTotalAbove(resp.Values, rowIndex)
+	baseCents, err := runningTotalAbove(resp.Values, rowIndex)
+	if err != nil {
+		return err
+	}
 
-	amounts := make([]float64, len(resp.Values))
+	amountsCents := make([]money.Cents, len(resp.Values))
 	for i, row := range resp.Values {
+		if i == 0 {
+			continue
+		}
 		if len(row) > 0 {
-			amounts[i] = parseFloat(row[0])
+			amountsCents[i], err = parseMoney(row[0])
+			if err != nil {
+				return fmt.Errorf("reading ledger amount: %w", err)
+			}
 		}
 	}
 
-	updates := cascadeLedgerAmounts(amounts, rowIndex-1, newAmount, base)
+	updates, err := cascadeLedgerAmounts(amountsCents, rowIndex-1, newAmountCents, baseCents)
+	if err != nil {
+		return err
+	}
 	if len(updates) == 0 {
 		return nil
 	}
@@ -403,15 +427,15 @@ func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmount float64) er
 // row, whose own stale amount would then be double-counted. values holds the
 // header at index 0, so sheet row r sits at values[r-1] and its Running
 // Total (column D) at [1].
-func runningTotalAbove(values [][]interface{}, rowIndex int) float64 {
+func runningTotalAbove(values [][]interface{}, rowIndex int) (money.Cents, error) {
 	if rowIndex <= 2 || rowIndex-2 >= len(values) {
-		return 0
+		return 0, nil
 	}
 	row := values[rowIndex-2]
 	if len(row) < 2 {
-		return 0
+		return 0, nil
 	}
-	return parseFloat(row[1])
+	return parseMoney(row[1])
 }
 
 // cascadeLedgerAmounts computes updated (Amount, Running Total) pairs for
@@ -421,21 +445,24 @@ func runningTotalAbove(values [][]interface{}, rowIndex int) float64 {
 // bounds-checks changedIdx and zips the results into the two-column cell
 // shape the Sheets update range wants. Pure — the Sheets I/O wrapper is
 // updateLedgerAmountCascading.
-func cascadeLedgerAmounts(amounts []float64, changedIdx int, newAmount, base float64) [][]interface{} {
-	if changedIdx < 0 || changedIdx >= len(amounts) {
-		return nil
+func cascadeLedgerAmounts(amountsCents []money.Cents, changedIdx int, newAmountCents, baseCents money.Cents) ([][]interface{}, error) {
+	if changedIdx < 0 || changedIdx >= len(amountsCents) {
+		return nil, nil
 	}
-	tail := amounts[changedIdx:]
-	totals := storage.CascadeRunningTotals(tail, newAmount, base)
-	updates := make([][]interface{}, len(tail))
-	for i := range tail {
-		amount := tail[i]
+	tailCents := amountsCents[changedIdx:]
+	totalsCents, err := storage.CascadeRunningTotals(tailCents, newAmountCents, baseCents)
+	if err != nil {
+		return nil, err
+	}
+	updates := make([][]interface{}, len(tailCents))
+	for i := range tailCents {
+		amountCents := tailCents[i]
 		if i == 0 {
-			amount = newAmount
+			amountCents = newAmountCents
 		}
-		updates[i] = []interface{}{amount, totals[i]}
+		updates[i] = []interface{}{amountCents, totalsCents[i]}
 	}
-	return updates
+	return updates, nil
 }
 
 // findTournamentRow searches column C (Tournament ID) for the given ID.
@@ -445,20 +472,20 @@ func (c *Client) findTournamentRow(tournamentID string) (rowIndex int, found boo
 }
 
 // tournamentRowSnapshot holds the subset of an existing Tournaments row
-// needed to reconcile NetUSD/Type against knockout-bounty data, which is
+// needed to reconcile NetCents/Type against knockout-bounty data, which is
 // only ever known from the hand history file (UpdateTournamentHandStats) and
 // never from the summary file AppendTournament parses its other fields from.
 type tournamentRowSnapshot struct {
-	date      time.Time
-	typeVal   string
-	buyInUSD  float64
-	hasNetUSD bool // false while the row is still a hand-file-only partial row
-	netUSD    float64
-	bountyUSD float64
+	date        time.Time
+	typeVal     string
+	buyInCents  money.Cents
+	hasNetUSD   bool // false while the row is still a hand-file-only partial row
+	netCents    money.Cents
+	bountyCents money.Cents
 }
 
 // readTournamentRow reads the fields of an existing Tournaments row (by
-// 1-based sheet rowIndex) needed to compute a bounty-reconciled NetUSD/Type
+// 1-based sheet rowIndex) needed to compute a bounty-reconciled NetCents/Type
 // from either side of the two-file correlation.
 func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:M%d", rowIndex, rowIndex))
@@ -479,14 +506,23 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 		snap.typeVal = fmt.Sprint(row[1])
 	}
 	if len(row) > 3 {
-		snap.buyInUSD = parseFloat(row[3])
+		snap.buyInCents, err = parseMoney(row[3])
+		if err != nil {
+			return tournamentRowSnapshot{}, err
+		}
 	}
 	if len(row) > 8 && fmt.Sprint(row[8]) != "" {
 		snap.hasNetUSD = true
-		snap.netUSD = parseFloat(row[8])
+		snap.netCents, err = parseMoney(row[8])
+		if err != nil {
+			return tournamentRowSnapshot{}, err
+		}
 	}
 	if len(row) > 11 {
-		snap.bountyUSD = parseFloat(row[11])
+		snap.bountyCents, err = parseMoney(row[11])
+		if err != nil {
+			return tournamentRowSnapshot{}, err
+		}
 	}
 	return snap, nil
 }
@@ -500,11 +536,11 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 // elimination lines do (why two files: plan §Why Tournaments Need Two
 // Files) — and carries forward the storage.KnockoutPlaceholder into a real
 // "<base>-ko" Type if the row was flagged knockout. Writes Prize Won
-// (column M, = NetUSD + BuyInUSD) alongside. Leaves VPIP/PFR/Bounty Won
-// (J:L) untouched. Returns the final NetUSD (baseline net plus any bounty)
+// (column M, = NetCents + BuyInCents) alongside. Leaves VPIP/PFR/Bounty Won
+// (J:L) untouched. Returns the final NetCents (baseline net plus any bounty)
 // so callers can report or evaluate against the real total rather than the
 // pre-bounty figure.
-func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
+func (c *Client) rawAppendTournament(t parsers.Tournament) (money.Cents, error) {
 	var multiplier interface{}
 	if t.Multiplier != nil {
 		multiplier = *t.Multiplier
@@ -514,9 +550,9 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
 
 	// A ticket-denominated prize pool (e.g. "$1.00 Power Path Step 2
 	// Ticket") is never a real dollar amount — writing the raw description
-	// text here instead of PrizePoolUSD (always 0 in that case) keeps the
+	// text here instead of PrizePoolCents (always 0 in that case) keeps the
 	// cell from reading as a misleading cash figure.
-	var prizePool interface{} = t.PrizePoolUSD
+	var prizePool interface{} = t.PrizePoolCents
 	if t.PrizePoolDescription != "" {
 		prizePool = t.PrizePoolDescription
 	}
@@ -526,17 +562,20 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
 		return 0, err
 	}
 
-	var bounty float64
+	var bountyCents money.Cents
 	typeOut := t.Type
 	if found {
 		snap, err := c.readTournamentRow(rowIndex)
 		if err != nil {
 			return 0, err
 		}
-		bounty = snap.bountyUSD
+		bountyCents = snap.bountyCents
 		typeOut = storage.ReconcileKnockoutType(t.Type, snap.typeVal)
 	}
-	netUSD, prizeWon := storage.FoldBountyIntoNet(t.NetUSD, bounty, t.BuyInUSD)
+	netCents, prizeWonCents, err := storage.FoldBountyIntoNet(t.NetCents, bountyCents, t.BuyInCents)
+	if err != nil {
+		return 0, err
+	}
 
 	if found {
 		// Row was pre-created by UpdateTournamentHandStats — update the main
@@ -551,17 +590,17 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
 					t.Date.Format(dateFormat),
 					typeOut,
 					t.TournamentID,
-					t.BuyInUSD,
+					t.BuyInCents,
 					prizePool,
 					multiplier,
 					t.FinishPos,
 					t.TotalPlayers,
-					netUSD,
+					netCents,
 				}},
 			},
 			{
 				Range:  fmt.Sprintf("Tournaments!M%d", rowIndex),
-				Values: [][]interface{}{{prizeWon}},
+				Values: [][]interface{}{{prizeWonCents}},
 			},
 		}); err != nil {
 			return 0, fmt.Errorf("updating tournament %s: %w", t.TournamentID, err)
@@ -571,26 +610,26 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
 			t.Date.Format(dateFormat),
 			typeOut,
 			t.TournamentID,
-			t.BuyInUSD,
+			t.BuyInCents,
 			prizePool,
 			multiplier,
 			t.FinishPos,
 			t.TotalPlayers,
-			netUSD,
+			netCents,
 			"", // VPIP — filled later by UpdateTournamentHandStats
 			"", // PFR  — filled later by UpdateTournamentHandStats
 			"", // Bounty Won (USD) — filled later by UpdateTournamentHandStats
-			prizeWon,
+			prizeWonCents,
 			"", // Hands — filled later by UpdateTournamentHandStats
 		}); err != nil {
 			return 0, err
 		}
 	}
 
-	if err := c.upsertLedgerTournamentRow(t.TournamentID, t.Date, netUSD); err != nil {
+	if err := c.upsertLedgerTournamentRow(t.TournamentID, t.Date, netCents); err != nil {
 		return 0, err
 	}
-	return netUSD, nil
+	return netCents, nil
 }
 
 // upsertLedgerTournamentRow corrects the tournament's own Bankroll Ledger row
@@ -602,26 +641,30 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (float64, error) {
 // watcher — and without this, the Tournaments tab stays deduplicated (see
 // findTournamentRow) while the ledger silently double-counts the same
 // tournament's net result. Mirrors upsertLedgerCashSessionRow.
-func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, netUSD float64) error {
+func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, netCents money.Cents) error {
 	rowIndex, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", tournamentID)
 	if err != nil {
 		return err
 	}
 	if !found {
-		prev, err := c.getLastRunningTotal()
+		prevCents, err := c.getLastRunningTotal()
+		if err != nil {
+			return err
+		}
+		totalCents, err := money.Add(prevCents, netCents)
 		if err != nil {
 			return err
 		}
 		return c.appendRow("Bankroll Ledger", []interface{}{
 			date.Format(dateFormat),
 			"tournament",
-			netUSD,
-			prev + netUSD,
+			netCents,
+			totalCents,
 			tournamentID,
 		})
 	}
 
-	return c.updateLedgerAmountCascading(rowIndex, netUSD)
+	return c.updateLedgerAmountCascading(rowIndex, netCents)
 }
 
 // UpdateTournamentHandStats writes VPIP, PFR, and knockout-bounty winnings
@@ -636,13 +679,13 @@ func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, 
 // and stops there — AppendTournament will complete it once the summary file
 // arrives, combining the placeholder into a real "<base>-ko" Type and
 // folding in this bounty (see its doc comment). If a row exists but summary
-// data (NetUSD, column I) hasn't arrived yet either, only J:L, N (and
+// data (NetCents, column I) hasn't arrived yet either, only J:L, N (and
 // possibly B, for the same storage.KnockoutPlaceholder reason) are written and
-// NetUSD/Prize Won/the ledger are left alone. If a row exists and already
+// NetCents/Prize Won/the ledger are left alone. If a row exists and already
 // has summary data — the common case, since the hand history file grows and
 // is reparsed (recomputing this tournament's cumulative bounty from scratch)
 // throughout the tournament while the summary only ever arrives once at the
-// end — NetUSD is reconciled as (storedNetUSD - storedBounty) + bountyUSD,
+// end — NetCents is reconciled as (storedNetCents - storedBounty) + bounty,
 // undoing this row's previous bounty contribution and applying the freshly
 // reparsed total; Prize Won (column M) and the tournament's Bankroll Ledger
 // row are corrected to match via upsertLedgerTournamentRow. If isKnockout
@@ -652,7 +695,7 @@ func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, 
 // far (column N, added alongside VPIP/PFR) — the weight /stats uses to
 // combine a tournament's VPIP/PFR into a hands-weighted average, the same
 // role Hands plays for cash sessions.
-func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyUSD float64, isKnockout bool) error {
+func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil {
 		return err
@@ -676,8 +719,8 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 			"", // Net
 			vpip,
 			pfr,
-			bountyUSD,
-			"", // Prize Won (USD) — filled in once AppendTournament knows BuyInUSD
+			bountyCents,
+			"", // Prize Won (USD) — filled in once AppendTournament knows BuyInCents
 			hands,
 		})
 	}
@@ -698,7 +741,7 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 	data := []valueRange{
 		{
 			Range:  fmt.Sprintf("Tournaments!J%d:L%d", rowIndex, rowIndex),
-			Values: [][]interface{}{{vpip, pfr, bountyUSD}},
+			Values: [][]interface{}{{vpip, pfr, bountyCents}},
 		},
 		{
 			Range:  fmt.Sprintf("Tournaments!N%d", rowIndex),
@@ -712,18 +755,21 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 		})
 	}
 
-	var netUSD float64
+	var netCents money.Cents
 	if snap.hasNetUSD {
-		var prizeWon float64
-		netUSD, prizeWon = storage.ReconcileTournamentBounty(snap.netUSD, snap.bountyUSD, bountyUSD, snap.buyInUSD)
+		var prizeWonCents money.Cents
+		netCents, prizeWonCents, err = storage.ReconcileTournamentBounty(snap.netCents, snap.bountyCents, bountyCents, snap.buyInCents)
+		if err != nil {
+			return err
+		}
 		data = append(data,
 			valueRange{
 				Range:  fmt.Sprintf("Tournaments!I%d", rowIndex),
-				Values: [][]interface{}{{netUSD}},
+				Values: [][]interface{}{{netCents}},
 			},
 			valueRange{
 				Range:  fmt.Sprintf("Tournaments!M%d", rowIndex),
-				Values: [][]interface{}{{prizeWon}},
+				Values: [][]interface{}{{prizeWonCents}},
 			},
 		)
 	}
@@ -736,7 +782,7 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 		// Summary still hasn't arrived — nothing to reconcile yet.
 		return nil
 	}
-	return c.upsertLedgerTournamentRow(tournamentID, snap.date, netUSD)
+	return c.upsertLedgerTournamentRow(tournamentID, snap.date, netCents)
 }
 
 // ── Write-ahead fallback ────────────────────────────────────────────────
@@ -770,12 +816,12 @@ type fallbackEntry struct {
 // handStatsArgs mirrors rawUpdateTournamentHandStats's parameter list so a
 // failed hand-stats write can be replayed verbatim.
 type handStatsArgs struct {
-	TournamentID string  `json:"tournament_id"`
-	VPIP         float64 `json:"vpip"`
-	PFR          float64 `json:"pfr"`
-	Hands        int     `json:"hands"`
-	BountyUSD    float64 `json:"bounty_usd"`
-	IsKnockout   bool    `json:"is_knockout"`
+	TournamentID string      `json:"tournament_id"`
+	VPIP         float64     `json:"vpip"`
+	PFR          float64     `json:"pfr"`
+	Hands        int         `json:"hands"`
+	BountyCents  money.Cents `json:"bounty_cents"`
+	IsKnockout   bool        `json:"is_knockout"`
 }
 
 // ledgerArgs holds a failed deposit/withdrawal for replay. The Running Total is
@@ -783,10 +829,10 @@ type handStatsArgs struct {
 // sheet's current last row at replay time, so a deposit that lands after other
 // rows queued ahead of it still gets a correct cumulative total.
 type ledgerArgs struct {
-	OperationID string    `json:"operation_id,omitempty"`
-	EntryType   string    `json:"entry_type"`
-	AmountUSD   float64   `json:"amount_usd"`
-	Now         time.Time `json:"now"`
+	OperationID string      `json:"operation_id,omitempty"`
+	EntryType   string      `json:"entry_type"`
+	AmountCents money.Cents `json:"amount_cents"`
+	Now         time.Time   `json:"now"`
 }
 
 // AppendCashSession writes the session and, only if that fails, caches it for
@@ -815,7 +861,7 @@ func (c *Client) AppendCashSession(session parsers.CashSession) error {
 	return nil
 }
 
-func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
+func (c *Client) AppendTournament(t parsers.Tournament) (money.Cents, error) {
 	if err := storage.ValidateTournament(t); err != nil {
 		return 0, err
 	}
@@ -826,29 +872,29 @@ func (c *Client) AppendTournament(t parsers.Tournament) (float64, error) {
 	if err := c.prepareQueuedReplacement(key, entry); err != nil {
 		return 0, err
 	}
-	net, err := c.rawAppendTournament(t)
+	netCents, err := c.rawAppendTournament(t)
 	if err != nil {
-		return net, c.queueWriteFailure(key, entry, err)
+		return netCents, c.queueWriteFailure(key, entry, err)
 	}
 	if err := c.retireFallback(key); err != nil {
-		return net, err
+		return netCents, err
 	}
 	c.flush()
-	return net, nil
+	return netCents, nil
 }
 
-func (c *Client) UpdateTournamentHandStats(id string, vpip, pfr float64, hands int, bounty float64, knockout bool) error {
-	if err := storage.ValidateNumbers(vpip, pfr, bounty); err != nil {
+func (c *Client) UpdateTournamentHandStats(id string, vpip, pfr float64, hands int, bountyCents money.Cents, knockout bool) error {
+	if err := storage.ValidateNumbers(vpip, pfr); err != nil {
 		return err
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	key := fallbackKindStats + ":" + id
-	entry := fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{TournamentID: id, VPIP: vpip, PFR: pfr, Hands: hands, BountyUSD: bounty, IsKnockout: knockout}}
+	entry := fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{TournamentID: id, VPIP: vpip, PFR: pfr, Hands: hands, BountyCents: bountyCents, IsKnockout: knockout}}
 	if err := c.prepareQueuedReplacement(key, entry); err != nil {
 		return err
 	}
-	if err := c.rawUpdateTournamentHandStats(id, vpip, pfr, hands, bounty, knockout); err != nil {
+	if err := c.rawUpdateTournamentHandStats(id, vpip, pfr, hands, bountyCents, knockout); err != nil {
 		return c.queueWriteFailure(key, entry, err)
 	}
 	if err := c.retireFallback(key); err != nil {
@@ -875,6 +921,9 @@ func (c *Client) prepareQueuedReplacement(key string, entry fallbackEntry) error
 }
 
 func (c *Client) queueWriteFailure(key string, entry fallbackEntry, remoteErr error) error {
+	if errors.Is(remoteErr, money.ErrOverflow) {
+		return remoteErr
+	}
 	err := c.cacheFailed(key, entry)
 	return &storage.WriteError{Err: errors.Join(remoteErr, err), Queued: err == nil}
 }
@@ -1027,7 +1076,7 @@ func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 		}
 		return c.rawUpdateTournamentHandStats(
 			entry.HandStats.TournamentID, entry.HandStats.VPIP, entry.HandStats.PFR,
-			entry.HandStats.Hands, entry.HandStats.BountyUSD, entry.HandStats.IsKnockout,
+			entry.HandStats.Hands, entry.HandStats.BountyCents, entry.HandStats.IsKnockout,
 		) == nil
 	case fallbackKindSummary:
 		_, err := c.rawAppendTournament(*entry.Summary)
@@ -1036,7 +1085,7 @@ func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 		// No supersede guard: a deposit/withdrawal is a pure append whose
 		// running total rawAppendLedgerEntry recomputes fresh, so there's no
 		// stale snapshot to protect against — just replay it.
-		return c.rawAppendLedgerEntry(entry.Ledger.EntryType, entry.Ledger.AmountUSD, entry.Ledger.Now, entry.Ledger.OperationID) == nil
+		return c.rawAppendLedgerEntry(entry.Ledger.EntryType, entry.Ledger.AmountCents, entry.Ledger.Now, entry.Ledger.OperationID) == nil
 	}
 	return true // unknown kind — drop rather than retry forever
 }
@@ -1102,7 +1151,7 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 }
 
 // AppendLedgerEntry appends a deposit or withdrawal row to Bankroll Ledger.
-// For withdrawals, the caller passes a negative amountUSD. The date is
+// For withdrawals, the caller passes a negative amountCents. The date is
 // written as the local wall clock, not UTC — session rows' dates come from
 // PokerStars' zone-less local timestamps, so writing a true-UTC time here
 // would put deposits in a date coordinate system shifted from every session
@@ -1111,22 +1160,22 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 // Identified movements reconcile their existing ledger ID before replay, including
 // a remotely committed append whose acknowledgement was lost. Legacy blank IDs
 // retain append semantics and cannot provide exactly-once recovery.
-func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error {
+func (c *Client) AppendLedgerEntry(entryType string, amountCents money.Cents, now time.Time, operationID string) error {
 	if err := storage.ValidateMoneyOperationID(operationID); err != nil {
-		return err
-	}
-	if err := storage.ValidateNumbers(amountUSD); err != nil {
 		return err
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	if err := c.rawAppendLedgerEntry(entryType, amountUSD, now, operationID); err != nil {
+	if err := c.rawAppendLedgerEntry(entryType, amountCents, now, operationID); err != nil {
+		if errors.Is(err, money.ErrOverflow) {
+			return err
+		}
 		key := fmt.Sprintf("%s:%d", fallbackKindLedger, now.UnixNano())
 		if operationID != "" {
 			key = fallbackKindLedger + ":" + operationID
 		}
 		saveErr := c.cacheFailed(key, fallbackEntry{Kind: fallbackKindLedger, Ledger: &ledgerArgs{
-			EntryType: entryType, AmountUSD: amountUSD, Now: now, OperationID: operationID,
+			EntryType: entryType, AmountCents: amountCents, Now: now, OperationID: operationID,
 		}})
 		return &storage.WriteError{Err: errors.Join(err, saveErr), Queued: saveErr == nil}
 	}
@@ -1134,7 +1183,7 @@ func (c *Client) AppendLedgerEntry(entryType string, amountUSD float64, now time
 	return nil
 }
 
-func (c *Client) rawAppendLedgerEntry(entryType string, amountUSD float64, now time.Time, operationID string) error {
+func (c *Client) rawAppendLedgerEntry(entryType string, amountCents money.Cents, now time.Time, operationID string) error {
 	if operationID != "" {
 		_, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", operationID)
 		if err != nil {
@@ -1145,22 +1194,26 @@ func (c *Client) rawAppendLedgerEntry(entryType string, amountUSD float64, now t
 		}
 	}
 
-	prev, err := c.getLastRunningTotal()
+	prevCents, err := c.getLastRunningTotal()
+	if err != nil {
+		return err
+	}
+	totalCents, err := money.Add(prevCents, amountCents)
 	if err != nil {
 		return err
 	}
 	return c.appendRow("Bankroll Ledger", []interface{}{
 		now.Format(dateFormat),
 		entryType,
-		amountUSD,
-		prev + amountUSD,
+		amountCents,
+		totalCents,
 		operationID,
 	})
 }
 
 // GetCurrentBankroll returns the running total from the last Bankroll Ledger row.
 // Returns 0 if the ledger is empty.
-func (c *Client) GetCurrentBankroll() (float64, error) {
+func (c *Client) GetCurrentBankroll() (money.Cents, error) {
 	return c.getLastRunningTotal()
 }
 
@@ -1207,7 +1260,10 @@ func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord
 	}
 	var result []storage.CashSessionRecord
 	for _, row := range resp.Values[1:] {
-		rec, ok := parseCashRow(row)
+		rec, ok, err := parseCashRow(row)
+		if err != nil {
+			return nil, err
+		}
 		if !ok || rec.Date.Before(since) {
 			continue
 		}
@@ -1221,13 +1277,21 @@ func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord
 // hand-edited or otherwise malformed row — the script never writes fewer) or
 // column A doesn't hold a valid date. Shared by queryCashSessions and the
 // migration round-trip so both decode a row identically.
-func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool) {
+func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool, err error) {
 	if len(row) < 9 {
-		return storage.CashSessionRecord{}, false
+		return storage.CashSessionRecord{}, false, nil
 	}
 	date, err := parseSheetDate(cell(row, 0))
 	if err != nil {
-		return storage.CashSessionRecord{}, false
+		return storage.CashSessionRecord{}, false, nil
+	}
+	netCents, err := parseMoney(cell(row, 4))
+	if err != nil {
+		return rec, false, err
+	}
+	rakeCents, err := parseMoney(cell(row, 5))
+	if err != nil {
+		return rec, false, err
 	}
 	rec = storage.CashSessionRecord{
 		CashSession: parsers.CashSession{
@@ -1235,19 +1299,19 @@ func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool) {
 			Stake:       fmt.Sprint(cell(row, 1)),
 			Hands:       parseInt(cell(row, 2)),
 			DurationMin: parseInt(cell(row, 3)),
-			NetUSD:      parseFloat(cell(row, 4)),
-			RakeUSD:     parseFloat(cell(row, 5)),
+			NetCents:    netCents,
+			RakeCents:   rakeCents,
 			BB100:       parseFloat(cell(row, 6)),
 			VPIP:        parseFloat(cell(row, 7)),
 			PFR:         parseFloat(cell(row, 8)),
 		},
 		SessionID: fmt.Sprint(cell(row, 9)),
 	}
-	return rec, true
+	return rec, true, nil
 }
 
 // GetCashSessionsSince returns all Cash Sessions rows where Date >= t.
-// BuyInUSD is not stored in the sheet and will be zero in returned structs.
+// BuyInCents is not stored in the sheet and will be zero in returned structs.
 func (c *Client) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error) {
 	records, err := c.queryCashSessions(t)
 	if err != nil {
@@ -1289,7 +1353,10 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 		if len(row) < 9 {
 			continue
 		}
-		rec, hasDate := parseTournamentRow(row)
+		rec, hasDate, err := parseTournamentRow(row)
+		if err != nil {
+			return nil, err
+		}
 		if !hasDate || rec.Date.Before(since) {
 			continue
 		}
@@ -1304,21 +1371,27 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 // completed tournaments skip, but the migration snapshot keeps (with a zero
 // Date). Shared by queryTournaments, allTournamentRows, and the migration
 // round-trip so every path decodes a row identically.
-func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDate bool) {
+func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDate bool, err error) {
 	rec.Type = fmt.Sprint(cell(row, 1))
 	rec.TournamentID = fmt.Sprint(cell(row, 2))
 	if date, err := parseSheetDate(cell(row, 0)); err == nil {
 		rec.Date = date
 		hasDate = true
 	}
-	rec.BuyInUSD = parseFloat(cell(row, 3))
+	rec.BuyInCents, err = parseMoney(cell(row, 3))
+	if err != nil {
+		return rec, false, err
+	}
 	// Prize Pool (col E) holds a number for a real cash pool, or text for a
 	// ticket-denominated one (e.g. "$1.00 Power Path Step 2 Ticket") — see
 	// AppendTournament's prizePool write.
 	if desc, ok := cell(row, 4).(string); ok && desc != "" {
 		rec.PrizePoolDescription = desc
 	} else {
-		rec.PrizePoolUSD = parseFloat(cell(row, 4))
+		rec.PrizePoolCents, err = parseMoney(cell(row, 4))
+		if err != nil {
+			return rec, false, err
+		}
 	}
 	// Multiplier (col F) is empty for MTT rows.
 	if mult := fmt.Sprint(cell(row, 5)); mult != "" {
@@ -1327,7 +1400,10 @@ func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDat
 	}
 	rec.FinishPos = parseInt(cell(row, 6))
 	rec.TotalPlayers = parseInt(cell(row, 7))
-	rec.NetUSD = parseFloat(cell(row, 8))
+	rec.NetCents, err = parseMoney(cell(row, 8))
+	if err != nil {
+		return rec, false, err
+	}
 	if v := fmt.Sprint(cell(row, 9)); v != "" {
 		f := parseFloat(cell(row, 9))
 		rec.VPIP = &f
@@ -1336,13 +1412,19 @@ func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDat
 		f := parseFloat(cell(row, 10))
 		rec.PFR = &f
 	}
-	rec.BountyWonUSD = parseFloat(cell(row, 11))
-	rec.PrizeWonUSD = parseFloat(cell(row, 12))
+	rec.BountyWonCents, err = parseMoney(cell(row, 11))
+	if err != nil {
+		return rec, false, err
+	}
+	rec.PrizeWonCents, err = parseMoney(cell(row, 12))
+	if err != nil {
+		return rec, false, err
+	}
 	if h := fmt.Sprint(cell(row, 13)); h != "" {
 		n := parseInt(cell(row, 13))
 		rec.Hands = &n
 	}
-	return rec, hasDate
+	return rec, hasDate, nil
 }
 
 // allTournamentRows reads every Tournaments row including partial ones (blank
@@ -1362,7 +1444,10 @@ func (c *Client) allTournamentRows() ([]storage.TournamentRecord, error) {
 		if len(row) < 3 {
 			continue
 		}
-		rec, _ := parseTournamentRow(row)
+		rec, _, err := parseTournamentRow(row)
+		if err != nil {
+			return nil, err
+		}
 		result = append(result, rec)
 	}
 	return result, nil
@@ -1386,7 +1471,10 @@ func (c *Client) GetTournamentByID(tournamentID string) (parsers.Tournament, boo
 	if len(resp.Values) == 0 {
 		return parsers.Tournament{}, false, nil
 	}
-	rec, hasDate := parseTournamentRow(resp.Values[0])
+	rec, hasDate, err := parseTournamentRow(resp.Values[0])
+	if err != nil {
+		return parsers.Tournament{}, false, err
+	}
 	if !hasDate {
 		return parsers.Tournament{}, false, nil
 	}
@@ -1478,7 +1566,7 @@ func buildCashRows(sessions []storage.CashSessionRecord) [][]interface{} {
 	for i, s := range sessions {
 		rows[i] = []interface{}{
 			s.Date.UTC().Format(dateFormat), s.Stake, s.Hands, s.DurationMin,
-			s.NetUSD, s.RakeUSD, s.BB100, s.VPIP, s.PFR, s.SessionID,
+			s.NetCents, s.RakeCents, s.BB100, s.VPIP, s.PFR, s.SessionID,
 		}
 	}
 	return rows
@@ -1493,11 +1581,11 @@ func buildTournamentRows(tournaments []storage.TournamentRecord) [][]interface{}
 			// Net (col I) stays empty and isn't read back as summary data.
 			rows[i] = []interface{}{
 				"", t.Type, t.TournamentID, "", "", "", "", "", "",
-				floatCell(t.VPIP), floatCell(t.PFR), t.BountyWonUSD, "", intCell(t.Hands),
+				floatCell(t.VPIP), floatCell(t.PFR), t.BountyWonCents, "", intCell(t.Hands),
 			}
 			continue
 		}
-		var prizePool interface{} = t.PrizePoolUSD
+		var prizePool interface{} = t.PrizePoolCents
 		if t.PrizePoolDescription != "" {
 			prizePool = t.PrizePoolDescription
 		}
@@ -1506,9 +1594,9 @@ func buildTournamentRows(tournaments []storage.TournamentRecord) [][]interface{}
 			multiplier = *t.Multiplier
 		}
 		rows[i] = []interface{}{
-			t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInUSD, prizePool, multiplier,
-			t.FinishPos, t.TotalPlayers, t.NetUSD, floatCell(t.VPIP), floatCell(t.PFR),
-			t.BountyWonUSD, t.PrizeWonUSD, intCell(t.Hands),
+			t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInCents, prizePool, multiplier,
+			t.FinishPos, t.TotalPlayers, t.NetCents, floatCell(t.VPIP), floatCell(t.PFR),
+			t.BountyWonCents, t.PrizeWonCents, intCell(t.Hands),
 		}
 	}
 	return rows
@@ -1518,7 +1606,7 @@ func buildLedgerRows(entries []storage.LedgerEntry) [][]interface{} {
 	rows := make([][]interface{}, len(entries))
 	for i, e := range entries {
 		rows[i] = []interface{}{
-			e.Date.UTC().Format(dateFormat), e.Type, e.AmountUSD, e.RunningTotal, e.SessionID,
+			e.Date.UTC().Format(dateFormat), e.Type, e.AmountCents, e.RunningTotalCents, e.SessionID,
 		}
 	}
 	return rows
@@ -1584,11 +1672,19 @@ func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing ledger date %q: %w", row[0], err)
 		}
+		amountCents, err := parseMoney(row[2])
+		if err != nil {
+			return nil, err
+		}
+		totalCents, err := parseMoney(row[3])
+		if err != nil {
+			return nil, err
+		}
 		entry := storage.LedgerEntry{
-			Date:         date,
-			Type:         fmt.Sprint(row[1]),
-			AmountUSD:    parseFloat(row[2]),
-			RunningTotal: parseFloat(row[3]),
+			Date:              date,
+			Type:              fmt.Sprint(row[1]),
+			AmountCents:       amountCents,
+			RunningTotalCents: totalCents,
 		}
 		if len(row) > 4 {
 			entry.SessionID = fmt.Sprint(row[4])
@@ -1611,6 +1707,9 @@ func cell(row []interface{}, i int) interface{} {
 
 func parseInt(v interface{}) int {
 	switch x := v.(type) {
+	case json.Number:
+		n, _ := x.Float64()
+		return int(n)
 	case float64:
 		return int(x)
 	case string:
@@ -1622,6 +1721,9 @@ func parseInt(v interface{}) int {
 
 func parseFloat(v interface{}) float64 {
 	switch x := v.(type) {
+	case json.Number:
+		value, _ := x.Float64()
+		return value
 	case float64:
 		return x
 	case string:
@@ -1637,4 +1739,12 @@ func (c *Client) DrainPendingWrites() {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	c.flush()
+}
+
+// parseMoney decodes a USD-denominated cell into integer cents.
+func parseMoney(value interface{}) (money.Cents, error) {
+	if value == nil || value == "" {
+		return 0, nil
+	}
+	return money.Parse(fmt.Sprint(value))
 }

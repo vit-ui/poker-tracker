@@ -6,6 +6,8 @@ package bot
 // test files mirror the package's file-per-concern split.
 
 import (
+	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,4 +180,43 @@ func TestDisplayRelativeToHome(t *testing.T) {
 			t.Errorf("displayRelativeToHome(%q) = %q, want unchanged", outside, got)
 		}
 	})
+}
+
+func TestParsePositiveMoney(t *testing.T) {
+	for _, tc := range []struct {
+		text      string
+		wantCents money.Cents
+		invalid   bool
+	}{
+		{"2,54", 254, false}, {"1.001", 101, false}, {"0.00001", 1, false},
+		{"0", 0, true}, {"-1.001", 0, true}, {"NaN", 0, true}, {"Inf", 0, true}, {"1e100", 0, true},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			gotCents, err := parsePositiveMoney(tc.text)
+			if (err != nil) != tc.invalid || gotCents != tc.wantCents {
+				t.Fatalf("got %d, %v; want %d, invalid %v", gotCents, err, tc.wantCents, tc.invalid)
+			}
+		})
+	}
+}
+
+func TestMoneyThresholdMenusDistinguishUnsetAndZero(t *testing.T) {
+	zeroCents, configuredCents := money.Cents(0), money.Cents(125)
+	for _, tc := range []struct {
+		name       string
+		valueCents *money.Cents
+		want       string
+	}{
+		{"unset", nil, "not set"}, {"zero", &zeroCents, "0.00"}, {"configured", &configuredCents, "1.25"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Alerts: config.Alerts{DailyLossCents: tc.valueCents}, Hardstop: config.Hardstop{DailyLossCents: tc.valueCents}}
+			if got := alertValueText(cfg, "daily_loss"); got != tc.want {
+				t.Fatalf("alert text %q; want %q", got, tc.want)
+			}
+			if got := hardstopValueText(cfg, "daily_loss"); got != tc.want {
+				t.Fatalf("hardstop text %q; want %q", got, tc.want)
+			}
+		})
+	}
 }

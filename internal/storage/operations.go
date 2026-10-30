@@ -7,6 +7,9 @@ package storage
 // rollback. Resumed must then be buffered once to receive the resume outcome.
 // PrepareRestart drains collection without requiring PokerStars to close and
 // preserves pending cash, unless FinalizeAllCash is set for a sheet change.
+
+import "github.com/vit-ui/self-tracker/internal/money"
+
 type Operation struct {
 	PrepareMigration bool
 	PrepareRestart   bool
@@ -21,11 +24,11 @@ type Operation struct {
 
 // OperationResult is consumed on the bot event loop, where replies are sent.
 type OperationResult struct {
-	Recovered   int
-	Snapshot    *Snapshot
-	NetUSD      float64
-	Bankroll    float64
-	Found       bool
-	Err         error
-	BankrollErr error
+	Recovered     int
+	Snapshot      *Snapshot
+	NetCents      money.Cents
+	BankrollCents money.Cents
+	Found         bool
+	Err           error
+	BankrollErr   error
 }

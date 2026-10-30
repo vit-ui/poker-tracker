@@ -45,6 +45,9 @@ func TestRecoveredFileResyncResetsCollectorOffset(t *testing.T) {
 			return transport.Upload{}
 		}
 	}
+	if initial := receive(); initial.Status == nil || initial.Status.Error != "" || initial.ClientClock.IsZero() {
+		t.Fatalf("missing initial collector status: %+v", initial)
+	}
 	events <- watcher.FileEvent{Path: source, Type: "cash"}
 	if first := receive(); first.Offset != 0 || string(first.Bytes) != "first" {
 		t.Fatalf("first upload %+v", first)

@@ -6,41 +6,46 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-func approxEqual(a, b float64) bool {
-	return math.Abs(a-b) < 1e-9
+func approxEqual[T ~int64 | ~float64](a, b T) bool {
+	if _, ok := any(a).(money.Cents); ok {
+		return a == b
+	}
+	return math.Abs(float64(a-b)) < 1e-9
 }
 
 func TestParseLeadingAmount(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		want   float64
-		wantOk bool
+		name      string
+		input     string
+		wantCents money.Cents
+		wantOk    bool
 	}{
-		{"dollar amount", "$5.00", 5.00, true},
-		{"bare integer", "5", 5, true},
-		{"decimal with trailing text", "0.10 USD) - 2025", 0.10, true},
-		{"trailing non-numeric text stops parsing", "5.5x", 5.5, true},
+		{"dollar amount", "$5.00", 500, true},
+		{"bare integer", "5", 500, true},
+		{"decimal with trailing text", "0.10 USD) - 2025", 10, true},
+		{"trailing non-numeric text stops parsing", "5.5x", 550, true},
 		{"no leading digits", "abc", 0, false},
 		{"empty string", "", 0, false},
 		{"dollar sign only", "$", 0, false},
-		{"chips, no dollar sign", "25", 25, true},
+		{"chips, no dollar sign", "25", 2500, true},
 		{"zero", "0", 0, true},
 		// Thousands separators: a comma inside a digit run is consumed and
 		// stripped ("$12,500.00" was silently parsed as 12 before this).
-		{"thousands-separated dollars", "$12,500.00", 12500.00, true},
-		{"thousands-separated with trailing text", "1,048.00 USD) - 2026", 1048.00, true},
-		{"multiple thousands groups", "1,234,567.89", 1234567.89, true},
-		{"sentence comma after the amount stops parsing", "1, and more", 1, true},
-		{"trailing comma not consumed", "5,", 5, true},
+		{"thousands-separated dollars", "$12,500.00", 1250000, true},
+		{"thousands-separated with trailing text", "1,048.00 USD) - 2026", 104800, true},
+		{"multiple thousands groups", "1,234,567.89", 123456789, true},
+		{"sentence comma after the amount stops parsing", "1, and more", 100, true},
+		{"trailing comma not consumed", "5,", 500, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := parseLeadingAmount(c.input)
-			if ok != c.wantOk || got != c.want {
-				t.Errorf("parseLeadingAmount(%q) = (%v, %v), want (%v, %v)", c.input, got, ok, c.want, c.wantOk)
+			gotCents, ok := parseLeadingAmount(c.input)
+			if ok != c.wantOk || gotCents != c.wantCents {
+				t.Errorf("parseLeadingAmount(%q) = (%v, %v), want (%v, %v)", c.input, gotCents, ok, c.wantCents, c.wantOk)
 			}
 		})
 	}
@@ -88,8 +93,8 @@ Total pot $0.15 | Rake $0
 	if session.Stake != "NL10" {
 		t.Errorf("Stake = %q, want NL10", session.Stake)
 	}
-	if session.BuyInUSD != 10.0 {
-		t.Errorf("BuyInUSD = %v, want 10.0", session.BuyInUSD)
+	if session.BuyInCents != 1000 {
+		t.Errorf("BuyInCents = %v, want 10.0", session.BuyInCents)
 	}
 	if session.Hands != 1 {
 		t.Errorf("Hands = %d, want 1", session.Hands)
@@ -97,11 +102,11 @@ Total pot $0.15 | Rake $0
 	if session.DurationMin != 0 {
 		t.Errorf("DurationMin = %d, want 0 (single hand)", session.DurationMin)
 	}
-	if session.NetUSD != -0.05 {
-		t.Errorf("NetUSD = %v, want -0.05", session.NetUSD)
+	if session.NetCents != -5 {
+		t.Errorf("NetCents = %v, want -0.05", session.NetCents)
 	}
-	if session.RakeUSD != 0 {
-		t.Errorf("RakeUSD = %v, want 0", session.RakeUSD)
+	if session.RakeCents != 0 {
+		t.Errorf("RakeCents = %v, want 0", session.RakeCents)
 	}
 	if session.BB100 != -50 {
 		t.Errorf("BB100 = %v, want -50", session.BB100)
@@ -192,8 +197,8 @@ Total pot $0.15 | Rake $0
 	if session.DurationMin != 3 {
 		t.Errorf("DurationMin = %d, want 3", session.DurationMin)
 	}
-	if !approxEqual(session.NetUSD, -0.35) {
-		t.Errorf("NetUSD = %v, want -0.35", session.NetUSD)
+	if !approxEqual(session.NetCents, -35) {
+		t.Errorf("NetCents = %v, want -0.35", session.NetCents)
 	}
 	if !approxEqual(session.BB100, -87.5) {
 		t.Errorf("BB100 = %v, want -87.5", session.BB100)
@@ -409,13 +414,13 @@ Total pot 9710 | Rake 0
 	if !tourneyStats.IsKnockout {
 		t.Error("IsKnockout = false, want true")
 	}
-	if tourneyStats.BountyUSD != 0.18 {
-		t.Errorf("BountyUSD = %v, want 0.18 (only hero's own elimination counts, not villain2's)", tourneyStats.BountyUSD)
+	if tourneyStats.BountyCents != 18 {
+		t.Errorf("BountyCents = %v, want 0.18 (only hero's own elimination counts, not villain2's)", tourneyStats.BountyCents)
 	}
 }
 
 // TestParseCashFile_NonKnockoutTournament confirms a plain (non-bounty)
-// tournament hand never flags IsKnockout or accrues BountyUSD, even though
+// tournament hand never flags IsKnockout or accrues BountyCents, even though
 // its lines happen to contain "wins" and "collected".
 func TestParseCashFile_NonKnockoutTournament(t *testing.T) {
 	contents := `PokerStars Hand #300000000006: Tournament #987654324, $1.00+$0.10 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
@@ -442,12 +447,12 @@ Total pot 75 | Rake 0
 	if tourneyStats.IsKnockout {
 		t.Error("IsKnockout = true, want false")
 	}
-	if tourneyStats.BountyUSD != 0 {
-		t.Errorf("BountyUSD = %v, want 0", tourneyStats.BountyUSD)
+	if tourneyStats.BountyCents != 0 {
+		t.Errorf("BountyCents = %v, want 0", tourneyStats.BountyCents)
 	}
 }
 
-// TestParseCashFile_KnockoutBounty_MultipleEliminations confirms BountyUSD
+// TestParseCashFile_KnockoutBounty_MultipleEliminations confirms BountyCents
 // accumulates across more than one elimination by hero in the same file,
 // not just the single-KO case.
 func TestParseCashFile_KnockoutBounty_MultipleEliminations(t *testing.T) {
@@ -487,14 +492,14 @@ Total pot 10000 | Rake 0
 	if tourneyStats == nil {
 		t.Fatal("expected non-nil tourneyStats")
 	}
-	if tourneyStats.BountyUSD != 0.36 {
-		t.Errorf("BountyUSD = %v, want 0.36 (0.18 + 0.18 across two eliminations)", tourneyStats.BountyUSD)
+	if tourneyStats.BountyCents != 36 {
+		t.Errorf("BountyCents = %v, want 0.36 (0.18 + 0.18 across two eliminations)", tourneyStats.BountyCents)
 	}
 }
 
 // TestParseCashFile_KnockoutTournament_NoHeroBounty confirms IsKnockout is
 // still true when hero plays a knockout tournament but never scores a KO
-// themselves — BountyUSD stays 0, but the tournament is still flagged as
+// themselves — BountyCents stays 0, but the tournament is still flagged as
 // knockout (every seat carries a bounty marker regardless of who cashes in
 // on it), the distinction documented on TournamentHandStats.IsKnockout.
 func TestParseCashFile_KnockoutTournament_NoHeroBounty(t *testing.T) {
@@ -520,8 +525,8 @@ Total pot 150 | Rake 0
 	if !tourneyStats.IsKnockout {
 		t.Error("IsKnockout = false, want true — every seat shows a bounty marker")
 	}
-	if tourneyStats.BountyUSD != 0 {
-		t.Errorf("BountyUSD = %v, want 0 — hero never eliminated anyone", tourneyStats.BountyUSD)
+	if tourneyStats.BountyCents != 0 {
+		t.Errorf("BountyCents = %v, want 0 — hero never eliminated anyone", tourneyStats.BountyCents)
 	}
 }
 
@@ -554,7 +559,7 @@ Total pot 150 | Rake 0
 	}
 }
 
-// TestParseCashFile_KnockoutBounty_OddCentRounding confirms BountyUSD uses
+// TestParseCashFile_KnockoutBounty_OddCentRounding confirms BountyCents uses
 // the "wins $X.XX" amount, not the "bounty increases by $Y.YY" amount —
 // these can differ by a cent on an odd bounty, since PokerStars splits the
 // eliminated player's bounty 50/50 (half cash to the eliminator, half stays
@@ -584,13 +589,13 @@ Total pot 10000 | Rake 0
 	if tourneyStats == nil {
 		t.Fatal("expected non-nil tourneyStats")
 	}
-	if tourneyStats.BountyUSD != 0.68 {
-		t.Errorf("BountyUSD = %v, want 0.68 (the real cash credited — \"wins $\" — not 0.67 from \"increases by\")", tourneyStats.BountyUSD)
+	if tourneyStats.BountyCents != 68 {
+		t.Errorf("BountyCents = %v, want 0.68 (the real cash credited — \"wins $\" — not 0.67 from \"increases by\")", tourneyStats.BountyCents)
 	}
 }
 
 // TestParseCashFile_UncalledBet confirms an uncalled raise's returned
-// portion is added back into NetUSD, not counted as money lost — hero
+// portion is added back into NetCents, not counted as money lost — hero
 // raises to $0.30, villain folds, and PokerStars refunds the $0.20 hero
 // never had to have called by anyone via "Uncalled bet ($0.20) returned to
 // AnonHero01". Only the $0.10 that was actually contested (won back via
@@ -623,12 +628,12 @@ Total pot $0.20 | Rake $0
 	// got back $0.20 uncalled plus collected $0.20 pot (villain's $0.10 BB
 	// plus hero's own $0.10 that stayed in after the uncalled refund):
 	// net = 0.20 (uncalled) + 0.20 (collected) - 0.30 (invested) = 0.10.
-	if !approxEqual(session.NetUSD, 0.10) {
-		t.Errorf("NetUSD = %v, want 0.10 (uncalled portion refunded, not counted as invested)", session.NetUSD)
+	if !approxEqual(session.NetCents, 10) {
+		t.Errorf("NetCents = %v, want 0.10 (uncalled portion refunded, not counted as invested)", session.NetCents)
 	}
 }
 
-// TestParseCashFile_RakeAccumulation confirms RakeUSD sums across multiple
+// TestParseCashFile_RakeAccumulation confirms RakeCents sums across multiple
 // hands — every existing hand-parsing test up to this one uses "Rake $0",
 // so real rake accumulation was never actually exercised.
 func TestParseCashFile_RakeAccumulation(t *testing.T) {
@@ -669,8 +674,8 @@ Total pot $0.20 | Rake $0.02
 	if session == nil {
 		t.Fatal("expected non-nil session")
 	}
-	if !approxEqual(session.RakeUSD, 0.03) {
-		t.Errorf("RakeUSD = %v, want 0.03 (0.01 + 0.02 across two hands)", session.RakeUSD)
+	if !approxEqual(session.RakeCents, 3) {
+		t.Errorf("RakeCents = %v, want 0.03 (0.01 + 0.02 across two hands)", session.RakeCents)
 	}
 }
 
@@ -706,8 +711,8 @@ Total pot $1.80 | Main pot $1.50 | Side pot $0.30 | Rake $0
 	}
 	// Invested $0.50 (posted $0.05 SB + called $0.45 more); collected both
 	// pots: 0.30 + 1.50 - 0.50 = 1.30.
-	if !approxEqual(session.NetUSD, 1.30) {
-		t.Errorf("NetUSD = %v, want 1.30 (both side pot and main pot collections counted)", session.NetUSD)
+	if !approxEqual(session.NetCents, 130) {
+		t.Errorf("NetCents = %v, want 1.30 (both side pot and main pot collections counted)", session.NetCents)
 	}
 }
 

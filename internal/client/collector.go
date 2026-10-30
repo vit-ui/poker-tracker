@@ -65,6 +65,14 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 	defer close(finished)
 	requests := make(chan transport.Command)
 	go c.applyCommands(dead, finished, requests)
+	lock, err := config.LoadLock(c.enforcer.path)
+	status := &transport.CollectorStatus{Lock: lock}
+	if err != nil {
+		status.Error = err.Error()
+	}
+	if !c.send(transport.Upload{Status: status, ClientClock: time.Now()}, dead) {
+		return
+	}
 	sent := make(map[string]*sentEntry)
 	paused := false
 	upload := func(event watcher.FileEvent, recovery bool) error {

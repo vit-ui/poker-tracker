@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
@@ -15,7 +16,7 @@ func TestMoneyIdentitiesSurviveRestartAndMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-	if err := source.AppendLedgerEntry("deposit", 1, now, "money:first"); err != nil {
+	if err := source.AppendLedgerEntry("deposit", 100, now, "money:first"); err != nil {
 		t.Fatal(err)
 	}
 	source.Close()
@@ -25,22 +26,22 @@ func TestMoneyIdentitiesSurviveRestartAndMigration(t *testing.T) {
 	}
 	defer source.Close()
 	for _, entry := range []struct {
-		kind   string
-		amount float64
-		id     string
+		kind        string
+		amountCents money.Cents
+		id          string
 	}{
-		{"deposit", 1, "money:first"},
-		{"deposit", 1, "money:second"},
-		{"withdrawal", -.25, "money:withdrawal"},
-		{"withdrawal", -.25, "money:withdrawal"},
-		{"deposit", 1, ""},
-		{"deposit", 1, ""},
+		{"deposit", 100, "money:first"},
+		{"deposit", 100, "money:second"},
+		{"withdrawal", -25, "money:withdrawal"},
+		{"withdrawal", -25, "money:withdrawal"},
+		{"deposit", 100, ""},
+		{"deposit", 100, ""},
 	} {
-		if err := source.AppendLedgerEntry(entry.kind, entry.amount, now, entry.id); err != nil {
+		if err := source.AppendLedgerEntry(entry.kind, entry.amountCents, now, entry.id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := source.AppendLedgerEntry("deposit", 99, now, "session-collision"); err == nil {
+	if err := source.AppendLedgerEntry("deposit", 9900, now, "session-collision"); err == nil {
 		t.Fatal("accepted unnamespaced movement ID")
 	}
 	snapshot, err := source.ExportSnapshot()
@@ -50,10 +51,10 @@ func TestMoneyIdentitiesSurviveRestartAndMigration(t *testing.T) {
 	if len(snapshot.Ledger) != 5 {
 		t.Fatalf("ledger rows=%d, want 5", len(snapshot.Ledger))
 	}
-	wantTotals := []float64{1, 2, 1.75, 2.75, 3.75}
+	wantTotalsCents := []money.Cents{100, 200, 175, 275, 375}
 	wantIDs := []string{"money:first", "money:second", "money:withdrawal", "", ""}
 	for i, entry := range snapshot.Ledger {
-		if entry.RunningTotal != wantTotals[i] || entry.SessionID != wantIDs[i] {
+		if entry.RunningTotalCents != wantTotalsCents[i] || entry.SessionID != wantIDs[i] {
 			t.Fatalf("row %d: %+v", i, entry)
 		}
 	}
@@ -65,7 +66,7 @@ func TestMoneyIdentitiesSurviveRestartAndMigration(t *testing.T) {
 	if _, err := storage.Migrate(source, target); err != nil {
 		t.Fatal(err)
 	}
-	if err := target.AppendLedgerEntry("deposit", 1, now, "money:first"); err != nil {
+	if err := target.AppendLedgerEntry("deposit", 100, now, "money:first"); err != nil {
 		t.Fatal(err)
 	}
 	copied, err := target.ExportSnapshot()

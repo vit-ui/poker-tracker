@@ -28,6 +28,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
+	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -73,7 +74,7 @@ func parsePositiveInt(s string) (int, error) {
 // it. Used when saving a hard stop threshold, to ensure it isn't set below
 // an already-configured alert for the same metric — alerts are meant to
 // warn before hard stop intervenes, so hard stop must never trigger first.
-func validateNotBelow[T int | float64](value T, other *T, valueLabel, otherLabel string) error {
+func validateNotBelow[T ~int | ~int64 | ~float64](value T, other *T, valueLabel, otherLabel string) error {
 	if other != nil && value < *other {
 		return fmt.Errorf("%s must be at least %v — %s is already set to that.", valueLabel, *other, otherLabel)
 	}
@@ -83,7 +84,7 @@ func validateNotBelow[T int | float64](value T, other *T, valueLabel, otherLabel
 // validateNotAbove is the mirror of validateNotBelow, used when saving an
 // alert threshold to ensure it isn't set above an already-configured hard
 // stop for the same metric.
-func validateNotAbove[T int | float64](value T, other *T, valueLabel, otherLabel string) error {
+func validateNotAbove[T ~int | ~int64 | ~float64](value T, other *T, valueLabel, otherLabel string) error {
 	if other != nil && value > *other {
 		return fmt.Errorf("%s must be at most %v — %s is already set to that.", valueLabel, *other, otherLabel)
 	}
@@ -93,7 +94,7 @@ func validateNotAbove[T int | float64](value T, other *T, valueLabel, otherLabel
 // handleDepositWithdraw implements /deposit and /withdraw. kind is
 // "deposit" or "withdrawal" — passed directly as the Bankroll Ledger Type.
 func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
-	amount, err := parsePositiveFloat(args)
+	amountCents, err := parsePositiveMoney(args)
 	if err != nil {
 		if kind == "deposit" {
 			send(b.tg, chatID, "Invalid amount. Usage: /deposit <usd_amount> — enter the USD amount shown on PokerStars after the deposit clears, not BRL.")
@@ -103,10 +104,10 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 		return
 	}
 
-	ledgerAmount := amount
+	ledgerAmountCents := amountCents
 	label := "Deposit"
 	if kind == "withdrawal" {
-		ledgerAmount = -amount
+		ledgerAmountCents = -amountCents
 		label = "Withdrawal"
 	}
 
@@ -122,15 +123,15 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 		if client, ok := store.(*sheets.Client); ok {
 			before = client.PendingWrites()
 		}
-		if err := store.AppendLedgerEntry(kind, ledgerAmount, now, operationID); err != nil {
+		if err := store.AppendLedgerEntry(kind, ledgerAmountCents, now, operationID); err != nil {
 			return storage.OperationResult{Err: err}
 		}
-		bankroll, err := store.GetCurrentBankroll()
+		bankrollCents, err := store.GetCurrentBankroll()
 		recovered := 0
 		if client, ok := store.(*sheets.Client); ok {
 			recovered = before - client.PendingWrites()
 		}
-		return storage.OperationResult{Bankroll: bankroll, BankrollErr: err, Recovered: recovered}
+		return storage.OperationResult{BankrollCents: bankrollCents, BankrollErr: err, Recovered: recovered}
 	}, func(result storage.OperationResult) {
 		if result.Err != nil {
 			slog.Error("recording money movement", "kind", kind, "err", result.Err)
@@ -146,10 +147,10 @@ func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
 			send(b.tg, chatID, fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", result.Recovered))
 		}
 		if result.BankrollErr != nil {
-			send(b.tg, chatID, fmt.Sprintf("✅ %s recorded: %s. Bankroll is temporarily unavailable.", label, FormatSignedUSD(ledgerAmount)))
+			send(b.tg, chatID, fmt.Sprintf("✅ %s recorded: %s. Bankroll is temporarily unavailable.", label, FormatSignedUSD(ledgerAmountCents)))
 			return
 		}
-		send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%.2f", label, FormatSignedUSD(ledgerAmount), result.Bankroll))
+		send(b.tg, chatID, fmt.Sprintf("✅ %s logged: %s\nBankroll: $%s", label, FormatSignedUSD(ledgerAmountCents), result.BankrollCents))
 	})
 }
 
@@ -431,9 +432,9 @@ func alertValueText(cfg *config.Config, key string) string {
 	case "losing_streak":
 		return intText(cfg.Alerts.LosingStreakCount)
 	case "daily_loss":
-		return floatText(cfg.Alerts.DailyLossUSD)
+		return moneyText(cfg.Alerts.DailyLossCents)
 	case "spingo_daily_loss":
-		return floatText(cfg.Alerts.SpingoDailyLossUSD)
+		return moneyText(cfg.Alerts.SpingoDailyLossCents)
 	}
 	return "not set"
 }
@@ -465,9 +466,9 @@ func hardstopValueText(cfg *config.Config, key string) string {
 	case "consecutive_losses":
 		return intText(cfg.Hardstop.ConsecutiveLosses)
 	case "daily_loss":
-		return floatText(cfg.Hardstop.DailyLossUSD)
+		return moneyText(cfg.Hardstop.DailyLossCents)
 	case "spingo_daily_loss":
-		return floatText(cfg.Hardstop.SpingoDailyLossUSD)
+		return moneyText(cfg.Hardstop.SpingoDailyLossCents)
 	case "duration":
 		return intText(cfg.Hardstop.DurationHours)
 	}
@@ -616,7 +617,8 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	rows = append(rows, menuRow(label, "menu:leave:"+path))
 	text := "Hard stop rules — tap one to change:"
 	if warning != "" {
-		text = warning + "\n\n" + text
+		text = warning + "\n\n" +
+			text
 	}
 	b.showMenu(chatID, messageID, text, rows)
 }
@@ -688,7 +690,7 @@ func hardstopRuleSetWithoutDuration(cfg *config.Config) bool {
 	// Only an *active* rule needs a duration — a turned-off one won't fire.
 	h := config.EffectiveHardstop(cfg.Hardstop)
 	anyRule := h.SessionLossBuyins != nil || h.DownswingBuyins != nil || h.ConsecutiveLosses != nil ||
-		h.DailyLossUSD != nil || h.SpingoDailyLossUSD != nil
+		h.DailyLossCents != nil || h.SpingoDailyLossCents != nil
 	return anyRule && cfg.Hardstop.DurationHours == nil
 }
 
@@ -719,13 +721,9 @@ func (b *Bot) renderPathsMenu(chatID int64, messageID int, path string) {
 
 func pathPromptText(field string) string {
 	if field == "tournament_summary" {
-		return "Send the Tournament Summary folder path, relative to your Windows user folder — not including your screen name at the end.\n" +
-			`Example: AppData\Local\PokerStars\TournamentSummaries` + "\n" +
-			`(C:\Users\<you>\ and \YourScreenName are both added automatically — a full path with a drive letter, e.g. D:\..., also works if your data isn't under your user folder)`
+		return "Send the Tournament Summary folder path, relative to your Windows user folder — not including your screen name at the end.\n" + `Example: AppData\Local\PokerStars\TournamentSummaries` + "\n" + `(C:\Users\<you>\ and \YourScreenName are both added automatically — a full path with a drive letter, e.g. D:\..., also works if your data isn't under your user folder)`
 	}
-	return "Send the Hand History folder path, relative to your Windows user folder — not including your screen name at the end.\n" +
-		`Example: AppData\Local\PokerStars\HandHistory` + "\n" +
-		`(C:\Users\<you>\ and \YourScreenName are both added automatically — a full path with a drive letter, e.g. D:\..., also works if your data isn't under your user folder)`
+	return "Send the Hand History folder path, relative to your Windows user folder — not including your screen name at the end.\n" + `Example: AppData\Local\PokerStars\HandHistory` + "\n" + `(C:\Users\<you>\ and \YourScreenName are both added automatically — a full path with a drive letter, e.g. D:\..., also works if your data isn't under your user folder)`
 }
 
 // --- /schedule flow ---
@@ -1058,7 +1056,8 @@ func (b *Bot) requestTurnOff(chatID int64, messageID int, target string) {
 func (b *Bot) renderHardstopOffConfirm(chatID int64, messageID int, target string) {
 	segs := strings.Split(target, ":")
 	key := segs[len(segs)-1]
-	text := "⚠️ Turn off this hard stop?\n\n" + hardstopRuleExplain(key) +
+	text := "⚠️ Turn off this hard stop?\n\n" +
+		hardstopRuleExplain(key) +
 		"\n\nWith it off, PokerStars won't be closed when this limit is hit. Are you sure?"
 	rows := [][]tgbotapi.InlineKeyboardButton{
 		menuRow("Yes, turn it off", "menu:"+target+":offconfirm"),
@@ -1132,9 +1131,9 @@ func validateActivate(cfg *config.Config, flow, key string) error {
 		case "losing_streak":
 			return validateNotAbove(*cfg.Alerts.LosingStreakCount, effH.ConsecutiveLosses, "losing streak alert", "the hard stop consecutive-losses threshold")
 		case "daily_loss":
-			return validateNotAbove(*cfg.Alerts.DailyLossUSD, effH.DailyLossUSD, "daily loss alert", "the hard stop daily loss threshold")
+			return validateNotAbove(*cfg.Alerts.DailyLossCents, effH.DailyLossCents, "daily loss alert", "the hard stop daily loss threshold")
 		case "spingo_daily_loss":
-			return validateNotAbove(*cfg.Alerts.SpingoDailyLossUSD, effH.SpingoDailyLossUSD, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold")
+			return validateNotAbove(*cfg.Alerts.SpingoDailyLossCents, effH.SpingoDailyLossCents, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold")
 		}
 		return nil
 	}
@@ -1146,9 +1145,9 @@ func validateActivate(cfg *config.Config, flow, key string) error {
 	case "consecutive_losses":
 		return validateNotBelow(*cfg.Hardstop.ConsecutiveLosses, effA.LosingStreakCount, "hard stop consecutive-losses threshold", "the losing streak alert")
 	case "daily_loss":
-		return validateNotBelow(*cfg.Hardstop.DailyLossUSD, effA.DailyLossUSD, "hard stop daily loss threshold", "the daily loss alert")
+		return validateNotBelow(*cfg.Hardstop.DailyLossCents, effA.DailyLossCents, "hard stop daily loss threshold", "the daily loss alert")
 	case "spingo_daily_loss":
-		return validateNotBelow(*cfg.Hardstop.SpingoDailyLossUSD, effA.SpingoDailyLossUSD, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert")
+		return validateNotBelow(*cfg.Hardstop.SpingoDailyLossCents, effA.SpingoDailyLossCents, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert")
 	}
 	return nil
 }
@@ -1276,23 +1275,23 @@ func saveAlertValue(cfg *config.Config, key, text string) error {
 		}
 		cfg.Alerts.LosingStreakCount = &v
 	case "daily_loss":
-		v, err := parsePositiveFloat(text)
+		vCents, err := parsePositiveMoney(text)
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotAbove(v, effH.DailyLossUSD, "daily loss alert", "the hard stop daily loss threshold"); err != nil {
+		if err := validateNotAbove(vCents, effH.DailyLossCents, "daily loss alert", "the hard stop daily loss threshold"); err != nil {
 			return err
 		}
-		cfg.Alerts.DailyLossUSD = &v
+		cfg.Alerts.DailyLossCents = &vCents
 	case "spingo_daily_loss":
-		v, err := parsePositiveFloat(text)
+		vCents, err := parsePositiveMoney(text)
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotAbove(v, effH.SpingoDailyLossUSD, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold"); err != nil {
+		if err := validateNotAbove(vCents, effH.SpingoDailyLossCents, "Spin & Go daily loss alert", "the hard stop Spin & Go daily loss threshold"); err != nil {
 			return err
 		}
-		cfg.Alerts.SpingoDailyLossUSD = &v
+		cfg.Alerts.SpingoDailyLossCents = &vCents
 	}
 	// A freshly set or changed value is on.
 	setThresholdEnabled(cfg, "alerts", key, true)
@@ -1332,23 +1331,23 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		}
 		cfg.Hardstop.ConsecutiveLosses = &v
 	case "daily_loss":
-		v, err := parsePositiveFloat(text)
+		vCents, err := parsePositiveMoney(text)
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotBelow(v, effA.DailyLossUSD, "hard stop daily loss threshold", "the daily loss alert"); err != nil {
+		if err := validateNotBelow(vCents, effA.DailyLossCents, "hard stop daily loss threshold", "the daily loss alert"); err != nil {
 			return err
 		}
-		cfg.Hardstop.DailyLossUSD = &v
+		cfg.Hardstop.DailyLossCents = &vCents
 	case "spingo_daily_loss":
-		v, err := parsePositiveFloat(text)
+		vCents, err := parsePositiveMoney(text)
 		if err != nil {
 			return fmt.Errorf("Invalid value. Please send a positive number.")
 		}
-		if err := validateNotBelow(v, effA.SpingoDailyLossUSD, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert"); err != nil {
+		if err := validateNotBelow(vCents, effA.SpingoDailyLossCents, "hard stop Spin & Go daily loss threshold", "the Spin & Go daily loss alert"); err != nil {
 			return err
 		}
-		cfg.Hardstop.SpingoDailyLossUSD = &v
+		cfg.Hardstop.SpingoDailyLossCents = &vCents
 	case "duration":
 		v, err := strconv.Atoi(strings.TrimSpace(text))
 		if err != nil || (v != 12 && v != 24) {
@@ -1559,4 +1558,21 @@ func displayRelativeToHome(path string) string {
 		return rel
 	}
 	return path
+}
+
+func parsePositiveMoney(text string) (money.Cents, error) {
+	amountCents, err := money.Parse(commaAsDecimal(text))
+	if err != nil {
+		return 0, err
+	}
+	if amountCents <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	return amountCents, nil
+}
+func moneyText(valueCents *money.Cents) string {
+	if valueCents == nil {
+		return "not set"
+	}
+	return valueCents.String()
 }

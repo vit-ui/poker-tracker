@@ -131,6 +131,15 @@ go test ./internal/parsers/...      # one package
   `pending_cash.json` replacement; restore per-table activity and resynchronize
   recovered files without postponing unchanged snapshots. Retire recovery state
   only after persistence or durable Sheets fallback acceptance.
+- Use `money.Cents` (`int64`) for USD amounts and explicit `Cents` suffixes on
+  monetary fields and variables. Parse decimal input directly; fractional cents
+  round away from zero. Persist cent integers in JSON and SQLite `_cents` columns;
+  convert to decimal dollars only for Sheets cells and display/CSV. Keep ratios
+  and percentages separate, and compare fractional-buy-in limits without
+  converting monetary values to floats. Check overflow before storage mutations.
+- This unreleased version is the compatibility baseline. Compatibility with
+  earlier schemas, configuration and protocol formats is not required; maintain
+  compatibility from this version forward. Use disposable new-format test stores.
 - Keep hard-stop trigger identity separate from delivery and expiry. Persist
   outgoing requests and collector receipts, including expired receipts; replay
   cannot extend or restart the same trigger. Financial changes remain eligible

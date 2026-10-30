@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2/google"
+
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
 const (
@@ -181,7 +183,9 @@ func (s *restService) doJSON(method, reqURL string, body, out interface{}) (err 
 		return fmt.Errorf("google api: %s: %s", resp.Status, snippet)
 	}
 	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		decoder := json.NewDecoder(resp.Body)
+		decoder.UseNumber()
+		if err := decoder.Decode(out); err != nil {
 			return fmt.Errorf("decoding response: %w", err)
 		}
 	}
@@ -216,14 +220,14 @@ func (s *restService) valuesGet(spreadsheetID, rng string) (valueRange, error) {
 // valuesUpdate overwrites a range with RAW input (no cell-format parsing).
 func (s *restService) valuesUpdate(spreadsheetID, rng string, values [][]interface{}) error {
 	return s.doJSON(http.MethodPut, s.valuesURL(spreadsheetID, rng, "", "valueInputOption=RAW"),
-		valueRange{Values: values}, nil)
+		valueRange{Values: dollarCells(values)}, nil)
 }
 
 // valuesAppend appends rows after the last data row of the table containing
 // rng, with RAW input.
 func (s *restService) valuesAppend(spreadsheetID, rng string, values [][]interface{}) error {
 	return s.doJSON(http.MethodPost, s.valuesURL(spreadsheetID, rng, ":append", "valueInputOption=RAW"),
-		valueRange{Values: values}, nil)
+		valueRange{Values: dollarCells(values)}, nil)
 }
 
 // valuesClear deletes the values in a range, leaving the cells empty. Used to
@@ -234,6 +238,9 @@ func (s *restService) valuesClear(spreadsheetID, rng string) error {
 
 // valuesBatchUpdate writes several disjoint ranges in one call.
 func (s *restService) valuesBatchUpdate(spreadsheetID string, data []valueRange) error {
+	for i := range data {
+		data[i].Values = dollarCells(data[i].Values)
+	}
 	body := struct {
 		ValueInputOption string       `json:"valueInputOption"`
 		Data             []valueRange `json:"data"`
@@ -294,4 +301,18 @@ func (s *restService) driveFindSpreadsheets(name string) ([]string, error) {
 		ids[i] = f.ID
 	}
 	return ids, nil
+}
+
+// dollarCells preserves numeric USD cells while the accounting model uses cents.
+func dollarCells(rows [][]interface{}) [][]interface{} {
+	result := make([][]interface{}, len(rows))
+	for i, row := range rows {
+		result[i] = append([]interface{}(nil), row...)
+		for j, cell := range row {
+			if amountCents, ok := cell.(money.Cents); ok {
+				result[i][j] = amountCents.Dollars()
+			}
+		}
+	}
+	return result
 }

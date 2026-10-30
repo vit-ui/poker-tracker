@@ -3,11 +3,9 @@ package storage
 import (
 	"fmt"
 	"time"
-)
 
-// bankrollEpsilon absorbs the float round-trip through a Google Sheets cell
-// (JSON number → string → JSON number); the sqlite path is exact.
-const bankrollEpsilon = 0.005
+	"github.com/vit-ui/self-tracker/internal/money"
+)
 
 // Migrate copies every row from src into dst — which must be empty — as a raw
 // snapshot (see Snapshot), then verifies the copy landed correctly. It does not
@@ -56,17 +54,20 @@ func verifyMigration(src, dst Store, snap Snapshot) error {
 	if err := VerifySnapshot(snap, check, precision); err != nil {
 		return err
 	}
-	expected := ledgerSum(snap.Ledger)
+	expectedCents, err := ledgerSum(snap.Ledger)
+	if err != nil {
+		return err
+	}
 	for _, backend := range []struct {
 		name  string
 		store Store
 	}{{"source", src}, {"destination", dst}} {
-		bankroll, err := backend.store.GetCurrentBankroll()
+		bankrollCents, err := backend.store.GetCurrentBankroll()
 		if err != nil {
 			return fmt.Errorf("reading %s bankroll: %w", backend.name, err)
 		}
-		if !sameNumber(bankroll, expected, bankrollEpsilon) {
-			return fmt.Errorf("%s bankroll mismatch after migration: amounts sum to %.2f, bankroll %.2f", backend.name, expected, bankroll)
+		if !(bankrollCents == expectedCents) {
+			return fmt.Errorf("%s bankroll mismatch after migration: amounts sum to %s, bankroll %s", backend.name, expectedCents, bankrollCents)
 		}
 	}
 	return nil
@@ -88,29 +89,36 @@ func VerifySnapshot(expected, actual Snapshot, precision time.Duration) error {
 			return fmt.Errorf("%s count mismatch after migration: wrote %d, read back %d", count.name, count.want, count.got)
 		}
 	}
-	sourceSum, destinationSum := ledgerSum(expected.Ledger), ledgerSum(actual.Ledger)
-	if !sameNumber(sourceSum, destinationSum, bankrollEpsilon) {
-		return fmt.Errorf("ledger amount mismatch after migration: source sum %.2f, destination sum %.2f", sourceSum, destinationSum)
+	sourceSumCents, err := ledgerSum(expected.Ledger)
+	if err != nil {
+		return err
+	}
+	destinationSumCents, err := ledgerSum(actual.Ledger)
+	if err != nil {
+		return err
+	}
+	if !(sourceSumCents == destinationSumCents) {
+		return fmt.Errorf("ledger amount mismatch after migration: source sum %s, destination sum %s", sourceSumCents, destinationSumCents)
 	}
 	for _, data := range []struct {
-		name string
-		rows []LedgerEntry
-		sum  float64
+		name     string
+		rows     []LedgerEntry
+		sumCents money.Cents
 	}{
-		{"source", expected.Ledger, sourceSum}, {"destination", actual.Ledger, destinationSum},
+		{"source", expected.Ledger, sourceSumCents}, {"destination", actual.Ledger, destinationSumCents},
 	} {
-		final := 0.0
+		var finalCents money.Cents
 		if len(data.rows) > 0 {
-			final = data.rows[len(data.rows)-1].RunningTotal
+			finalCents = data.rows[len(data.rows)-1].RunningTotalCents
 		}
-		if !sameNumber(final, data.sum, bankrollEpsilon) {
-			return fmt.Errorf("%s ledger mismatch: amounts sum to %.2f, final running total %.2f", data.name, data.sum, final)
+		if !(finalCents == data.sumCents) {
+			return fmt.Errorf("%s ledger mismatch: amounts sum to %s, final running total %s", data.name, data.sumCents, finalCents)
 		}
 	}
 	for i, want := range expected.Ledger {
 		got := actual.Ledger[i]
 		if !sameDate(want.Date, got.Date, precision) || want.Type != got.Type || want.SessionID != got.SessionID ||
-			!sameNumber(want.AmountUSD, got.AmountUSD, bankrollEpsilon) || !sameNumber(want.RunningTotal, got.RunningTotal, bankrollEpsilon) {
+			!(want.AmountCents == got.AmountCents) || !(want.RunningTotalCents == got.RunningTotalCents) {
 			return fmt.Errorf("ledger entry %d differs after migration", i+1)
 		}
 	}
@@ -118,7 +126,7 @@ func VerifySnapshot(expected, actual Snapshot, precision time.Duration) error {
 		got := actual.CashSessions[i]
 		if want.SessionID != got.SessionID || !sameDate(want.Date, got.Date, precision) || want.Stake != got.Stake ||
 			want.Hands != got.Hands || want.DurationMin != got.DurationMin ||
-			!sameNumber(want.NetUSD, got.NetUSD, bankrollEpsilon) || !sameNumber(want.RakeUSD, got.RakeUSD, bankrollEpsilon) ||
+			!(want.NetCents == got.NetCents) || !(want.RakeCents == got.RakeCents) ||
 			!sameNumber(want.BB100, got.BB100, 1e-9) || !sameNumber(want.VPIP, got.VPIP, 1e-9) || !sameNumber(want.PFR, got.PFR, 1e-9) {
 			return fmt.Errorf("cash session %d differs after migration", i+1)
 		}
@@ -127,9 +135,9 @@ func VerifySnapshot(expected, actual Snapshot, precision time.Duration) error {
 		got := actual.Tournaments[i]
 		if want.TournamentID != got.TournamentID || !sameDate(want.Date, got.Date, precision) || want.Type != got.Type ||
 			want.PrizePoolDescription != got.PrizePoolDescription || want.FinishPos != got.FinishPos || want.TotalPlayers != got.TotalPlayers ||
-			!sameNumber(want.BuyInUSD, got.BuyInUSD, bankrollEpsilon) || !sameNumber(want.PrizePoolUSD, got.PrizePoolUSD, bankrollEpsilon) ||
-			!sameNumber(want.NetUSD, got.NetUSD, bankrollEpsilon) || !sameNumber(want.BountyWonUSD, got.BountyWonUSD, bankrollEpsilon) ||
-			!sameNumber(want.PrizeWonUSD, got.PrizeWonUSD, bankrollEpsilon) || !sameOptionalNumber(want.Multiplier, got.Multiplier) ||
+			!(want.BuyInCents == got.BuyInCents) || !(want.PrizePoolCents == got.PrizePoolCents) ||
+			!(want.NetCents == got.NetCents) || !(want.BountyWonCents == got.BountyWonCents) ||
+			!(want.PrizeWonCents == got.PrizeWonCents) || !sameOptionalNumber(want.Multiplier, got.Multiplier) ||
 			!sameOptionalNumber(want.VPIP, got.VPIP) || !sameOptionalNumber(want.PFR, got.PFR) || !sameOptionalInt(want.Hands, got.Hands) {
 			return fmt.Errorf("tournament %d differs after migration", i+1)
 		}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/hardstop"
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
 // TestHeartbeatEvent covers the pure decision behind the Sheets connectivity
@@ -78,7 +79,7 @@ func TestIsAbsoluteWindowsPath(t *testing.T) {
 		{"drive letter alone is absolute", `C:`, true},
 		{"relative path under user folder is not absolute", `AppData\Local\PokerStars\HandHistory`, false},
 		{"single path component is not absolute", `Desktop`, false},
-		{"empty string is not absolute", ``, false},
+		{"empty string is not absolute", "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -215,7 +216,7 @@ func TestFixMissingDriveColon(t *testing.T) {
 		{"already has colon, unchanged", `C:\Users\VITOR\Hand History`, `C:\Users\VITOR\Hand History`},
 		{"relative path under user folder, unchanged", `AppData\Local\PokerStars\HandHistory`, `AppData\Local\PokerStars\HandHistory`},
 		{"single path component, unchanged", `Desktop`, `Desktop`},
-		{"empty string, unchanged", ``, ``},
+		{"empty string, unchanged", "", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -279,7 +280,7 @@ func TestSessionLossBuyinsCrossValidation(t *testing.T) {
 			t.Run(c.name, func(t *testing.T) {
 				err := validateNotBelow(c.hardstopVal, c.alert, "hard stop session loss threshold", "the session loss alert")
 				if (err != nil) != c.wantErr {
-					t.Errorf("validateNotBelow(hardstop=%.1f, alert=%v) error = %v, wantErr %v",
+					t.Errorf("validateNotBelow(hardstop=%v, alert=%v) error = %v, wantErr %v",
 						c.hardstopVal, c.alert, err, c.wantErr)
 				}
 			})
@@ -303,7 +304,7 @@ func TestSessionLossBuyinsCrossValidation(t *testing.T) {
 			t.Run(c.name, func(t *testing.T) {
 				err := validateNotAbove(c.alertVal, c.hardstop, "session loss alert", "the hard stop session loss threshold")
 				if (err != nil) != c.wantErr {
-					t.Errorf("validateNotAbove(alert=%.1f, hardstop=%v) error = %v, wantErr %v",
+					t.Errorf("validateNotAbove(alert=%v, hardstop=%v) error = %v, wantErr %v",
 						c.alertVal, c.hardstop, err, c.wantErr)
 				}
 			})
@@ -314,10 +315,10 @@ func TestSessionLossBuyinsCrossValidation(t *testing.T) {
 // TestDownswingAlertThreshold exercises the same fires/does-not-fire
 // decision EvaluateDownswingAlert makes: an unconfigured (nil) threshold
 // never fires, otherwise fire only when peak-current strictly exceeds
-// threshold × buyInUSD — equal is not over.
+// threshold × buyInCents — equal is not over.
 func TestDownswingAlertThreshold(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
-	const peak, current, buyInUSD = 12.0, 4.0, 5.00
+	const peak, current, buyInCents = 12.0, 4.0, 5.00
 
 	cases := []struct {
 		name      string
@@ -332,7 +333,7 @@ func TestDownswingAlertThreshold(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			fires := c.threshold != nil && hardstop.DownswingExceeds(peak, current, buyInUSD, *c.threshold)
+			fires := c.threshold != nil && hardstop.DownswingExceeds(1200, 400, 500, *c.threshold)
 			if fires != c.wantFire {
 				t.Errorf("fires = %v, want %v", fires, c.wantFire)
 			}
@@ -342,23 +343,23 @@ func TestDownswingAlertThreshold(t *testing.T) {
 
 func TestRecoverTicketPayout(t *testing.T) {
 	cases := []struct {
-		name      string
-		buyInUSD  float64
-		netUSD    float64
-		wantBuyIn float64
-		wantNet   float64
+		name           string
+		buyInCents     money.Cents
+		netCents       money.Cents
+		wantBuyInCents money.Cents
+		wantNetCents   money.Cents
 	}{
-		{"small loss recovers to break-even", 0.50, -0.50, 0, 0.0},
-		{"small win recovers to full payout", 0.50, 0.50, 0, 1.0},
-		{"break-even loss recovers to zero", 1.00, -1.00, 0, 0.0},
-		{"big win recovers to full payout", 1.00, 4.00, 0, 5.0},
+		{"small loss recovers to break-even", 50, -50, 0, 0},
+		{"small win recovers to full payout", 50, 50, 0, 100},
+		{"break-even loss recovers to zero", 100, -100, 0, 0},
+		{"big win recovers to full payout", 100, 400, 0, 500},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotBuyIn, gotNet := RecoverTicketPayout(c.buyInUSD, c.netUSD)
-			if gotBuyIn != c.wantBuyIn || gotNet != c.wantNet {
-				t.Errorf("RecoverTicketPayout(buyIn=%.2f, net=%.2f) = (%.2f, %.2f), want (%.2f, %.2f)",
-					c.buyInUSD, c.netUSD, gotBuyIn, gotNet, c.wantBuyIn, c.wantNet)
+			gotBuyInCents, gotNetCents := RecoverTicketPayout(c.buyInCents, c.netCents)
+			if gotBuyInCents != c.wantBuyInCents || gotNetCents != c.wantNetCents {
+				t.Errorf("RecoverTicketPayout(buyIn=%v, net=%v) = (%v, %v), want (%v, %v)",
+					c.buyInCents, c.netCents, gotBuyInCents, gotNetCents, c.wantBuyInCents, c.wantNetCents)
 			}
 		})
 	}

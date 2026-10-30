@@ -8,6 +8,18 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Money uses integer USD cents throughout parsing, accounting, storage and
+  hard-stop fingerprints. Extra fractional cents round up in magnitude at input;
+  ledger verification is exact. Monetary names and persisted columns identify
+  cent units, while Sheets and CSV still contain decimal dollar amounts.
+  This unreleased version establishes the compatibility baseline.
+- `/status` reads collector-confirmed protection state and uses the poker PC's
+  clock. Confirmed effective lock expiry survives server restart without
+  replacing it with a shorter request or reviving an acknowledged expired lock.
+  Obsolete connections cannot update current protection or collection replies.
+- Pending tournament questions retain their stored wall-clock digits when the
+  server and poker PC use different timezones.
+
 - Windows tasks share boot, power, execution-limit and failure-recovery settings
   across setup paths and roles. A repeating minute trigger keeps recovery
   available after failure attempts run out, while IgnoreNew preserves one process.

@@ -4,22 +4,23 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
 // CashSession holds aggregated stats for a single cash game session file.
 type CashSession struct {
 	Date        time.Time
 	Stake       string
-	BuyInUSD    float64
+	BuyInCents  money.Cents
 	Hands       int
 	DurationMin int
-	NetUSD      float64
-	RakeUSD     float64
+	NetCents    money.Cents
+	RakeCents   money.Cents
 	BB100       float64
 	VPIP        float64
 	PFR         float64
@@ -37,7 +38,7 @@ type CashSession struct {
 // Knockout-bounty winnings only ever appear here — the tournament summary
 // file has no concept of them at all, only the hand history file's
 // elimination lines do (why two files: plan §Why Tournaments Need Two
-// Files) — so BountyUSD and IsKnockout, like VPIP/PFR, are always populated
+// Files) — so BountyCents and IsKnockout, like VPIP/PFR, are always populated
 // from this struct, never from ParseTournamentFile.
 type TournamentHandStats struct {
 	TournamentID string
@@ -48,22 +49,22 @@ type TournamentHandStats struct {
 	// far — the same weight CashSession.Hands provides for cash sessions,
 	// letting /stats weight a tournament's VPIP/PFR by how much of a sample
 	// they actually represent. Recomputed from scratch on every parse, same
-	// as VPIP/PFR/BountyUSD, since the file keeps growing across the whole
+	// as VPIP/PFR/BountyCents, since the file keeps growing across the whole
 	// tournament.
 	Hands int
 
-	// BountyUSD is the cumulative knockout-bounty cash won by screenName
+	// BountyCents is the cumulative knockout-bounty cash won by screenName
 	// across every "<name> wins $X.XX for eliminating ..." line in the file,
 	// recomputed from scratch on every parse — the same file keeps growing
 	// with every hand across the whole tournament (not per table), so this
 	// is always the tournament's true cumulative bounty total, not a
 	// per-call increment. Zero for a non-knockout tournament.
-	BountyUSD float64
+	BountyCents money.Cents
 
 	// IsKnockout is true if any seat in the file shows a bounty ("$X.XX
 	// bounty)" in the pre-hand seat listing) — present for every seat in a
 	// knockout tournament regardless of whether screenName ever eliminates
-	// anyone, unlike BountyUSD which can legitimately be zero in a knockout
+	// anyone, unlike BountyCents which can legitimately be zero in a knockout
 	// tournament screenName didn't score a KO in.
 	IsKnockout bool
 }
@@ -75,16 +76,16 @@ type TournamentHandStats struct {
 // from zero — see ParseState / ParseCashFileFrom.
 type cashAgg struct {
 	firstTime, lastTime time.Time
-	bigBlind            float64
+	bigBlindCents       money.Cents
 	stake               string
 	firstHandID         string
 	hands               int
-	netUSD, rakeUSD     float64
+	netCents, rakeCents money.Cents
 	vpipCount, pfrCount int
 
 	isTournament bool
 	tournamentID string
-	bountyUSD    float64
+	bountyCents  money.Cents
 	isKnockout   bool
 }
 
@@ -174,16 +175,16 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 	newConsumedOffset := startOffset
 
 	var (
-		handActive    bool
-		inPreflop     bool
-		playerDealt   bool
-		playerVPIP    bool
-		playerPFR     bool
-		streetTotal   float64
-		handInvested  float64
-		handCollected float64
-		handUncalled  float64
-		handRake      float64
+		handActive         bool
+		inPreflop          bool
+		playerDealt        bool
+		playerVPIP         bool
+		playerPFR          bool
+		streetTotalCents   money.Cents
+		handInvestedCents  money.Cents
+		handCollectedCents money.Cents
+		handUncalledCents  money.Cents
+		handRakeCents      money.Cents
 	)
 
 	ap := screenName + ": "
@@ -194,14 +195,34 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 	bountyWinPfx := screenName + " wins $"
 	const bountySeatMarker = " bounty)"
 
+	var amountErr error
+	add := func(targetCents *money.Cents, valueCents money.Cents) {
+		if amountErr == nil {
+			*targetCents, amountErr = money.Add(*targetCents, valueCents)
+		}
+	}
+	parseAmount := func(text string) (money.Cents, bool) {
+		valueCents, ok := parseLeadingAmount(text)
+		if !ok && amountErr == nil {
+			amountErr = fmt.Errorf("invalid hand amount %q", text)
+		}
+		return valueCents, ok
+	}
 	finalizeHand := func() {
 		if !handActive {
 			return
 		}
 		if playerDealt {
 			st.hands++
-			st.netUSD += handCollected + handUncalled - handInvested
-			st.rakeUSD += handRake
+			handNetCents, err := money.Add(handCollectedCents, handUncalledCents)
+			if err == nil {
+				handNetCents, err = money.Subtract(handNetCents, handInvestedCents)
+			}
+			if err != nil && amountErr == nil {
+				amountErr = err
+			}
+			add(&st.netCents, handNetCents)
+			add(&st.rakeCents, handRakeCents)
 			if playerVPIP {
 				st.vpipCount++
 			}
@@ -214,11 +235,11 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 		playerDealt = false
 		playerVPIP = false
 		playerPFR = false
-		streetTotal = 0
-		handInvested = 0
-		handCollected = 0
-		handUncalled = 0
-		handRake = 0
+		streetTotalCents = 0
+		handInvestedCents = 0
+		handCollectedCents = 0
+		handUncalledCents = 0
+		handRakeCents = 0
 	}
 
 	offset := startOffset
@@ -258,7 +279,7 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 						}
 					}
 				} else {
-					if st.bigBlind == 0 {
+					if st.bigBlindCents == 0 {
 						st.firstHandID = extractHandID(line)
 
 						parenIdx := strings.Index(line, "($")
@@ -274,12 +295,12 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 						if len(bbStr) > 0 && bbStr[0] == '$' {
 							bbStr = bbStr[1:]
 						}
-						bb, ok := parseLeadingAmount(bbStr)
+						bbCents, ok := parseAmount(bbStr)
 						if !ok {
 							return nil, nil, nil, fmt.Errorf("bad BB in header: %s", line), true
 						}
-						st.bigBlind = bb
-						st.stake = "NL" + strconv.Itoa(int(math.Round(bb*100)))
+						st.bigBlindCents = bbCents
+						st.stake = "NL" + strconv.FormatInt(int64(bbCents), 10)
 					}
 
 					// Timestamp is after the last " - " in the header.
@@ -330,7 +351,7 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 				// pre-hand listing ("Seat 2: Name (5000 in chips, $0.36
 				// bounty)"), repeated on every hand — checked regardless of
 				// screenName, since screenName can finish a knockout tournament
-				// without ever scoring a KO themselves (bountyUSD would then
+				// without ever scoring a KO themselves (bounty would then
 				// stay 0, but it's still a knockout tournament).
 				st.isKnockout = true
 
@@ -342,19 +363,19 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 				// Two Files). The amount right after "wins $" is the real cash
 				// credited, which can differ by a cent from the "increases by"
 				// figure due to the 50/50 split-and-round on an odd bounty.
-				if amt, ok := parseLeadingAmount(line[len(bountyWinPfx):]); ok {
-					st.bountyUSD += amt
+				if amtCents, ok := parseAmount(line[len(bountyWinPfx):]); ok {
+					add(&st.bountyCents, amtCents)
 				}
 
 			case strings.HasPrefix(line, "*** FLOP ***"):
 				inPreflop = false
-				streetTotal = 0
+				streetTotalCents = 0
 
 			case strings.HasPrefix(line, "*** TURN ***"):
-				streetTotal = 0
+				streetTotalCents = 0
 
 			case strings.HasPrefix(line, "*** RIVER ***"):
-				streetTotal = 0
+				streetTotalCents = 0
 
 			case line == "*** SHOW DOWN ***", line == "*** SUMMARY ***":
 				inPreflop = false
@@ -363,39 +384,39 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 				rest := line[len(ap+"posts "):]
 				dollarIdx := strings.Index(rest, "$")
 				if dollarIdx >= 0 {
-					if amt, ok := parseLeadingAmount(rest[dollarIdx+1:]); ok {
-						handInvested += amt
-						streetTotal += amt
+					if amtCents, ok := parseAmount(rest[dollarIdx+1:]); ok {
+						add(&handInvestedCents, amtCents)
+						add(&streetTotalCents, amtCents)
 					}
 				}
 
 			case strings.HasPrefix(line, ap+"calls "):
 				// Both cash ($X) and tournament (X chips) use this prefix.
-				if amt, ok := parseLeadingAmount(line[len(ap+"calls "):]); ok {
-					handInvested += amt
-					streetTotal += amt
+				if amtCents, ok := parseAmount(line[len(ap+"calls "):]); ok {
+					add(&handInvestedCents, amtCents)
+					add(&streetTotalCents, amtCents)
 					if inPreflop {
 						playerVPIP = true
 					}
 				}
 
 			case strings.HasPrefix(line, ap+"bets "):
-				if amt, ok := parseLeadingAmount(line[len(ap+"bets "):]); ok {
-					handInvested += amt
-					streetTotal += amt
+				if amtCents, ok := parseAmount(line[len(ap+"bets "):]); ok {
+					add(&handInvestedCents, amtCents)
+					add(&streetTotalCents, amtCents)
 				}
 
 			case strings.HasPrefix(line, ap+"raises "):
 				// Cash: "raises $X to $Y"; tournament: "raises X to Y [and is all-in]"
 				toIdx := strings.Index(line, " to ")
 				if toIdx >= 0 {
-					if total, ok := parseLeadingAmount(line[toIdx+4:]); ok {
-						increment := total - streetTotal
-						if increment < 0 {
-							increment = 0
+					if totalCents, ok := parseAmount(line[toIdx+4:]); ok {
+						incrementCents := totalCents - streetTotalCents
+						if incrementCents < 0 {
+							incrementCents = 0
 						}
-						handInvested += increment
-						streetTotal = total
+						add(&handInvestedCents, incrementCents)
+						streetTotalCents = totalCents
 						if inPreflop {
 							playerVPIP = true
 							playerPFR = true
@@ -406,20 +427,20 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 			case strings.HasPrefix(line, uncalledPfx) && strings.HasSuffix(line, uncalledSfx):
 				closeIdx := strings.Index(line, ")")
 				if closeIdx > len(uncalledPfx) {
-					if amt, ok := parseLeadingAmount(line[len(uncalledPfx):closeIdx]); ok {
-						handUncalled += amt
+					if amtCents, ok := parseAmount(line[len(uncalledPfx):closeIdx]); ok {
+						add(&handUncalledCents, amtCents)
 					}
 				}
 
 			case strings.HasPrefix(line, collectedPfx):
-				if amt, ok := parseLeadingAmount(line[len(collectedPfx):]); ok {
-					handCollected += amt
+				if amtCents, ok := parseAmount(line[len(collectedPfx):]); ok {
+					add(&handCollectedCents, amtCents)
 				}
 
 			case strings.HasPrefix(line, "Total pot ") && strings.Contains(line, "| Rake $"):
 				rakeIdx := strings.Index(line, "| Rake $")
-				if rake, ok := parseLeadingAmount(line[rakeIdx+8:]); ok {
-					handRake = rake
+				if rakeCents, ok := parseAmount(line[rakeIdx+8:]); ok {
+					handRakeCents = rakeCents
 				}
 			}
 		}
@@ -434,6 +455,9 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 
 	finalizeHand()
 
+	if amountErr != nil {
+		return nil, nil, nil, fmt.Errorf("accumulating hand amounts: %w", amountErr), true
+	}
 	if st.hands == 0 {
 		return nil, nil, nil, fmt.Errorf("no dealt hands found in %s", path), true
 	}
@@ -449,7 +473,7 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 			VPIP:         float64(st.vpipCount) / float64(st.hands) * 100,
 			PFR:          float64(st.pfrCount) / float64(st.hands) * 100,
 			Hands:        st.hands,
-			BountyUSD:    st.bountyUSD,
+			BountyCents:  st.bountyCents,
 			IsKnockout:   st.isKnockout,
 		}, newState, nil, true
 	}
@@ -457,18 +481,22 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 	dur := int(st.lastTime.Sub(st.firstTime).Minutes())
 
 	var bb100 float64
-	if st.bigBlind > 0 {
-		bb100 = (st.netUSD / st.bigBlind) / float64(st.hands) * 100
+	if st.bigBlindCents > 0 {
+		bb100 = money.Ratio(st.netCents, st.bigBlindCents) / float64(st.hands) * 100
 	}
 
+	buyInCents, err := money.Multiply(st.bigBlindCents, 100)
+	if err != nil {
+		return nil, nil, nil, err, true
+	}
 	return &CashSession{
 		Date:        st.firstTime,
 		Stake:       st.stake,
-		BuyInUSD:    st.bigBlind * 100,
+		BuyInCents:  buyInCents,
 		Hands:       st.hands,
 		DurationMin: dur,
-		NetUSD:      st.netUSD,
-		RakeUSD:     st.rakeUSD,
+		NetCents:    st.netCents,
+		RakeCents:   st.rakeCents,
 		BB100:       bb100,
 		VPIP:        float64(st.vpipCount) / float64(st.hands) * 100,
 		PFR:         float64(st.pfrCount) / float64(st.hands) * 100,
@@ -512,7 +540,7 @@ func extractHandID(line string) string {
 // sentence comma after the amount ("$1, and…") still ends the number.
 // Without this, "Total Prize Pool: $12,500.00" silently parsed as 12 —
 // corrupted money with no error and no user-facing signal.
-func parseLeadingAmount(s string) (float64, bool) {
+func parseLeadingAmount(s string) (money.Cents, bool) {
 	if len(s) > 0 && s[0] == '$' {
 		s = s[1:]
 	}
@@ -532,6 +560,6 @@ func parseLeadingAmount(s string) (float64, bool) {
 	if i == 0 {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(strings.ReplaceAll(s[:i], ",", ""), 64)
-	return v, err == nil
+	vCents, err := money.Parse(strings.ReplaceAll(s[:i], ",", ""))
+	return vCents, err == nil
 }

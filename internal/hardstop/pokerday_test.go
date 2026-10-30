@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/money"
 )
 
 // TestPokerDayStart_DefaultHour covers the day-boundary edge case named in
@@ -100,25 +101,25 @@ func TestRollingWindowStart(t *testing.T) {
 // bot.go's alert path and hardstop's own trigger path both call this.
 func TestDownswingExceeds(t *testing.T) {
 	cases := []struct {
-		name      string
-		peak      float64
-		current   float64
-		buyInUSD  float64
-		threshold float64
-		want      bool
+		name         string
+		peakCents    money.Cents
+		currentCents money.Cents
+		buyInCents   money.Cents
+		threshold    float64
+		want         bool
 	}{
-		{"under threshold", 10, 8, 5.00, 1, false},
-		{"exactly at threshold does not fire", 10, 5, 5.00, 1, false},
-		{"just over threshold fires", 10, 4.99, 5.00, 1, true},
-		{"no downswing at all", 10, 10, 5.00, 1, false},
-		{"current above peak (shouldn't happen, but not negative downswing)", 5, 10, 5.00, 1, false},
+		{"under threshold", 1000, 800, 500, 1, false},
+		{"exactly at threshold does not fire", 1000, 500, 500, 1, false},
+		{"just over threshold fires", 1000, 499, 500, 1, true},
+		{"no downswing at all", 1000, 1000, 500, 1, false},
+		{"current above peak (shouldn't happen, but not negative downswing)", 500, 1000, 500, 1, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := DownswingExceeds(c.peak, c.current, c.buyInUSD, c.threshold)
+			got := DownswingExceeds(c.peakCents, c.currentCents, c.buyInCents, c.threshold)
 			if got != c.want {
 				t.Errorf("DownswingExceeds(peak=%v, current=%v, buyIn=%v, threshold=%v) = %v, want %v",
-					c.peak, c.current, c.buyInUSD, c.threshold, got, c.want)
+					c.peakCents, c.currentCents, c.buyInCents, c.threshold, got, c.want)
 			}
 		})
 	}
