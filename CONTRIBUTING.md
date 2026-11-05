@@ -104,6 +104,12 @@ go test ./internal/parsers/...      # one package
   cross-builds provide separate evidence; they do not establish those checks.
 - Ordinary Windows tests must not invoke active PokerStars enforcement. Keep
   side-effectful ignored local tests out of blanket test runs.
+- `cmd/tracker/deployment_parity_test.go` compares complete snapshots, stable IDs,
+  alerts, notification filtering and bankroll through real channels and pinned
+  TLS pipelines with separate collector/server configs. Import-only uploads
+  verify collector-clock poker-day boundaries. Identical exported rows and the
+  shared CSV formatter tests establish formatting parity; Telegram delivery
+  remains a separate manual check.
 
 Branch pushes and pull requests run `.github/workflows/ci.yml`: the full Go
 suite, vet, and eight pure-Go cross-builds (Windows combined/collector/server and

@@ -8,6 +8,10 @@ pulls its notes from the matching section below.
 
 ### Added
 
+- Real watcher-to-SQLite checks compare combined channels and authenticated pinned
+  TLS deployments, including exact records/IDs, alerts, bankroll and import-only
+  collector-clock date windows.
+
 - Branch and pull-request CI runs the full Go suite, vet and all eight supported
   Windows/Linux role and architecture cross-builds without release credentials.
   Packaging and publication remain tag-triggered.
