@@ -277,6 +277,13 @@ func SaveConfig(path string, cfg *Config) error {
 }
 
 func saveConfig(path string, cfg *Config) error {
+	if err := guardDeploymentSettings(path, cfg); err != nil {
+		return err
+	}
+	return saveConfigUnchecked(path, cfg)
+}
+
+func saveConfigUnchecked(path string, cfg *Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling config: %w", err)
@@ -388,6 +395,13 @@ func UpdatePendingTournaments(path string, update func([]PendingTournament) ([]P
 }
 
 func savePendingTournaments(path string, pending []PendingTournament) error {
+	if err := guardDeploymentPending(path, pending); err != nil {
+		return err
+	}
+	return savePendingTournamentsUnchecked(path, pending)
+}
+
+func savePendingTournamentsUnchecked(path string, pending []PendingTournament) error {
 	data, err := json.MarshalIndent(PendingTournaments{Pending: pending}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling pending tournaments: %w", err)

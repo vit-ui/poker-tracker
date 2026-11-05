@@ -239,6 +239,28 @@ changed and verified.
 - Migration copies raw records and verifies independently read destination
   amounts and identities. Preserve partial tournaments and nil-versus-zero
   fields; allow the documented minute precision when Sheets participates.
+- Combined-to-split transfer uses the running source owner's Windows event and
+  durable request/result exchange. Keep collection paused and the worker held
+  after draining/finalizing cash; manual protection remains available. Reserve
+  the destination before freezing the source and stop destination polling before
+  acknowledging reservation. Resume polling only after durable activation and
+  verified source exit. Rollback leaves destination polling in standby.
+- Transfer traffic must authenticate and classify before collector replacement.
+  Refuse a connected destination collector, nonempty history, conflicting saved
+  chats and pending operational queues. Serialize admission with durable worker
+  replies, including replies whose requesting socket disconnected. A chunk ACK
+  follows data fsync and saved offset; never infer completion from a socket close.
+- Keep transfer staging/journals beside configuration under config ownership.
+  Import raw snapshots on the worker and independently verify records, IDs,
+  ledger amounts and bankroll before changing policy. Preserve destination
+  credentials/backend/TLS identity and PC lock bytes/expiry. Rollback may clear
+  only verified transfer-owned rows; refuse new history or pending work. Installer
+  retries use the original destination and identity, with the old task disabled
+  across executable replacement. Keep the original executable and source data.
+- Transfer checks need real TLS/SQLite worker tests plus disposable native
+  Windows owner/installer cutover, interruption and rollback checks. Local Bot
+  API hooks stay ignored and isolated. Compiler output alone does not prove task
+  registration, Telegram handoff, native ARM64 execution or live Sheets transfer.
 
 ## Commits
 

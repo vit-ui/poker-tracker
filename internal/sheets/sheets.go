@@ -1748,3 +1748,38 @@ func parseMoney(value interface{}) (money.Cents, error) {
 	}
 	return money.Parse(fmt.Sprint(value))
 }
+
+// PendingFallbackCount inspects durable writes without constructing a Google
+// client or replaying them. Transfer startup must refuse pending/corrupt state.
+func PendingFallbackCount(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading pending Sheets writes: %w", err)
+	}
+	var pending map[string]json.RawMessage
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return 0, fmt.Errorf("parsing pending Sheets writes: %w", err)
+	}
+	return len(pending), nil
+}
+
+// CheckTransferReady refuses both cached and durable queued writes without
+// replaying either. A corrupt queue cannot establish an empty source.
+func (c *Client) CheckTransferReady() error {
+	if c.PendingWrites() > 0 {
+		return fmt.Errorf("Sheets writes are pending")
+	}
+	if c.fallbackPath != "" {
+		n, err := PendingFallbackCount(c.fallbackPath)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return fmt.Errorf("durable Sheets writes are pending")
+		}
+	}
+	return nil
+}

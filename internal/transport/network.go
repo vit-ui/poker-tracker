@@ -57,9 +57,11 @@ var handshakeTimeout = 10 * time.Second
 // set: Token on the client's first (handshake) frame, then Upload frames going
 // up or Command frames coming down.
 type frame struct {
-	Token   string   `json:"token,omitempty"`
-	Upload  *Upload  `json:"upload,omitempty"`
-	Command *Command `json:"command,omitempty"`
+	Token         string           `json:"token,omitempty"`
+	Upload        *Upload          `json:"upload,omitempty"`
+	Command       *Command         `json:"command,omitempty"`
+	Transfer      *TransferRequest `json:"transfer,omitempty"`
+	TransferReply *TransferReply   `json:"transfer_reply,omitempty"`
 }
 
 // GenerateServerCert creates a self-signed ECDSA P-256 certificate for the
@@ -238,36 +240,9 @@ func DialServer(info ConnInfo) (*Link, <-chan struct{}, error) {
 // ConnectCollector uses caller cancellation for dialing/handshake and active
 // socket ownership. It adds no network timeout or reconnect policy.
 func ConnectCollector(info ConnInfo, stop <-chan struct{}) (*CollectorConnection, error) {
-	cfg := &tls.Config{
-		MinVersion:         tls.VersionTLS13, // both ends are our own code — require the newest TLS, no downgrade
-		InsecureSkipVerify: true,             // we pin the exact cert below instead of a CA chain
-		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			if len(rawCerts) == 0 {
-				return fmt.Errorf("server presented no certificate")
-			}
-			sum := sha256.Sum256(rawCerts[0])
-			if fmt.Sprintf("%x", sum) != strings.ToLower(info.Fingerprint) {
-				return fmt.Errorf("server certificate fingerprint mismatch")
-			}
-			return nil
-		},
-	}
-
-	dialContext, cancel := context.WithCancel(context.Background())
-	cancelDone := make(chan struct{})
-	go func() {
-		defer close(cancelDone)
-		select {
-		case <-stop:
-			cancel()
-		case <-dialContext.Done():
-		}
-	}()
-	conn, err := (&tls.Dialer{Config: cfg}).DialContext(dialContext, "tcp", info.Address())
-	cancel()
-	<-cancelDone
+	conn, err := dialPinned(info, stop)
 	if err != nil {
-		return nil, fmt.Errorf("dialing server: %w", err)
+		return nil, err
 	}
 	socket := &frameConn{Conn: conn, done: make(chan struct{})}
 	connection := &CollectorConnection{Link: NewLink(), Done: socket.done, socket: socket, uploadsDone: make(chan struct{})}
@@ -318,6 +293,41 @@ func ConnectCollector(info ConnInfo, stop <-chan struct{}) (*CollectorConnection
 	return connection, nil
 }
 
+func dialPinned(info ConnInfo, stop <-chan struct{}) (net.Conn, error) {
+	cfg := &tls.Config{
+		MinVersion:         tls.VersionTLS13, // both ends are our own code — require the newest TLS, no downgrade
+		InsecureSkipVerify: true,             // we pin the exact cert below instead of a CA chain
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("server presented no certificate")
+			}
+			sum := sha256.Sum256(rawCerts[0])
+			if fmt.Sprintf("%x", sum) != strings.ToLower(info.Fingerprint) {
+				return fmt.Errorf("server certificate fingerprint mismatch")
+			}
+			return nil
+		},
+	}
+
+	dialContext, cancel := context.WithCancel(context.Background())
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		select {
+		case <-stop:
+			cancel()
+		case <-dialContext.Done():
+		}
+	}()
+	conn, err := (&tls.Dialer{Config: cfg}).DialContext(dialContext, "tcp", info.Address())
+	cancel()
+	<-cancelDone
+	if err != nil {
+		return nil, fmt.Errorf("dialing server: %w", err)
+	}
+	return conn, nil
+}
+
 // Listen starts a TLS listener on addr with the given PEM cert/key. addr is a
 // host:port (host empty = all interfaces).
 func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
@@ -365,11 +375,13 @@ func (c *frameConn) write(f frame) error {
 // is still delivered.
 type serveState struct {
 	mu          sync.Mutex
+	transferMu  sync.Mutex // serialize worker replies with admission observations
 	current     *frameConn
 	activeLock  *config.LockFile
 	connections map[net.Conn]struct{}
 	done        chan struct{}
 	closed      bool
+	transferID  string
 }
 
 // Serve accepts client connections on ln and bridges each to link after the
@@ -393,7 +405,7 @@ type serveState struct {
 func Serve(ln net.Listener, token string, link *Link) {
 	link.useNetwork()
 	var routines sync.WaitGroup
-	st := &serveState{connections: make(map[net.Conn]struct{}), done: make(chan struct{})}
+	st := &serveState{connections: make(map[net.Conn]struct{}), done: make(chan struct{}), transferID: link.InitialTransferID}
 	defer func() {
 		st.mu.Lock()
 		st.closed = true
@@ -474,13 +486,17 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 	// instead of blocking this goroutine indefinitely (see handshakeTimeout).
 	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	first, err := readFrame(conn)
-	if err != nil || first.Token != token {
+	if err != nil || first.Token != token || first.Upload != nil || first.Command != nil || first.TransferReply != nil {
 		conn.Close()
 		return
 	}
 	// Authenticated: clear the deadline so an idle-but-live collector (long gaps
 	// between uploads) isn't dropped; a real drop is caught by TCP keepalive.
 	_ = conn.SetReadDeadline(time.Time{})
+	if first.Transfer != nil {
+		serveTransfer(conn, *first.Transfer, link, st)
+		return
+	}
 	// Become the active collector, closing any previous one so its reader exits
 	// and it stops being a target for commands. Under the same lock, snapshot
 	// any still-active lock so it can be re-pushed to this fresh connection —
@@ -488,7 +504,7 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 	// socket that closed mid-write during this very reconnect.
 	framed := &frameConn{Conn: conn, done: make(chan struct{})}
 	st.mu.Lock()
-	if st.closed {
+	if st.closed || st.transferID != "" {
 		st.mu.Unlock()
 		framed.close()
 		return

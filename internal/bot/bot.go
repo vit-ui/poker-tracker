@@ -46,6 +46,7 @@ type Bot struct {
 	updateID           int
 	migrating          bool
 	restarting         bool
+	ownerPaused        bool
 	worker             chan<- storage.Operation
 	pendingOperations  []pendingOperation
 	taskName           string
@@ -111,7 +112,7 @@ func (c *conversation) reset() {
 // stop ends command intake; drained closes after accepted operations finish (also
 // after a successful restart request). The owner then stops producers/worker and
 // closes alertChan. Run joins the update poller before returning.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -136,23 +137,33 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 30
-	updates := tgBot.GetUpdatesChan(u)
-	defer func(incoming tgbotapi.UpdatesChannel) {
-		tgBot.StopReceivingUpdates()
-		// Join the library poller, including a blocked buffered delivery.
-		for range incoming {
+	var poller *updatePoller
+	var updates <-chan tgbotapi.Update
+	nextUpdate := 0
+	if !standby {
+		poller = startUpdatePoller(tgBot, nextUpdate)
+		updates = poller.updates
+	} else {
+		b.ownerPaused = true
+	}
+	defer func() {
+		if poller != nil {
+			poller.stop()
 		}
-	}(updates)
+	}()
 	var active *pendingOperation
 	var results <-chan storage.OperationResult
 	stopping, notified := false, false
+	var pausedReply chan error
 	for {
 		if b.restarting {
 			stopping = true
 		}
 		if stopping {
+			if poller != nil {
+				poller.stop()
+				poller = nil
+			}
 			updates = nil
 			ticker.Stop()
 			stop = nil
@@ -163,6 +174,10 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			}
 			notified = true
 		}
+		if pausedReply != nil && active == nil && len(b.pendingOperations) == 0 {
+			pausedReply <- nil
+			pausedReply = nil
+		}
 		var outbound chan<- storage.Operation
 		var request storage.Operation
 		if active == nil && len(b.pendingOperations) > 0 {
@@ -170,6 +185,28 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			request = b.pendingOperations[0].request
 		}
 		select {
+		case control := <-controls:
+			if control.Pause {
+				if b.migrating || pausedReply != nil {
+					control.Reply <- fmt.Errorf("a configuration operation is already in progress")
+				} else {
+					b.ownerPaused = true
+					if control.StopPolling && poller != nil {
+						poller.stop()
+						poller = nil
+						updates = nil
+					}
+					pausedReply = control.Reply
+				}
+			} else {
+				b.ownerPaused = false
+				if poller == nil {
+					poller = startUpdatePoller(tgBot, nextUpdate)
+					updates = poller.updates
+				}
+				control.Reply <- nil
+			}
+			continue
 		case <-stop:
 			stopping = true
 			continue
@@ -188,6 +225,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			if !ok {
 				return fmt.Errorf("telegram update stream closed")
 			}
+			nextUpdate = update.UpdateID + 1
 			b.handleUpdate(update)
 		case msg, ok := <-alertChan:
 			if !ok {
@@ -195,7 +233,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			}
 			b.sendMessage(msg)
 		case <-ticker.C:
-			if b.migrating {
+			if b.migrating || b.ownerPaused || b.deploymentPaused() {
 				continue
 			}
 			// realNow drives real-elapsed timing (the 30-min heartbeat, pending
@@ -405,7 +443,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		return // not the configured chat — ignore silently
 	}
 
-	if b.migrating {
+	if b.migrating || b.ownerPaused || b.deploymentPaused() {
 		if msg := update.Message; msg != nil && msg.IsCommand() && msg.Command() == "hardstop" && strings.TrimSpace(msg.CommandArguments()) == "trigger" {
 			b.handleHardstopCommand(senderChatID, "trigger")
 			return

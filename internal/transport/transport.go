@@ -114,6 +114,10 @@ type Command struct {
 // flow up (client → server), commands flow down (server → client). Split builds
 // bridge each end to TLS; all-local shares this channel pair directly.
 type Link struct {
+	// InitialTransferID restores a durable reservation before Serve accepts peers.
+	// Set it before starting Serve; the worker owns all later phase changes.
+	InitialTransferID string
+	Transfers         chan TransferCall
 	ConnectionChanged chan struct{}
 	connectionMu      sync.Mutex
 	collectorDone     <-chan struct{}
@@ -129,6 +133,7 @@ func NewLink() *Link {
 	localDone := make(chan struct{})
 	return &Link{
 		ConnectionChanged: make(chan struct{}, 1),
+		Transfers:         make(chan TransferCall),
 		collectorDone:     localDone,
 		localDone:         localDone,
 		Uploads:           make(chan Upload, 10),

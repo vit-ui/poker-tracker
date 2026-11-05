@@ -8,6 +8,15 @@ pulls its notes from the matching section below.
 
 ### Added
 
+- Windows combined-to-collector setup transfers history, player policy and
+  unanswered tournament questions to a configured empty server over pinned TLS.
+  Durable chunk acknowledgements, raw-row/ledger verification and saved receipts
+  support interrupted retries. Source shutdown precedes replacement startup;
+  destination Telegram polling stays in standby until cutover. Rollback restores
+  only transfer-owned changes and refuses newly accepted destination work.
+  Google credentials and each machine's storage/connection identity stay local.
+  Failed transfer completion also returns a failing unattended installer status.
+
 - Real watcher-to-SQLite checks compare combined channels and authenticated pinned
   TLS deployments, including exact records/IDs, alerts, bankroll and import-only
   collector-clock date windows.
@@ -24,6 +33,7 @@ pulls its notes from the matching section below.
   and watcher, transport, worker, database and temporary-file cleanup completes
   before replacement startup. Active lock expiry is preserved. Windows stop
   helpers include collectors and no longer force-kill installation processes.
+  Scoped owner events permit elevated installers to contact SYSTEM tasks.
 
 - Split collectors keep active-lock enforcement running through server outages
   and reconnect themselves every 30 seconds, including when the server is down

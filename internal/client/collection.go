@@ -83,7 +83,7 @@ func (c *Collector) Serve(configPath string, dead <-chan struct{}) error {
 			c.collection.active.stop()
 		}
 	}()
-	if _, err := c.control(false); err != nil {
+	if _, err := c.control(c.StartPaused); err != nil {
 		return err
 	}
 	return c.Run(c.collection.events, configPath, dead)

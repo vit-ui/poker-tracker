@@ -21,11 +21,13 @@ import (
 // job.
 type Collector struct {
 	// Stop requests a watcher drain while transport and enforcement remain available.
-	Stop       <-chan struct{}
-	link       *transport.Link
-	enforcer   *Enforcer
-	control    func(bool) ([]watcher.FileEvent, error)
-	collection *collection
+	Stop <-chan struct{}
+	// StartPaused holds the watcher during interrupted source-transfer recovery.
+	StartPaused bool
+	link        *transport.Link
+	enforcer    *Enforcer
+	control     func(bool) ([]watcher.FileEvent, error)
+	collection  *collection
 }
 
 // NewCollector creates a Collector over the given link, writing enforced locks

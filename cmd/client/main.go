@@ -39,6 +39,8 @@ func init() {
 }
 
 func main() {
+	printRole := flag.Bool("role", false, "print this executable role")
+	roleFile := flag.String("role-output", "", "write the executable role to a setup result file")
 	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
 	serve := flag.Bool("serve", false, "run the collector")
 	setup := flag.Bool("setup", false, "configure folders, screen name, and the server connection string")
@@ -46,6 +48,14 @@ func main() {
 	flag.Parse()
 
 	switch {
+	case *printRole:
+		if *roleFile != "" {
+			if err := os.WriteFile(*roleFile, []byte("client"), 0600); err != nil {
+				os.Exit(1)
+			}
+		} else {
+			fmt.Println("client")
+		}
 	case *stopInstallation != "":
 		if err := installation.Stop(*stopInstallation); err != nil {
 			fmt.Fprintln(os.Stderr, err)

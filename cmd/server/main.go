@@ -23,6 +23,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/deployment"
 	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/server"
@@ -67,6 +68,8 @@ func init() {
 }
 
 func main() {
+	printRole := flag.Bool("role", false, "print this executable role")
+	roleFile := flag.String("role-output", "", "write the executable role to a setup result file")
 	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
 	serve := flag.Bool("serve", false, "run the server")
 	setup := flag.Bool("setup", false, "generate credentials and print the connection string")
@@ -82,6 +85,14 @@ func main() {
 	flag.Parse()
 
 	switch {
+	case *printRole:
+		if *roleFile != "" {
+			if err := os.WriteFile(*roleFile, []byte("server"), 0600); err != nil {
+				os.Exit(1)
+			}
+		} else {
+			fmt.Println("server")
+		}
 	case *stopInstallation != "":
 		if err := installation.Stop(*stopInstallation); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -171,9 +182,16 @@ func runServe() (failure error) {
 		slog.Error("listening for the collector", "err", err)
 		return err
 	}
+	defer ln.Close()
 	transportDone := make(chan struct{})
-	go func() { defer close(transportDone); transport.Serve(ln, token, link) }()
-	defer func() { ln.Close(); <-transportDone }()
+	transferState, err := config.LoadDeploymentTransfer(filepath.Join(filepath.Dir(configPath), "deployment_transfer.json"))
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	if config.DeploymentInProgress(transferState) {
+		link.InitialTransferID = transferState.ID
+	}
 
 	alertChan := make(chan string, 20)
 	srv, err := server.NewServer(sc, configPath, link, alertChan)
@@ -184,6 +202,8 @@ func runServe() (failure error) {
 	workerDone := make(chan error, 1)
 	workerDrain := make(chan struct{})
 	srv.Drain = workerDrain
+	workerTransfers := make(chan transport.TransferCall)
+	srv.TransferCalls = workerTransfers
 	go func() { workerDone <- srv.Run() }()
 
 	// A hard-stop decision (manual via the bot, or automatic in the server) is
@@ -200,10 +220,15 @@ func runServe() (failure error) {
 		link.Commands <- transport.Command{Kind: transport.CommandRescan}
 	}
 
+	ownerControls := make(chan bot.OwnerControl)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState))
 	}()
+	destinationStop, destinationDone := make(chan struct{}), make(chan struct{})
+	destinationOwner := &deployment.DestinationOwner{Path: configPath, Requests: link.Transfers, Worker: workerTransfers, Controls: ownerControls, Stop: destinationStop, Standby: deployment.DestinationStandby(transferState)}
+	go func() { defer close(destinationDone); destinationOwner.Run() }()
+	go func() { defer close(transportDone); transport.Serve(ln, token, link) }()
 	workerEnded, botEnded := false, false
 	var discards sync.WaitGroup
 	workerFailed := func(err error) {
@@ -235,6 +260,8 @@ func runServe() (failure error) {
 	case err := <-workerDone:
 		workerFailed(err)
 	}
+	close(destinationStop)
+	<-destinationDone
 	close(botStop)
 	if !botEnded && !workerEnded {
 		select {

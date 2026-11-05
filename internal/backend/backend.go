@@ -7,6 +7,7 @@ package backend
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -31,6 +32,25 @@ func Open(botToken, configPath, serviceAccountPath, dbPath, fallbackPath string)
 	}
 	switch name {
 	case "sheets":
+		root := filepath.Dir(configPath)
+		dest, err := config.LoadDeploymentTransfer(filepath.Join(root, "deployment_transfer.json"))
+		if err != nil {
+			return nil, "", err
+		}
+		source, err := config.LoadSourceTransfer(filepath.Join(root, "source_transfer.json"))
+		if err != nil {
+			return nil, "", err
+		}
+		frozenSource := source != nil && (source.Phase == "preparing" || source.Phase == "prepared" || source.Phase == "stopping")
+		if config.DeploymentInProgress(dest) || frozenSource {
+			n, err := sheets.PendingFallbackCount(fallbackPath)
+			if err != nil {
+				return nil, "", err
+			}
+			if n > 0 {
+				return nil, "", fmt.Errorf("deployment transfer cannot replay pending Sheets writes")
+			}
+		}
 		sheetID, err := bot.EnsureSheetID(botToken, configPath, serviceAccountPath)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolving google sheet: %w", err)

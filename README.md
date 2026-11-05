@@ -71,6 +71,46 @@ Setup:
    Either way it shows a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
 2. On the poker PC, run `PokerTracker-Setup-<version>.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
 
+### Moving an existing all-local installation
+
+Use matching versions on both machines. Configure the server's storage first,
+then close PokerStars and rerun the Windows installer in the existing tracker
+folder. Choose **Connect to a server** and paste its connection string. The
+installer detects the combined executable and offers to transfer its history
+before changing this PC to collection only. Running `tracker-client --setup`
+alone does not transfer an existing combined installation.
+
+The destination must have empty history, no connected collector and no pending
+cash, tournament questions, collector edits or unconfirmed hard-stop deliveries.
+Saved Telegram chats must match; an unset destination chat is copied from the
+source. Pending Sheets writes must finish before transfer. Histories are never
+merged.
+
+The source pauses collection, drains accepted work and records pending cash.
+The server receives and verifies the raw sessions, tournaments and ledger,
+including their IDs and running totals. Alerts, hard-stop rules, schedules,
+notifications and unanswered tournament questions move with them. Each machine
+keeps its own storage configuration, Google credentials and connection identity;
+Google keys are never transferred. Source history and the original executable
+are retained on the PC. Active protection keeps its original expiry.
+
+During preparation, the destination stops reading Telegram commands and the
+source continues to accept manual `/hardstop trigger` requests. Once the copy is
+verified, the source completes shutdown and cleanup before the collector starts.
+The destination then takes over Telegram polling and applies the copied policy.
+
+If interrupted, rerun the installer in the same folder with the **same server
+connection string**. Saved transfer progress is checked before continuing; a
+disconnection never counts as success. A confirmed rollback removes only rows
+owned by that transfer and restores the combined source. If the destination has
+accepted new history or pending work after activation, rollback is refused to
+preserve it. If its status cannot be confirmed, keep the saved files and retry
+when the server is reachable. A rolled-back destination stays in standby while
+the source resumes; a later verified transfer hands commands over again.
+
+Older executables that cannot identify their role must first be upgraded in
+their current role. Older protocol/schema combinations are unsupported.
+
 They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired.
 
 Server settings (`/alerts`, `/hardstop` rules and duration, `/schedule`)

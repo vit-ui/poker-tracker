@@ -1080,3 +1080,22 @@ func nullInt(p *int) sql.NullInt64 {
 	}
 	return sql.NullInt64{Int64: int64(*p), Valid: true}
 }
+
+// ClearAllData clears a transfer-owned destination without deleting its live
+// database. The serialized worker must verify ownership before calling it.
+func (s *Store) ClearAllData() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("starting transfer rollback: %w", err)
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"cash_sessions", "tournaments", "bankroll_ledger"} {
+		if _, err := tx.Exec("DELETE FROM " + table); err != nil {
+			return fmt.Errorf("clearing transfer rows in %s: %w", table, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing transfer rollback: %w", err)
+	}
+	return nil
+}

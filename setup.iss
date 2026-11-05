@@ -63,9 +63,10 @@ Source: "tracker-arm64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: i
 ; install step above has copied anything to {app} yet. PreInstallFiles then
 ; copies this {tmp} extraction onward to {app} (via CombinedExeName) and runs it
 ; from there — not from {tmp} directly — since tracker.exe resolves its own
-; config/credentials paths from its own executable location. Combined only.
-Source: "tracker-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallCombinedAmd64
-Source: "tracker-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy; Check: InstallCombinedArm64
+; config/credentials paths from its own executable location. Also used as the
+; transfer helper before a combined installation changes to the client role.
+Source: "tracker-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy
+Source: "tracker-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 ; Split client build — installed as the same fixed tracker.exe name when the
 ; player chose connect-to-server. It provides --serve and --check-lock; the
 ; server owns storage and the bot.
@@ -117,6 +118,10 @@ var
   // are unchanged in identity; only their order relative to PageMethod moved.
   PageRole: TInputOptionWizardPage;
   PageConnection: TInputQueryWizardPage;
+  PageTransfer: TOutputMsgWizardPage;
+  ExistingCombined, ExistingRoleUnknown, IncompleteTransfer: Boolean;
+  TransferStaged, TransferFinished: Boolean;
+  TransferConnection: String;
   // PageServerMethod asks the run-a-server install the same thing the Linux
   // server's chooseBackend does: configure storage from Telegram (recommended,
   // defaults SQLite) vs set it here now. ServerUseTelegram is its answer, read
@@ -538,13 +543,97 @@ begin
     RaiseException('Could not stop this installation safely. Close its tracker process and try again.');
 end;
 
+function TransferHelperPath(): String;
+begin
+  Result := ExpandConstant('{app}\tracker-transfer.exe');
+  ExtractTemporaryFile(CombinedExeName());
+  if not FileCopy(ExpandConstant('{tmp}\' + CombinedExeName()), Result, False) then
+    RaiseException('Could not prepare the transfer helper. Existing installation files were kept.');
+end;
+
+function RunTransferStep(const Arguments: String): Boolean;
+var
+  ResultCode: Integer;
+  Details: String;
+begin
+  Result := Exec(TransferHelperPath(), Arguments, ExpandConstant('{app}'),
+    SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  if not Result then
+  begin
+    Details := ReadFileAsString(ExpandConstant('{app}\transfer-error.txt'));
+    SuppressibleMsgBox('Transfer could not finish. Existing data and protection files were kept.' +
+      '' + #13#10 + #13#10 + Details + #13#10 + #13#10 +
+      'Retry this installer with the same server connection string to resolve the saved transfer.',
+      mbError, MB_OK, IDOK);
+  end;
+end;
+
+function NeedsTransfer(): Boolean;
+begin
+  Result := IsClientMode() and (ExistingCombined or IncompleteTransfer);
+end;
+
+function StageTransfer(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  if IsClientMode() and ExistingRoleUnknown then
+  begin
+    SuppressibleMsgBox('This existing executable cannot identify its role. Upgrade it in its current role with this version first, then run Connect to a server.', mbError, MB_OK, IDOK);
+    Result := False;
+    Exit;
+  end;
+  if not NeedsTransfer() or TransferStaged then Exit;
+  TransferConnection := Trim(PageConnection.Values[0]);
+  Result := RunTransferStep('--transfer-stage "' + TransferConnection + '"');
+  TransferStaged := Result;
+  if not Result then
+  begin
+    if JSONExtractStringValue(ReadFileAsString(ExpandConstant('{app}\source_transfer.json')), 'phase') = 'aborted' then
+    begin
+      Exec('schtasks.exe', '/Change /TN "{#CombinedTaskName}" /ENABLE', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
+  end;
+  if Result then
+  begin
+    if not Exec('schtasks.exe', '/Change /TN "{#CombinedTaskName}" /DISABLE', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      RunTransferStep('--transfer-rollback');
+      Exec('schtasks.exe', '/Change /TN "{#CombinedTaskName}" /ENABLE', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Result := False;
+    end
+    else
+      Result := RunTransferStep('--transfer-stage "' + TransferConnection + '"');
+  end;
+end;
+
 procedure InitializeWizard();
 var
-  MethodDescription, BackendDescription: String;
+  MethodDescription, BackendDescription, RoleOutput, RoleText, TransferState: String;
+  RoleResult: Integer;
 begin
   // WizardDirValue is available during initialization and includes /DIR and
   // the directory restored from this installation identity's uninstall entry.
   ExistingConfigJSON := ReadFileAsString(AddBackslash(WizardDirValue) + 'config.json');
+  RoleOutput := ExpandConstant('{tmp}\existing-tracker-role.txt');
+  if FileExists(AddBackslash(WizardDirValue) + 'tracker.exe') then
+  begin
+    if Exec(AddBackslash(WizardDirValue) + 'tracker.exe', '--role --role-output "' + RoleOutput + '"', '', SW_HIDE, ewWaitUntilTerminated, RoleResult) and (RoleResult = 0) then
+    begin
+      RoleText := Trim(ReadFileAsString(RoleOutput));
+      ExistingCombined := (RoleText = 'combined');
+      ExistingRoleUnknown := (RoleText <> 'combined') and (RoleText <> 'client');
+    end
+    else ExistingRoleUnknown := True;
+    DeleteFile(RoleOutput);
+  end;
+  TransferState := ReadFileAsString(AddBackslash(WizardDirValue) + 'source_transfer.json');
+  RoleText := JSONExtractStringValue(TransferState, 'phase');
+  IncompleteTransfer := (RoleText = 'preparing') or (RoleText = 'prepared') or (RoleText = 'stopping');
+
   BackendAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'storage_backend');
   // Seeds UsingSQLite from the existing value when the page that would
   // normally set it (PageBackend, below) is about to be skipped — see the
@@ -710,12 +799,18 @@ begin
   PageTournamentDir.Values[0] := JSONExtractStringValue(ExistingConfigJSON, 'tournament_summary');
 
   // Inert unless the local installer test passes TEST* params; see ApplyTestAnswers.
+  PageTransfer := CreateOutputMsgPage(PageTournamentDir.ID,
+    'Move this PC to your server', 'Transfer existing history before switching roles',
+    'Close PokerStars before continuing. Your existing sessions, bankroll, rules and unanswered tournament questions will be copied to the configured empty server and verified before this PC switches to collection only.' +
+    '' + #13#10 + #13#10 + 'The server must have no collector connected, no pending work, and the same saved Telegram chat (or no saved chat). Google credentials stay on their own machine. Your original history and protection files stay on this PC.' +
+    '' + #13#10 + #13#10 + 'If interrupted, rerun this installer with the same connection string. Transfer starts when you click Install.');
   ApplyTestAnswers();
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  if PageID = PageTransfer.ID then begin Result := not NeedsTransfer(); Exit; end;
   // Run-a-server mode shows PageServerMethod (configure from Telegram vs set
   // storage here) and, when the player sets storage here, the storage backend
   // page (+ credentials + sheet name for Sheets) — exactly the all-local storage
@@ -1117,6 +1212,18 @@ begin
     MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
 end;
 
+function RegisterTransferTask(): Boolean;
+var
+  XMLPath: String;
+  ResultCode: Integer;
+begin
+  XMLPath := ExpandConstant('{tmp}\transfer-collector-task.xml');
+  Result := SaveStringToFile(XMLPath, UTF16Bytes(BuildTaskXML(ExpandConstant('{app}\tracker.exe'), ExpandConstant('{app}'))), False);
+  if Result then
+    Result := Exec('schtasks.exe', '/Create /TN "{#CombinedTaskName}" /XML "' + XMLPath + '" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  DeleteFile(XMLPath);
+end;
+
 // WritePreSeedConfig runs on the Telegram path (RunTelegramSetup) right before
 // tracker.exe --setup. It deliberately does NOT force storage_backend: with
 // PageMethod now ahead of PageBackend, a Telegram install skips the native
@@ -1220,7 +1327,10 @@ begin
     UsingTelegram := (PageMethod.SelectedValueIndex = 0)
 
   else if CurPageID = wpReady then
-    StopInstallation()
+  begin
+    if not StageTransfer() then begin Result := False; Exit; end;
+    StopInstallation();
+  end
 
   else if CurPageID = PageConnection.ID then
   begin
@@ -1396,7 +1506,10 @@ var
   ResultCode: Integer;
 begin
   if CurStep = ssInstall then
+  begin
+    if not StageTransfer() then RaiseException('Transfer did not finish; the original installation was kept.');
     StopInstallation();
+  end;
   if CurStep = ssPostInstall then
   begin
     ExistingConfigJSON := ReadFileAsString(ExpandConstant('{app}\config.json'));
@@ -1415,7 +1528,19 @@ begin
           '"' + JSONEscape(PageHandHistoryDir.Values[0]) + '"',
           '"' + JSONEscape(PageTournamentDir.Values[0]) + '"'),
         False);
-      RegisterScheduledTask();
+      if TransferStaged then
+      begin
+        if not RegisterTransferTask() then
+          RaiseException('Collector task registration failed; retry transfer to recover.');
+        if not Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+          RaiseException('Collector start failed; retry this transfer.');
+        if not RunTransferStep('--transfer-activate') then
+          RaiseException('Destination activation is unconfirmed; retry this transfer.');
+        if not RunTransferStep('--transfer-complete') then
+          RaiseException('Transfer completion is unconfirmed; retry this transfer.');
+        TransferFinished := True;
+      end
+      else RegisterScheduledTask();
       Exit;
     end;
     // Run-a-server: the server binary is installed as tracker-server.exe
@@ -1532,4 +1657,25 @@ begin
     DeleteFile(ExpandConstant('{app}\server_cert.pem'));
     DeleteFile(ExpandConstant('{app}\server_key.pem'));
   end;
+end;
+
+procedure DeinitializeSetup();
+var
+  ResultCode: Integer;
+begin
+  if TransferStaged and not TransferFinished then
+  begin
+    if Exec('schtasks.exe', '/Change /TN "{#CombinedTaskName}" /DISABLE', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    begin
+      RunTransferStep('--transfer-rollback');
+      Exec('schtasks.exe', '/Change /TN "{#CombinedTaskName}" /ENABLE', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
+  end;
+end;
+
+function GetCustomSetupExitCode(): Integer;
+begin
+  Result := 0;
+  if TransferStaged and not TransferFinished then Result := 1;
 end;

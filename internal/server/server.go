@@ -66,6 +66,8 @@ const (
 type Server struct {
 	// Operations shares the file worker with bot-originated storage writes.
 	Operations chan storage.Operation
+	// TransferCalls defaults to the link; split owners may broker polling handoff first.
+	TransferCalls <-chan transport.TransferCall
 	// Drain releases a prepared restart hold before upload producers are joined.
 	Drain      <-chan struct{}
 	store      storage.Store
@@ -115,7 +117,7 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
+	return &Server{TransferCalls: link.Transfers, Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -179,6 +181,12 @@ func (s *Server) reconstruct(up transport.Upload) (string, error) {
 // the link's Uploads channel is closed.
 func (s *Server) Run() error {
 	defer os.RemoveAll(s.workDir)
+	receiver := deploymentReceiver{server: s}
+	var loadErr error
+	receiver.state, loadErr = config.LoadDeploymentTransfer(receiver.path())
+	if loadErr != nil {
+		return loadErr
+	}
 	settingsQueue := collectorSettingsQueue{path: filepath.Join(filepath.Dir(s.configPath), "collector_settings.json")}
 	var settingsErr error
 	settingsQueue.state, settingsErr = config.LoadCollectorSettings(settingsQueue.path)
@@ -458,7 +466,19 @@ func (s *Server) Run() error {
 		}
 		var up transport.Upload
 
+		if receiver.reserved() {
+			endings = nil
+			commands = nil
+			resync = nil
+		}
 		select {
+		case call := <-s.TransferCalls:
+			if (call.Request.Kind == transport.TransferReserve || call.Request.Kind == transport.TransferBegin) && len(s.link.Uploads) > 0 {
+				call.Reply <- receiver.reply(call.Request.ID, fmt.Errorf("accepted collector uploads have not drained"))
+			} else {
+				call.Reply <- receiver.handle(call.Request)
+			}
+			continue
 		case <-drain:
 			drain = nil
 			heldOperation = nil
@@ -501,6 +521,10 @@ func (s *Server) Run() error {
 			heldOperation = nil
 			continue
 		case operation := <-operations:
+			if receiver.reserved() {
+				operation.Reply <- storage.OperationResult{Err: fmt.Errorf("destination is reserved for deployment transfer")}
+				continue
+			}
 			if operation.CollectorSettings {
 				var err error
 				if operation.CollectorChange != nil {
@@ -514,6 +538,14 @@ func (s *Server) Run() error {
 				}
 				operation.Reply <- storage.OperationResult{CollectorSettings: settingsQueue.state, CollectorOnline: online, Err: err}
 				continue
+			}
+			if operation.PrepareMigration {
+				if client, ok := s.store.(*sheets.Client); ok {
+					if err := client.CheckTransferReady(); err != nil {
+						operation.Reply <- storage.OperationResult{Err: err}
+						continue
+					}
+				}
 			}
 			if !operation.PrepareMigration && !operation.PrepareRestart {
 
@@ -577,6 +609,9 @@ func (s *Server) Run() error {
 			up = u
 		}
 
+		if receiver.reserved() {
+			return fmt.Errorf("collector upload reached reserved deployment destination")
+		}
 		connection, current := s.link.UploadConnection(up)
 		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil || up.ConfigReply != nil) && !current {
 			continue

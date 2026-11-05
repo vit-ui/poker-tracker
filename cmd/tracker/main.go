@@ -16,6 +16,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/bot"
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/deployment"
 	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/server"
@@ -64,13 +65,35 @@ func init() {
 }
 
 func main() {
+	printRole := flag.Bool("role", false, "print this executable role")
+	roleFile := flag.String("role-output", "", "write the executable role to a setup result file")
 	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
 	serve := flag.Bool("serve", false, "run the background service")
 	checkLock := flag.Bool("check-lock", false, "check lockfile state and exit")
 	setup := flag.Bool("setup", false, "run setup wizard via Telegram bot")
+	transferStage := flag.String("transfer-stage", "", "prepare and verify combined-to-split transfer")
+	transferActivate := flag.Bool("transfer-activate", false, "activate verified deployment transfer")
+	transferComplete := flag.Bool("transfer-complete", false, "record completed collector cutover")
+	transferRollback := flag.Bool("transfer-rollback", false, "roll back a transfer-owned destination and restore source")
 	flag.Parse()
 
 	switch {
+	case *transferStage != "":
+		runTransfer(func() error { return deployment.Stage(configPath, *transferStage) })
+	case *transferComplete:
+		runTransfer(func() error { return deployment.Complete(configPath) })
+	case *transferActivate:
+		runTransfer(func() error { return deployment.Activate(configPath) })
+	case *transferRollback:
+		runTransfer(func() error { return deployment.Rollback(configPath) })
+	case *printRole:
+		if *roleFile != "" {
+			if err := os.WriteFile(*roleFile, []byte("combined"), 0600); err != nil {
+				os.Exit(1)
+			}
+		} else {
+			fmt.Println("combined")
+		}
 	case *stopInstallation != "":
 		if err := installation.Stop(*stopInstallation); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -221,11 +244,32 @@ func runServe() (failure error) {
 	workerDone := make(chan error, 1)
 	workerDrain := make(chan struct{})
 	srv.Drain = workerDrain
-	go func() { workerDone <- srv.Run() }()
+	workerStopped := make(chan struct{})
+	go func() { defer close(workerStopped); workerDone <- srv.Run() }()
+	sourceOwner, err := deployment.OpenSourceOwner(configPath)
+	if err != nil {
+		alertsDrained := make(chan struct{})
+		go func() {
+			defer close(alertsDrained)
+			for range alertChan {
+			}
+		}()
+		close(link.Uploads)
+		<-workerDone
+		close(alertChan)
+		<-alertsDrained
+		return err
+	}
+	sourceStop := make(chan struct{})
+	ownerControls := make(chan bot.OwnerControl)
+	sourceOwner.Controls, sourceOwner.Operations, sourceOwner.Stop, sourceOwner.WorkerStopped = ownerControls, srv.Operations, sourceStop, workerStopped
+	sourceStartPaused := sourceOwner.StartPaused()
+	go sourceOwner.Run()
 
 	collector := client.NewCollector(link, enforcer, nil)
 	collectorStop, collectorDone := make(chan struct{}), make(chan error, 1)
 	collector.Stop = collectorStop
+	collector.StartPaused = sourceStartPaused
 	go func() { collectorDone <- collector.Serve(configPath, nil) }()
 
 	// All-local: a manual /hardstop trigger enforces inline, exactly as before
@@ -242,7 +286,7 @@ func runServe() (failure error) {
 
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false)
 	}()
 	workerEnded, botEnded := false, false
 	var discards sync.WaitGroup
@@ -269,6 +313,9 @@ func runServe() (failure error) {
 	}
 	collectorEnded := false
 	select {
+	case <-sourceOwner.Shutdown:
+	case err := <-sourceOwner.Errors:
+		failure = err
 	case <-shutdown:
 	case <-botDrained: // A successful configuration restart requests owner cleanup.
 	case err := <-botDone:
@@ -279,6 +326,8 @@ func runServe() (failure error) {
 		collectorEnded = true
 		failure = fmt.Errorf("required collector stopped: %v", err)
 	}
+	close(sourceStop)
+	sourceOwner.Close()
 	close(botStop)
 	if !botEnded && !workerEnded {
 		select {
@@ -322,4 +371,21 @@ func runServe() (failure error) {
 	discards.Wait()
 
 	return failure
+}
+
+func runTransfer(action func() error) {
+	path := filepath.Join(filepath.Dir(configPath), "transfer-error.txt")
+	err := func() error {
+		release, err := installation.AcquireTransferLock(filepath.Dir(configPath))
+		if err != nil {
+			return err
+		}
+		defer release()
+		return action()
+	}()
+	if err != nil {
+		os.WriteFile(path, []byte(err.Error()), 0600)
+		os.Exit(1)
+	}
+	os.Remove(path)
 }
