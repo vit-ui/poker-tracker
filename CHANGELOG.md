@@ -6,6 +6,12 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+### Added
+
+- Branch and pull-request CI runs the full Go suite, vet and all eight supported
+  Windows/Linux role and architecture cross-builds without release credentials.
+  Packaging and publication remain tag-triggered.
+
 ### Fixed
 
 - Controlled restarts and installation stops now request shutdown from the

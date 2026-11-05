@@ -24,7 +24,7 @@ Telegram setup keeps your saved chat during reinstall and waits for a message fr
 Windows upgrades keep saved preferences, credentials, pairing identity, history and pending cash/questions. Existing collector values are prefilled rather than replaced with empty answers. Unattended server setup respects `/SUPPRESSMSGBOXES`; interactive setup still displays its pairing information.
 
 
-Download **`PokerTracker-Setup.exe`** from [Releases](../../releases) and run it — one installer for every PC (it detects your CPU, Intel/AMD or ARM, and installs the right build; there's no separate download to pick). The installer first asks **how you'd like to set up**:
+Download **`PokerTracker-Setup-<version>.exe`** from [Releases](../../releases) and run it — one installer for every PC (it detects your CPU, Intel/AMD or ARM, and installs the right build; there's no separate download to pick). The installer first asks **how you'd like to set up**:
 
 - **Telegram (recommended)** — the installer launches the bot and you finish setup by chatting with it, **including choosing where your data lives**.
 - **Manual** — set everything up in the installer instead, starting with the storage backend.
@@ -56,7 +56,7 @@ handles unexpected process failures.
 
 By default everything runs on your poker PC, so `/stats`, `/export`, and the rest only work while that PC is on. If you'd rather keep your data and commands available when it's off, you can split the tracker across two machines:
 
-- **Server** (`tracker-server`) — runs on any always-on machine (a home server, a Raspberry Pi, a VPS; Windows or Linux). It stores your data, runs the Telegram bot, and enforces your rules.
+- **Server** (`tracker-server`) — runs on an always-on Windows or Linux machine with an amd64 or arm64 CPU (for example, a home server, a 64-bit Raspberry Pi, or a VPS). It stores your data, runs the Telegram bot, and enforces your rules.
 - **Client** (`tracker-client`) — runs on the poker PC (Windows). It watches PokerStars, streams file changes to the server, and enforces hard-stop locks.
 
 Setup:
@@ -66,10 +66,10 @@ Setup:
      - A fresh Google Sheets choice starts with SQLite so the bot can run before a Google key or sheet is connected. Then send `/storage sheets <sheet name or URL>` to upload the key and migrate to an empty shared sheet. Keep the poker PC connected and PokerStars closed for migration.
      - To upgrade, rerun the installer. It stages the new executable and replaces it atomically, preserves saved configuration and data, and restarts the installation’s user service. Existing storage choices stay in place; use `/storage` to change them with verified migration.
      - The setup window uses your desktop's standard dialog tool — **zenity** on GNOME and other GTK desktops (Ubuntu, Fedora, Mint, Xfce, MATE, Cinnamon…), **kdialog** on KDE Plasma (Kubuntu, openSUSE KDE…). On a desktop that has neither installed, or a headless box, setup falls back to **terminal prompts** — so run it from a terminal there rather than double-clicking. You can reprint the connection string anytime with `~/.local/share/poker-tracker/tracker-server --pair`.
-   - **Windows:** run `PokerTracker-Setup.exe` and choose **"Run a server on this PC"**. It asks whether to configure from Telegram (recommended — defaults to a local file, switch anytime with `/storage`) or set the storage backend here now — the same choice the Linux server offers — then sets everything up.
+   - **Windows:** run `PokerTracker-Setup-<version>.exe` and choose **"Run a server on this PC"**. It asks whether to configure from Telegram (recommended — defaults to a local file, switch anytime with `/storage`) or set the storage backend here now — the same choice the Linux server offers — then sets everything up.
 
    Either way it shows a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
-2. On the poker PC, run `PokerTracker-Setup.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
+2. On the poker PC, run `PokerTracker-Setup-<version>.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
 
 They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired.
 
@@ -310,6 +310,17 @@ Usage examples:
 - `/help` — list every command
 - `/help stats` — detailed help for `/stats`
 </details>
+
+## Parsing and import limitations
+
+VPIP/PFR count Hold'em and Omaha preflop actions. Stud and draw hands still
+contribute to the hand count, so mixed-game percentages are diluted and an
+all-stud/draw sample shows zero. This does not change money accounting.
+
+Satellite questions depend on structural clues in the summary. A satellite
+without those clues cannot be identified automatically. `/scan` skips and counts
+historical tournaments that require a ticket/cash or free/paid answer; it does
+not open those questions during import.
 
 ## Notes
 

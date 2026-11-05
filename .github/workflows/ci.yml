@@ -1,0 +1,48 @@
+name: CI
+
+on:
+    push:
+        branches:
+            - "**"
+    pull_request:
+
+permissions:
+    contents: read
+
+env:
+    CGO_ENABLED: "0"
+
+jobs:
+    check:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-go@v5
+              with:
+                  go-version-file: go.mod
+            - name: Test
+              run: go test ./...
+            - name: Vet
+              run: go vet ./...
+
+    cross-build:
+        name: Build ${{ matrix.target.role }} (${{ matrix.target.goos }}/${{ matrix.arch }})
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                arch: [amd64, arm64]
+                target:
+                    - { role: tracker, goos: windows }
+                    - { role: client, goos: windows }
+                    - { role: server, goos: windows }
+                    - { role: server, goos: linux }
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-go@v5
+              with:
+                  go-version-file: go.mod
+            - name: Cross-build
+              env:
+                  GOOS: ${{ matrix.target.goos }}
+                  GOARCH: ${{ matrix.arch }}
+              run: go build -trimpath -o "$RUNNER_TEMP/tracker" ./cmd/${{ matrix.target.role }}

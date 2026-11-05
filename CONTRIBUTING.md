@@ -94,11 +94,28 @@ go test ./internal/parsers/...      # one package
   detection) gets a table-driven test with hand-checked expected values.
 - **No mocks.** Test against real temp files and real structs — parsers against
   real hand histories, the SQLite store against a temp `.db` (`t.TempDir()`).
-- Real player hand histories live in gitignored fixture folders (`data/`,
-  `testdata/`); tests over them skip cleanly when the folder is absent, so a
-  fresh checkout still passes.
-- Telegram interactions, the installer, and Task Scheduler registration are
-  verified manually — they are the only things not covered by automated tests.
+- Anonymized fixtures in `testdata/hand_history/` and
+  `testdata/tournament_summary/` are tracked and required by parser and real
+  watcher → collector → server → SQLite tests. Keep usernames and tournament
+  identities anonymized and consistent across files. Raw player histories in
+  ignored `data/` are optional local smoke-test input.
+- Live Telegram/Sheets, actual installer flows, Task Scheduler, reboot behavior
+  and native execution need their relevant manual checks. Local HTTP hooks and
+  cross-builds provide separate evidence; they do not establish those checks.
+- Ordinary Windows tests must not invoke active PokerStars enforcement. Keep
+  side-effectful ignored local tests out of blanket test runs.
+
+Branch pushes and pull requests run `.github/workflows/ci.yml`: the full Go
+suite, vet, and eight pure-Go cross-builds (Windows combined/collector/server and
+Linux server, each on amd64 and arm64). These checks use no bot token. Packaging
+and publication remain in the tag-triggered release workflow. Compilation does
+not establish native ARM64 execution or installer acceptance.
+
+The parser intentionally limits VPIP/PFR to Hold'em/Omaha preflop actions;
+mixed-game hand counts include stud/draw hands. Satellite classification requires
+structural summary clues, and `/scan` skips/counts tournaments needing an answer.
+Preserve these limitations in documentation until their behavior is explicitly
+changed and verified.
 
 ## Code style
 
