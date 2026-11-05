@@ -203,10 +203,19 @@ func FingerprintPEM(certPEM []byte) (string, error) {
 // CollectorConnection owns its socket and all transport goroutines. Close also
 // cancels a command delivery blocked behind a full collector channel.
 type CollectorConnection struct {
-	Link     *Link
-	Done     <-chan struct{}
-	socket   *frameConn
-	routines sync.WaitGroup
+	Link        *Link
+	Done        <-chan struct{}
+	socket      *frameConn
+	routines    sync.WaitGroup
+	uploadsDone chan struct{}
+}
+
+// Drain finishes accepted uploads before closing the session. Call only after
+// the collector and its command goroutine have stopped producing uploads.
+func (c *CollectorConnection) Drain() {
+	close(c.Link.Uploads)
+	<-c.uploadsDone
+	c.Close()
 }
 
 func (c *CollectorConnection) Close() { c.socket.close(); c.routines.Wait() }
@@ -261,7 +270,7 @@ func ConnectCollector(info ConnInfo, stop <-chan struct{}) (*CollectorConnection
 		return nil, fmt.Errorf("dialing server: %w", err)
 	}
 	socket := &frameConn{Conn: conn, done: make(chan struct{})}
-	connection := &CollectorConnection{Link: NewLink(), Done: socket.done, socket: socket}
+	connection := &CollectorConnection{Link: NewLink(), Done: socket.done, socket: socket, uploadsDone: make(chan struct{})}
 	connection.routines.Go(func() {
 		select {
 		case <-stop:
@@ -274,6 +283,7 @@ func ConnectCollector(info ConnInfo, stop <-chan struct{}) (*CollectorConnection
 		return nil, fmt.Errorf("sending token: %w", err)
 	}
 	connection.routines.Go(func() {
+		defer close(connection.uploadsDone)
 		defer socket.close()
 		for {
 			select {

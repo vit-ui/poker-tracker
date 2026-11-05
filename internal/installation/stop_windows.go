@@ -11,8 +11,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Stop terminates tracker processes whose executable belongs to dir. The
-// caller is excluded so setup and the uninstaller can use the installed binary.
+// Stop requests owner shutdown and waits for processes in dir to exit.
+// The caller is excluded so setup and uninstall can use the installed binary.
 func Stop(dir string) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -26,7 +26,7 @@ func Stop(dir string) error {
 	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
 	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
 		name := windows.UTF16ToString(entry.ExeFile[:])
-		if int(entry.ProcessID) == os.Getpid() || (!strings.EqualFold(name, "tracker.exe") && !strings.EqualFold(name, "tracker-server.exe")) {
+		if int(entry.ProcessID) == os.Getpid() || (!strings.EqualFold(name, "tracker.exe") && !strings.EqualFold(name, "tracker-server.exe") && !strings.EqualFold(name, "tracker-client.exe")) {
 			continue
 		}
 		if err := stopProcess(entry.ProcessID, filepath.Join(dir, name)); err != nil {
@@ -56,28 +56,35 @@ func stopProcess(pid uint32, target string) error {
 	if !strings.EqualFold(filepath.Clean(windows.UTF16ToString(buffer[:size])), target) {
 		return nil
 	}
-	terminator, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
+	waiter, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, pid)
 	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("opening installation process %d for termination: %w", pid, err)
+		return fmt.Errorf("opening installation process %d for shutdown: %w", pid, err)
 	}
-	defer windows.CloseHandle(terminator)
-	// Recheck the second handle in case the original process exited and its
-	// PID was reused between opening the two handles.
+	defer windows.CloseHandle(waiter)
 	size = uint32(len(buffer))
-	if err := windows.QueryFullProcessImageName(terminator, 0, &buffer[0], &size); err != nil {
-		return fmt.Errorf("verifying installation process %d before termination: %w", pid, err)
+	if err := windows.QueryFullProcessImageName(waiter, 0, &buffer[0], &size); err != nil {
+		return fmt.Errorf("verifying shutdown process %d: %w", pid, err)
 	}
 	if !strings.EqualFold(filepath.Clean(windows.UTF16ToString(buffer[:size])), target) {
 		return nil
 	}
-	if err := windows.TerminateProcess(terminator, 0); err != nil {
-		return fmt.Errorf("stopping tracker process %d in %s: %w", pid, filepath.Dir(target), err)
+	name, err := shutdownEvent(filepath.Dir(target), pid)
+	if err != nil {
+		return err
 	}
-	if _, err := windows.WaitForSingleObject(terminator, windows.INFINITE); err != nil {
-		return fmt.Errorf("waiting for tracker process %d to stop: %w", pid, err)
+	event, err := windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, name)
+	if err != nil {
+		return fmt.Errorf("opening shutdown event for installation process %d: %w", pid, err)
+	}
+	defer windows.CloseHandle(event)
+	if err := windows.SetEvent(event); err != nil {
+		return fmt.Errorf("requesting installation process %d shutdown: %w", pid, err)
+	}
+	if _, err := windows.WaitForSingleObject(waiter, windows.INFINITE); err != nil {
+		return fmt.Errorf("waiting for installation process %d cleanup: %w", pid, err)
 	}
 	return nil
 }

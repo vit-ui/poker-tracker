@@ -8,6 +8,13 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Controlled restarts and installation stops now request shutdown from the
+  process owner: an installation-scoped event on Windows, termination signals
+  on Linux. Accepted bot operations and uploads drain, pending cash is saved,
+  and watcher, transport, worker, database and temporary-file cleanup completes
+  before replacement startup. Active lock expiry is preserved. Windows stop
+  helpers include collectors and no longer force-kill installation processes.
+
 - Split collectors keep active-lock enforcement running through server outages
   and reconnect themselves every 30 seconds, including when the server is down
   at boot. Original lock expiry and unsaved protection survive connection changes.

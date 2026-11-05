@@ -35,7 +35,18 @@ func runNetworkCollector(configPath string, enforcer *Enforcer, done <-chan stru
 				var info transport.ConnInfo
 				info, err = transport.ParseConnectionString(*cfg.Setup.ConnectionString)
 				if err == nil {
-					connection, err = transport.ConnectCollector(info, done)
+					attemptStop, connected, joined := make(chan struct{}), make(chan struct{}), make(chan struct{})
+					go func() {
+						defer close(joined)
+						select {
+						case <-done:
+							close(attemptStop)
+						case <-connected:
+						}
+					}()
+					connection, err = transport.ConnectCollector(info, attemptStop)
+					close(connected)
+					<-joined
 				}
 			}
 		}
@@ -44,11 +55,13 @@ func runNetworkCollector(configPath string, enforcer *Enforcer, done <-chan stru
 		} else {
 			slog.Info("collector transport connected")
 			collector := NewCollector(connection.Link, enforcer, nil)
+			collector.Stop = done
 			err = collector.Serve(configPath, connection.Done)
-			connection.Close()
 			if err != nil {
+				connection.Close()
 				return fmt.Errorf("collecting files: %w", err)
 			}
+			connection.Drain()
 			slog.Info("collector transport disconnected; enforcement remains active")
 		}
 		timer := time.NewTimer(reconnectDelay)

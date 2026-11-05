@@ -65,9 +65,21 @@ inject the working bot token into a disposable combined/server build. Native
 installer and process-isolation checks require an elevated Windows session;
 Wine compilation does not verify Task Scheduler or Windows process isolation.
 The installer invokes the collector's `--stop-installation <directory>` helper,
-which verifies executable paths before stopping processes and excludes itself.
+which verifies executable paths, signals each matching process's shutdown event,
+and waits for owner cleanup; it includes collectors and excludes itself. It does
+not force-kill processes. The uninstaller uses the installed role's executable.
+An unresponsive process must be investigated before retrying installation.
 PokerStars enforcement continues to target `PokerStars.exe` and requires a
 separately coordinated test window.
+
+Controlled shutdown must join producers before stopping the worker: stop bot
+intake and drain accepted operations, release any prepared restart hold, then
+stop/drain collection or close/join the server transport. The worker drains
+buffered uploads and saves pending cash before removing its temporary directory.
+Keep the bot consuming alerts until the worker exits; join the bot poller and
+close SQLite before process exit. Keep the enforcer alive through cleanup and
+preserve the original lock expiry. Windows restart helpers wait for the old PID;
+Linux user-service restarts wait for SIGTERM handling and process exit.
 
 ## Tests
 

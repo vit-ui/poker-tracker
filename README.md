@@ -317,6 +317,13 @@ This is a single-user tool built for one specific personal setup, and it's inten
 
 Each background role writes a `tracker.log` next to its program for troubleshooting — errors plus a few milestones (start-up, hard stops, migrations). It's capped at 5 MB and rolls over to a single `tracker.log.old`. If the log cannot open, the service discards logging; it does not fall back to a hidden console. Unexpected termination of the required bot, worker or collector exits with failure so the service manager can restart the process.
 
+Controlled restarts and installation stops drain accepted work and save pending
+cash before closing the watcher, connections and database and removing temporary
+working files. Windows uses an installation-scoped shutdown event; Linux handles
+SIGTERM and SIGINT. Restart helpers wait for the old process to exit before
+starting its replacement. Active hard-stop locks keep their original expiry;
+shutdown does not clear or shorten them.
+
 ## License
 
 © 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE): free for personal, noncommercial use, but you may not redistribute, modify, or use it commercially. See [`LICENSE`](LICENSE) for the full terms.

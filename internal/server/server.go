@@ -66,6 +66,8 @@ const (
 type Server struct {
 	// Operations shares the file worker with bot-originated storage writes.
 	Operations chan storage.Operation
+	// Drain releases a prepared restart hold before upload producers are joined.
+	Drain      <-chan struct{}
 	store      storage.Store
 	configPath string
 	link       *transport.Link
@@ -358,6 +360,7 @@ func (s *Server) Run() error {
 		requestSequence++
 		return fmt.Sprintf("migration-%d", requestSequence)
 	}
+	drain := s.Drain
 	for {
 		if offlinePreparation != nil && len(s.link.Uploads) == 0 {
 			operation := *offlinePreparation
@@ -454,7 +457,12 @@ func (s *Server) Run() error {
 			}
 		}
 		var up transport.Upload
+
 		select {
+		case <-drain:
+			drain = nil
+			heldOperation = nil
+			continue
 		case <-s.link.ConnectionChanged:
 			settingsQueue.inflight = nil
 			sentLocks = make(map[string]bool)
@@ -564,7 +572,7 @@ func (s *Server) Run() error {
 			continue
 		case u, ok := <-uploads:
 			if !ok {
-				return nil // accepted buffered uploads have drained
+				return persistPending() // accepted buffered uploads have drained
 			}
 			up = u
 		}

@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -24,8 +23,14 @@ func TestStop(t *testing.T) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+		done, cleanup, err := ListenShutdown(filepath.Dir(exe))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cleanup()
+		defer os.WriteFile(filepath.Join(filepath.Dir(exe), "cleaned"), []byte("done"), 0600)
 		fmt.Println("ready")
-		time.Sleep(time.Hour)
+		<-done
 		return
 	}
 	exe, err := os.Executable()
@@ -36,7 +41,7 @@ func TestStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"tracker.exe", "tracker-server.exe"} {
+	for _, name := range []string{"tracker.exe", "tracker-server.exe", "tracker-client.exe"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			target := filepath.Join(root, "install")
@@ -71,6 +76,9 @@ func TestStop(t *testing.T) {
 			}
 			if err := children[0].Wait(); err != nil {
 				t.Fatalf("target termination: %v", err)
+			}
+			if data, err := os.ReadFile(filepath.Join(target, "cleaned")); err != nil || string(data) != "done" {
+				t.Fatalf("owner cleanup: %q, %v", data, err)
 			}
 			handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(children[1].Process.Pid))
 			if err != nil {

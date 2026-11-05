@@ -52,7 +52,9 @@ func main() {
 			os.Exit(1)
 		}
 	case *serve:
-		runServe()
+		if err := runServe(); err != nil {
+			os.Exit(1)
+		}
 	case *setup:
 		runSetup()
 	case *checkLock:
@@ -63,9 +65,19 @@ func main() {
 	}
 }
 
-func runServe() {
+func runServe() (failure error) {
 	closeLog := logging.Configure(filepath.Join(filepath.Dir(configPath), "tracker.log"))
 	defer closeLog()
+	defer func() {
+		if failure != nil {
+			slog.Error("service stopped", "err", failure)
+		}
+	}()
+	shutdown, releaseShutdown, err := installation.ListenShutdown(filepath.Dir(configPath))
+	if err != nil {
+		return err
+	}
+	defer releaseShutdown()
 	// Bound this idle background service's footprint. Same knobs, and the same
 	// reasoning, as cmd/tracker's runServe (see its long comment): the scheduled
 	// task can't set GOMEMLIMIT/GOGC env vars, so set the in-code equivalents.
@@ -78,10 +90,11 @@ func runServe() {
 	// Enforcement belongs to the process, not a network connection. The same
 	// enforcer retains unsaved protection across every reconnect attempt.
 	enforcer := client.NewEnforcer(lockfilePath)
-	if err := client.RunNetworkCollector(configPath, enforcer, nil); err != nil {
+	if err := client.RunNetworkCollector(configPath, enforcer, shutdown); err != nil {
 		slog.Error("collector stopped unexpectedly", "err", err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }
 
 func runSetup() {

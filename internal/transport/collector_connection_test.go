@@ -81,3 +81,31 @@ func TestCollectorConnectionCancellationInterruptsTLSHandshake(t *testing.T) {
 		t.Fatal("cancellation did not interrupt TLS handshake")
 	}
 }
+
+func TestCollectorConnectionDrainFinishesAcceptedUploads(t *testing.T) {
+	link, info := startServer(t, "owned-token")
+	connection, err := ConnectCollector(info, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	finished := make(chan struct{})
+	go func() {
+		for i := range 32 {
+			connection.Link.Uploads <- Upload{Offset: int64(i), Bytes: []byte{byte(i)}}
+		}
+		connection.Drain()
+		close(finished)
+	}()
+	for i := range 32 {
+		up := recvUpload(t, link)
+		if up.Offset != int64(i) || len(up.Bytes) != 1 || up.Bytes[0] != byte(i) {
+			t.Fatalf("upload %d: %+v", i, up)
+		}
+	}
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("drain did not join transport")
+	}
+}

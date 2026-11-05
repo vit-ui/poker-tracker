@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/backend"
@@ -17,6 +19,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/server"
+	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
@@ -78,7 +81,9 @@ func main() {
 	case *setup:
 		runSetup()
 	case *serve:
-		runServe()
+		if err := runServe(); err != nil {
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintln(os.Stderr, "usage: tracker [--serve | --check-lock | --setup]")
 		os.Exit(1)
@@ -130,7 +135,7 @@ func runSetup() {
 	os.Exit(0)
 }
 
-func runServe() {
+func runServe() (failure error) {
 	// Keep this idle background service's footprint bounded. Despite the
 	// package name, runtime/debug is where Go's production runtime knobs
 	// live: these two calls are the in-code equivalents of the GOMEMLIMIT
@@ -164,6 +169,16 @@ func runServe() {
 	// io.Discard — never stderr, which reintroduces the hang.
 	closeLog := logging.Configure(logPath)
 	defer closeLog()
+	defer func() {
+		if failure != nil {
+			slog.Error("service stopped", "err", failure)
+		}
+	}()
+	shutdown, releaseShutdown, err := installation.ListenShutdown(filepath.Dir(configPath))
+	if err != nil {
+		return err
+	}
+	defer releaseShutdown()
 
 	// Belt-and-suspenders on top of -H=windowsgui — see hideConsole's doc
 	// comment for why the build flag alone wasn't enough in practice.
@@ -172,7 +187,9 @@ func runServe() {
 	// Existing protection must start before any network-backed startup work.
 	enforcer := client.NewEnforcer(lockfilePath)
 	enforcer.EnforceActive()
-	go enforcer.Run(make(chan struct{}))
+	enforcementStop, enforcementDone := make(chan struct{}), make(chan struct{})
+	go func() { defer close(enforcementDone); enforcer.Run(enforcementStop) }()
+	defer func() { close(enforcementStop); <-enforcementDone }()
 
 	// Construct the storage backend (shared with the split server via
 	// internal/backend). On the sheets path this blocks in EnsureSheetID until a
@@ -181,9 +198,12 @@ func runServe() {
 	sc, backendName, err := backend.Open(BotToken, configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
 		slog.Error("opening storage backend", "err", err)
-		os.Exit(1)
+		return err
 	}
 
+	if db, ok := sc.(*sqlitestore.Store); ok {
+		defer func() { failure = errors.Join(failure, db.Close()) }()
+	}
 	slog.Info("tracker service starting", "backend", backendName)
 	alertChan := make(chan string, 20)
 
@@ -196,16 +216,17 @@ func runServe() {
 	srv, err := server.NewServer(sc, configPath, link, alertChan)
 	if err != nil {
 		slog.Error("creating server", "err", err)
-		os.Exit(1)
+		return err
 	}
-	go func() { err := srv.Run(); slog.Error("server worker stopped", "err", err); os.Exit(1) }()
+	workerDone := make(chan error, 1)
+	workerDrain := make(chan struct{})
+	srv.Drain = workerDrain
+	go func() { workerDone <- srv.Run() }()
 
 	collector := client.NewCollector(link, enforcer, nil)
-	go func() {
-		err := collector.Serve(configPath, nil)
-		slog.Error("collector stopped unexpectedly", "err", err)
-		os.Exit(1)
-	}()
+	collectorStop, collectorDone := make(chan struct{}), make(chan error, 1)
+	collector.Stop = collectorStop
+	go func() { collectorDone <- collector.Serve(configPath, nil) }()
 
 	// All-local: a manual /hardstop trigger enforces inline, exactly as before
 	// the split — same client.Enforce (taskkill + write the local lockfile), no
@@ -219,21 +240,86 @@ func runServe() {
 	}
 	requestRescan := func() { link.Commands <- transport.Command{Kind: transport.CommandRescan} }
 
+	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		// All-local: server and collector share this machine's clock, so the
-		// read-side date windows anchor to time.Now — unchanged behavior.
-		err := bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock)
-		// bot.Run's error return was previously discarded entirely by a
-		// bare "go bot.Run(...)" — if NewBotAPI failed inside it (bad
-		// token, network issue at that instant), the goroutine would exit
-		// silently and nothing would ever be visibly wrong: the process
-		// stays alive (select{} below blocks forever), Task Scheduler
-		// shows it as running, and the bot simply never listens for
-		// anything. This log is the only way that failure was ever going
-		// to be visible.
-		slog.Error("bot.Run goroutine returned — the bot is no longer listening for anything", "err", err)
-		os.Exit(1)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained)
 	}()
+	workerEnded, botEnded := false, false
+	var discards sync.WaitGroup
+	workerFailed := func(err error) {
+		workerEnded = true
+		workerDone = nil
+		failure = errors.Join(failure, fmt.Errorf("required worker stopped: %v", err))
+		close(alertChan)
+		discards.Go(func() {
+			for range link.Uploads {
+			}
+		})
+	}
+	botFailed := func(err error) {
+		botEnded = true
+		botDone = nil
+		failure = errors.Join(failure, fmt.Errorf("required bot stopped: %v", err))
+		if !workerEnded {
+			discards.Go(func() {
+				for range alertChan {
+				}
+			})
+		}
+	}
+	collectorEnded := false
+	select {
+	case <-shutdown:
+	case <-botDrained: // A successful configuration restart requests owner cleanup.
+	case err := <-botDone:
+		botFailed(err)
+	case err := <-workerDone:
+		workerFailed(err)
+	case err := <-collectorDone:
+		collectorEnded = true
+		failure = fmt.Errorf("required collector stopped: %v", err)
+	}
+	close(botStop)
+	if !botEnded && !workerEnded {
+		select {
+		case <-botDrained:
+		case err := <-botDone:
+			botFailed(err)
+		case err := <-workerDone:
+			workerFailed(err)
+		}
+	}
+	close(workerDrain)
+	close(collectorStop)
+	for !collectorEnded {
+		select {
+		case err := <-collectorDone:
+			collectorEnded = true
+			failure = errors.Join(failure, err)
+		case err := <-workerDone:
+			workerFailed(err)
+		case err := <-botDone:
+			botFailed(err)
+		}
+	}
+	close(link.Uploads)
+	if !workerEnded {
+		waiting := true
+		for waiting {
+			select {
+			case err := <-workerDone:
+				failure = errors.Join(failure, err)
+				waiting = false
+			case err := <-botDone:
+				botFailed(err)
+			}
+		}
+		close(alertChan)
+	}
+	if !botEnded {
+		failure = errors.Join(failure, <-botDone)
+	}
+	discards.Wait()
 
-	select {}
+	return failure
 }

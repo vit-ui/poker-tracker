@@ -8,6 +8,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/bot"
@@ -24,6 +26,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/server"
+	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
 )
@@ -85,7 +88,9 @@ func main() {
 			os.Exit(1)
 		}
 	case *serve:
-		runServe()
+		if err := runServe(); err != nil {
+			os.Exit(1)
+		}
 	case *setup:
 		runSetup(*backend, *sheetName, *sheetID)
 	case *pair:
@@ -108,9 +113,19 @@ func runInstall() {
 	fmt.Println("Installed as a service — it is running now.")
 }
 
-func runServe() {
+func runServe() (failure error) {
 	closeLog := logging.Configure(filepath.Join(filepath.Dir(configPath), "tracker.log"))
 	defer closeLog()
+	defer func() {
+		if failure != nil {
+			slog.Error("service stopped", "err", failure)
+		}
+	}()
+	shutdown, releaseShutdown, err := installation.ListenShutdown(filepath.Dir(configPath))
+	if err != nil {
+		return err
+	}
+	defer releaseShutdown()
 	// Keep the idle footprint small without starving the read spikes. GOGC=50
 	// (vs the default 100) halves the heap growth ratio, so the idle heap floor
 	// stays low and freed pages are scavenged back to the OS sooner — this is
@@ -132,7 +147,11 @@ func runServe() {
 	sc, backendName, err := backend.Open(BotToken, configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
 		slog.Error("opening storage backend", "err", err)
-		os.Exit(1)
+		return err
+	}
+
+	if db, ok := sc.(*sqlitestore.Store); ok {
+		defer func() { failure = errors.Join(failure, db.Close()) }()
 	}
 
 	certPEM, certErr := os.ReadFile(certPath)
@@ -140,7 +159,7 @@ func runServe() {
 	cfg, cfgErr := config.LoadConfig(configPath)
 	if certErr != nil || keyErr != nil || cfgErr != nil || cfg.Setup.PairToken == nil {
 		slog.Error("server is not set up — run: tracker-server --setup")
-		os.Exit(1)
+		return fmt.Errorf("server is not set up — run tracker-server --setup")
 	}
 	token := *cfg.Setup.PairToken
 
@@ -150,17 +169,22 @@ func runServe() {
 	ln, err := transport.Listen(fmt.Sprintf(":%d", listenPort), certPEM, keyPEM)
 	if err != nil {
 		slog.Error("listening for the collector", "err", err)
-		os.Exit(1)
+		return err
 	}
-	go transport.Serve(ln, token, link)
+	transportDone := make(chan struct{})
+	go func() { defer close(transportDone); transport.Serve(ln, token, link) }()
+	defer func() { ln.Close(); <-transportDone }()
 
 	alertChan := make(chan string, 20)
 	srv, err := server.NewServer(sc, configPath, link, alertChan)
 	if err != nil {
 		slog.Error("creating server", "err", err)
-		os.Exit(1)
+		return err
 	}
-	go func() { err := srv.Run(); slog.Error("server worker stopped", "err", err); os.Exit(1) }()
+	workerDone := make(chan error, 1)
+	workerDrain := make(chan struct{})
+	srv.Drain = workerDrain
+	go func() { workerDone <- srv.Run() }()
 
 	// A hard-stop decision (manual via the bot, or automatic in the server) is
 	// sent down the link to the collector, which kills PokerStars and writes the
@@ -176,13 +200,84 @@ func runServe() {
 		link.Commands <- transport.Command{Kind: transport.CommandRescan}
 	}
 
+	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		err := bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock)
-		slog.Error("bot.Run returned — the bot is no longer listening", "err", err)
-		os.Exit(1)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained)
 	}()
+	workerEnded, botEnded := false, false
+	var discards sync.WaitGroup
+	workerFailed := func(err error) {
+		workerEnded = true
+		workerDone = nil
+		failure = errors.Join(failure, fmt.Errorf("required worker stopped: %v", err))
+		close(alertChan)
+		discards.Go(func() {
+			for range link.Uploads {
+			}
+		})
+	}
+	botFailed := func(err error) {
+		botEnded = true
+		botDone = nil
+		failure = errors.Join(failure, fmt.Errorf("required bot stopped: %v", err))
+		if !workerEnded {
+			discards.Go(func() {
+				for range alertChan {
+				}
+			})
+		}
+	}
+	select {
+	case <-shutdown:
+	case <-botDrained: // A successful configuration restart requests owner cleanup.
+	case err := <-botDone:
+		botFailed(err)
+	case err := <-workerDone:
+		workerFailed(err)
+	}
+	close(botStop)
+	if !botEnded && !workerEnded {
+		select {
+		case <-botDrained:
+		case err := <-botDone:
+			botFailed(err)
+		case err := <-workerDone:
+			workerFailed(err)
+		}
+	}
+	close(workerDrain)
+	ln.Close()
+	transportEnded := false
+	for !transportEnded {
+		select {
+		case <-transportDone:
+			transportEnded = true
+		case err := <-workerDone:
+			workerFailed(err)
+		case err := <-botDone:
+			botFailed(err)
+		}
+	}
+	close(link.Uploads)
+	if !workerEnded {
+		waiting := true
+		for waiting {
+			select {
+			case err := <-workerDone:
+				failure = errors.Join(failure, err)
+				waiting = false
+			case err := <-botDone:
+				botFailed(err)
+			}
+		}
+		close(alertChan)
+	}
+	if !botEnded {
+		failure = errors.Join(failure, <-botDone)
+	}
+	discards.Wait()
 
-	select {}
+	return failure
 }
 
 func runSetup(backend, sheetName, sheetID string) {

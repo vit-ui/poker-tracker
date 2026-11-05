@@ -45,6 +45,7 @@ type Bot struct {
 	sendLock           func(config.LockFile)
 	updateID           int
 	migrating          bool
+	restarting         bool
 	worker             chan<- storage.Operation
 	pendingOperations  []pendingOperation
 	taskName           string
@@ -107,7 +108,10 @@ func (c *conversation) reset() {
 // when switching to a different spreadsheet or service account. dbPath is the
 // sqlite database path, used by /storage to construct a sqlite target.
 // taskName identifies the role/installation Windows task or Linux user unit for restarts.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error)) error {
+// stop ends command intake; drained closes after accepted operations finish (also
+// after a successful restart request). The owner then stops producers/worker and
+// closes alertChan. Run joins the update poller before returning.
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -135,10 +139,30 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := tgBot.GetUpdatesChan(u)
-	defer tgBot.StopReceivingUpdates()
+	defer func(incoming tgbotapi.UpdatesChannel) {
+		tgBot.StopReceivingUpdates()
+		// Join the library poller, including a blocked buffered delivery.
+		for range incoming {
+		}
+	}(updates)
 	var active *pendingOperation
 	var results <-chan storage.OperationResult
+	stopping, notified := false, false
 	for {
+		if b.restarting {
+			stopping = true
+		}
+		if stopping {
+			updates = nil
+			ticker.Stop()
+			stop = nil
+		}
+		if stopping && !notified && active == nil && len(b.pendingOperations) == 0 {
+			if drained != nil {
+				close(drained)
+			}
+			notified = true
+		}
 		var outbound chan<- storage.Operation
 		var request storage.Operation
 		if active == nil && len(b.pendingOperations) > 0 {
@@ -146,6 +170,9 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			request = b.pendingOperations[0].request
 		}
 		select {
+		case <-stop:
+			stopping = true
+			continue
 		case outbound <- request:
 			next := b.pendingOperations[0]
 			b.pendingOperations[0] = pendingOperation{}

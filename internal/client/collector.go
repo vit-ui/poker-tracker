@@ -20,6 +20,8 @@ import (
 // that come back down. It never parses or stores anything — that's the server's
 // job.
 type Collector struct {
+	// Stop requests a watcher drain while transport and enforcement remain available.
+	Stop       <-chan struct{}
 	link       *transport.Link
 	enforcer   *Enforcer
 	control    func(bool) ([]watcher.FileEvent, error)
@@ -114,6 +116,31 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 			events = sessionChan
 		}
 		select {
+		case <-c.Stop:
+			var pending []watcher.FileEvent
+			var err error
+			if c.collection != nil && c.collection.active != nil {
+				pending, err = c.collection.active.stop()
+				c.collection.active = nil
+			} else if c.control != nil {
+				pending, err = c.control(true)
+			}
+		shutdownDrain:
+			for {
+				select {
+				case event, ok := <-sessionChan:
+					if !ok {
+						break shutdownDrain
+					}
+					pending = append(pending, event)
+				default:
+					break shutdownDrain
+				}
+			}
+			for _, event := range pending {
+				err = errors.Join(err, upload(event, false))
+			}
+			return err
 		case <-stopped:
 			return fmt.Errorf("file watcher stopped: %w", c.collection.active.err)
 		case <-dead:

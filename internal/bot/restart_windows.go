@@ -36,7 +36,7 @@ func noWindowSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: createNoWindow}
 }
 
-// selfRestart stops this PID and runs the injected Windows task, preserving
+// selfRestart waits for owner cleanup and runs the injected Windows task, preserving
 // the role and disposable installation identity. The batch file lives beside
 // config.json and deletes itself after requesting the restart. A detached
 // helper survives the process's Task Scheduler Job Object; if Windows rejects
@@ -46,9 +46,11 @@ func selfRestart(configPath, taskName string) error {
 	batPath := filepath.Join(dir, "restart.bat")
 	script := fmt.Sprintf(
 		"@echo off\r\n"+
-			"taskkill /F /PID %d\r\n"+
+			"powershell.exe -NoProfile -NonInteractive -Command \"$ErrorActionPreference='Stop'; try { $p=[Diagnostics.Process]::GetProcessById(%d) } catch [ArgumentException] { exit 0 }; $p.WaitForExit()\"\r\n"+
+			"if errorlevel 1 goto cleanup\r\n"+
 			"ping -n 4 127.0.0.1 >nul\r\n"+
 			"schtasks /Run /TN \"%s\"\r\n"+
+			":cleanup\r\n"+
 			"del \"%%~f0\"\r\n",
 		os.Getpid(), taskName)
 
@@ -66,5 +68,5 @@ func selfRestart(configPath, taskName string) error {
 			return fmt.Errorf("starting restart script: %w", err)
 		}
 	}
-	return nil
+	return cmd.Process.Release()
 }

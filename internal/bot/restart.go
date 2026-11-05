@@ -3,7 +3,6 @@ package bot
 import (
 	"fmt"
 	"log/slog"
-	"os"
 
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
@@ -29,7 +28,8 @@ func (b *Bot) restartConfiguration(chatID int64, label string, finalizeCash bool
 		send(b.tg, chatID, "✅ Updated "+label+". Restarting tracker…")
 		if err := selfRestart(b.configPath, b.taskName); err == nil {
 			cleanup()
-			os.Exit(0)
+			b.restarting = true
+			return
 		} else {
 			slog.Error("restarting after configuration change", "setting", label, "err", err)
 		}

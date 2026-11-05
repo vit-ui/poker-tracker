@@ -308,7 +308,8 @@ func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) 
 		slog.Info("backend migration verified", "target", ps.target, "cash_sessions", len(snap.CashSessions), "tournaments", len(snap.Tournaments), "ledger", len(snap.Ledger))
 		send(b.tg, chatID, fmt.Sprintf("✅ Migrated %d cash sessions, %d tournaments, and %d ledger entries to %s. Amounts and bankroll verified. Restarting tracker…", len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), backendLabel(ps.target)))
 		if err := selfRestart(b.configPath, b.taskName); err == nil {
-			os.Exit(0)
+			b.restarting = true
+			return
 		} else {
 			slog.Error("restarting tracker after backend switch", "err", err)
 		}
