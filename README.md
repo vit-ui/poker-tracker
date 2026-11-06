@@ -90,6 +90,9 @@ source. Pending Sheets writes must finish before transfer. Histories are never
 merged.
 
 The source pauses collection, drains accepted work and records pending cash.
+Preparation refuses unconfirmed hard-stop requests, including those triggered
+by recording that cash. Keep the tracker running until the collector confirms
+protection, then retry; the original lock expiry is preserved.
 The server receives and verifies the raw sessions, tournaments and ledger,
 including their IDs and running totals. Alerts, hard-stop rules, schedules,
 notifications and unanswered tournament questions move with them. Each machine

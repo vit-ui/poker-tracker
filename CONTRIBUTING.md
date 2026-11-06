@@ -271,6 +271,9 @@ changed and verified.
   only verified transfer-owned rows; refuse new history or pending work. Installer
   retries use the original destination and identity, with the old task disabled
   across executable replacement. Keep the original executable and source data.
+  Before source export, check protection on the worker after finalizing cash:
+  merge saved/manual requests with in-memory intents and require durable collector
+  confirmation. Refusal resumes collection without changing the original expiry.
 - Transfer checks need real TLS/SQLite worker tests plus disposable native
   Windows owner/installer cutover, interruption and rollback checks. Local Bot
   API hooks stay ignored and isolated. Compiler output alone does not prove task

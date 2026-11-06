@@ -11,6 +11,10 @@ pulls its notes from the matching section below.
 - Windows setup suspends scheduled recovery before stopping the installation
   and keeps it suspended through Telegram setup and executable replacement.
   Completion or cancellation restores tasks that setup suspended.
+- Combined-to-collector transfer refuses source preparation until hard-stop
+  requests have durable collector confirmation, including protection triggered
+  while finalizing cash. Failed preparation resumes collection and preserves
+  the original protection request and expiry for acknowledgement and retry.
 
 ## v4.6 — 2026-11-05
 

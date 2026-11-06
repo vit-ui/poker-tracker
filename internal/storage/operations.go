@@ -8,6 +8,8 @@ package storage
 // rollback. Resumed must then be buffered once to receive the resume outcome.
 // PrepareRestart drains collection without requiring PokerStars to close and
 // preserves pending cash, unless FinalizeAllCash is set for a sheet change.
+// RequireConfirmedProtection prevents deployment cutover from losing the sole
+// replay owner of an unconfirmed hard-stop intent, including unsaved intents.
 
 import (
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -15,17 +17,18 @@ import (
 )
 
 type Operation struct {
-	CollectorSettings bool
-	CollectorChange   *config.CollectorChange
-	PrepareMigration  bool
-	PrepareRestart    bool
-	FinalizeAllCash   bool
-	FinalizeCash      bool
-	RetryHardstops    bool
-	Release           <-chan struct{}
-	Resumed           chan error
-	Apply             func(Store) OperationResult
-	Reply             chan OperationResult
+	CollectorSettings          bool
+	CollectorChange            *config.CollectorChange
+	PrepareMigration           bool
+	RequireConfirmedProtection bool
+	PrepareRestart             bool
+	FinalizeAllCash            bool
+	FinalizeCash               bool
+	RetryHardstops             bool
+	Release                    <-chan struct{}
+	Resumed                    chan error
+	Apply                      func(Store) OperationResult
+	Reply                      chan OperationResult
 }
 
 // OperationResult is consumed on the bot event loop, where replies are sent.

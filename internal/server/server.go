@@ -378,6 +378,19 @@ func (s *Server) Run() error {
 				}
 			}
 		}
+		if operation.RequireConfirmedProtection {
+			// Merge the worker's in-memory intents with manual requests before
+			// checking. A disk-only check would miss a failed journal write.
+			if err := saveDeliveries(); err != nil {
+				return fmt.Errorf("persisting source protection before transfer: %w", err)
+			}
+			deliveriesDirty = false
+			for _, delivery := range deliveries {
+				if !delivery.Confirmed {
+					return fmt.Errorf("source protection is unconfirmed; keep the tracker running and retry after collector acknowledgement")
+				}
+			}
+		}
 		return persistPending()
 	}
 	var requestSequence uint64
