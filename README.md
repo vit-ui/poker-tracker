@@ -135,7 +135,8 @@ the previous connection; lock replay and ordinary commands use the same frame
 writer. Folder and screen-name edits are durably queued; rescan requests remain
 one-shot commands.
 `/status` uses the collector’s observed protection state and reports when that
-state is unavailable. Lock times follow the poker PC’s timezone.
+state is unavailable. Lock times follow the poker PC’s timezone. Active locks show their expiry and
+remaining days, hours and minutes, rounding a partial minute up.
 
 Money is accounted for in whole USD cents. Extra fractional cents round up in
 magnitude when entered: $1.001 becomes $1.01. Dollar displays and CSV columns
@@ -160,9 +161,18 @@ trigger preserves its original expiry and cannot restart an expired lock;
 distinct new financial triggers can still enforce. The collector retains active
 protection independently of connectivity. Keep `lockfile.json` and
 `hardstop_deliveries.json` with the installation when backing it up or upgrading.
+Keep `collector_closures.json` on the poker PC and `closure_notifications.json`
+on the server (both are local in combined mode). These retain closure events
+and notification receipts through reconnects and restarts.
 While locked, it checks for a reopened PokerStars client every second and closes
 it again. Startup and newly received locks enforce immediately; the idle check
-remains every 30 seconds.
+remains every 30 seconds. Each successful tracker termination sends a Telegram
+notice with the original closure time, expiry and current remaining time. Idle
+checks and failed terminations send no closure-success notice. Offline events
+are delivered after reconnection; if their lock has expired, the message says
+it ended. Pending events block installation transfer until delivery catches up.
+Delivery is at least once: a crash after Telegram accepts a message but before
+the tracker saves confirmation can produce a duplicate.
 Use matching collector and server versions for recovery acknowledgements and
 whole-file resynchronization; older peers do not support these operations.
 
@@ -181,7 +191,7 @@ Usage example: `/menu`
 <details>
 <summary><code>/status</code> — current bankroll and P&L</summary>
 
-Shows your current bankroll, today / this week / this month P&L, and details of any active hard-stop lock.
+Shows your current bankroll, today / this week / this month P&L, and the expiry and remaining days, hours and minutes of any active hard-stop lock.
 
 Usage example: `/status`
 </details>
@@ -312,7 +322,15 @@ Usage example: `/alerts` — then tap a field and reply with the value, e.g. `5`
 
 Set the rules that close PokerStars and lock it for a fixed duration: session loss, rolling drawdown, consecutive losses, daily loss, Spin & Go daily loss, and how long the lock lasts. The duration must be set if any rule is; a hard stop can never be set lower than its matching alert threshold. Each rule can be turned off (it keeps its number for later), but since it's a safety lock, turning one off asks you to confirm first. **There is no cancel — once triggered, the lock runs its full duration.**
 
+The shared duration applies to manual and automatic triggers. Enter a positive
+whole amount: `12` means 12 hours, `48h` or `2d` means two days, and `1w` means
+one week. Units are case-insensitive; surrounding whitespace is allowed.
+Fractions, zero, negatives, unknown units and overflowing durations are rejected.
+Saving a new duration keeps an existing lock’s expiry. The menu and trigger
+confirmation show its expiry and remaining days, hours and minutes.
+
 Usage examples:
+
 - `/hardstop` — open the settings menu
 - `/hardstop trigger` — lock immediately, by hand (requires the duration to be configured)
 </details>

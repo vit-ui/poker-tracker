@@ -6,8 +6,11 @@
 package client
 
 import (
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,15 +20,17 @@ import (
 // Enforcer shares durable lock state and a fail-closed in-memory lock between
 // command handling and the process-owned enforcement loop.
 type Enforcer struct {
-	path    string
-	mu      sync.Mutex
-	active  *config.LockFile
-	unsaved *config.LockFile
-	changed chan struct{}
+	path            string
+	mu              sync.Mutex
+	active          *config.LockFile
+	unsaved         *config.LockFile
+	changed         chan struct{}
+	closuresReady   chan struct{}
+	unsavedClosures []config.ClosureEvent
 }
 
 func NewEnforcer(path string) *Enforcer {
-	return &Enforcer{path: path, changed: make(chan struct{}, 1)}
+	return &Enforcer{path: path, changed: make(chan struct{}, 1), closuresReady: make(chan struct{}, 1)}
 }
 
 func (e *Enforcer) Enforce(proposed config.LockFile) (*config.LockFile, bool, error) {
@@ -54,13 +59,15 @@ func (e *Enforcer) Enforce(proposed config.LockFile) (*config.LockFile, bool, er
 		e.active = active
 		e.unsaved = nil
 	}
+	if active != nil && active.ExpiresAt.After(now) {
+		closed, killErr := killPokerStars()
+		err = errors.Join(err, e.recordClosure(active, closed, killErr, time.Now()))
+	}
+	e.persistClosures()
 	e.mu.Unlock()
 	select {
 	case e.changed <- struct{}{}:
 	default:
-	}
-	if active != nil && active.ExpiresAt.After(now) {
-		err = errors.Join(err, killPokerStars())
 	}
 	if err != nil {
 		slog.Error("applying hard-stop protection", "err", err)
@@ -89,15 +96,17 @@ func (e *Enforcer) EnforceActive() bool {
 		e.active = saved
 	}
 	active := e.active != nil && e.active.ExpiresAt.After(now)
-	e.mu.Unlock()
 	if err != nil {
 		slog.Error("reading hard-stop protection; keeping enforcement active", "err", err)
 	}
 	if active || err != nil {
-		if err := killPokerStars(); err != nil {
+		closed, killErr := killPokerStars()
+		if err := e.recordClosure(e.active, closed, killErr, time.Now()); err != nil {
 			slog.Error("enforcing active hard stop", "err", err)
 		}
 	}
+	e.persistClosures()
+	e.mu.Unlock()
 	return active || err != nil
 }
 
@@ -139,4 +148,47 @@ func lockfileActiveAt(lockfilePath string, now time.Time) bool {
 		return false
 	}
 	return now.Before(lock.ExpiresAt)
+}
+
+func (e *Enforcer) closuresPath() string {
+	return filepath.Join(filepath.Dir(e.path), "collector_closures.json")
+}
+
+// Called under e.mu after the termination. Persistence failure cannot prevent
+// termination or erase the in-memory lock. Existing enforcement checks retry it.
+func (e *Enforcer) recordClosure(lock *config.LockFile, closed bool, err error, now time.Time) error {
+	if err != nil || !closed || lock == nil || !lock.ExpiresAt.After(now) {
+		return err
+	}
+	e.unsavedClosures = append(e.unsavedClosures, config.ClosureEvent{ID: "closure:" + rand.Text(), ClosedAt: now, Lock: *lock})
+	return nil
+}
+
+func (e *Enforcer) persistClosures() {
+	if len(e.unsavedClosures) > 0 {
+		if err := config.QueueClosures(e.closuresPath(), e.unsavedClosures); err != nil {
+			slog.Error("persisting PokerStars closure events; enforcement remains active", "err", err)
+		} else {
+			e.unsavedClosures = nil
+			select {
+			case e.closuresReady <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+func (e *Enforcer) acknowledgeClosure(id string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return config.AcknowledgeClosure(e.closuresPath(), id)
+}
+
+func (e *Enforcer) checkClosureTransferReady() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.unsavedClosures) > 0 {
+		return fmt.Errorf("PokerStars closure events have not been saved")
+	}
+	return config.CheckClosureTransferReady(filepath.Dir(e.path))
 }

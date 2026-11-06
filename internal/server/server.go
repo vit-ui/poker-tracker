@@ -65,7 +65,8 @@ const (
 // emits alerts on alertChan and hard-stop lock commands back down the link.
 type Server struct {
 	// Operations shares the file worker with bot-originated storage writes.
-	Operations chan storage.Operation
+	Operations           chan storage.Operation
+	ClosureNotifications bot.ClosureNotifications
 	// TransferCalls defaults to the link; split owners may broker polling handoff first.
 	TransferCalls <-chan transport.TransferCall
 	// Drain releases a prepared restart hold before upload producers are joined.
@@ -117,7 +118,7 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{TransferCalls: link.Transfers, Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
+	return &Server{ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -187,6 +188,18 @@ func (s *Server) Run() error {
 	if loadErr != nil {
 		return loadErr
 	}
+	closures, err := loadClosureQueue(filepath.Join(filepath.Dir(s.configPath), "closure_notifications.json"))
+	if err != nil {
+		return err
+	}
+	defer closures.persist()
+	var lastClosure time.Time
+	for _, entry := range closures.entries {
+		if entry.Event.ClosedAt.After(lastClosure) {
+			lastClosure = entry.Event.ClosedAt
+		}
+	}
+	s.updateClock(lastClosure)
 	settingsQueue := collectorSettingsQueue{path: filepath.Join(filepath.Dir(s.configPath), "collector_settings.json")}
 	var settingsErr error
 	settingsQueue.state, settingsErr = config.LoadCollectorSettings(settingsQueue.path)
@@ -305,7 +318,11 @@ func (s *Server) Run() error {
 		if _, known := deliveries[id]; known {
 			return
 		}
-		lock, _ := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
+		lock, _, err := hardstop.BuildTrigger(reason, durationHours, time.Now().UTC())
+		if err != nil {
+			slog.Error("building hard stop", "err", err)
+			return
+		}
 		lock.TriggerID = id
 		deliveries[id] = config.HardstopDelivery{Lock: lock}
 		if err := saveDeliveries(); err != nil {
@@ -464,6 +481,26 @@ func (s *Server) Run() error {
 				sort.Strings(resyncCommand.Files)
 			}
 		}
+		var closureDelivery chan config.ClosureEvent
+		var closureEvent config.ClosureEvent
+		if next := closures.next(); next != nil && !receiver.reserved() {
+			closureDelivery, closureEvent = s.ClosureNotifications.Deliveries, *next
+		}
+		var closureCommands chan<- transport.Command
+		var closureCommand transport.Command
+		if !receiver.reserved() {
+			select {
+			case <-s.link.CollectorDone():
+			default:
+				if closures.replay {
+					closureCommands, closureCommand = s.link.Commands, transport.Command{Kind: transport.CommandReplayClosures}
+				}
+				for id := range closures.acknowledgements {
+					closureCommands, closureCommand = s.link.Commands, transport.Command{Kind: transport.CommandClosureAck, ClosureID: id}
+					break
+				}
+			}
+		}
 		var up transport.Upload
 
 		if receiver.reserved() {
@@ -472,6 +509,20 @@ func (s *Server) Run() error {
 			resync = nil
 		}
 		select {
+		case closureDelivery <- closureEvent:
+			closures.attempted[closureEvent.ID] = true
+			closures.inflight[closureEvent.ID] = true
+			continue
+		case result := <-s.ClosureNotifications.Results:
+			closures.result(result)
+			continue
+		case closureCommands <- closureCommand:
+			if closureCommand.Kind == transport.CommandClosureAck {
+				delete(closures.acknowledgements, closureCommand.ClosureID)
+			} else {
+				closures.replay = false
+			}
+			continue
 		case call := <-s.TransferCalls:
 			if (call.Request.Kind == transport.TransferReserve || call.Request.Kind == transport.TransferBegin) && len(s.link.Uploads) > 0 {
 				call.Reply <- receiver.reply(call.Request.ID, fmt.Errorf("accepted collector uploads have not drained"))
@@ -484,6 +535,7 @@ func (s *Server) Run() error {
 			heldOperation = nil
 			continue
 		case <-s.link.ConnectionChanged:
+			closures.retry()
 			settingsQueue.inflight = nil
 			sentLocks = make(map[string]bool)
 			restoredLockSent = false
@@ -540,6 +592,10 @@ func (s *Server) Run() error {
 				continue
 			}
 			if operation.PrepareMigration {
+				if err := config.CheckClosureTransferReady(filepath.Dir(s.configPath)); err != nil {
+					operation.Reply <- storage.OperationResult{Err: err}
+					continue
+				}
 				if client, ok := s.store.(*sheets.Client); ok {
 					if err := client.CheckTransferReady(); err != nil {
 						operation.Reply <- storage.OperationResult{Err: err}
@@ -550,6 +606,7 @@ func (s *Server) Run() error {
 			if !operation.PrepareMigration && !operation.PrepareRestart {
 
 				if operation.RetryHardstops {
+					closures.retry()
 					refreshDeliveries()
 					sentLocks = make(map[string]bool)
 					restoredLockSent = false
@@ -616,6 +673,15 @@ func (s *Server) Run() error {
 		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil || up.ConfigReply != nil) && !current {
 			continue
 		}
+		if event := up.Closure; event != nil {
+			if current {
+				s.updateClock(up.ClientClock)
+			}
+			if err := closures.receive(*event); err != nil {
+				slog.Error("receiving PokerStars closure event", "err", err)
+			}
+			continue
+		}
 		if status := up.Status; status != nil {
 			s.updateClock(up.ClientClock)
 			s.observeCollectorLock(status.Lock, status.Error, connection)
@@ -678,7 +744,7 @@ func (s *Server) Run() error {
 				restoredLockSent = true
 			}
 			if reply.Lock != nil {
-				s.alertChan <- hardstop.LockMessage(*reply.Lock, s.ClientNow().Location())
+				s.alertChan <- hardstop.LockMessage(*reply.Lock, s.ClientNow())
 			}
 			continue
 		}

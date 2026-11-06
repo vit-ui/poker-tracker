@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -208,6 +209,9 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 					break
 				}
 				if cmd.Kind == transport.CommandPauseCollection {
+					if err = c.enforcer.checkClosureTransferReady(); err != nil {
+						break
+					}
 					running, checkErr := pokerStarsRunning()
 					if checkErr != nil {
 						err = checkErr
@@ -284,6 +288,27 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<- transport.Command) {
 	var pendingRequests []transport.Command
 	var replies []transport.Upload
+	sentClosures := make(map[string]bool)
+	replayClosures := func() {
+		entries, err := config.LoadClosureNotifications(c.enforcer.closuresPath())
+		if err != nil {
+			slog.Error("loading queued PokerStars closures", "err", err)
+			return
+		}
+		ids := make([]string, 0, len(entries))
+		for id := range entries {
+			if !sentClosures[id] {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			event := entries[id].Event
+			replies = append(replies, transport.Upload{Closure: &event, ClientClock: time.Now()})
+			sentClosures[id] = true
+		}
+	}
+	replayClosures()
 	for {
 		var outgoingRequests chan<- transport.Command
 		var request transport.Command
@@ -308,9 +333,24 @@ func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<
 		case outgoingReplies <- reply:
 			replies[0] = transport.Upload{}
 			replies = replies[1:]
+		case <-c.enforcer.closuresReady:
+			replayClosures()
 		case command, ok := <-c.link.Commands:
 			if !ok {
 				return
+			}
+			if command.Kind == transport.CommandClosureAck {
+				if err := c.enforcer.acknowledgeClosure(command.ClosureID); err != nil {
+					slog.Error("saving closure acknowledgement", "err", err)
+				} else {
+					delete(sentClosures, command.ClosureID)
+				}
+				continue
+			}
+			if command.Kind == transport.CommandReplayClosures {
+				sentClosures = make(map[string]bool)
+				replayClosures()
+				continue
 			}
 			if command.Kind != transport.CommandLock {
 				pendingRequests = append(pendingRequests, command)

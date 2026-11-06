@@ -286,7 +286,7 @@ func runServe() (failure error) {
 
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications)
 	}()
 	workerEnded, botEnded := false, false
 	var discards sync.WaitGroup

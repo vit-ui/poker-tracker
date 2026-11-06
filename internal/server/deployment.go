@@ -167,6 +167,9 @@ func (d *deploymentReceiver) noNewWork() error {
 		}
 	}
 	root := filepath.Dir(d.server.configPath)
+	if err := config.CheckClosureTransferReady(root); err != nil {
+		return err
+	}
 	cash, err := config.LoadPendingCash(filepath.Join(root, "pending_cash.json"))
 	if err != nil {
 		return err

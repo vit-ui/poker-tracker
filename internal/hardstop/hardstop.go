@@ -353,6 +353,9 @@ func ManualTrigger(configPath string, onTrigger func(reason string, durationHour
 	if cfg.Hardstop.DurationHours == nil {
 		return fmt.Errorf("duration_hours is not configured, run /hardstop first")
 	}
+	if _, err := Duration(*cfg.Hardstop.DurationHours); err != nil {
+		return err
+	}
 	onTrigger("manual", *cfg.Hardstop.DurationHours)
 	return nil
 }
@@ -363,22 +366,26 @@ func ManualTrigger(configPath string, onTrigger func(reason string, durationHour
 // lockfile to the client, which kills PokerStars and writes it. Splitting the
 // build out from enforcement is what lets the decision stay on the server
 // while the taskkill and lockfile write happen on the collector.
-func BuildTrigger(reason string, durationHours int, now time.Time) (config.LockFile, string) {
-	expiresAt := now.Add(time.Duration(durationHours) * time.Hour)
+func BuildTrigger(reason string, durationHours int, now time.Time) (config.LockFile, string, error) {
+	duration, err := Duration(durationHours)
+	if err != nil {
+		return config.LockFile{}, "", err
+	}
+	expiresAt := now.Add(duration)
 	lock := config.LockFile{
 		TriggeredAt:   now,
 		ExpiresAt:     expiresAt,
 		Reason:        reason,
 		DurationHours: durationHours,
 	}
-	alert := LockMessage(lock, time.Local)
-	return lock, alert
+	alert := LockMessage(lock, now.In(time.Local))
+	return lock, alert, nil
 }
 
 // LockMessage formats the collector-confirmed lock instead of a speculative
 // retry expiry. Split mode supplies the collector's observed timezone.
-func LockMessage(lock config.LockFile, location *time.Location) string {
-	return fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\nExpires: %s", reasonPhrase(lock.Reason), lock.ExpiresAt.In(location).Format("2006-01-02 15:04"))
+func LockMessage(lock config.LockFile, now time.Time) string {
+	return fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\n%s", reasonPhrase(lock.Reason), LockDetails(lock, now))
 }
 
 // reasonPhrase turns a lockfile reason key into the plain-language line the

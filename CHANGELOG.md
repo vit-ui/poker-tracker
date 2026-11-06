@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v4.6 — 2026-11-05
+
+### Added
+
+- Manual and automatic hard stops accept positive whole durations in hours,
+  days or weeks: `48`, `48h`, `2d` and `1w`. Overflowing durations are rejected;
+  saving a duration leaves an active lock's expiry unchanged.
+- `/status`, the hard-stop menu and trigger confirmations show expiry and
+  remaining days, hours and minutes. Partial minutes round up; timestamps
+  follow the poker PC's known timezone.
+- Each successful PokerStars termination during a lock queues a Telegram
+  closure notice with the original closure time and current lock status.
+  Collector events, server acknowledgements and send receipts persist through
+  reconnects and restarts. Replayed IDs are deduplicated; failed sends stay
+  pending for existing reconnect/maintenance opportunities. Pending events
+  block installation transfer. Delivery is at least once: a crash after a
+  successful Telegram send but before its local receipt may duplicate a notice.
+
 ## v4.5 — 2026-11-05
 
 ### Added

@@ -61,8 +61,8 @@ var commandHelp = map[string]string{
 	"hardstop": "Configures hard stop rules or triggers one manually.\n" +
 		"Usage (configure): /hardstop — opens the settings menu\n" +
 		"Usage (manual trigger): /hardstop trigger — activates a hard stop immediately\n" +
-		"Fields: session loss (buy-ins), downswing (buy-ins, rolling 30-day peak), consecutive losses (sessions), daily loss (all games, $), Spin & Go daily loss ($), duration (hours).\n" +
-		"The hard stop closes PokerStars and blocks the launcher for the configured duration.\n" +
+		"Fields: session loss (buy-ins), downswing (buy-ins, rolling 30-day peak), consecutive losses (sessions), daily loss (all games, $), Spin & Go daily loss ($), duration (12, 48h, 2d or 1w).\n" +
+		"The hard stop closes PokerStars and blocks the launcher for the configured duration. Existing locks keep their expiry when you save a new duration.\n" +
 		"Duration must be configured before using /hardstop trigger.\n" +
 		"A hard stop threshold can never be set lower than its corresponding alert threshold, if that alert is configured.",
 	"alerts": "Configures notification alert thresholds.\n" +

@@ -396,7 +396,7 @@ func TestInRollingWindow(t *testing.T) {
 // the lockfile itself, now that writing has moved to the enforcement side.
 func lockWriter(lockPath string, ch chan string) func(reason string, durationHours int) {
 	return func(reason string, durationHours int) {
-		lock, msg := BuildTrigger(reason, durationHours, time.Now().UTC())
+		lock, msg, _ := BuildTrigger(reason, durationHours, time.Now().UTC())
 		_ = config.SaveLock(lockPath, &lock)
 		if ch != nil {
 			ch <- msg
@@ -702,7 +702,7 @@ func TestManualTrigger(t *testing.T) {
 // names the hard stop and the humanized reason phrase.
 func TestBuildTrigger(t *testing.T) {
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
-	lock, alert := BuildTrigger("session_loss_buyins", 12, now)
+	lock, alert, _ := BuildTrigger("session_loss_buyins", 12, now)
 
 	if lock.Reason != "session_loss_buyins" || lock.DurationHours != 12 {
 		t.Errorf("lock = reason %q / %dh, want session_loss_buyins / 12h", lock.Reason, lock.DurationHours)

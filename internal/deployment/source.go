@@ -195,6 +195,9 @@ func (o *SourceOwner) prepare() error {
 	release, resumed, reply := make(chan struct{}), make(chan error, 1), make(chan storage.OperationResult, 1)
 	var payload []byte
 	op := storage.Operation{PrepareMigration: true, Release: release, Resumed: resumed, Reply: reply, Apply: func(store storage.Store) storage.OperationResult {
+		if err := config.CheckClosureTransferReady(filepath.Dir(o.Path)); err != nil {
+			return storage.OperationResult{Err: err}
+		}
 		snapshot, err := store.ExportSnapshot()
 		if err != nil {
 			return storage.OperationResult{Err: err}

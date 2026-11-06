@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -420,6 +421,122 @@ func replaceStateFile(path string, data []byte) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("replacing state file: %w", err)
+	}
+	return nil
+}
+
+// ClosureEvent captures one successful termination, independently of its delivery.
+// Lock is the effective lock at closure, so delayed messages never reset expiry.
+type ClosureEvent struct {
+	ID       string    `json:"id"`
+	ClosedAt time.Time `json:"closed_at"`
+	Lock     LockFile  `json:"lock"`
+}
+
+// ClosureNotification remains as a receipt after delivery to deduplicate replay.
+type ClosureNotification struct {
+	Event     ClosureEvent `json:"event"`
+	Delivered bool         `json:"delivered"`
+}
+
+func LoadClosureNotifications(path string) (map[string]ClosureNotification, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	return loadClosureNotifications(path)
+}
+
+func loadClosureNotifications(path string) (map[string]ClosureNotification, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return make(map[string]ClosureNotification), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading closure notifications: %w", err)
+	}
+	entries := make(map[string]ClosureNotification)
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, fmt.Errorf("decoding closure notifications: %w", err)
+	}
+	if entries == nil {
+		entries = make(map[string]ClosureNotification)
+	}
+	for id, entry := range entries {
+		if id == "" || entry.Event.ID != id || entry.Event.ClosedAt.IsZero() || !entry.Event.Lock.ExpiresAt.After(entry.Event.ClosedAt) {
+			return nil, fmt.Errorf("invalid closure event %q", id)
+		}
+	}
+	return entries, nil
+}
+
+func SaveClosureNotifications(path string, entries map[string]ClosureNotification) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return saveClosureNotifications(path, entries)
+}
+
+func saveClosureNotifications(path string, entries map[string]ClosureNotification) error {
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding closure notifications: %w", err)
+	}
+	file, err := os.OpenFile(path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("opening closure journal: %w", err)
+	}
+	_, writeErr := file.Write(data)
+	err = errors.Join(writeErr, file.Sync(), file.Close())
+	if err != nil {
+		return fmt.Errorf("persisting closure journal: %w", err)
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
+		return fmt.Errorf("replacing closure journal: %w", err)
+	}
+	return nil
+}
+
+// QueueClosures merges newly observed collector events with pending ones.
+// The enforcer serializes queueing with acknowledgements through its mutex.
+func QueueClosures(path string, events []ClosureEvent) error {
+	mu.Lock()
+	defer mu.Unlock()
+	entries, err := loadClosureNotifications(path)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if _, exists := entries[event.ID]; !exists {
+			entries[event.ID] = ClosureNotification{Event: event}
+		}
+	}
+	return saveClosureNotifications(path, entries)
+}
+
+func AcknowledgeClosure(path, id string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	entries, err := loadClosureNotifications(path)
+	if err != nil {
+		return err
+	}
+	if _, exists := entries[id]; !exists {
+		return nil
+	}
+	delete(entries, id)
+	return saveClosureNotifications(path, entries)
+}
+
+// CheckClosureTransferReady protects both collector events and unsent bot messages.
+func CheckClosureTransferReady(root string) error {
+	for _, name := range []string{"collector_closures.json", "closure_notifications.json"} {
+		entries, err := LoadClosureNotifications(filepath.Join(root, name))
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.Delivered {
+				return fmt.Errorf("PokerStars closure notifications are pending")
+			}
+		}
 	}
 	return nil
 }

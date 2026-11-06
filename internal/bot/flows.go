@@ -553,6 +553,14 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	}
 	rows = append(rows, menuRow(label, "menu:leave:"+path))
 	text := "Hard stop rules — saved on the server even while the poker PC is offline. Existing locks keep their full duration. Tap one to change:"
+	if b.currentLock != nil {
+		lock, err := b.currentLock()
+		if err != nil {
+			text += "\n⚠️ Collector lock status unavailable."
+		} else if lock != nil && lock.ExpiresAt.After(time.Now()) {
+			text += "\n🛑 " + hardstop.LockDetails(*lock, b.now())
+		}
+	}
 	if warning != "" {
 		text = warning + "\n\n" +
 			text
@@ -978,7 +986,7 @@ func hardstopPromptText(field string) string {
 	case "spingo_daily_loss":
 		return "Send the Spin & Go daily loss threshold in USD that should trigger a hard stop (e.g. 30)."
 	case "duration":
-		return "Send the hard stop lock duration in hours. Must be 12 or 24."
+		return "Send a positive whole duration: 12 or 48h (hours), 2d (days), or 1w (weeks). Saving this does not change an active lock."
 	}
 	return "Send the new value."
 }
@@ -1256,9 +1264,9 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		}
 		cfg.Hardstop.SpingoDailyLossCents = &vCents
 	case "duration":
-		v, err := strconv.Atoi(strings.TrimSpace(text))
-		if err != nil || (v != 12 && v != 24) {
-			return fmt.Errorf("Duration must be 12 or 24.")
+		v, err := hardstop.ParseDurationHours(text)
+		if err != nil {
+			return err
 		}
 		cfg.Hardstop.DurationHours = &v
 	}
@@ -1289,7 +1297,7 @@ func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 	if strings.TrimSpace(args) == "trigger" {
 		var requested config.LockFile
 		err := hardstop.ManualTrigger(b.configPath, func(reason string, duration int) {
-			requested, _ = hardstop.BuildTrigger(reason, duration, time.Now().UTC())
+			requested, _, _ = hardstop.BuildTrigger(reason, duration, time.Now().UTC())
 			if b.updateID != 0 {
 				requested.TriggerID = fmt.Sprintf("hardstop:manual:%d:%d:%d", b.tg.Self.ID, chatID, b.updateID)
 			} else {

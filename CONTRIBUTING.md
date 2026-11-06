@@ -111,6 +111,14 @@ go test ./internal/parsers/...      # one package
   shared CSV formatter tests establish formatting parity; Telegram delivery
   remains a separate manual check.
 
+Hard-stop closure checks use real collector/server journals and channels or
+pinned TLS. They verify acknowledgements, replay deduplication, failed bot send
+results and restart recovery without invoking Windows termination. Keep Bot API
+HTTP checks in ignored local tests through the existing endpoint seam. A new
+native enforcement check requires a separately coordinated window; ordinary
+tests must never terminate the user's PokerStars process. Closure notifications
+are at least once; pending queues block installation transfer.
+
 Branch pushes and pull requests run `.github/workflows/ci.yml`: the full Go
 suite, vet, and eight pure-Go cross-builds (Windows combined/collector/server and
 Linux server, each on amd64 and arm64). These checks use no bot token. Packaging

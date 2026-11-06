@@ -59,6 +59,7 @@ type Upload struct {
 	Status          *CollectorStatus
 	Recovery        bool
 	FileActivity    time.Time
+	Closure         *config.ClosureEvent
 	LockReply       *LockReply
 	CollectionReply *CollectionReply
 	ConfigReply     *CollectorConfigReply
@@ -93,6 +94,8 @@ func (l *Link) UploadConnection(upload Upload) (<-chan struct{}, bool) {
 // upload. A pause checks PokerStars closure before draining its watcher.
 const (
 	CommandLock             = "lock"
+	CommandClosureAck       = "closure_ack"
+	CommandReplayClosures   = "replay_closures"
 	CommandRescan           = "rescan"
 	CommandResyncFiles      = "resync_files"
 	CommandPauseCollection  = "pause_collection"
@@ -103,6 +106,7 @@ const (
 
 // Command is sent from the server to the client.
 type Command struct {
+	ClosureID string
 	Files     []string
 	RequestID string
 	Kind      string                    // one of the Command constants

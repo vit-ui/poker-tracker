@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -354,7 +355,7 @@ func (b *Bot) handleStatus(chatID int64) {
 		slog.Error("reading collector lock status", "err", err)
 		text += "\n⚠️ Collector lock status unavailable."
 	} else if lock != nil && !config.IsLockExpired(lock) {
-		text += fmt.Sprintf("\n🛑 Locked until %s", lock.ExpiresAt.In(b.now().Location()).Format("2006-01-02 15:04"))
+		text += "\n🛑 " + hardstop.LockDetails(*lock, b.now())
 	}
 
 	send(b.tg, chatID, text)

@@ -146,7 +146,7 @@ func TestExpiredCollectorReceiptRejectsFreshServerReplayButAllowsNewLoss(t *test
 		t.Fatal(err)
 	}
 	oldTime := time.Now().Add(-2 * time.Hour)
-	old, _ := hardstop.BuildTrigger("consecutive_losses", duration, oldTime)
+	old, _, _ := hardstop.BuildTrigger("consecutive_losses", duration, oldTime)
 	old.TriggerID = id
 	collectorPath := filepath.Join(t.TempDir(), "lockfile.json")
 	if _, _, err := config.ApplyHardstop(collectorPath, old, oldTime); err != nil {

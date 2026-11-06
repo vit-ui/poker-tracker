@@ -30,12 +30,21 @@ type transferTarget struct {
 }
 
 func TestDeploymentReservationPreflightAndRollback(t *testing.T) {
-	for _, conflict := range []string{"none", "history", "chat", "cash", "unconfirmed-protection", "confirmed-protection"} {
+	for _, conflict := range []string{"none", "history", "chat", "cash", "unconfirmed-protection", "confirmed-protection", "pending-closure", "delivered-closure", "collector-closure"} {
 		t.Run(conflict, func(t *testing.T) {
 			root := t.TempDir()
 			target := startTransferTarget(t, root)
 			at := time.Now()
 			switch conflict {
+			case "pending-closure", "delivered-closure", "collector-closure":
+				name := "closure_notifications.json"
+				if conflict == "collector-closure" {
+					name = "collector_closures.json"
+				}
+				event := config.ClosureEvent{ID: "closure:preflight", ClosedAt: at, Lock: config.LockFile{ExpiresAt: at.Add(time.Hour)}}
+				if err := config.SaveClosureNotifications(filepath.Join(root, name), map[string]config.ClosureNotification{event.ID: {Event: event, Delivered: conflict == "delivered-closure"}}); err != nil {
+					t.Fatal(err)
+				}
 			case "history":
 				if err := target.store.AppendLedgerEntry("deposit", 1, storage.AsStoredClock(at), "money:existing"); err != nil {
 					t.Fatal(err)
@@ -62,7 +71,7 @@ func TestDeploymentReservationPreflightAndRollback(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			accept := conflict == "none" || conflict == "confirmed-protection"
+			accept := conflict == "none" || conflict == "confirmed-protection" || conflict == "delivered-closure"
 			if (reply.Error == "") != accept {
 				t.Fatalf("reservation=%+v accept=%v", reply, accept)
 			}
