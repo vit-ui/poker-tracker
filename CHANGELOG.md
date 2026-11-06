@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Fixed
+
+- Windows setup suspends scheduled recovery before stopping the installation
+  and keeps it suspended through Telegram setup and executable replacement.
+  Completion or cancellation restores tasks that setup suspended.
+
 ## v4.6 — 2026-11-05
 
 ### Added

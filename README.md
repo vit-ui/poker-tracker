@@ -21,6 +21,9 @@ It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand
 
 Telegram setup keeps your saved chat during reinstall and waits for a message from that chat. Messages from other chats cannot replace it. A fresh install still identifies your chat from the first message.
 
+Windows setup suspends scheduled recovery while configuring and replacing the
+installation, then restores it on completion or cancellation.
+
 Windows upgrades keep saved preferences, credentials, pairing identity, history and pending cash/questions. Existing collector values are prefilled rather than replaced with empty answers. Unattended server setup respects `/SUPPRESSMSGBOXES`; interactive setup still displays its pairing information.
 
 

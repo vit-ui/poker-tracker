@@ -122,6 +122,7 @@ var
   ExistingCombined, ExistingRoleUnknown, IncompleteTransfer: Boolean;
   TransferStaged, TransferFinished: Boolean;
   TransferConnection: String;
+  CombinedTaskSuspended, ServerTaskSuspended: Boolean;
   // PageServerMethod asks the run-a-server install the same thing the Linux
   // server's chooseBackend does: configure storage from Telegram (recommended,
   // defaults SQLite) vs set it here now. ServerUseTelegram is its answer, read
@@ -516,11 +517,58 @@ begin
   if Answer <> '' then PageTournamentDir.Values[0] := Answer;
 end;
 
+// Disable triggers and failure recovery before asking the owner to exit.
+// Enumeration distinguishes an absent task from scheduler/access failures.
+procedure SuspendScheduledRecovery();
+var
+  Scheduler, Tasks, Task: Variant;
+  I: Integer;
+begin
+  Scheduler := CreateOleObject('Schedule.Service');
+  Scheduler.Connect();
+  Tasks := Scheduler.GetFolder('\').GetTasks(1);
+  for I := 1 to Tasks.Count do
+  begin
+    Task := Tasks.Item(I);
+    if Task.Enabled then
+    begin
+      if (Task.Name = '{#CombinedTaskName}') and not CombinedTaskSuspended then
+      begin
+        Task.Enabled := False;
+        CombinedTaskSuspended := True;
+      end
+      else if (Task.Name = '{#ServerTaskName}') and not ServerTaskSuspended then
+      begin
+        Task.Enabled := False;
+        ServerTaskSuspended := True;
+      end;
+    end;
+  end;
+end;
+
+procedure RestoreScheduledRecovery(const TaskName: String; var Suspended: Boolean);
+var
+  ResultCode: Integer;
+begin
+  if not Suspended then Exit;
+  if not Exec('schtasks.exe', '/Change /TN "' + TaskName + '" /ENABLE',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+  begin
+    SuppressibleMsgBox('Could not restore scheduled recovery for "' + TaskName + '". Enable it in Task Scheduler.', mbError, MB_OK, IDOK);
+    Exit;
+  end;
+  Suspended := False;
+  if not Exec('schtasks.exe', '/Run /TN "' + TaskName + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    SuppressibleMsgBox('Could not restart "' + TaskName + '". Run it in Task Scheduler.', mbError, MB_OK, IDOK);
+end;
+
 procedure StopInstallation();
 var
   HelperPath: String;
   ResultCode: Integer;
 begin
+  SuspendScheduledRecovery();
   if IsUninstaller then
   begin
     HelperPath := ExpandConstant('{app}\tracker.exe');
@@ -1247,8 +1295,8 @@ end;
 // has already copied it there, precisely so it resolves its own
 // deployment paths against the real install directory rather than {tmp}
 // — see PreInstallFiles' doc comment for why running it from {tmp} was
-// wrong. --setup handles config.json, the Task Scheduler entry, and
-// starting the service itself — see bot.RunSetup and runSetup in main.go.
+// wrong. The installer owns task registration/startup so recovery cannot
+// reopen tracker.exe before the final file replacement.
 // Release builds use -H=windowsgui, so tracker.exe never creates a console
 // regardless of ShowCmd — SW_HIDE here just states that honestly; all of
 // --setup's progress is visible through the Telegram conversation itself.
@@ -1258,7 +1306,7 @@ var
 begin
   PreInstallFiles();
   WritePreSeedConfig();
-  if not Exec(ExpandConstant('{app}\tracker.exe'), '--setup', ExpandConstant('{app}'),
+  if not Exec(ExpandConstant('{app}\tracker.exe'), '--setup --installer-owns-task', ExpandConstant('{app}'),
      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     MsgBox('Could not start tracker.exe --setup.', mbError, MB_OK);
@@ -1625,18 +1673,7 @@ begin
       RegisterScheduledTask();
     end
     else
-    begin
-      // The Telegram path's task already exists — tracker.exe --setup
-      // registered it itself (see runSetup in cmd/tracker/main.go) and
-      // started it running. But NextButtonClick(wpReady) then killed
-      // that process (to avoid Inno's "unable to close applications"
-      // prompt during file copy), so by this point the task is
-      // registered but not running. Only a restart is needed, not the
-      // full RegisterScheduledTask the manual path uses above.
-      if not Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"',
-         '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-        MsgBox('Could not start the tracker service. Open Task Scheduler and run "Poker Tracker" manually, or reboot.', mbError, MB_OK);
-    end;
+      RegisterScheduledTask();
   end;
 end;
 
@@ -1671,6 +1708,11 @@ begin
       Exec('schtasks.exe', '/Change /TN "{#CombinedTaskName}" /ENABLE', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec('schtasks.exe', '/Run /TN "{#CombinedTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
+  end;
+  if not TransferStaged or TransferFinished then
+  begin
+    RestoreScheduledRecovery('{#CombinedTaskName}', CombinedTaskSuspended);
+    RestoreScheduledRecovery('{#ServerTaskName}', ServerTaskSuspended);
   end;
 end;
 

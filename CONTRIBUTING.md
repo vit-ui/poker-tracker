@@ -69,6 +69,12 @@ which verifies executable paths, signals each matching process's shutdown event,
 and waits for owner cleanup; it includes collectors and excludes itself. It does
 not force-kill processes. The uninstaller uses the installed role's executable.
 An unresponsive process must be investigated before retrying installation.
+Before stopping the owner, setup disables existing installation tasks so minute
+triggers and failure recovery cannot restart it during configuration or file
+replacement. Installer-launched Telegram setup uses `--installer-owns-task`;
+Inno registers/starts the task only after replacement. Completion/cancellation
+restores tasks that setup suspended; previously disabled tasks stay disabled on
+cancellation.
 PokerStars enforcement continues to target `PokerStars.exe` and requires a
 separately coordinated test window.
 

@@ -71,6 +71,7 @@ func main() {
 	serve := flag.Bool("serve", false, "run the background service")
 	checkLock := flag.Bool("check-lock", false, "check lockfile state and exit")
 	setup := flag.Bool("setup", false, "run setup wizard via Telegram bot")
+	installerOwnsTask := flag.Bool("installer-owns-task", false, "leave task registration and startup to the installer")
 	transferStage := flag.String("transfer-stage", "", "prepare and verify combined-to-split transfer")
 	transferActivate := flag.Bool("transfer-activate", false, "activate verified deployment transfer")
 	transferComplete := flag.Bool("transfer-complete", false, "record completed collector cutover")
@@ -102,7 +103,7 @@ func main() {
 	case *checkLock:
 		runCheckLock()
 	case *setup:
-		runSetup()
+		runSetup(*installerOwnsTask)
 	case *serve:
 		if err := runServe(); err != nil {
 			os.Exit(1)
@@ -133,12 +134,15 @@ func runCheckLock() {
 	os.Exit(1)
 }
 
-func runSetup() {
+func runSetup(installerOwnsTask bool) {
 	if err := installation.Stop(filepath.Dir(configPath)); err != nil {
 		panic("stopping this installation before setup: " + err.Error())
 	}
 
 	bot.RunSetup(BotToken, configPath, serviceAccountPath)
+	if installerOwnsTask {
+		return
+	}
 
 	exePath, err := os.Executable()
 	if err != nil {
