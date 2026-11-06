@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## Unreleased
+## v4.7 — 2026-11-06
 
 ### Fixed
 
@@ -15,6 +15,16 @@ pulls its notes from the matching section below.
   requests have durable collector confirmation, including protection triggered
   while finalizing cash. Failed preparation resumes collection and preserves
   the original protection request and expiry for acknowledgement and retry.
+- Normal Windows uninstall removes recovery journals and transfer state along
+  with player data, preventing old cash sessions from returning after reinstall.
+  Silent uninstall retains the existing player-data preservation policy.
+
+### Verification
+
+- The full Go suite, vet, focused race checks, all eight cross-builds and Inno
+  compilation passed. Native Windows verification passed the long-wait Telegram
+  upgrade. Cancellation and uninstall checks remain unverified because Windows
+  security blocked the disposable test installer on retry.
 
 ## v4.6 — 2026-11-05
 

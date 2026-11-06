@@ -1679,16 +1679,34 @@ end;
 
 // Stop before deleting any files, including on silent uninstall. Player data
 // keeps the existing manual-versus-silent uninstall policy.
+procedure DeletePlayerState(const Name: String);
+begin
+  DeleteFile(ExpandConstant('{app}\') + Name);
+  DeleteFile(ExpandConstant('{app}\') + Name + '.tmp');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
     StopInstallation();
   if (CurUninstallStep = usUninstall) and not UninstallSilent() then
   begin
-    DeleteFile(ExpandConstant('{app}\config.json'));
-    DeleteFile(ExpandConstant('{app}\lockfile.json'));
-    DeleteFile(ExpandConstant('{app}\pending_tournaments.json'));
-    DeleteFile(ExpandConstant('{app}\sheets_fallback.json'));
+    DeletePlayerState('config.json');
+    DeletePlayerState('lockfile.json');
+    DeletePlayerState('pending_tournaments.json');
+    DeletePlayerState('sheets_fallback.json');
+    DeletePlayerState('pending_cash.json');
+    DeletePlayerState('hardstop_deliveries.json');
+    DeletePlayerState('collector_settings.json');
+    DeletePlayerState('collector_closures.json');
+    DeletePlayerState('closure_notifications.json');
+    DeletePlayerState('source_transfer.json');
+    DeletePlayerState('source_transfer_request.json');
+    DeletePlayerState('deployment_transfer.json');
+    DeleteFile(ExpandConstant('{app}\deployment_transfer.data'));
+    DeleteFile(ExpandConstant('{app}\transfer-error.txt'));
+    DeleteFile(ExpandConstant('{app}\tracker-transfer.exe'));
+    DelTree(ExpandConstant('{app}\tracker-source-*.exe'), False, True, False);
     DeleteFile(ExpandConstant('{app}\tracker.db'));
     // Server role's TLS material (absent on combined/client installs).
     DeleteFile(ExpandConstant('{app}\server_cert.pem'));

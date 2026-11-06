@@ -74,7 +74,8 @@ triggers and failure recovery cannot restart it during configuration or file
 replacement. Installer-launched Telegram setup uses `--installer-owns-task`;
 Inno registers/starts the task only after replacement. Completion/cancellation
 restores tasks that setup suspended; previously disabled tasks stay disabled on
-cancellation.
+cancellation. Manual uninstall removes config-owned recovery/transfer state and
+its temporary writes alongside player data; silent uninstall preserves it.
 PokerStars enforcement continues to target `PokerStars.exe` and requires a
 separately coordinated test window.
 
