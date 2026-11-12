@@ -45,7 +45,7 @@ func runHelper(path string, args []string) error {
 	for i, arg := range args {
 		escaped[i] = syscall.EscapeArg(arg)
 	}
-	script := "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath " + psLiteral(path) + " -ArgumentList " + psLiteral(strings.Join(escaped, " ")) + " -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+	script := "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath " + psLiteral(path) + " -ArgumentList " + psLiteral(strings.Join(escaped, " ")) + " -Verb RunAs -PassThru; $p.WaitForExit(); exit $p.ExitCode"
 	output, err := powershell(script)
 	if err != nil {
 		return fmt.Errorf("elevated update: %w: %s", err, output)

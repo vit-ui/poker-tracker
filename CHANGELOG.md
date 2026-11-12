@@ -18,6 +18,9 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Elevated Windows updates wait only for their helper, allowing the terminal
+  command to finish while a restarted foreground installation keeps running.
+
 - Historical cash recovery keeps the latest saved collector timezone. Without a
   saved observation, recovery chooses the newest historical clock.
 

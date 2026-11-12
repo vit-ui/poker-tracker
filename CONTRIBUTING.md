@@ -341,3 +341,7 @@ protection; this does not change enforcement acknowledgement requirements.
 Recovery snapshots must not replace an existing saved collector clock. When no
 saved observation exists, choose the freshest historical timestamp across cash
 and closure records before establishing calendar context.
+
+Elevated update launchers must wait for the helper PID only. PowerShell
+`Start-Process -Wait` also waits for descendants, including a restarted
+foreground owner; cover that distinction with isolated native processes.
