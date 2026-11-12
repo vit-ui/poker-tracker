@@ -64,6 +64,7 @@ const (
 // reconstructs each file under workDir (keyed by the upload's FileID), and
 // emits alerts on alertChan and hard-stop lock commands back down the link.
 type Server struct {
+	Ready chan struct{}
 	// Operations shares the file worker with bot-originated storage writes.
 	Operations           chan storage.Operation
 	hardstopRequests     chan config.LockFile
@@ -129,7 +130,7 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
+	return &Server{Ready: make(chan struct{}), clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -426,6 +427,7 @@ func (s *Server) Run() error {
 		return fmt.Sprintf("migration-%d", requestSequence)
 	}
 	drain := s.Drain
+	close(s.Ready)
 	for {
 		if offlinePreparation != nil && len(s.link.Uploads) == 0 {
 			operation := *offlinePreparation

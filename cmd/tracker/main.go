@@ -22,6 +22,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/transport"
+	"github.com/vit-ui/self-tracker/internal/update"
 )
 
 // BotToken is injected at build time via -ldflags "-X main.BotToken=...".
@@ -64,7 +65,10 @@ func init() {
 	logPath = filepath.Join(dir, "tracker.log")
 }
 
+var Version = "dev"
+
 func main() {
+	updater := update.Register(flag.CommandLine)
 	printRole := flag.Bool("role", false, "print this executable role")
 	roleFile := flag.String("role-output", "", "write the executable role to a setup result file")
 	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
@@ -77,6 +81,13 @@ func main() {
 	transferComplete := flag.Bool("transfer-complete", false, "record completed collector cutover")
 	transferRollback := flag.Bool("transfer-rollback", false, "roll back a transfer-owned destination and restore source")
 	flag.Parse()
+	if handled, err := updater.Handle(flag.CommandLine, "combined", Version, InstallationID); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	switch {
 	case *transferStage != "":
@@ -284,10 +295,14 @@ func runServe() (failure error) {
 	sendLock := srv.RequestHardstop
 	requestRescan := func() { link.Commands <- transport.Command{Kind: transport.CommandRescan} }
 
+	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady)
 	}()
+	startupStop := make(chan struct{})
+	defer close(startupStop)
+	startupErrors := installation.ReadyAfter(filepath.Dir(configPath), Version, startupStop, srv.Ready, botReady, collector.Ready)
 	workerEnded, botEnded := false, false
 	var discards sync.WaitGroup
 	workerFailed := func(err error) {
@@ -313,6 +328,8 @@ func runServe() (failure error) {
 	}
 	collectorEnded := false
 	select {
+	case err := <-startupErrors:
+		failure = fmt.Errorf("confirming startup: %w", err)
 	case <-sourceOwner.Shutdown:
 	case err := <-sourceOwner.Errors:
 		failure = err

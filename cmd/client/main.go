@@ -21,6 +21,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/installation"
 	"github.com/vit-ui/self-tracker/internal/logging"
 	"github.com/vit-ui/self-tracker/internal/transport"
+	"github.com/vit-ui/self-tracker/internal/update"
 )
 
 var (
@@ -38,7 +39,12 @@ func init() {
 	lockfilePath = filepath.Join(dir, "lockfile.json")
 }
 
+var InstallationID string
+
+var Version = "dev"
+
 func main() {
+	updater := update.Register(flag.CommandLine)
 	printRole := flag.Bool("role", false, "print this executable role")
 	roleFile := flag.String("role-output", "", "write the executable role to a setup result file")
 	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
@@ -46,6 +52,13 @@ func main() {
 	setup := flag.Bool("setup", false, "configure folders, screen name, and the server connection string")
 	checkLock := flag.Bool("check-lock", false, "check the local lockfile and exit (0 = clear, 1 = locked)")
 	flag.Parse()
+	if handled, err := updater.Handle(flag.CommandLine, "client", Version, InstallationID); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	switch {
 	case *printRole:
@@ -100,6 +113,10 @@ func runServe() (failure error) {
 	// Enforcement belongs to the process, not a network connection. The same
 	// enforcer retains unsaved protection across every reconnect attempt.
 	enforcer := client.NewEnforcer(lockfilePath)
+	enforcer.EnforceActive()
+	if err := installation.ReportReady(filepath.Dir(configPath), Version); err != nil {
+		return fmt.Errorf("confirming startup: %w", err)
+	}
 	if err := client.RunNetworkCollector(configPath, enforcer, shutdown); err != nil {
 		slog.Error("collector stopped unexpectedly", "err", err)
 		return err

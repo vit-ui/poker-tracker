@@ -113,7 +113,7 @@ func (c *conversation) reset() {
 // stop ends command intake; drained closes after accepted operations finish (also
 // after a successful restart request). The owner then stops producers/worker and
 // closes alertChan. Run joins the update poller before returning.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error)) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
@@ -153,6 +153,9 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			poller.stop()
 		}
 	}()
+	if ready != nil {
+		ready <- struct{}{}
+	}
 	var active *pendingOperation
 	var results <-chan storage.OperationResult
 	stopping, notified := false, false

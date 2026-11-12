@@ -13,7 +13,10 @@ import (
 
 // Stop requests owner shutdown and waits for processes in dir to exit.
 // The caller is excluded so setup and uninstall can use the installed binary.
-func Stop(dir string) error {
+func Stop(dir string) error { return StopExcept(dir, 0) }
+
+// StopExcept also excludes the terminal updater, which has no service shutdown event.
+func StopExcept(dir string, excludedPID int) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return fmt.Errorf("resolving installation directory: %w", err)
@@ -26,7 +29,7 @@ func Stop(dir string) error {
 	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
 	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
 		name := windows.UTF16ToString(entry.ExeFile[:])
-		if int(entry.ProcessID) == os.Getpid() || (!strings.EqualFold(name, "tracker.exe") && !strings.EqualFold(name, "tracker-server.exe") && !strings.EqualFold(name, "tracker-client.exe")) {
+		if int(entry.ProcessID) == os.Getpid() || int(entry.ProcessID) == excludedPID || (!strings.EqualFold(name, "tracker.exe") && !strings.EqualFold(name, "tracker-server.exe") && !strings.EqualFold(name, "tracker-client.exe")) {
 			continue
 		}
 		if err := stopProcess(entry.ProcessID, filepath.Join(dir, name)); err != nil {

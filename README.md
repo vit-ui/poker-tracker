@@ -418,3 +418,29 @@ The server retains the collector's last reported timezone in
 `collector_clock.json`, including across restarts while the PC is offline. Include
 this file in backups. Network clocks retain the reported UTC offset; a later PC
 report refreshes it, including after a daylight-saving change.
+
+### Terminal updates
+
+Run the executable from its installation directory with `--version` or
+`--update`: `tracker.exe --update` on a Windows poker PC (combined or collector),
+`tracker-server.exe --update` on a Windows server, or `./tracker-server --update`
+on Linux. Standalone collector builds also support `tracker-client.exe --update`. Windows
+may request administrator approval. The command updates only that installation
+to the latest stable GitHub release; run it separately on each paired machine.
+
+Close PokerStars before updating a combined or collector installation. An active
+hard stop is allowed: its original expiry survives the brief enforcement
+interruption. Configuration, credentials, history and pairing remain in place.
+Previously running services restart; stopped installations stay stopped. Downloads
+and checksums are verified before stopping the owner. The new application must confirm startup before the updater reports success. If
+replacement fails or the process exits before confirming readiness, the updater
+attempts to restore and restart the previous executable.
+Windows can retain a `.tracker-previous-*` executable after an update because the
+terminal caller still has the old image mapped. Normal uninstall removes retained
+update executables.
+
+Install the first updater-capable release with the existing installer. Older
+releases have no `--update`; development builds have no release version and must
+not be used to update an installation. A release without the required executable
+assets and `SHA256SUMS` requires its installer. Updates do not run setup or refresh
+the Windows uninstaller's displayed installer version.

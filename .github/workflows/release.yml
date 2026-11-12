@@ -22,20 +22,24 @@ jobs:
                     # All-local (combined) — Windows GUI, with the bot token. The single
                     # installer packs both arches and installs the matching one.
                     GOOS=windows GOARCH=$arch go build -trimpath \
-                      -ldflags "-s -w -H=windowsgui -X main.BotToken=$TOKEN" \
+                      -ldflags "-s -w -H=windowsgui -X main.BotToken=$TOKEN -X main.Version=${GITHUB_REF_NAME}" \
                       -o tracker-$arch.exe ./cmd/tracker
                     # Split client — Windows console app, NO bot token (never talks to Telegram).
                     GOOS=windows GOARCH=$arch go build -trimpath \
-                      -ldflags "-s -w" \
+                      -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" \
                       -o tracker-client-$arch.exe ./cmd/client
                     # Split server — Windows + Linux, with the bot token (the only Telegram-talking split role).
                     GOOS=windows GOARCH=$arch go build -trimpath \
-                      -ldflags "-s -w -X main.BotToken=$TOKEN" \
+                      -ldflags "-s -w -X main.BotToken=$TOKEN -X main.Version=${GITHUB_REF_NAME}" \
                       -o tracker-server-windows-$arch.exe ./cmd/server
                     GOOS=linux GOARCH=$arch go build -trimpath \
-                      -ldflags "-s -w -X main.BotToken=$TOKEN" \
+                      -ldflags "-s -w -X main.BotToken=$TOKEN -X main.Version=${GITHUB_REF_NAME}" \
                       -o tracker-server-linux-$arch ./cmd/server
                   done
+                  sha256sum tracker-amd64.exe tracker-arm64.exe \
+                    tracker-client-amd64.exe tracker-client-arm64.exe \
+                    tracker-server-windows-amd64.exe tracker-server-windows-arm64.exe \
+                    tracker-server-linux-amd64 tracker-server-linux-arm64 > SHA256SUMS
                   # One self-extracting Linux server installer with BOTH CPU builds
                   # inside: run it and it detects the CPU (packaging/install.sh) and
                   # installs the right one — the Linux equivalent of the one Windows
@@ -66,6 +70,9 @@ jobs:
                       tracker-server-windows-amd64.exe
                       tracker-server-windows-arm64.exe
                       PokerTracker-Server-linux.tar.gz
+                      tracker-server-linux-amd64
+                      tracker-server-linux-arm64
+                      SHA256SUMS
                   retention-days: 1
 
     installer:
@@ -128,3 +135,12 @@ jobs:
                   files: |
                       PokerTracker-Setup-${{ needs.installer.outputs.version }}.exe
                       PokerTracker-Server-linux.tar.gz
+                      tracker-amd64.exe
+                      tracker-arm64.exe
+                      tracker-client-amd64.exe
+                      tracker-client-arm64.exe
+                      tracker-server-windows-amd64.exe
+                      tracker-server-windows-arm64.exe
+                      tracker-server-linux-amd64
+                      tracker-server-linux-arm64
+                      SHA256SUMS

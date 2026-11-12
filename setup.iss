@@ -1700,6 +1700,9 @@ begin
     DeletePlayerState('collector_settings.json');
     DeletePlayerState('collector_observation.json');
     DeletePlayerState('collector_clock.json');
+    DeletePlayerState('update_startup.json');
+    DelTree(ExpandConstant('{app}\.tracker-previous-*'), False, True, False);
+    DelTree(ExpandConstant('{app}\.tracker-update-*'), False, True, False);
     DeletePlayerState('collector_closures.json');
     DeletePlayerState('closure_notifications.json');
     DeletePlayerState('source_transfer.json');

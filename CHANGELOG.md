@@ -6,6 +6,16 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+### Added
+
+- `--update` installs the latest stable GitHub release for the local role and CPU
+  on Windows and Linux, preserving installation data and restarting an owner
+  that was running. `--version` prints the embedded release version. Release
+  assets now include raw executables and SHA-256 checksums for terminal updates.
+  Windows collector/combined updates require PokerStars closed; active lock
+  expiries are preserved. The new process confirms startup before success;
+  a failed startup restores the previous executable.
+
 ### Fixed
 
 - Collector timezone observations survive server restarts, keeping offline

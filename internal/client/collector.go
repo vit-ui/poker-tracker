@@ -21,6 +21,7 @@ import (
 // that come back down. It never parses or stores anything — that's the server's
 // job.
 type Collector struct {
+	Ready chan struct{}
 	// Stop requests a watcher drain while transport and enforcement remain available.
 	Stop <-chan struct{}
 	// StartPaused holds the watcher during interrupted source-transfer recovery.
@@ -34,7 +35,7 @@ type Collector struct {
 // NewCollector creates a Collector over the given link, writing enforced locks
 // to lockfilePath. control pauses/resumes its watcher and returns drained events.
 func NewCollector(link *transport.Link, enforcer *Enforcer, control func(bool) ([]watcher.FileEvent, error)) *Collector {
-	return &Collector{link: link, enforcer: enforcer, control: control}
+	return &Collector{Ready: make(chan struct{}), link: link, enforcer: enforcer, control: control}
 }
 
 // sentEntry is a file's last-sent byte offset plus when it was last touched, so
@@ -88,6 +89,7 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 	if !c.send(transport.Upload{Status: status, ClientClock: time.Now()}, dead) {
 		return nil
 	}
+	close(c.Ready)
 	sent := make(map[string]*sentEntry)
 	paused := false
 	upload := func(event watcher.FileEvent, recovery bool) error {

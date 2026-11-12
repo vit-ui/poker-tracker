@@ -316,3 +316,17 @@ the original trigger identity and absolute expiry.
 Collector calendar context persists in config-owned `collector_clock.json`.
 Restore it before bot startup; never use the saved offset to shift absolute lock
 expiry or reminder deadlines.
+
+Release builds inject `-X main.Version=${GITHUB_REF_NAME}` into all roles. The
+release publishes all eight raw executables plus `SHA256SUMS` as updater assets;
+installer assets and paths stay unchanged. Never include the bot token in a
+collector build. Exercise updater replacement and recovery in disposable roots
+and service identities, with PokerStars closed, before claiming native behavior
+verified. The updater downloads and validates before stopping the owner and
+never invokes setup. Development builds use `Version=dev` and refuse updates.
+
+Terminal updates use config-owned `update_startup.json` receipts and fsnotify
+startup acknowledgement. Combined/server owners wait for required components;
+the offline collector confirms local enforcement initialization independently of
+its network connection. Do not replace this with a fixed startup delay or service
+active-state check: both can accept a process that exits during initialization.

@@ -30,6 +30,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/transport"
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
+	"github.com/vit-ui/self-tracker/internal/update"
 )
 
 // BotToken is injected at build time via -ldflags "-X main.BotToken=...", the
@@ -67,7 +68,10 @@ func init() {
 	keyPath = filepath.Join(dir, "server_key.pem")
 }
 
+var Version = "dev"
+
 func main() {
+	updater := update.Register(flag.CommandLine)
 	printRole := flag.Bool("role", false, "print this executable role")
 	roleFile := flag.String("role-output", "", "write the executable role to a setup result file")
 	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
@@ -83,6 +87,13 @@ func main() {
 	sheetName := flag.String("sheet-name", "", "Google Sheet name to preseed on --setup (sheets backend)")
 	sheetID := flag.String("sheet-id", "", "Google Sheet ID to preseed on --setup (sheets backend)")
 	flag.Parse()
+	if handled, err := updater.Handle(flag.CommandLine, "server", Version, InstallationID); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	switch {
 	case *printRole:
@@ -219,14 +230,18 @@ func runServe() (failure error) {
 	}
 
 	ownerControls := make(chan bot.OwnerControl)
+	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady)
 	}()
 	destinationStop, destinationDone := make(chan struct{}), make(chan struct{})
 	destinationOwner := &deployment.DestinationOwner{Path: configPath, Requests: link.Transfers, Worker: workerTransfers, Controls: ownerControls, Stop: destinationStop, Standby: deployment.DestinationStandby(transferState)}
 	go func() { defer close(destinationDone); destinationOwner.Run() }()
 	go func() { defer close(transportDone); transport.Serve(ln, token, link) }()
+	startupStop := make(chan struct{})
+	defer close(startupStop)
+	startupErrors := installation.ReadyAfter(filepath.Dir(configPath), Version, startupStop, srv.Ready, botReady)
 	workerEnded, botEnded := false, false
 	var discards sync.WaitGroup
 	workerFailed := func(err error) {
@@ -251,6 +266,8 @@ func runServe() (failure error) {
 		}
 	}
 	select {
+	case err := <-startupErrors:
+		failure = fmt.Errorf("confirming startup: %w", err)
 	case <-shutdown:
 	case <-botDrained: // A successful configuration restart requests owner cleanup.
 	case err := <-botDone:
