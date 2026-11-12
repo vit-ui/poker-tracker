@@ -18,6 +18,12 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Windows terminal updates save a durable recovery journal and register an
+  independent boot/minute recovery task before suspending normal recovery.
+  Interrupted unconfirmed updates restore the previous executable and task
+  state; durably confirmed updates retain the new image. Setup/uninstall cancels
+  temporary update recovery before replacing or removing the installation.
+
 - Elevated Windows updates wait only for their helper, allowing the terminal
   command to finish while a restarted foreground installation keeps running.
 

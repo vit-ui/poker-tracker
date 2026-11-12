@@ -174,3 +174,11 @@ func (s *serviceState) alive() (bool, error) {
 	}
 	return false, nil
 }
+
+func recoverPendingUpdate(string, string, string, int) (string, error) { return "", nil }
+func (*serviceState) prepareUpdate(string, string, string) error       { return nil }
+func (s *serviceState) previousExecutable() (string, error)            { return reservePrevious(s.target) }
+func (*serviceState) confirmUpdate() error                             { return nil }
+func (*serviceState) finishUpdate() error                              { return nil }
+
+func moveExecutable(from, to string) error { return os.Rename(from, to) }

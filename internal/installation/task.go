@@ -15,12 +15,17 @@ import (
 // execution limit, one running instance, and manager-owned failure recovery.
 // The repeating trigger remains available after failure restart attempts run out.
 func WindowsTaskXML(executable, directory string, now time.Time) string {
+	return WindowsCommandTaskXML(executable, directory, "--serve", now)
+}
+
+// WindowsCommandTaskXML shares the service recovery policy with temporary update recovery.
+func WindowsCommandTaskXML(executable, directory, arguments string, now time.Time) string {
 	escape := func(value string) string {
 		var out bytes.Buffer
 		xml.EscapeText(&out, []byte(value))
 		return out.String()
 	}
-	return fmt.Sprintf(taskSchedulerXML, now.Format("2006-01-02T15:04:05"), escape(executable), escape(directory))
+	return fmt.Sprintf(taskSchedulerXML, now.Format("2006-01-02T15:04:05"), escape(executable), escape(arguments), escape(directory))
 }
 
 // RegisterWindowsTask registers only the supplied installation task. The owner
@@ -103,7 +108,7 @@ const taskSchedulerXML = `<?xml version="1.0" encoding="UTF-16"?>
   <Actions Context="Author">
     <Exec>
       <Command>%s</Command>
-      <Arguments>--serve</Arguments>
+      <Arguments>%s</Arguments>
       <WorkingDirectory>%s</WorkingDirectory>
     </Exec>
   </Actions>

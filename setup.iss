@@ -23,6 +23,8 @@
 #endif
 #define CombinedTaskName "Poker Tracker" + InstallationSuffix
 #define ServerTaskName "PokerTrackerServer" + InstallationSuffix
+#define CombinedUpdateRecoveryTaskName CombinedTaskName + " Update Recovery"
+#define ServerUpdateRecoveryTaskName ServerTaskName + " Update Recovery"
 
 [Setup]
 AppId={{5D7656F7-7CCB-4B00-8694-954DDE2986AE}{#InstallationSuffix}
@@ -563,11 +565,40 @@ begin
     SuppressibleMsgBox('Could not restart "' + TaskName + '". Run it in Task Scheduler.', mbError, MB_OK, IDOK);
 end;
 
+// Setup/uninstall replaces the installation itself; terminal-update recovery
+// must not later restore the image that the installer intentionally replaces.
+procedure CancelTerminalUpdateRecovery();
+var
+  Scheduler, Folder, Tasks, Task: Variant;
+  I: Integer;
+begin
+  Scheduler := CreateOleObject('Schedule.Service');
+  Scheduler.Connect();
+  Folder := Scheduler.GetFolder('\');
+  Tasks := Folder.GetTasks(1);
+  for I := Tasks.Count downto 1 do
+  begin
+    Task := Tasks.Item(I);
+    if (Task.Name = '{#CombinedUpdateRecoveryTaskName}') or
+       (Task.Name = '{#ServerUpdateRecoveryTaskName}') then
+    begin
+      Task.Enabled := False;
+      Task.Stop(0);
+      Folder.DeleteTask(Task.Name, 0);
+    end;
+  end;
+  DeleteFile(ExpandConstant('{app}\update_recovery.json'));
+  DeleteFile(ExpandConstant('{app}\update_recovery.json.tmp'));
+  DeleteFile(ExpandConstant('{app}\.tracker-update-recovery.exe'));
+  DeleteFile(ExpandConstant('{app}\.tracker-update-recovery.exe.tmp'));
+end;
+
 procedure StopInstallation();
 var
   HelperPath: String;
   ResultCode: Integer;
 begin
+  CancelTerminalUpdateRecovery();
   SuspendScheduledRecovery();
   if IsUninstaller then
   begin

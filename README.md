@@ -444,3 +444,12 @@ releases have no `--update`; development builds have no release version and must
 not be used to update an installation. A release without the required executable
 assets and `SHA256SUMS` requires its installer. Updates do not run setup or refresh
 the Windows uninstaller's displayed installer version.
+
+Windows updates register a temporary recovery task before stopping the normal
+installation task. If the helper is killed or Windows restarts during replacement,
+recovery restores the previous executable and prior task state at the next
+recovery trigger (boot or the regular minute check). An update whose startup was
+already durably confirmed keeps the new executable. Recovery preserves player
+data and the original lock expiry. Do not run setup/uninstall concurrently with
+an active terminal update; setup/uninstall cancels temporary recovery when it
+takes ownership of the installation.

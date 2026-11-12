@@ -101,3 +101,25 @@ func TestWindowsTaskRecoveryPolicyAndEscapedPaths(t *testing.T) {
 		t.Fatalf("installation paths were not preserved: %+v", task.Actions)
 	}
 }
+
+func TestRecoveryTaskUsesSharedPolicyAndEscapedArguments(t *testing.T) {
+	for _, args := range []string{"--serve", `--recover-update "C:\owned & isolated\tracker.exe"`} {
+		text := WindowsCommandTaskXML(`C:\owned & isolated\.tracker-update-recovery.exe`, `C:\owned & isolated`, args, time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC))
+		decoder := xml.NewDecoder(strings.NewReader(text))
+		decoder.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
+		var task struct {
+			Actions  struct{ Exec struct{ Arguments string } }
+			Settings struct{ Enabled bool }
+			Triggers struct {
+				Boot     struct{}                                       `xml:"BootTrigger"`
+				Repeated struct{ Repetition struct{ Interval string } } `xml:"TimeTrigger"`
+			}
+		}
+		if err := decoder.Decode(&task); err != nil {
+			t.Fatal(err)
+		}
+		if task.Actions.Exec.Arguments != args || !task.Settings.Enabled || task.Triggers.Repeated.Repetition.Interval != "PT1M" {
+			t.Fatalf("recovery policy changed: %+v", task)
+		}
+	}
+}

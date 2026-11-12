@@ -345,3 +345,14 @@ and closure records before establishing calendar context.
 Elevated update launchers must wait for the helper PID only. PowerShell
 `Start-Process -Wait` also waits for descendants, including a restarted
 foreground owner; cover that distinction with isolated native processes.
+
+Windows update transactions persist `update_recovery.json` and a flushed recovery
+helper before registering the temporary recovery task; only then may normal
+recovery be suspended. The temporary task uses the existing boot/minute policy
+and skips an installation while its update/transfer mutex is held. Interrupted
+unconfirmed images roll back; durable startup confirmation keeps the new image.
+Keep recovery armed on restoration failures, validate installation/file identity
+before recovery, and remove the temporary definition before deleting its journal.
+Native interruption tests must use disposable tasks/roots and kill only their own
+helper processes. Compiler and file-state tests do not establish actual reboot
+behavior or ARM64 execution.

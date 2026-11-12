@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/installation"
 	"golang.org/x/sys/windows"
 )
@@ -58,6 +59,7 @@ type serviceState struct {
 	Exists, Enabled, Running, Manual bool
 	release                          func()
 	parent                           int
+	recovery                         *config.UpdateRecovery
 }
 
 func inspectService(target, role, id string, parent int) (*serviceState, error) {
@@ -146,4 +148,16 @@ func (s *serviceState) alive() (bool, error) {
 		return false, fmt.Errorf("checking startup owner: %w: %s", err, output)
 	}
 	return strings.TrimSpace(string(output)) == "True", nil
+}
+
+func moveExecutable(from, to string) error {
+	source, err := windows.UTF16PtrFromString(from)
+	if err != nil {
+		return err
+	}
+	target, err := windows.UTF16PtrFromString(to)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(source, target, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }

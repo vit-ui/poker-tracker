@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,20 +17,23 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/vit-ui/self-tracker/internal/logging"
 )
 
 const latestURL = "https://api.github.com/repos/vit-ui/poker-tracker/releases/latest"
 
 type Options struct {
-	update, version bool
-	target, output  string
-	parent          int
+	update, version               bool
+	target, output, recoverTarget string
+	parent                        int
 }
 
 func Register(flags *flag.FlagSet) *Options {
 	options := new(Options)
 	flags.BoolVar(&options.update, "update", false, "update this installation to the latest stable GitHub release")
 	flags.BoolVar(&options.version, "version", false, "print this executable's release version")
+	flags.StringVar(&options.recoverTarget, "recover-update", "", "internal interrupted-update recovery target")
 	flags.StringVar(&options.target, "update-target", "", "internal update helper target")
 	flags.StringVar(&options.output, "update-output", "", "internal update helper output")
 	flags.IntVar(&options.parent, "update-parent", 0, "internal update caller PID")
@@ -38,6 +42,23 @@ func Register(flags *flag.FlagSet) *Options {
 
 // Handle runs before setup/serve so updating never loads another installation's config.
 func (options *Options) Handle(flags *flag.FlagSet, role, version, installationID string) (bool, error) {
+	if options.recoverTarget != "" {
+		if runtime.GOOS != "windows" {
+			return true, fmt.Errorf("interrupted-update recovery is Windows-only")
+		}
+		count := 0
+		flags.Visit(func(*flag.Flag) { count++ })
+		if count != 1 || flags.NArg() != 0 || !filepath.IsAbs(options.recoverTarget) {
+			return true, fmt.Errorf("--recover-update requires one absolute target and no other actions")
+		}
+		closeLog := logging.Configure(filepath.Join(filepath.Dir(options.recoverTarget), "tracker.log"))
+		defer closeLog()
+		_, err := recoverPendingUpdate(options.recoverTarget, role, installationID, 0)
+		if err != nil {
+			slog.Error("recovering interrupted update", "err", err)
+		}
+		return true, err
+	}
 	if options.target == "" && (options.parent != 0 || options.output != "") {
 		return true, fmt.Errorf("internal update arguments require a helper target")
 	}
@@ -298,6 +319,13 @@ func stage(client *http.Client, value release, name, dir string) (string, error)
 }
 
 func run(target, role, version, id string, parent int, out io.Writer) error {
+	recoveredVersion, err := recoverPendingUpdate(target, role, id, parent)
+	if err != nil {
+		return fmt.Errorf("recovering previous update: %w", err)
+	}
+	if recoveredVersion != "" {
+		version = recoveredVersion
+	}
 	name, err := assetName(role, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return err
@@ -323,7 +351,7 @@ func run(target, role, version, id string, parent int, out io.Writer) error {
 	// A release executable must identify itself before the running owner is touched.
 	if runtime.GOOS == "windows" {
 		renamed := staged + ".exe"
-		if err := os.Rename(staged, renamed); err != nil {
+		if err := moveExecutable(staged, renamed); err != nil {
 			return err
 		}
 		staged = renamed
@@ -343,8 +371,28 @@ func run(target, role, version, id string, parent int, out io.Writer) error {
 		return err
 	}
 	defer service.close()
+	installed, err := exec.Command(target, "--version").Output()
+	if err != nil {
+		return fmt.Errorf("reading installed version before replacement: %w", err)
+	}
+	version = strings.TrimSpace(string(installed))
+	upgrade, err = newer(value.Tag, version)
+	if err != nil {
+		return err
+	}
+	if !upgrade {
+		fmt.Fprintf(out, "Already up to date (%s).\n", version)
+		return nil
+	}
+	if err := service.prepareUpdate(staged, version, value.Tag); err != nil {
+		return fmt.Errorf("preparing update recovery: %w", err)
+	}
 	if err := service.stop(); err != nil {
-		return errors.Join(fmt.Errorf("stopping installation: %w", err), service.restore())
+		restoreErr := service.restore()
+		if restoreErr == nil {
+			restoreErr = service.finishUpdate()
+		}
+		return errors.Join(fmt.Errorf("stopping installation: %w", err), restoreErr)
 	}
 	if err := replace(target, staged, service, value.Tag, version); err != nil {
 		return err
@@ -354,18 +402,19 @@ func run(target, role, version, id string, parent int, out io.Writer) error {
 }
 
 func replace(target, staged string, service *serviceState, newVersion, oldVersion string) (result error) {
-	backup, err := os.CreateTemp(filepath.Dir(target), ".tracker-previous-*")
+	old, err := service.previousExecutable()
 	if err != nil {
-		return errors.Join(err, restartAndConfirm(service, oldVersion))
+		return abortUpdate(service, oldVersion, err)
 	}
-	old := backup.Name()
-	backup.Close()
-	os.Remove(old)
-	if err := os.Rename(target, old); err != nil {
-		return errors.Join(fmt.Errorf("saving previous executable: %w", err), restartAndConfirm(service, oldVersion))
+	if err := moveExecutable(target, old); err != nil {
+		return abortUpdate(service, oldVersion, fmt.Errorf("saving previous executable: %w", err))
 	}
-	if err := os.Rename(staged, target); err != nil {
-		return errors.Join(err, os.Rename(old, target), restartAndConfirm(service, oldVersion))
+	if err := moveExecutable(staged, target); err != nil {
+		restoreErr := moveExecutable(old, target)
+		if restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
+		return abortUpdate(service, oldVersion, err)
 	}
 	if err := restartAndConfirm(service, newVersion); err != nil {
 		stopErr := service.stop()
@@ -373,18 +422,24 @@ func replace(target, staged string, service *serviceState, newVersion, oldVersio
 			return errors.Join(fmt.Errorf("new executable startup failed: %w", err), stopErr, fmt.Errorf("previous executable retained at %s", old))
 		}
 		failed := staged
-		moveErr := os.Rename(target, failed)
+		moveErr := moveExecutable(target, failed)
 		if moveErr != nil {
 			return errors.Join(err, moveErr, fmt.Errorf("previous executable retained at %s", old))
 		}
-		restoreErr := os.Rename(old, target)
+		restoreErr := moveExecutable(old, target)
 		if restoreErr != nil {
 			return errors.Join(err, restoreErr)
 		}
-		return errors.Join(fmt.Errorf("new executable startup failed; restored previous executable: %w", err), restartAndConfirm(service, oldVersion))
+		return abortUpdate(service, oldVersion, fmt.Errorf("new executable could not be confirmed; restored previous executable: %w", err))
+	}
+	if err := service.confirmUpdate(); err != nil {
+		return fmt.Errorf("persisting update confirmation; recovery remains armed: %w", err)
+	}
+	if err := service.finishUpdate(); err != nil {
+		return fmt.Errorf("finishing update recovery: %w", err)
 	}
 	// Windows may retain the caller's mapped image until --update returns.
-	if err := os.Remove(old); err != nil {
+	if err := os.Remove(old); err != nil && !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(os.Stdout, "Previous executable retained at %s\n", old)
 	}
 	return nil
@@ -402,4 +457,12 @@ func copyFile(source, target string, mode os.FileMode) error {
 	}
 	_, err = io.Copy(out, in)
 	return errors.Join(err, out.Close())
+}
+
+func abortUpdate(service *serviceState, version string, cause error) error {
+	err := restartAndConfirm(service, version)
+	if err == nil {
+		err = service.finishUpdate()
+	}
+	return errors.Join(cause, err)
 }
