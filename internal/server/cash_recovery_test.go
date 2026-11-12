@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -226,35 +227,63 @@ func awaitBankroll(t *testing.T, store *sqlitestore.Store, wantCents money.Cents
 }
 
 func TestRecoveredCashRestoresRemainingQuietInterval(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	if err := config.SaveConfig(path, &config.Config{}); err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name         string
+		startupDelay time.Duration
+		remaining    time.Duration
+	}{
+		{"no startup delay", 0, 100 * time.Millisecond},
+		{"startup consumes part of interval", 75 * time.Millisecond, 25 * time.Millisecond},
+		{"startup passes deadline", 150 * time.Millisecond, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "config.json")
+				if err := config.SaveConfig(path, &config.Config{}); err != nil {
+					t.Fatal(err)
+				}
+				store, err := sqlitestore.NewStore(filepath.Join(dir, "test.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer store.Close()
+				session := recoveryFixture(t)
+				journal := filepath.Join(dir, "pending_cash.json")
+				if err := config.SavePendingCash(journal, []config.PendingCash{{FileID: "table", Session: session, LastActivity: time.Now().Add(-300 * time.Millisecond)}}); err != nil {
+					t.Fatal(err)
+				}
+
+				// Only virtual time advances here. Real filesystem/database setup and CPU
+				// scheduling cannot consume the saved session's remaining quiet interval.
+				time.Sleep(test.startupDelay)
+				worker, link, stop := runRecoveredWorker(t, store, path, 400*time.Millisecond)
+				defer stop()
+				<-worker.Ready
+				synctest.Wait()
+				select {
+				case command := <-link.Commands:
+					if command.Kind != transport.CommandResyncFiles || len(command.Files) != 1 || command.Files[0] != "table" {
+						t.Fatalf("resync command %+v", command)
+					}
+				default:
+					t.Fatal("missing recovered source resync")
+				}
+				if test.remaining > 0 {
+					time.Sleep(test.remaining - time.Nanosecond)
+					synctest.Wait()
+					if valueCents, err := store.GetCurrentBankroll(); err != nil || valueCents != 0 {
+						t.Fatalf("cash finalized before its saved deadline: %v, %v", valueCents, err)
+					}
+					time.Sleep(time.Nanosecond)
+					synctest.Wait()
+				}
+				if valueCents, err := store.GetCurrentBankroll(); err != nil || valueCents != session.NetCents {
+					t.Fatalf("cash not finalized at its saved deadline: %v, %v; want %v", valueCents, err, session.NetCents)
+				}
+			})
+		})
 	}
-	session := recoveryFixture(t)
-	journal := filepath.Join(dir, "pending_cash.json")
-	if err := config.SavePendingCash(journal, []config.PendingCash{{FileID: "table", Session: session, LastActivity: time.Now().Add(-300 * time.Millisecond)}}); err != nil {
-		t.Fatal(err)
-	}
-	store, err := sqlitestore.NewStore(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	_, link, stop := runRecoveredWorker(t, store, path, 400*time.Millisecond)
-	defer stop()
-	select {
-	case command := <-link.Commands:
-		if command.Kind != transport.CommandResyncFiles || len(command.Files) != 1 || command.Files[0] != "table" {
-			t.Fatalf("resync command %+v", command)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("missing recovered source resync")
-	}
-	if valueCents, err := store.GetCurrentBankroll(); err != nil || valueCents != 0 {
-		t.Fatalf("restored timer finalized prematurely: %v, %v", valueCents, err)
-	}
-	awaitBankroll(t, store, session.NetCents, 300*time.Millisecond)
 }
 
 func TestExpiredCashRecoveryUpsertsAfterInterruptedJournalRetirement(t *testing.T) {

@@ -18,6 +18,9 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Cash recovery timer tests use controlled time and exact deadline assertions,
+  avoiding false early-finalization failures when startup runs under load.
+
 - Collector timezone observations survive server restarts, keeping offline
   statistics and lock displays on the last reported poker-PC clock.
 

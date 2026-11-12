@@ -95,6 +95,9 @@ go test ./...                       # everything
 go test ./internal/parsers/...      # one package
 ```
 
+- For isolated timer regressions, use `testing/synctest` with real temporary
+  stores to assert before/at deadlines independently of CPU scheduling. Keep
+  the real watcher-to-SQLite end-to-end suite for filesystem/network behavior.
 - **Write tests in the same change as the code.** Any function that takes data
   and returns a number or a decision (rake, BB/100, ROI, running totals, equity
   curve, poker-day boundaries, hard-stop and alert thresholds, duplicate
