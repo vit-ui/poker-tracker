@@ -219,3 +219,62 @@ func TestSavedLockDisplayCanUseDurableConfirmationReceipt(t *testing.T) {
 		t.Fatalf("old receipt overrode clear observation: %s %v", text, err)
 	}
 }
+
+func TestLockStatusPrefersLiveObservationWhenCacheCannotBeSaved(t *testing.T) {
+	for _, test := range []struct {
+		name                                   string
+		cachedActive, liveActive, corruptCache bool
+	}{
+		{"live lock after saved clear", false, true, false},
+		{"live clear after saved lock", true, false, false},
+		{"live lock with corrupt cache", false, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			worker, link, _ := migrationWorker(t)
+			cached := config.LockFile{TriggerID: "cached", ExpiresAt: time.Now().Add(2 * time.Hour)}
+			var old *config.LockFile
+			if test.cachedActive {
+				old = &cached
+			}
+			if err := worker.saveCollectorObservation(old, ""); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(filepath.Dir(worker.configPath), "collector_observation.json")
+			if test.corruptCache {
+				if err := os.WriteFile(path, []byte("invalid JSON"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(path+".tmp", 0700); err != nil {
+				t.Fatal(err)
+			}
+			lock := config.LockFile{TriggerID: "live", ExpiresAt: time.Now().Add(time.Hour)}
+			var current *config.LockFile
+			if test.liveActive {
+				current = &lock
+			}
+			link.Uploads <- transport.Upload{Status: &transport.CollectorStatus{Lock: current}}
+			deadline := time.Now().Add(time.Second)
+			for {
+				got, err := worker.CollectorLock()
+				if err == nil && ((current == nil && got == nil) || (current != nil && got != nil && got.TriggerID == current.TriggerID)) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("live observation not received: %v %v", got, err)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			text, err := worker.LockStatusText()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(text, "Locked until") != test.liveActive {
+				t.Fatalf("status used stale cache: %q", text)
+			}
+			if strings.Contains(text, "unavailable") || strings.Contains(text, "unknown") {
+				t.Fatalf("live observation was unavailable: %q", text)
+			}
+		})
+	}
+}

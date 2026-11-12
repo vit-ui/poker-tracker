@@ -333,3 +333,7 @@ startup acknowledgement. Combined/server owners wait for required components;
 the offline collector confirms local enforcement initialization independently of
 its network connection. Do not replace this with a fixed startup delay or service
 active-state check: both can accept a process that exits during initialization.
+
+Lock status displays use current-connection observations while available and the
+saved display copy offline. A display-cache failure must not hide known live
+protection; this does not change enforcement acknowledgement requirements.

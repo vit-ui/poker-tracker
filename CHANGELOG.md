@@ -18,6 +18,9 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Live collector protection status takes precedence over its saved copy, so a
+  failed cache write cannot hide a confirmed lock or retain a cleared one.
+
 - Cash recovery timer tests use controlled time and exact deadline assertions,
   avoiding false early-finalization failures when startup runs under load.
 

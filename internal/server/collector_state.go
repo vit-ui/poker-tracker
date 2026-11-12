@@ -49,9 +49,14 @@ func (s *Server) CollectorLock() (*config.LockFile, error) {
 
 // LockStatusText reads display state without establishing enforcement confirmation.
 func (s *Server) LockStatusText() (string, error) {
-	state, err := config.LoadCollectorObservation(filepath.Join(filepath.Dir(s.configPath), "collector_observation.json"))
-	if err != nil {
-		return "", err
+	liveLock, liveErr := s.CollectorLock()
+	state := config.CollectorObservation{Known: liveErr == nil, Lock: liveLock}
+	if liveErr != nil {
+		var err error
+		state, err = config.LoadCollectorObservation(filepath.Join(filepath.Dir(s.configPath), "collector_observation.json"))
+		if err != nil {
+			return "", err
+		}
 	}
 	deliveries, err := config.LoadHardstopDeliveries(filepath.Join(filepath.Dir(s.configPath), "hardstop_deliveries.json"))
 	if err != nil {
@@ -90,7 +95,7 @@ func (s *Server) LockStatusText() (string, error) {
 	case <-s.link.CollectorDone():
 		text += "\n⚠️ Poker PC is offline. Showing saved lock status."
 	default:
-		if _, err := s.CollectorLock(); err != nil {
+		if liveErr != nil {
 			text += "\n⚠️ Live collector protection status unavailable."
 		}
 	}
