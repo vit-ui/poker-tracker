@@ -225,9 +225,7 @@ func (s *Server) Run() error {
 	s.clockMu.Lock()
 	clockKnown := s.clientLoc != nil
 	s.clockMu.Unlock()
-	if !clockKnown {
-		s.updateClock(lastClosure)
-	}
+	recoveryClock := lastClosure
 	settingsQueue := collectorSettingsQueue{path: filepath.Join(filepath.Dir(s.configPath), "collector_settings.json")}
 	var settingsErr error
 	settingsQueue.state, settingsErr = config.LoadCollectorSettings(settingsQueue.path)
@@ -264,11 +262,16 @@ func (s *Server) Run() error {
 		pendingSessions[entry.FileID] = entry.Session
 		activity[entry.FileID] = entry.LastActivity
 		clocks[entry.FileID] = entry.ClientClock
-		s.updateClock(entry.ClientClock)
+		if entry.ClientClock.After(recoveryClock) {
+			recoveryClock = entry.ClientClock
+		}
 		resyncPending[entry.FileID] = true
 		recoveredSnapshots[entry.FileID] = entry
 		remaining := remainingCashQuiet(s.QuietPeriod, entry.LastActivity, time.Now())
 		armCashSessionEnd(summaryTimers, entry.FileID, remaining, sessionEndChan, workerDone)
+	}
+	if !clockKnown {
+		s.updateClock(recoveryClock)
 	}
 	persistPending := func() error {
 		entries := make([]config.PendingCash, 0, len(pendingSessions))

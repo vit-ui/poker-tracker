@@ -18,6 +18,9 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Historical cash recovery keeps the latest saved collector timezone. Without a
+  saved observation, recovery chooses the newest historical clock.
+
 - Live collector protection status takes precedence over its saved copy, so a
   failed cache write cannot hide a confirmed lock or retain a cleared one.
 

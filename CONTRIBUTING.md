@@ -337,3 +337,7 @@ active-state check: both can accept a process that exits during initialization.
 Lock status displays use current-connection observations while available and the
 saved display copy offline. A display-cache failure must not hide known live
 protection; this does not change enforcement acknowledgement requirements.
+
+Recovery snapshots must not replace an existing saved collector clock. When no
+saved observation exists, choose the freshest historical timestamp across cash
+and closure records before establishing calendar context.
