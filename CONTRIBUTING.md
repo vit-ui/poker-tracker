@@ -307,3 +307,8 @@ changed and verified.
 - Tag and push only after verifying the build end-to-end (a real session, a
   Telegram round-trip, an installer upgrade). Releases are never automated from
   a commit.
+
+Hard-stop display state (`collector_observation.json`) is a config-owned server
+copy. Never use it as live protection confirmation for migration or deployment.
+Manual requests go through the worker's durable delivery queue; reconnects retain
+the original trigger identity and absolute expiry.

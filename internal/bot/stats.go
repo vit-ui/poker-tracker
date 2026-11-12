@@ -20,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
@@ -350,13 +349,7 @@ func (b *Bot) handleStatus(chatID int64) {
 
 	text := fmt.Sprintf("💰 Status\nBankroll: $%s\nToday: %s\nWeek: %s\nMonth: %s", bankrollCents, FormatSignedUSD(todayNetCents), FormatSignedUSD(weekNetCents), FormatSignedUSD(monthNetCents))
 
-	lock, err := b.currentLock()
-	if err != nil {
-		slog.Error("reading collector lock status", "err", err)
-		text += "\n⚠️ Collector lock status unavailable."
-	} else if lock != nil && !config.IsLockExpired(lock) {
-		text += "\n🛑 " + hardstop.LockDetails(*lock, b.now())
-	}
+	text += b.lockStatus()
 
 	send(b.tg, chatID, text)
 }
@@ -554,4 +547,27 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 		avgFinish = avgFinishSum / float64(cnt)
 	}
 	return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d\nAvg finish: %.0f%%", emoji, label, periodLabel, FormatSignedUSD(netCents), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered), avgFinish), nil
+}
+
+// lockStatus is shared by the status command and hard-stop menu.
+func (b *Bot) lockStatus() string {
+	if b.lockStatusText != nil {
+		text, err := b.lockStatusText()
+		if err != nil {
+			slog.Error("reading saved lock status", "err", err)
+			return "\n⚠️ Collector lock status unavailable."
+		}
+		return text
+	}
+	if b.currentLock == nil {
+		return ""
+	}
+	lock, err := b.currentLock()
+	if err != nil {
+		return "\n⚠️ Collector lock status unavailable."
+	}
+	if lock != nil && lock.ExpiresAt.After(time.Now()) {
+		return "\n🛑 " + hardstop.LockDetails(*lock, b.now())
+	}
+	return ""
 }

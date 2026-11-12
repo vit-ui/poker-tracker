@@ -66,6 +66,8 @@ const (
 type Server struct {
 	// Operations shares the file worker with bot-originated storage writes.
 	Operations           chan storage.Operation
+	hardstopRequests     chan config.LockFile
+	stopped              chan struct{}
 	ClosureNotifications bot.ClosureNotifications
 	// TransferCalls defaults to the link; split owners may broker polling handoff first.
 	TransferCalls <-chan transport.TransferCall
@@ -118,7 +120,7 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
+	return &Server{ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -181,6 +183,7 @@ func (s *Server) reconstruct(up transport.Upload) (string, error) {
 // file, writes storage, and evaluates the hard stop and alerts. It blocks until
 // the link's Uploads channel is closed.
 func (s *Server) Run() error {
+	defer close(s.stopped)
 	defer os.RemoveAll(s.workDir)
 	receiver := deploymentReceiver{server: s}
 	var loadErr error
@@ -547,6 +550,15 @@ func (s *Server) Run() error {
 			drain = nil
 			heldOperation = nil
 			continue
+		case lock := <-s.hardstopRequests:
+			if _, exists := deliveries[lock.TriggerID]; !exists {
+				deliveries[lock.TriggerID] = config.HardstopDelivery{Lock: lock}
+			}
+			if err := saveDeliveries(); err != nil {
+				deliveriesDirty = true
+				slog.Error("saving manual hard-stop delivery", "err", err)
+			}
+			continue
 		case <-s.link.ConnectionChanged:
 			closures.retry()
 			settingsQueue.inflight = nil
@@ -698,6 +710,9 @@ func (s *Server) Run() error {
 		if status := up.Status; status != nil {
 			s.updateClock(up.ClientClock)
 			s.observeCollectorLock(status.Lock, status.Error, connection)
+			if err := s.saveCollectorObservation(status.Lock, status.Error); err != nil {
+				slog.Error("saving collector observation", "err", err)
+			}
 			if status.Settings != nil {
 				if err := settingsQueue.observe(*status.Settings, status.Watching, status.CollectionError); err != nil {
 					return err
@@ -722,6 +737,9 @@ func (s *Server) Run() error {
 		if reply := up.LockReply; reply != nil {
 			s.updateClock(up.ClientClock)
 			s.observeCollectorLock(reply.Lock, reply.Error, connection)
+			if err := s.saveCollectorObservation(reply.Lock, reply.Error); err != nil {
+				slog.Error("saving collector observation", "err", err)
+			}
 			refreshDeliveries()
 			entry, known := deliveries[reply.TriggerID]
 			if !known || entry.Confirmed {

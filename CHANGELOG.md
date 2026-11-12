@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Fixed
+
+- Offline hard-stop requests keep their original expiry through reconnects and
+  server restarts. Status and hard-stop menus display a durable server copy,
+  with offline and pending-PC-confirmation notes.
+
 ## v4.7 — 2026-11-06
 
 ### Fixed

@@ -1698,6 +1698,7 @@ begin
     DeletePlayerState('pending_cash.json');
     DeletePlayerState('hardstop_deliveries.json');
     DeletePlayerState('collector_settings.json');
+    DeletePlayerState('collector_observation.json');
     DeletePlayerState('collector_closures.json');
     DeletePlayerState('closure_notifications.json');
     DeletePlayerState('source_transfer.json');

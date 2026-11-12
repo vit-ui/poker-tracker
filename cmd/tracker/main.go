@@ -276,21 +276,17 @@ func runServe() (failure error) {
 	collector.StartPaused = sourceStartPaused
 	go func() { collectorDone <- collector.Serve(configPath, nil) }()
 
-	// All-local: a manual /hardstop trigger enforces inline, exactly as before
-	// the split — same client.Enforce (taskkill + write the local lockfile), no
-	// change in behavior. The split server instead sends the lock down the link.
+	// Manual hard stops share the worker-owned delivery queue in both modes.
 
 	// A /scan backfill is triggered the same way in both builds: send a rescan
 	// command down the link, which the collector (here, in-process) turns into a
 	// walk of the watched folders.
-	sendLock := func(lock config.LockFile) {
-		link.Commands <- transport.Command{Kind: transport.CommandLock, Lock: &lock}
-	}
+	sendLock := srv.RequestHardstop
 	requestRescan := func() { link.Commands <- transport.Command{Kind: transport.CommandRescan} }
 
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText)
 	}()
 	workerEnded, botEnded := false, false
 	var discards sync.WaitGroup

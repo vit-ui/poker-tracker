@@ -404,3 +404,12 @@ shutdown does not clear or shorten them.
 ## License
 
 © 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE): free for personal, noncommercial use, but you may not redistribute, modify, or use it commercially. See [`LICENSE`](LICENSE) for the full terms.
+
+### Offline hard stops
+
+`/hardstop trigger` saves a request even while the poker PC is offline. Its
+duration starts when requested, not when the PC reconnects. The collector applies
+only the remaining time; an expired request never starts another lock. `/status`
+and `/hardstop` show the server's saved copy and distinguish offline status and
+pending PC confirmation. Local collector lockfiles remain responsible for enforcement.
+Include `collector_observation.json` in installation backups.

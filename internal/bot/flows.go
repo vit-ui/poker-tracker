@@ -553,14 +553,7 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	}
 	rows = append(rows, menuRow(label, "menu:leave:"+path))
 	text := "Hard stop rules — saved on the server even while the poker PC is offline. Existing locks keep their full duration. Tap one to change:"
-	if b.currentLock != nil {
-		lock, err := b.currentLock()
-		if err != nil {
-			text += "\n⚠️ Collector lock status unavailable."
-		} else if lock != nil && lock.ExpiresAt.After(time.Now()) {
-			text += "\n🛑 " + hardstop.LockDetails(*lock, b.now())
-		}
-	}
+	text += b.lockStatus()
 	if warning != "" {
 		text = warning + "\n\n" +
 			text
@@ -1322,7 +1315,7 @@ func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 			return
 		}
 		b.sendLock(delivery.Lock)
-		send(b.tg, chatID, "Hard stop requested.")
+		send(b.tg, chatID, "Hard stop saved; pending PC confirmation.\n"+hardstop.LockDetails(delivery.Lock, b.now()))
 
 		return
 	}
