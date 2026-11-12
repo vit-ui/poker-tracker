@@ -105,6 +105,7 @@ type Server struct {
 	// client's actual time.Local.
 	clockMu                 sync.Mutex
 	clientLoc               *time.Location
+	savedClock              *config.CollectorClock
 	lockMu                  sync.Mutex
 	collectorLock           *config.LockFile
 	collectorLockKnown      bool
@@ -116,11 +117,19 @@ type Server struct {
 // files. The directory is created under the OS temp dir and left for the OS to
 // reclaim; it holds only transient copies of files the collector already has.
 func NewServer(store storage.Store, configPath string, link *transport.Link, alertChan chan<- string) (*Server, error) {
+	clock, err := config.LoadCollectorClock(filepath.Join(filepath.Dir(configPath), "collector_clock.json"))
+	if err != nil {
+		return nil, err
+	}
+	var loc *time.Location
+	if clock != nil {
+		loc = clock.Location()
+	}
 	workDir, err := os.MkdirTemp("", "tracker-work-")
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
+	return &Server{clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -131,8 +140,18 @@ func (s *Server) updateClock(clientClock time.Time) {
 		return
 	}
 	s.clockMu.Lock()
+	defer s.clockMu.Unlock()
 	s.clientLoc = clientClock.Location()
-	s.clockMu.Unlock()
+	_, offset := clientClock.Zone()
+	clock := config.CollectorClock{Name: clientClock.Location().String(), OffsetSeconds: offset}
+	if s.savedClock != nil && *s.savedClock == clock {
+		return
+	}
+	if err := config.SaveCollectorClock(filepath.Join(filepath.Dir(s.configPath), "collector_clock.json"), clock); err != nil {
+		slog.Error("saving collector clock", "err", err)
+		return
+	}
+	s.savedClock = &clock
 }
 
 // ClientNow returns the current instant expressed in the collector's timezone,
@@ -202,7 +221,12 @@ func (s *Server) Run() error {
 			lastClosure = entry.Event.ClosedAt
 		}
 	}
-	s.updateClock(lastClosure)
+	s.clockMu.Lock()
+	clockKnown := s.clientLoc != nil
+	s.clockMu.Unlock()
+	if !clockKnown {
+		s.updateClock(lastClosure)
+	}
 	settingsQueue := collectorSettingsQueue{path: filepath.Join(filepath.Dir(s.configPath), "collector_settings.json")}
 	var settingsErr error
 	settingsQueue.state, settingsErr = config.LoadCollectorSettings(settingsQueue.path)

@@ -8,6 +8,9 @@ pulls its notes from the matching section below.
 
 ### Fixed
 
+- Collector timezone observations survive server restarts, keeping offline
+  statistics and lock displays on the last reported poker-PC clock.
+
 - Offline hard-stop requests keep their original expiry through reconnects and
   server restarts. Status and hard-stop menus display a durable server copy,
   with offline and pending-PC-confirmation notes.

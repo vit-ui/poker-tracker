@@ -413,3 +413,8 @@ only the remaining time; an expired request never starts another lock. `/status`
 and `/hardstop` show the server's saved copy and distinguish offline status and
 pending PC confirmation. Local collector lockfiles remain responsible for enforcement.
 Include `collector_observation.json` in installation backups.
+
+The server retains the collector's last reported timezone in
+`collector_clock.json`, including across restarts while the PC is offline. Include
+this file in backups. Network clocks retain the reported UTC offset; a later PC
+report refreshes it, including after a daylight-saving change.

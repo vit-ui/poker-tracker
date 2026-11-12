@@ -312,3 +312,7 @@ Hard-stop display state (`collector_observation.json`) is a config-owned server
 copy. Never use it as live protection confirmation for migration or deployment.
 Manual requests go through the worker's durable delivery queue; reconnects retain
 the original trigger identity and absolute expiry.
+
+Collector calendar context persists in config-owned `collector_clock.json`.
+Restore it before bot startup; never use the saved offset to shift absolute lock
+expiry or reminder deadlines.
