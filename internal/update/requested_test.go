@@ -15,9 +15,10 @@ func TestAcceptDurableUpdateRequest(t *testing.T) {
 		keep, invalid                     bool
 	}{
 		{"fresh", "v4.8", "", "new", "v4.9", false, false},
-		{"queued coalesces", "v4.8", config.UpdateQueued, "new", "v4.10", true, false},
-		{"waiting coalesces", "v4.8", config.UpdateWaiting, "new", "v4.10", true, false},
-		{"running coalesces", "v4.8", config.UpdateRunning, "new", "v4.10", true, false},
+		{"queued coalesces", "v4.8", config.UpdateQueued, "new", "v4.9", true, false},
+		{"waiting coalesces", "v4.8", config.UpdateWaiting, "new", "v4.9", true, false},
+		{"running coalesces", "v4.8", config.UpdateRunning, "new", "v4.9", true, false},
+		{"pending different version refused", "v4.8", config.UpdateWaiting, "new", "v4.10", true, true},
 		{"completed identity replay", "v4.9", config.UpdateSucceeded, "old", "v4.9", true, false},
 		{"failed identity replay", "v4.8", config.UpdateFailed, "old", "v4.9", true, false},
 		{"new request after failure", "v4.8", config.UpdateFailed, "new", "v4.9", false, false},
@@ -43,6 +44,12 @@ func TestAcceptDurableUpdateRequest(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.invalid {
+				if old != nil {
+					if got == nil || *got != *old {
+						t.Fatal("refused request changed saved job")
+					}
+					return
+				}
 				if got != nil {
 					t.Fatal("invalid request wrote state")
 				}

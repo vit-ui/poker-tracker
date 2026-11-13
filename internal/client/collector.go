@@ -13,6 +13,7 @@ import (
 
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/transport"
+	"github.com/vit-ui/self-tracker/internal/update"
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
@@ -21,7 +22,8 @@ import (
 // that come back down. It never parses or stores anything — that's the server's
 // job.
 type Collector struct {
-	Ready chan struct{}
+	Updater *update.Agent
+	Ready   chan struct{}
 	// Stop requests a watcher drain while transport and enforcement remain available.
 	Stop <-chan struct{}
 	// StartPaused holds the watcher during interrupted source-transfer recovery.
@@ -75,6 +77,13 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 	defer func() { close(finished); <-commandsDone }()
 	lock, err := config.LoadLock(c.enforcer.path)
 	status := &transport.CollectorStatus{Lock: lock}
+	if c.Updater != nil {
+		report, err := c.Updater.Report()
+		if err != nil {
+			slog.Error("reading local update status", "err", err)
+		}
+		status.Update = &report
+	}
 	if err != nil {
 		status.Error = err.Error()
 	}
@@ -153,6 +162,20 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 		case cmd := <-requests:
 			var err error
 			switch cmd.Kind {
+			case transport.CommandUpdate:
+				reply := &transport.UpdateReply{RequestID: cmd.RequestID}
+				if c.Updater == nil || cmd.Update == nil {
+					reply.Error = "This collector has no update request owner. Install the current release first."
+				} else {
+					reply.Report, err = c.Updater.Request(*cmd.Update)
+					if err != nil {
+						reply.Error = err.Error()
+					}
+				}
+				if !c.send(transport.Upload{UpdateReply: reply, ClientClock: time.Now()}, dead) {
+					return nil
+				}
+				continue
 			case transport.CommandCollectorConfig:
 				var settings config.CollectorSettings
 				if cmd.Settings != nil {
@@ -288,6 +311,10 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 // lock kills PokerStars and writes the lockfile. File/control requests are
 // forwarded to Run so uploads and pause acknowledgements keep their order.
 func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<- transport.Command) {
+	var updateChanges <-chan config.UpdateReport
+	if c.Updater != nil {
+		updateChanges = c.Updater.Changes
+	}
 	var pendingRequests []transport.Command
 	var replies []transport.Upload
 	sentClosures := make(map[string]bool)
@@ -325,6 +352,8 @@ func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<
 			reply = replies[0]
 		}
 		select {
+		case report := <-updateChanges:
+			replies = append(replies, transport.Upload{Update: &report, ClientClock: time.Now()})
 		case <-dead:
 			return
 		case <-finished:

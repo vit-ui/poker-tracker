@@ -1732,6 +1732,9 @@ begin
     DeletePlayerState('collector_observation.json');
     DeletePlayerState('collector_clock.json');
     DeletePlayerState('update_startup.json');
+    DeletePlayerState('requested_update.json');
+    DeletePlayerState('collector_updates.json');
+    DeletePlayerState('update_notices.json');
     DelTree(ExpandConstant('{app}\.tracker-previous-*'), False, True, False);
     DelTree(ExpandConstant('{app}\.tracker-update-*'), False, True, False);
     DeletePlayerState('collector_closures.json');

@@ -259,6 +259,13 @@ func runServe() (failure error) {
 	workerDone := make(chan error, 1)
 	workerDrain := make(chan struct{})
 	srv.Drain = workerDrain
+	updater, err := update.NewAgent("combined", Version, InstallationID)
+	if err != nil {
+		return err
+	}
+	updateStop := make(chan struct{})
+	go updater.Run(updateStop, srv.Ready)
+	defer func() { close(updateStop); <-updater.Done() }()
 	workerStopped := make(chan struct{})
 	go func() { defer close(workerStopped); workerDone <- srv.Run() }()
 	sourceOwner, err := deployment.OpenSourceOwner(configPath)
@@ -282,6 +289,7 @@ func runServe() (failure error) {
 	go sourceOwner.Run()
 
 	collector := client.NewCollector(link, enforcer, nil)
+	collector.Updater = updater
 	collectorStop, collectorDone := make(chan struct{}), make(chan error, 1)
 	collector.Stop = collectorStop
 	collector.StartPaused = sourceStartPaused
@@ -298,7 +306,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
 	}()
 	startupStop := make(chan struct{})
 	defer close(startupStop)

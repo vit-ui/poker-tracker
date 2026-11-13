@@ -112,6 +112,9 @@ func (a *Agent) Run(stop, ready <-chan struct{}) {
 		if reflect.DeepEqual(previous, report) {
 			return
 		}
+		if report.Job != nil && report.Job.State == config.UpdateFailed {
+			slog.Error("requested update failed", "version", report.Job.Request.Version, "err", report.Job.Error)
+		}
 		previous = report
 		select {
 		case <-a.Changes:
@@ -173,6 +176,9 @@ func acceptRequest(path, current string, job *config.UpdateJob, request config.U
 		return err
 	}
 	if job != nil && (job.Pending() || job.Request.ID == request.ID) {
+		if job.Pending() && job.Request.Version != request.Version {
+			return fmt.Errorf("update %s is already pending; wait for it to finish before requesting %s", job.Request.Version, request.Version)
+		}
 		return nil
 	}
 	return config.SaveUpdateJob(path, config.UpdateJob{Request: request, State: config.UpdateQueued, Version: current})

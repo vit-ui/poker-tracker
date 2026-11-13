@@ -19,6 +19,7 @@ var commandList = []struct {
 	desc string
 }{
 	{"menu", "Open the full menu: settings, notifications, info, money."},
+	{"update", "Check versions and queue updates for the poker PC or server."},
 	{"deposit", "Log a deposit to your bankroll ledger."},
 	{"withdraw", "Log a withdrawal from your bankroll ledger."},
 	{"status", "Show current bankroll and P&L."},
@@ -41,7 +42,12 @@ var commandList = []struct {
 
 var commandHelp = map[string]string{
 	"help": "Use /help alone to list all commands. Use /help <command> to get details on a specific one. Example: /help stats",
-	"update": "Update Poker Tracker from a terminal on the machine where it is installed.\n" +
+	"update": "Use /update to see versions and saved update requests. Choose the poker PC, server or both.\n" +
+		"Direct commands: /update pc, /update server, /update all, /update check.\n" +
+		"Requests persist after the bot confirms saving them. An offline PC receives its request when it connects. The poker PC waits for PokerStars to close; no further command is needed. The server updates independently. Both targets use the release selected when you asked.\n" +
+		"The bot checks at startup and daily, with one notice per new version. It installs only after you request /update, and reports completion or failure after restart.\n" +
+		"If the bot's own server is off, Telegram retains unreceived commands for at most 24 hours; wait for the bot's saved-request confirmation.\n" +
+		"Terminal alternative:\n" +
 		"1. Close PokerStars before updating the poker PC.\n" +
 		"2. Windows: open PowerShell in your installation folder (default C:\\poker-tracker) and run:\n" +
 		"  .\\tracker.exe --update\n" +
@@ -55,7 +61,7 @@ var commandHelp = map[string]string{
 		"In split mode, update both machines separately to matching versions.\n" +
 		"If --update is unrecognized, install a current release in the existing folder first:\n" +
 		"https://github.com/vit-ui/poker-tracker/releases/latest\n" +
-		"This Telegram help explains the terminal command; it does not start an update.",
+		"Reading /help update does not start an update.",
 	"stats": "Shows performance stats.\n" +
 		"Usage: /stats [cash|spins|mtt] [today|week|month|all]\n" +
 		"Both arguments are optional. Default is all-time stats for all game types.\n" +
@@ -92,10 +98,10 @@ var commandHelp = map[string]string{
 		"  Setup — paths, schedule, screen name, storage, and (on the Sheets backend) sheet and credentials\n" +
 		"  Notifications — the /notify menu (summaries and alerts)\n" +
 		"  Hard stop — the hard-stop rules\n" +
-		"  Info — status, last session, stats, export, how to update\n" +
+		"  Info — status, last session, stats, export, updates\n" +
 		"  Money — deposit, withdraw\n" +
 		"  Help\n" +
-		"Use /help update for terminal update instructions. Drill in and tap Back to step out; Done closes a root menu.",
+		"Use /update for updates or /help update for instructions. Drill in and tap Back to step out; Done closes a root menu.",
 	"status": "Shows current bankroll and profit/loss.\n" +
 		"Usage: /status\n" +
 		"No arguments.",
@@ -155,7 +161,7 @@ func helpText(arg string) string {
 		for _, c := range commandList {
 			fmt.Fprintf(&b, "/%s — %s\n", c.name, c.desc)
 		}
-		b.WriteString("\nTo update the installed app: /help update (terminal instructions).\n")
+		b.WriteString("\nUpdate instructions: /help update.\n")
 		return strings.TrimRight(b.String(), "\n")
 	}
 	arg = strings.TrimPrefix(arg, "/")

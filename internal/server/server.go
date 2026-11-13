@@ -232,6 +232,11 @@ func (s *Server) Run() error {
 	if settingsErr != nil {
 		return settingsErr
 	}
+	updateQueue := collectorUpdateQueue{path: filepath.Join(filepath.Dir(s.configPath), "collector_updates.json")}
+	updateQueue.state, settingsErr = config.LoadCollectorUpdates(updateQueue.path)
+	if settingsErr != nil {
+		return settingsErr
+	}
 	// summaryTimers holds one quiet-period timer per cash table (FileID). A new
 	// hand resets its table's timer; when the table goes quiet the timer signals
 	// sessionEndChan, and the worker writes the session and runs the
@@ -487,6 +492,11 @@ func (s *Server) Run() error {
 				if next := settingsQueue.command(); next != nil {
 					commands, command = s.link.Commands, *next
 				}
+				if commands == nil {
+					if next := updateQueue.command(); next != nil {
+						commands, command = s.link.Commands, *next
+					}
+				}
 			}
 		}
 		select {
@@ -589,6 +599,7 @@ func (s *Server) Run() error {
 			}
 			continue
 		case <-s.link.ConnectionChanged:
+			updateQueue.sent = false
 			closures.retry()
 			settingsQueue.inflight = nil
 			sentLocks = make(map[string]bool)
@@ -608,6 +619,8 @@ func (s *Server) Run() error {
 				}
 			} else if command.Kind == transport.CommandCollectorConfig {
 				settingsQueue.inflight = &config.CollectorChange{ID: command.RequestID, Settings: *command.Settings}
+			} else if command.Kind == transport.CommandUpdate {
+				updateQueue.sent = true
 			} else {
 				pendingCollection.sent = true
 			}
@@ -630,6 +643,26 @@ func (s *Server) Run() error {
 			if receiver.reserved() {
 				operation.Reply <- storage.OperationResult{Err: fmt.Errorf("destination is reserved for deployment transfer")}
 				continue
+			}
+			if operation.Updates {
+				var err error
+				if operation.UpdateRequest != nil {
+					err = updateQueue.accept(*operation.UpdateRequest)
+				}
+				online := true
+				select {
+				case <-s.link.CollectorDone():
+					online = false
+				default:
+				}
+				operation.Reply <- storage.OperationResult{Updates: updateQueue.state, CollectorOnline: online, Err: err}
+				continue
+			}
+			if operation.PrepareMigration || operation.PrepareRestart {
+				if err := config.CheckUpdatesIdle(filepath.Dir(s.configPath)); err != nil {
+					operation.Reply <- storage.OperationResult{Err: err}
+					continue
+				}
 			}
 			if operation.CollectorSettings {
 				var err error
@@ -724,7 +757,7 @@ func (s *Server) Run() error {
 			return fmt.Errorf("collector upload reached reserved deployment destination")
 		}
 		connection, current := s.link.UploadConnection(up)
-		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil || up.ConfigReply != nil) && !current {
+		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil || up.ConfigReply != nil || up.Update != nil || up.UpdateReply != nil) && !current {
 			continue
 		}
 		if event := up.Closure; event != nil {
@@ -737,6 +770,11 @@ func (s *Server) Run() error {
 			continue
 		}
 		if status := up.Status; status != nil {
+			if status.Update != nil {
+				if err := updateQueue.observe(*status.Update); err != nil {
+					return err
+				}
+			}
 			s.updateClock(up.ClientClock)
 			s.observeCollectorLock(status.Lock, status.Error, connection)
 			if err := s.saveCollectorObservation(status.Lock, status.Error); err != nil {
@@ -749,6 +787,20 @@ func (s *Server) Run() error {
 				if status.CollectionError != "" {
 					s.alertChan <- "⚠️ Collection is inactive on the poker PC: " + status.CollectionError + "\nThe collector remains connected so /paths and /screenname can correct it. Hard-stop enforcement remains active."
 				}
+			}
+			continue
+		}
+		if up.Update != nil {
+			s.updateClock(up.ClientClock)
+			if err := updateQueue.observe(*up.Update); err != nil {
+				return err
+			}
+			continue
+		}
+		if up.UpdateReply != nil {
+			s.updateClock(up.ClientClock)
+			if err := updateQueue.acknowledge(*up.UpdateReply); err != nil {
+				return err
 			}
 			continue
 		}

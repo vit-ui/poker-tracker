@@ -37,6 +37,7 @@ type LockReply struct {
 }
 
 type CollectorStatus struct {
+	Update          *config.UpdateReport
 	Lock            *config.LockFile
 	Error           string
 	Settings        *config.CollectorSettings
@@ -54,7 +55,15 @@ type CollectorConfigReply struct {
 	CollectionError string
 }
 
+type UpdateReply struct {
+	RequestID string
+	Report    config.UpdateReport
+	Error     string
+}
+
 type Upload struct {
+	Update          *config.UpdateReport
+	UpdateReply     *UpdateReply
 	collector       <-chan struct{} `json:"-"`
 	Status          *CollectorStatus
 	Recovery        bool
@@ -102,10 +111,12 @@ const (
 	CommandDrainCollection  = "drain_collection"
 	CommandResumeCollection = "resume_collection"
 	CommandCollectorConfig  = "collector_config"
+	CommandUpdate           = "update"
 )
 
 // Command is sent from the server to the client.
 type Command struct {
+	Update    *config.UpdateRequest
 	ClosureID string
 	Files     []string
 	RequestID string

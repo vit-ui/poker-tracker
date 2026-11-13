@@ -114,10 +114,17 @@ func runServe() (failure error) {
 	// enforcer retains unsaved protection across every reconnect attempt.
 	enforcer := client.NewEnforcer(lockfilePath)
 	enforcer.EnforceActive()
+	updater, err := update.NewAgent("client", Version, InstallationID)
+	if err != nil {
+		return err
+	}
+	updateStop := make(chan struct{})
+	go updater.Run(updateStop, nil)
+	defer func() { close(updateStop); <-updater.Done() }()
 	if err := installation.ReportReady(filepath.Dir(configPath), Version); err != nil {
 		return fmt.Errorf("confirming startup: %w", err)
 	}
-	if err := client.RunNetworkCollector(configPath, enforcer, shutdown); err != nil {
+	if err := client.RunNetworkCollector(configPath, enforcer, shutdown, updater); err != nil {
 		slog.Error("collector stopped unexpectedly", "err", err)
 		return err
 	}

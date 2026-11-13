@@ -148,10 +148,16 @@ independent transient user unit. Native service behavior needs isolated checks;
 Go tests and cross-builds alone do not verify it.
 
 User update instructions belong near the beginning of the README and in the
-Telegram `/help update` topic (also linked from Menu → Info). Keep installed
+Telegram `/help update` topic and `/update` menu (also linked from Menu → Info). Keep installed
 filenames aligned with `setup.iss`: combined and collector use `tracker.exe`,
-while Windows server uses `tracker-server.exe`. The Telegram entry explains the
-terminal operation; it does not start a remote update.
+while Windows server uses `tracker-server.exe`. `/update` accepts local or durable
+collector requests through the worker and authenticates the configured chat.
+`/help update` explains both Telegram requests and terminal alternatives. Keep
+release checks asynchronous on startup/daily, and send/deduplicate notices only
+on the bot goroutine after reading actual local/collector observations. Never
+mark a queued send as completed; offline requests retain their identity until
+confirmed. New operational failures require a fresh request. Pending updates
+block storage/deployment handover; do not run setup/uninstall concurrently.
 
 The parser intentionally limits VPIP/PFR to Hold'em/Omaha preflop actions;
 mixed-game hand counts include stud/draw hands. Satellite classification requires

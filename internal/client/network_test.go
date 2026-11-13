@@ -50,7 +50,7 @@ func verifyNetworkCollectorRecovery(t *testing.T, enforce bool) {
 	}
 	done := make(chan struct{})
 	finished := make(chan error, 1)
-	go func() { finished <- runNetworkCollector(path, enforcer, done, 20*time.Millisecond) }()
+	go func() { finished <- runNetworkCollector(path, enforcer, done, 20*time.Millisecond, nil) }()
 	defer func() {
 		close(done)
 		select {
@@ -129,7 +129,7 @@ func verifyNetworkCollectorEnforcesInvalidPairing(t *testing.T) {
 	enforcer := NewEnforcer(lockPath)
 	done := make(chan struct{})
 	finished := make(chan error, 1)
-	go func() { finished <- runNetworkCollector(path, enforcer, done, 30*time.Millisecond) }()
+	go func() { finished <- runNetworkCollector(path, enforcer, done, 30*time.Millisecond, nil) }()
 	defer func() {
 		close(done)
 		if err := <-finished; err != nil {

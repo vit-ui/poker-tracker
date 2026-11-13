@@ -281,7 +281,7 @@ func (b *Bot) runCommandAction(chatID int64, token string) {
 	case "help":
 		send(b.tg, chatID, helpText(""))
 	case "update":
-		send(b.tg, chatID, helpText("update"))
+		b.handleUpdateCommand(chatID, "")
 	}
 }
 
@@ -897,7 +897,7 @@ func (b *Bot) renderInfoMenu(chatID int64, messageID int, path string) {
 		menuRow("Last session", "menu:"+path+":lastsession"),
 		menuRow("Stats", "menu:"+path+":stats"),
 		menuRow("Export", "menu:"+path+":export"),
-		menuRow("How to update", "menu:"+path+":update"),
+		menuRow("Updates", "menu:"+path+":update"),
 		navButton(path),
 	}
 	b.showMenu(chatID, messageID, "Info — tap one:", rows)

@@ -50,7 +50,7 @@ setup accepts contact only from your saved chat.
 
 Start with **`/menu`**. Tap an item, **Back** to return, or **Done** to close a
 root menu. Use `/help <command>` for details, such as `/help stats` or
-**`/help update`**. Update instructions are also in **Menu → Info → How to update**.
+**`/help update`**. Updates are also in **Menu → Info → Updates**.
 
 | What you want | Command or example |
 | --- | --- |
@@ -61,6 +61,7 @@ root menu. Use `/help <command>` for details, such as `/help stats` or
 | Today's Spin & Go results | `/stats spins today` |
 | This month's tournament results | `/stats mtt month` |
 | Record a deposit or withdrawal in USD | `/deposit 50.00` · `/withdraw 20.00` |
+| Check versions or request an update | `/update` |
 | Set hard-stop rules and duration | `/hardstop` |
 | Lock immediately for the configured duration | `/hardstop trigger` |
 | Warning thresholds | `/alerts` |
@@ -80,14 +81,36 @@ real knockout bounties are retained.
 
 ## Updating
 
-**Close PokerStars before updating your poker PC.** Run the command on each
-machine you want to update. It downloads the latest stable release and selects
-the correct role and CPU automatically.
+### From Telegram
 
-### Windows
+Send **`/update`**, then choose **Update poker PC**, **Update server** or
+**Update both**. An all-local installation offers **Update this PC**. You can
+also use `/update pc`, `/update server`, `/update all` or `/update check`.
 
-Open **PowerShell**, then enter your installation folder (the default is
-`C:\poker-tracker`; use your chosen folder if different):
+Wait for the bot to confirm that the request was **saved**. An offline poker PC
+receives it when it connects; if PokerStars is open, the tracker waits for you to
+close it and continues automatically. The server updates independently. Telegram updates on Windows use the installed
+elevated background task; a manually launched unelevated copy reports a
+permission failure and can use the terminal alternative. Requests survive restarts, and **both** pins the same release for both machines. The bot
+reports progress, confirmed completion or failure; a real failure needs a new
+`/update` request.
+
+The bot checks for new stable releases **at startup and daily**, with one notice
+per version. It never installs merely because a new version exists. Menu → Info
+→ Updates shows installed/last reported versions and pending requests.
+
+If the bot's own server is off, Telegram retains unreceived commands for at most
+[24 hours](https://core.telegram.org/bots/api#getting-updates). A request becomes
+durable locally only after the bot confirms saving it. Install the first release
+with this Telegram-update feature manually on both machines; old executables
+cannot receive these requests.
+
+### From a Windows terminal
+
+The terminal command selects the role and CPU automatically and waits for
+PokerStars to close on the poker PC. Open **PowerShell**, then enter your
+installation folder (the default is `C:\poker-tracker`; use your chosen folder
+if different):
 
 ```powershell
 cd C:\poker-tracker
@@ -107,7 +130,7 @@ cd C:\poker-tracker
 Accept the administrator prompt if Windows asks. A standalone collector kept
 under its download name uses `.\tracker-client.exe --update` instead.
 
-### Linux server
+### From a Linux terminal
 
 Open a terminal as the user who installed the server:
 
@@ -331,7 +354,11 @@ upgrade in their existing role first; older protocols/schemas are unsupported.
 | Bot unavailable with an all-local setup | The poker PC must be on and connected. Use a separate server for access while it is off. |
 | Sheets unavailable | Let queued results sync; the bot reports recovery. |
 | `--update` unknown | Install the latest release in the existing folder first. |
+| GitHub release check returns 404 | The default updater requires publicly accessible releases; the repository owner must make the releases public before downloads work. |
 | Another failure | Check `tracker.log` beside the executable on the affected machine. |
+
+A pending update prevents storage migration and deployment transfer until the
+update finishes. Do not run setup/uninstall while a background update is active.
 
 Back up the **installation folder**, including settings, local database,
 credentials, pairing and saved protection/recovery state. Keep the original
@@ -344,7 +371,9 @@ it for upgrades. Prefer the updater or rerun the installer to upgrade.
 
 Preserve `pending_cash.json`, `lockfile.json`, `hardstop_deliveries.json`,
 `collector_observation.json`, `collector_clock.json`, `collector_closures.json`
-and `closure_notifications.json` with their respective installation. In split
+and `closure_notifications.json` with their respective installation.
+Also preserve `requested_update.json`, `collector_updates.json` and
+`update_notices.json` for saved updates, collector results and notice receipts. In split
 mode, closure receipts live on their respective PC/server; in all-local mode,
 they are together. Keep pending tournament questions and any saved transfer or
 update-recovery state as well.

@@ -8,6 +8,15 @@ pulls its notes from the matching section below.
 
 ### Added
 
+- `/update` queues updates for the poker PC, server or both, with durable
+  acknowledgements and a pinned stable release. Offline PCs receive the request
+  after reconnection and wait for PokerStars to close without another command.
+  Telegram reports progress and confirmed results; storage/deployment handover
+  is refused while an update is pending.
+- Telegram checks releases at startup and daily, notifying once per newer
+  version without installing automatically. `/update check` and the Info menu
+  show versions and saved request status.
+
 - Add durable, release-pinned update requests with per-installation helper
   exclusion, saved progress/results and recovery through the existing updater.
   Background helpers run independently of the installation's service owner.

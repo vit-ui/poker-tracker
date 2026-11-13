@@ -58,6 +58,7 @@ func TestUpdateHelp(t *testing.T) {
 				`.\tracker-server.exe --update`, `.\tracker-client.exe --update`,
 				"~/.local/share/poker-tracker/tracker-server --update",
 				"--version", "update both machines separately", "does not start an update",
+				"/update pc", "/update server", "/update all", "waits for PokerStars to close", "daily",
 			} {
 				if !strings.Contains(got, want) {
 					t.Errorf("update help missing %q", want)

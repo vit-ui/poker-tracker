@@ -17,6 +17,8 @@ import (
 )
 
 type Operation struct {
+	Updates                    bool
+	UpdateRequest              *config.UpdateRequest
 	CollectorSettings          bool
 	CollectorChange            *config.CollectorChange
 	PrepareMigration           bool
@@ -33,6 +35,7 @@ type Operation struct {
 
 // OperationResult is consumed on the bot event loop, where replies are sent.
 type OperationResult struct {
+	Updates           config.CollectorUpdates
 	CollectorSettings config.CollectorSettingsState
 	CollectorOnline   bool
 	Recovered         int

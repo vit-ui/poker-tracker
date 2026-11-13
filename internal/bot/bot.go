@@ -23,6 +23,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
+	"github.com/vit-ui/self-tracker/internal/update"
 )
 
 // apiEndpoint is the Telegram Bot API root every bot connection dials. It is
@@ -42,6 +43,11 @@ var apiEndpoint = tgbotapi.APIEndpoint
 // worker-side alert evaluators (alerts.go) run on the worker goroutine,
 // which has no Bot, and stay plain functions too.
 type Bot struct {
+	updater            *update.Agent
+	releaseResults     chan releaseCheckResult
+	checkingRelease    bool
+	lastReleaseCheck   time.Time
+	latestVersion      string
 	sendLock           func(config.LockFile)
 	updateID           int
 	migrating          bool
@@ -113,13 +119,15 @@ func (c *conversation) reset() {
 // stop ends command intake; drained closes after accepted operations finish (also
 // after a successful restart request). The owner then stops producers/worker and
 // closes alertChan. Run joins the update poller before returning.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}) error {
+func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}, updater *update.Agent) error {
 	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("starting telegram bot: %w", err)
 	}
 
 	b := &Bot{
+		updater:            updater,
+		releaseResults:     make(chan releaseCheckResult, 1),
 		worker:             worker,
 		taskName:           taskName,
 		tg:                 tgBot,
@@ -145,6 +153,9 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 	if !standby {
 		poller = startUpdatePoller(tgBot, nextUpdate)
 		updates = poller.updates
+		if updater != nil {
+			b.checkRelease(0, "", "")
+		}
 	} else {
 		b.ownerPaused = true
 	}
@@ -191,6 +202,10 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			request = b.pendingOperations[0].request
 		}
 		var closureResults chan ClosureResult
+		var releaseResults <-chan releaseCheckResult
+		if !stopping {
+			releaseResults = b.releaseResults
+		}
 		var closureReply ClosureResult
 		closures := notifications.Deliveries
 		if closureResult != nil {
@@ -198,6 +213,8 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			closureResults, closureReply = notifications.Results, *closureResult
 		}
 		select {
+		case result := <-releaseResults:
+			b.finishReleaseCheck(result)
 		case event := <-closures:
 			result := b.sendClosure(event)
 			closureResult = &result
@@ -218,6 +235,9 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 				}
 			} else {
 				b.ownerPaused = false
+				if b.updater != nil && b.lastReleaseCheck.IsZero() {
+					b.checkRelease(0, "", "")
+				}
 				if poller == nil {
 					poller = startUpdatePoller(tgBot, nextUpdate)
 					updates = poller.updates
@@ -253,6 +273,12 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		case <-ticker.C:
 			if b.migrating || b.ownerPaused || b.deploymentPaused() {
 				continue
+			}
+			if b.updater != nil {
+				b.queueUpdates(nil, func(result storage.OperationResult) { b.observeUpdates(result) })
+				if time.Since(b.lastReleaseCheck) >= 24*time.Hour {
+					b.checkRelease(0, "", "")
+				}
 			}
 			// realNow drives real-elapsed timing (the 30-min heartbeat, pending
 			// reminders); now is the player-anchored clock the weekly/monthly
@@ -534,6 +560,8 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	data := cb.Data
 
 	switch {
+	case strings.HasPrefix(data, "update:"):
+		b.handleUpdateCommand(chatID, strings.TrimPrefix(data, "update:"))
 	case strings.HasPrefix(data, "satellite_cash:"):
 		b.resolveSatellite(chatID, messageID, strings.TrimPrefix(data, "satellite_cash:"), true)
 	case strings.HasPrefix(data, "satellite_ticket:"):
@@ -555,6 +583,8 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	switch msg.Command() {
+	case "update":
+		b.handleUpdateCommand(chatID, msg.CommandArguments())
 	case "start":
 		send(b.tg, chatID, "Welcome to Poker Tracker. Use the menu below any time — or type a command directly.")
 		b.startMenuFlow(chatID)

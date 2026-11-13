@@ -213,6 +213,13 @@ func runServe() (failure error) {
 	workerDone := make(chan error, 1)
 	workerDrain := make(chan struct{})
 	srv.Drain = workerDrain
+	updater, err := update.NewAgent("server", Version, InstallationID)
+	if err != nil {
+		return err
+	}
+	updateStop := make(chan struct{})
+	go updater.Run(updateStop, srv.Ready)
+	defer func() { close(updateStop); <-updater.Done() }()
 	workerTransfers := make(chan transport.TransferCall)
 	srv.TransferCalls = workerTransfers
 	go func() { workerDone <- srv.Run() }()
@@ -233,7 +240,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady)
+		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
 	}()
 	destinationStop, destinationDone := make(chan struct{}), make(chan struct{})
 	destinationOwner := &deployment.DestinationOwner{Path: configPath, Requests: link.Transfers, Worker: workerTransfers, Controls: ownerControls, Stop: destinationStop, Standby: deployment.DestinationStandby(transferState)}
