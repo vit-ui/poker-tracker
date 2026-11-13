@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## Unreleased
+## v4.10 — 2026-11-13
 
 ### Fixed
 
