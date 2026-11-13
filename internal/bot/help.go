@@ -47,6 +47,7 @@ var commandHelp = map[string]string{
 		"Requests persist after the bot confirms saving them. An offline PC receives its request when it connects. The poker PC waits for PokerStars to close; no further command is needed. The server updates independently. Both targets use the release selected when you asked.\n" +
 		"The bot checks at startup and daily, with one notice per new version. It installs only after you request /update, and reports completion or failure after restart.\n" +
 		"If the bot's own server is off, Telegram retains unreceived commands for at most 24 hours; wait for the bot's saved-request confirmation.\n" +
+		"Versions 4.8/4.9 need a one-time manual installer upgrade in the existing folder before using packaged updates.\n" +
 		"Terminal alternative:\n" +
 		"1. Close PokerStars before updating the poker PC.\n" +
 		"2. Windows: open PowerShell in your installation folder (default C:\\poker-tracker) and run:\n" +

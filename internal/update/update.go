@@ -2,8 +2,6 @@
 package update
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -140,9 +138,10 @@ func (options *Options) Handle(flags *flag.FlagSet, role, version, installationI
 }
 
 type releaseAsset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-	Size int64  `json:"size"`
+	Name   string `json:"name"`
+	URL    string `json:"browser_download_url"`
+	Size   int64  `json:"size"`
+	Digest string `json:"digest"`
 }
 type release struct {
 	Tag        string         `json:"tag_name"`
@@ -151,7 +150,7 @@ type release struct {
 	Assets     []releaseAsset `json:"assets"`
 }
 
-func assetName(role, goos, arch string) (string, error) {
+func payloadName(role, goos, arch string) (string, error) {
 	if arch != "amd64" && arch != "arm64" {
 		return "", fmt.Errorf("unsupported architecture %s", arch)
 	}
@@ -161,11 +160,10 @@ func assetName(role, goos, arch string) (string, error) {
 	case role == "client" && goos == "windows":
 		return "tracker-client-" + arch + ".exe", nil
 	case role == "server" && (goos == "windows" || goos == "linux"):
-		name := "tracker-server-" + goos + "-" + arch
 		if goos == "windows" {
-			name += ".exe"
+			return "tracker-server-windows-" + arch + ".exe", nil
 		}
-		return name, nil
+		return "tracker-server-" + arch, nil
 	}
 	return "", fmt.Errorf("unsupported update target %s/%s/%s", role, goos, arch)
 }
@@ -254,79 +252,6 @@ func findAsset(value release, name string) (releaseAsset, error) {
 	return releaseAsset{}, fmt.Errorf("release %s has no usable %s; use its installer", value.Tag, name)
 }
 
-func stage(client *http.Client, value release, name, dir string) (string, error) {
-	asset, err := findAsset(value, name)
-	if err != nil {
-		return "", err
-	}
-	sums, err := findAsset(value, "SHA256SUMS")
-	if err != nil {
-		return "", err
-	}
-	response, err := get(client, sums.URL)
-	if err != nil {
-		return "", err
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, sums.Size+1))
-	response.Body.Close()
-	if err != nil {
-		return "", err
-	}
-	if int64(len(data)) != sums.Size {
-		return "", fmt.Errorf("incomplete checksum manifest")
-	}
-	var expected string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
-			expected = fields[0]
-		}
-	}
-	decoded, err := hex.DecodeString(expected)
-	if err != nil || len(decoded) != sha256.Size {
-		return "", fmt.Errorf("missing or invalid checksum for %s", name)
-	}
-	response, err = get(client, asset.URL)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-	file, err := os.CreateTemp(dir, ".tracker-update-*")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	ok := false
-	defer func() {
-		file.Close()
-		if !ok {
-			os.Remove(path)
-		}
-	}()
-	hash := sha256.New()
-	count, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, asset.Size+1))
-	if err != nil {
-		return "", err
-	}
-	if count != asset.Size {
-		return "", fmt.Errorf("incomplete or oversized executable download")
-	}
-	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), expected) {
-		return "", fmt.Errorf("executable checksum mismatch")
-	}
-	if err := file.Chmod(0700); err != nil {
-		return "", err
-	}
-	if err := file.Sync(); err != nil {
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		return "", err
-	}
-	ok = true
-	return path, nil
-}
-
 func run(target, role, version, id string, parent int, out io.Writer, job *config.UpdateJob) error {
 	recoveredVersion, err := recoverPendingUpdate(target, role, id, parent)
 	if err != nil {
@@ -335,7 +260,7 @@ func run(target, role, version, id string, parent int, out io.Writer, job *confi
 	if recoveredVersion != "" {
 		version = recoveredVersion
 	}
-	name, err := assetName(role, runtime.GOOS, runtime.GOARCH)
+	name, err := payloadName(role, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
@@ -364,7 +289,7 @@ func run(target, role, version, id string, parent int, out io.Writer, job *confi
 		fmt.Fprintf(out, "Already up to date (%s).\n", version)
 		return nil
 	}
-	fmt.Fprintf(out, "Downloading %s (%s)...\n", value.Tag, name)
+	fmt.Fprintf(out, "Downloading the %s installer...\n", value.Tag)
 	staged, err := stage(http.DefaultClient, value, name, filepath.Dir(target))
 	if err != nil {
 		return fmt.Errorf("staging update: %w", err)

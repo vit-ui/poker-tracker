@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Fixed
+
+- Restore the release to two uploaded installers (four visible entries including
+  GitHub's source archives). Stop publishing individual executables and
+  `SHA256SUMS`. Internal CI builds still cover every role and architecture.
+- Terminal and Telegram updates download those same installers, validate their
+  GitHub SHA-256 digest and size, and extract only the required executable before
+  the existing startup-confirmed replacement. Extraction does not install or
+  change settings/services. Versions 4.8/4.9 need one manual installer upgrade
+  to adopt this format.
+
 ## v4.9 — 2026-11-13
 
 ### Added

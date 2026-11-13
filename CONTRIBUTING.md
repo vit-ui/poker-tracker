@@ -344,13 +344,24 @@ Collector calendar context persists in config-owned `collector_clock.json`.
 Restore it before bot startup; never use the saved offset to shift absolute lock
 expiry or reminder deadlines.
 
-Release builds inject `-X main.Version=${GITHUB_REF_NAME}` into all roles. The
-release publishes all eight raw executables plus `SHA256SUMS` as updater assets;
-installer assets and paths stay unchanged. Never include the bot token in a
+Release builds inject `-X main.Version=${GITHUB_REF_NAME}` into all roles.
+Build the eight role/architecture binaries as internal CI artifacts, but publish
+ONLY `PokerTracker-Setup-<version>.exe` and `PokerTracker-Server-linux.tar.gz`.
+GitHub adds two source archives automatically, giving four visible entries.
+Do not publish individual binaries, checksum manifests or extra updater assets.
+The updater verifies the installer's size and GitHub metadata `digest` before
+extracting a payload. Windows uses the installer's extraction-only
+`/UPDATEFILE` + `/UPDATEOUT` entry: InitializeSetup aborts with Inno exit code 1
+before wizard/config/task code; a fresh output file and role/version probes
+are required. Linux reads the makeself member from the outer tar.gz and uses
+`--tar xOf` to stream only `./tracker-server-<arch>`, never `install.sh`.
+Use the existing two packages and keep installer output names unchanged. Never include the bot token in a
 collector build. Exercise updater replacement and recovery in disposable roots
 and service identities, with PokerStars closed, before claiming native behavior
 verified. The updater downloads and validates before stopping the owner and
-never invokes setup. Development builds use `Version=dev` and refuse updates.
+never runs the setup/install flow. Development builds use `Version=dev` and
+refuse updates. Versions 4.8/4.9 require a one-time manual installer upgrade;
+there is no legacy raw-asset fallback.
 
 Terminal updates use config-owned `update_startup.json` receipts and fsnotify
 startup acknowledgement. Combined/server owners wait for required components;

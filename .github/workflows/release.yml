@@ -53,10 +53,6 @@ jobs:
                       -ldflags "-s -w -X main.BotToken=$TOKEN -X main.Version=${GITHUB_REF_NAME}" \
                       -o tracker-server-linux-$arch ./cmd/server
                   done
-                  sha256sum tracker-amd64.exe tracker-arm64.exe \
-                    tracker-client-amd64.exe tracker-client-arm64.exe \
-                    tracker-server-windows-amd64.exe tracker-server-windows-arm64.exe \
-                    tracker-server-linux-amd64 tracker-server-linux-arm64 > SHA256SUMS
                   # One self-extracting Linux server installer with BOTH CPU builds
                   # inside: run it and it detects the CPU (packaging/install.sh) and
                   # installs the right one — the Linux equivalent of the one Windows
@@ -89,7 +85,6 @@ jobs:
                       PokerTracker-Server-linux.tar.gz
                       tracker-server-linux-amd64
                       tracker-server-linux-arm64
-                      SHA256SUMS
                   retention-days: 1
 
     installer:
@@ -152,12 +147,3 @@ jobs:
                   files: |
                       PokerTracker-Setup-${{ needs.installer.outputs.version }}.exe
                       PokerTracker-Server-linux.tar.gz
-                      tracker-amd64.exe
-                      tracker-arm64.exe
-                      tracker-client-amd64.exe
-                      tracker-client-arm64.exe
-                      tracker-server-windows-amd64.exe
-                      tracker-server-windows-arm64.exe
-                      tracker-server-linux-amd64
-                      tracker-server-linux-arm64
-                      SHA256SUMS

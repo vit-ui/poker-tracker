@@ -102,8 +102,9 @@ per version. It never installs merely because a new version exists. Menu → Inf
 If the bot's own server is off, Telegram retains unreceived commands for at most
 [24 hours](https://core.telegram.org/bots/api#getting-updates). A request becomes
 durable locally only after the bot confirms saving it. Install the first release
-with this Telegram-update feature manually on both machines; old executables
-cannot receive these requests.
+with this packaged updater manually on both machines. Versions 4.8 and 4.9 used
+the retired raw-file format and need this one-time installer upgrade in the
+existing folder; settings and history stay in place.
 
 ### From a Windows terminal
 
@@ -166,8 +167,11 @@ retain a `.tracker-previous-*` executable until uninstall because the terminal
 caller still has the old image open. Terminal updates do not rerun setup or
 change the version displayed by the Windows uninstaller.
 
-Development builds cannot update an installation. A release missing the required
-executable assets or `SHA256SUMS` must be installed with its installer.
+Releases provide only the Windows installer and Linux server bundle; GitHub also
+lists two automatic source archives. Updates download the matching installer,
+verify its size and GitHub SHA-256 digest, and extract only the executable needed
+by this machine. They do not rerun the setup wizard or register services.
+Development builds cannot update an installation.
 
 </details>
 

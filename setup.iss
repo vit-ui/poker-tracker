@@ -79,6 +79,8 @@ Source: "tracker-client-arm64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; F
 ; CurStepChanged runs its --setup/--install and shows the connection string.
 Source: "tracker-server-windows-amd64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerAmd64
 Source: "tracker-server-windows-arm64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerArm64
+Source: "tracker-server-windows-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy
+Source: "tracker-server-windows-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 
 ; The collector is also a temporary, network-free process-stop helper for setup.
 Source: "tracker-client-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy
@@ -106,6 +108,7 @@ Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#ServerTaskName}"" /F"; Fl
 
 [Code]
 var
+  UpdateExtraction: Boolean;
   PageBackend: TInputOptionWizardPage;
   PageMethod: TInputOptionWizardPage;
   PageCredentials: TInputFileWizardPage;
@@ -687,6 +690,28 @@ begin
     else
       Result := RunTransferStep('--transfer-stage "' + TransferConnection + '"');
   end;
+end;
+
+// Updating extracts one payload and stops before wizard, config or task code.
+// Inno returns initialization exit code 1; the updater also requires the output
+// file and then probes its role/version before touching the installed owner.
+function InitializeSetup(): Boolean;
+var
+  Payload, OutputPath: String;
+begin
+  Payload := ExpandConstant('{param:UPDATEFILE|}');
+  OutputPath := ExpandConstant('{param:UPDATEOUT|}');
+  UpdateExtraction := (Payload <> '') or (OutputPath <> '');
+  Result := not UpdateExtraction;
+  if not UpdateExtraction then Exit;
+  if ((Payload <> 'tracker-amd64.exe') and (Payload <> 'tracker-arm64.exe') and
+      (Payload <> 'tracker-client-amd64.exe') and (Payload <> 'tracker-client-arm64.exe') and
+      (Payload <> 'tracker-server-windows-amd64.exe') and (Payload <> 'tracker-server-windows-arm64.exe')) or
+     (OutputPath = '') then
+    RaiseException('Invalid update extraction request.');
+  ExtractTemporaryFile(Payload);
+  if not FileCopy(ExpandConstant('{tmp}\') + Payload, OutputPath, True) then
+    RaiseException('Could not extract update payload.');
 end;
 
 procedure InitializeWizard();
@@ -1757,6 +1782,7 @@ procedure DeinitializeSetup();
 var
   ResultCode: Integer;
 begin
+  if UpdateExtraction then Exit;
   if TransferStaged and not TransferFinished then
   begin
     if Exec('schtasks.exe', '/Change /TN "{#CombinedTaskName}" /DISABLE', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then

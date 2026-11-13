@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,16 +30,16 @@ func TestReleaseVersionComparison(t *testing.T) {
 		})
 	}
 }
-func TestRoleAssets(t *testing.T) {
+func TestRolePayloadNames(t *testing.T) {
 	for _, tc := range []struct{ role, goos, arch, want string }{
 		{"combined", "windows", "amd64", "tracker-amd64.exe"}, {"combined", "windows", "arm64", "tracker-arm64.exe"},
 		{"client", "windows", "amd64", "tracker-client-amd64.exe"}, {"client", "windows", "arm64", "tracker-client-arm64.exe"},
 		{"server", "windows", "amd64", "tracker-server-windows-amd64.exe"}, {"server", "windows", "arm64", "tracker-server-windows-arm64.exe"},
-		{"server", "linux", "amd64", "tracker-server-linux-amd64"}, {"server", "linux", "arm64", "tracker-server-linux-arm64"},
+		{"server", "linux", "amd64", "tracker-server-amd64"}, {"server", "linux", "arm64", "tracker-server-arm64"},
 		{"client", "linux", "amd64", ""}, {"server", "linux", "386", ""},
 	} {
 		t.Run(tc.role+tc.goos+tc.arch, func(t *testing.T) {
-			got, err := assetName(tc.role, tc.goos, tc.arch)
+			got, err := payloadName(tc.role, tc.goos, tc.arch)
 			if got != tc.want || (err != nil) != (tc.want == "") {
 				t.Fatalf("asset=%s err=%v", got, err)
 			}
@@ -62,11 +61,9 @@ func TestDownloadStagesOnlyVerifiedBytes(t *testing.T) {
 			if tc.badHash {
 				hash = strings.Repeat("0", 64)
 			}
-			manifest := hash + "  tracker-server-linux-amd64\n"
 			var value release
 			mux := http.NewServeMux()
 			mux.HandleFunc("/latest", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(value) })
-			mux.HandleFunc("/sums", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, manifest) })
 			mux.HandleFunc("/binary", func(w http.ResponseWriter, r *http.Request) {
 				if tc.downloadError {
 					w.WriteHeader(503)
@@ -80,9 +77,9 @@ func TestDownloadStagesOnlyVerifiedBytes(t *testing.T) {
 			})
 			server := httptest.NewServer(mux)
 			defer server.Close()
-			value = release{Tag: "v4.8", Prerelease: tc.prerelease, Assets: []releaseAsset{{Name: "SHA256SUMS", URL: server.URL + "/sums", Size: int64(len(manifest))}}}
+			value = release{Tag: "v4.8", Prerelease: tc.prerelease}
 			if !tc.missing {
-				value.Assets = append(value.Assets, releaseAsset{Name: "tracker-server-linux-amd64", URL: server.URL + "/binary", Size: int64(len(payload))})
+				value.Assets = append(value.Assets, releaseAsset{Name: "PokerTracker-Server-linux.tar.gz", URL: server.URL + "/binary", Size: int64(len(payload)), Digest: "sha256:" + hash})
 			}
 			got, err := latest(server.Client(), server.URL+"/latest")
 			if tc.prerelease {
@@ -97,7 +94,11 @@ func TestDownloadStagesOnlyVerifiedBytes(t *testing.T) {
 			dir := t.TempDir()
 			dataPath := filepath.Join(dir, "config.json")
 			os.WriteFile(dataPath, []byte("preserve"), 0600)
-			staged, err := stage(server.Client(), got, "tracker-server-linux-amd64", dir)
+			staged := filepath.Join(dir, "package")
+			asset, err := findAsset(got, "PokerTracker-Server-linux.tar.gz")
+			if err == nil {
+				err = downloadPackage(server.Client(), asset, staged)
+			}
 			wantErr := tc.badHash || tc.short || tc.missing || tc.downloadError
 			if (err != nil) != wantErr {
 				t.Fatalf("stage=%s err=%v", staged, err)
