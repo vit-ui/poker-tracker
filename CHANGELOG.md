@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Changed
+
+- Pull requests run CI; version tags run tests and vet before release builds,
+  packaging and publication. Branch pushes no longer start a separate CI run,
+  avoiding duplicate builds when pushing a branch and its release tag together.
+
 ## v4.8 — 2026-11-12
 
 ### Added

@@ -129,11 +129,14 @@ native enforcement check requires a separately coordinated window; ordinary
 tests must never terminate the user's PokerStars process. Closure notifications
 are at least once; pending queues block installation transfer.
 
-Branch pushes and pull requests run `.github/workflows/ci.yml`: the full Go
-suite, vet, and eight pure-Go cross-builds (Windows combined/collector/server and
-Linux server, each on amd64 and arm64). These checks use no bot token. Packaging
-and publication remain in the tag-triggered release workflow. Compilation does
-not establish native ARM64 execution or installer acceptance.
+Pull requests run `.github/workflows/ci.yml`: the full Go suite, vet, and eight
+pure-Go cross-builds (Windows combined/collector/server and Linux server, each on
+amd64 and arm64), without a bot token. Branch pushes do not trigger a workflow;
+run tests and vet locally before pushing work without a pull request.
+Version tags run `.github/workflows/release.yml`: tests and vet must pass before
+the eight release binaries are built, packaged and published. Pushing a branch
+and its version tag together therefore starts only the release workflow.
+Compilation does not establish native ARM64 execution or installer acceptance.
 
 The parser intentionally limits VPIP/PFR to Hold'em/Omaha preflop actions;
 mixed-game hand counts include stud/draw hands. Satellite classification requires
