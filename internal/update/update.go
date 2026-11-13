@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/logging"
 )
 
@@ -26,6 +27,7 @@ const latestURL = "https://api.github.com/repos/vit-ui/poker-tracker/releases/la
 type Options struct {
 	update, version               bool
 	target, output, recoverTarget string
+	requestID                     string
 	parent                        int
 }
 
@@ -36,6 +38,7 @@ func Register(flags *flag.FlagSet) *Options {
 	flags.StringVar(&options.recoverTarget, "recover-update", "", "internal interrupted-update recovery target")
 	flags.StringVar(&options.target, "update-target", "", "internal update helper target")
 	flags.StringVar(&options.output, "update-output", "", "internal update helper output")
+	flags.StringVar(&options.requestID, "update-request", "", "internal durable update request identity")
 	flags.IntVar(&options.parent, "update-parent", 0, "internal update caller PID")
 	return options
 }
@@ -59,7 +62,7 @@ func (options *Options) Handle(flags *flag.FlagSet, role, version, installationI
 		}
 		return true, err
 	}
-	if options.target == "" && (options.parent != 0 || options.output != "") {
+	if options.target == "" && (options.parent != 0 || options.output != "" || options.requestID != "") {
 		return true, fmt.Errorf("internal update arguments require a helper target")
 	}
 	if !options.update && !options.version && options.target == "" {
@@ -68,7 +71,7 @@ func (options *Options) Handle(flags *flag.FlagSet, role, version, installationI
 	attachConsole()
 	var conflict string
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name != "update" && f.Name != "update-target" && f.Name != "update-parent" && f.Name != "update-output" && f.Name != "version" {
+		if f.Name != "update" && f.Name != "update-target" && f.Name != "update-parent" && f.Name != "update-output" && f.Name != "update-request" && f.Name != "version" {
 			conflict = f.Name
 		}
 	})
@@ -80,6 +83,12 @@ func (options *Options) Handle(flags *flag.FlagSet, role, version, installationI
 		return true, nil
 	}
 	if options.target != "" {
+		if options.requestID != "" {
+			if !filepath.IsAbs(options.target) || options.parent != 0 || options.output != "" {
+				return true, fmt.Errorf("invalid queued update arguments")
+			}
+			return true, runRequested(options.target, role, version, installationID, options.requestID, io.Discard)
+		}
 		if !filepath.IsAbs(options.target) || options.parent <= 0 || options.output == "" {
 			return true, fmt.Errorf("invalid internal update arguments")
 		}
@@ -88,7 +97,7 @@ func (options *Options) Handle(flags *flag.FlagSet, role, version, installationI
 			return true, fmt.Errorf("opening update output: %w", err)
 		}
 		defer log.Close()
-		err = run(options.target, role, version, installationID, options.parent, log)
+		err = run(options.target, role, version, installationID, options.parent, log, nil)
 		if err != nil {
 			fmt.Fprintln(log, "Update failed:", err)
 		}
@@ -318,7 +327,7 @@ func stage(client *http.Client, value release, name, dir string) (string, error)
 	return path, nil
 }
 
-func run(target, role, version, id string, parent int, out io.Writer) error {
+func run(target, role, version, id string, parent int, out io.Writer, job *config.UpdateJob) error {
 	recoveredVersion, err := recoverPendingUpdate(target, role, id, parent)
 	if err != nil {
 		return fmt.Errorf("recovering previous update: %w", err)
@@ -330,15 +339,28 @@ func run(target, role, version, id string, parent int, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	value, err := latest(http.DefaultClient, latestURL)
+	url := latestURL
+	if job != nil {
+		if err := ValidateRequestVersion(job.Request.Version); err != nil {
+			return err
+		}
+		url = "https://api.github.com/repos/vit-ui/poker-tracker/releases/tags/" + job.Request.Version
+	}
+	value, err := latest(http.DefaultClient, url)
 	if err != nil {
 		return fmt.Errorf("checking GitHub release: %w", err)
+	}
+	if job != nil && value.Tag != job.Request.Version {
+		return fmt.Errorf("release metadata does not match requested version %s", job.Request.Version)
 	}
 	upgrade, err := newer(value.Tag, version)
 	if err != nil {
 		return err
 	}
 	if !upgrade {
+		if job != nil {
+			job.Version = version
+		}
 		fmt.Fprintf(out, "Already up to date (%s).\n", version)
 		return nil
 	}
@@ -366,6 +388,16 @@ func run(target, role, version, id string, parent int, out io.Writer) error {
 			return fmt.Errorf("staged executable %s mismatch", probe.flag)
 		}
 	}
+	jobPath := filepath.Join(filepath.Dir(target), "requested_update.json")
+	if err := waitForPokerStars(jobPath, role, job); err != nil {
+		return err
+	}
+	if job != nil {
+		job.State = config.UpdateRunning
+		if err := config.SaveUpdateJob(jobPath, *job); err != nil {
+			return err
+		}
+	}
 	service, err := inspectService(target, role, id, parent)
 	if err != nil {
 		return err
@@ -381,6 +413,9 @@ func run(target, role, version, id string, parent int, out io.Writer) error {
 		return err
 	}
 	if !upgrade {
+		if job != nil {
+			job.Version = version
+		}
 		fmt.Fprintf(out, "Already up to date (%s).\n", version)
 		return nil
 	}
@@ -396,6 +431,9 @@ func run(target, role, version, id string, parent int, out io.Writer) error {
 	}
 	if err := replace(target, staged, service, value.Tag, version); err != nil {
 		return err
+	}
+	if job != nil {
+		job.Version = value.Tag
 	}
 	fmt.Fprintf(out, "Updated %s to %s.\n", role, value.Tag)
 	return nil

@@ -138,6 +138,15 @@ the eight release binaries are built, packaged and published. Pushing a branch
 and its version tag together therefore starts only the release workflow.
 Compilation does not establish native ARM64 execution or installer acceptance.
 
+Update request state lives in `requested_update.json` on each installation.
+Only its service agent accepts a request; after detached launch, the helper owns
+progress/result writes until completion. A separate installation lock excludes
+concurrent request helpers. Keep release pins, checksum validation, startup
+confirmation and existing rollback. Windows helpers need an elevated installed
+task and must survive its Task Scheduler job; Linux managed servers use an
+independent transient user unit. Native service behavior needs isolated checks;
+Go tests and cross-builds alone do not verify it.
+
 User update instructions belong near the beginning of the README and in the
 Telegram `/help update` topic (also linked from Menu → Info). Keep installed
 filenames aligned with `setup.iss`: combined and collector use `tracker.exe`,

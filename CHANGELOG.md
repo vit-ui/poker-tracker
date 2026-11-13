@@ -6,6 +6,12 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+### Added
+
+- Add durable, release-pinned update requests with per-installation helper
+  exclusion, saved progress/results and recovery through the existing updater.
+  Background helpers run independently of the installation's service owner.
+
 ### Changed
 
 - Pull requests run CI; version tags run tests and vet before release builds,
