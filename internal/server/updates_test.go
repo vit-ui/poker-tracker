@@ -225,3 +225,58 @@ func TestPendingUpdateRefusesConfigurationRestartWithoutPausingCollector(t *test
 	default:
 	}
 }
+
+func TestTerminalUpdateSurvivesDelayedProgress(t *testing.T) {
+	for _, terminal := range []string{config.UpdateSucceeded, config.UpdateFailed} {
+		for _, pending := range []string{config.UpdateQueued, config.UpdateWaiting, config.UpdateRunning} {
+			for _, acknowledgement := range []bool{false, true} {
+				t.Run(terminal+"/"+pending+map[bool]string{false: "/report", true: "/ack"}[acknowledgement], func(t *testing.T) {
+					root := t.TempDir()
+					q := collectorUpdateQueue{path: filepath.Join(root, "collector_updates.json")}
+					request := config.UpdateRequest{ID: "request", Version: "v4.11"}
+					if err := q.accept(request); err != nil {
+						t.Fatal(err)
+					}
+					job := config.UpdateJob{Request: request, State: terminal, Version: "v4.10"}
+					if terminal == config.UpdateSucceeded {
+						job.Version = "v4.11"
+					} else {
+						job.Error = "download failed"
+					}
+					report := config.UpdateReport{Version: job.Version, Job: &job}
+					if err := q.observe(report); err != nil {
+						t.Fatal(err)
+					}
+					delayed := config.UpdateReport{Version: "v4.10", Job: &config.UpdateJob{Request: request, State: pending, Version: "v4.10"}}
+					var err error
+					if acknowledgement {
+						err = q.acknowledge(transport.UpdateReply{RequestID: request.ID, Report: delayed})
+					} else {
+						err = q.observe(delayed)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					saved, err := config.LoadCollectorUpdates(q.path)
+					if err != nil || saved.Report.Job == nil || *saved.Report.Job != job || saved.Report.Version != report.Version {
+						t.Fatalf("terminal result lost: %+v, %v", saved, err)
+					}
+					if err := config.CheckUpdatesIdle(root); err != nil {
+						t.Fatal(err)
+					}
+					next := config.UpdateRequest{ID: "next", Version: "v4.11"}
+					if err := q.accept(next); err != nil {
+						t.Fatal(err)
+					}
+					delayed.Job.Request = next
+					if err := q.observe(delayed); err != nil {
+						t.Fatal(err)
+					}
+					if q.state.Report.Job.Request != next || !q.state.Report.Job.Pending() {
+						t.Fatal("new request progress was ignored")
+					}
+				})
+			}
+		}
+	}
+}

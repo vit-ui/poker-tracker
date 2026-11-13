@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## v4.11 — 2026-11-13
+
+### Fixed
+
+- Keep periodic Sheets recovery, cash finalization and hard-stop retries running
+  alongside update-status checks.
+- Preserve completed or failed PC update results when delayed acceptance replies
+  or progress reports arrive, preventing false pending status and blocked settings.
+
 ## v4.10 — 2026-11-13
 
 ### Fixed

@@ -391,3 +391,7 @@ before recovery, and remove the temporary definition before deleting its journal
 Native interruption tests must use disposable tasks/roots and kill only their own
 helper processes. Compiler and file-state tests do not establish actual reboot
 behavior or ARM64 execution.
+
+Update-status checks must not prevent the bot's idle maintenance from being queued.
+Collector update acknowledgements and asynchronous reports may arrive out of order;
+a pending report must never replace a terminal result for the same request.

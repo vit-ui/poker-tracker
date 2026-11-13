@@ -17,6 +17,13 @@ type collectorUpdateQueue struct {
 }
 
 func (q *collectorUpdateQueue) save(state config.CollectorUpdates) error {
+	// Acceptance replies and asynchronous reports can arrive out of order.
+	// A pending observation cannot undo the same request's terminal result.
+	previous, incoming := q.state.Report.Job, state.Report.Job
+	if previous != nil && incoming != nil && previous.Request == incoming.Request &&
+		(previous.State == config.UpdateSucceeded || previous.State == config.UpdateFailed) && incoming.Pending() {
+		state.Report = q.state.Report
+	}
 	if err := config.SaveCollectorUpdates(q.path, state); err != nil {
 		return err
 	}

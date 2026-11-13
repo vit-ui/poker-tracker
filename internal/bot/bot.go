@@ -274,12 +274,6 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			if b.migrating || b.ownerPaused || b.deploymentPaused() {
 				continue
 			}
-			if b.updater != nil {
-				b.queueUpdates(nil, func(result storage.OperationResult) { b.observeUpdates(result) })
-				if time.Since(b.lastReleaseCheck) >= 24*time.Hour {
-					b.checkRelease(0, "", "")
-				}
-			}
 			// realNow drives real-elapsed timing (the 30-min heartbeat, pending
 			// reminders); now is the player-anchored clock the weekly/monthly
 			// day windows fire on, so "Monday 09:00" is the player's, not the
@@ -300,6 +294,13 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 				request := &b.pendingOperations[len(b.pendingOperations)-1].request
 				request.FinalizeCash = true
 				request.RetryHardstops = true
+			}
+
+			if b.updater != nil {
+				b.queueUpdates(nil, func(result storage.OperationResult) { b.observeUpdates(result) })
+				if time.Since(b.lastReleaseCheck) >= 24*time.Hour {
+					b.checkRelease(0, "", "")
+				}
 			}
 
 			realNow := time.Now()
