@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## Unreleased
+## v4.9 — 2026-11-13
 
 ### Added
 
@@ -28,8 +28,8 @@ pulls its notes from the matching section below.
   avoiding duplicate builds when pushing a branch and its release tag together.
 - Reorganize the README around installation, everyday commands and updates,
   with a contents list and copyable PowerShell/Linux update instructions.
-- Add `/help update` and Menu → Info → How to update in Telegram, explaining
-  terminal updates for every installed role and both machines in split mode.
+- Add `/help update` and Menu → Info → Updates in Telegram, with Telegram and
+  terminal instructions for every installed role and both machines in split mode.
 
 ## v4.8 — 2026-11-12
 
