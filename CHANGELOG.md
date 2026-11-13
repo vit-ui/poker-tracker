@@ -11,6 +11,10 @@ pulls its notes from the matching section below.
 - Pull requests run CI; version tags run tests and vet before release builds,
   packaging and publication. Branch pushes no longer start a separate CI run,
   avoiding duplicate builds when pushing a branch and its release tag together.
+- Reorganize the README around installation, everyday commands and updates,
+  with a contents list and copyable PowerShell/Linux update instructions.
+- Add `/help update` and Menu → Info → How to update in Telegram, explaining
+  terminal updates for every installed role and both machines in split mode.
 
 ## v4.8 — 2026-11-12
 

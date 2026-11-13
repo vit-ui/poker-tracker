@@ -41,6 +41,21 @@ var commandList = []struct {
 
 var commandHelp = map[string]string{
 	"help": "Use /help alone to list all commands. Use /help <command> to get details on a specific one. Example: /help stats",
+	"update": "Update Poker Tracker from a terminal on the machine where it is installed.\n" +
+		"1. Close PokerStars before updating the poker PC.\n" +
+		"2. Windows: open PowerShell in your installation folder (default C:\\poker-tracker) and run:\n" +
+		"  .\\tracker.exe --update\n" +
+		"  Windows server: .\\tracker-server.exe --update\n" +
+		"  Standalone collector named tracker-client.exe: .\\tracker-client.exe --update\n" +
+		"  Accept the administrator prompt if Windows asks.\n" +
+		"  Linux server (as the user who installed it):\n" +
+		"  ~/.local/share/poker-tracker/tracker-server --update\n" +
+		"3. Wait for Updated ... or Already up to date. Check the installed version by replacing --update with --version.\n" +
+		"This downloads the latest stable release for that machine's role and CPU. Settings, credentials, history, pairing and active lock expiry are preserved. A previously running installation restarts; a stopped one stays stopped.\n" +
+		"In split mode, update both machines separately to matching versions.\n" +
+		"If --update is unrecognized, install a current release in the existing folder first:\n" +
+		"https://github.com/vit-ui/poker-tracker/releases/latest\n" +
+		"This Telegram help explains the terminal command; it does not start an update.",
 	"stats": "Shows performance stats.\n" +
 		"Usage: /stats [cash|spins|mtt] [today|week|month|all]\n" +
 		"Both arguments are optional. Default is all-time stats for all game types.\n" +
@@ -77,10 +92,10 @@ var commandHelp = map[string]string{
 		"  Setup — paths, schedule, screen name, storage, and (on the Sheets backend) sheet and credentials\n" +
 		"  Notifications — the /notify menu (summaries and alerts)\n" +
 		"  Hard stop — the hard-stop rules\n" +
-		"  Info — status, last session, stats, export\n" +
+		"  Info — status, last session, stats, export, how to update\n" +
 		"  Money — deposit, withdraw\n" +
 		"  Help\n" +
-		"Every item is also reachable by its own command. Drill in and tap Back to step out; there's no Done button.",
+		"Use /help update for terminal update instructions. Drill in and tap Back to step out; Done closes a root menu.",
 	"status": "Shows current bankroll and profit/loss.\n" +
 		"Usage: /status\n" +
 		"No arguments.",
@@ -140,6 +155,7 @@ func helpText(arg string) string {
 		for _, c := range commandList {
 			fmt.Fprintf(&b, "/%s — %s\n", c.name, c.desc)
 		}
+		b.WriteString("\nTo update the installed app: /help update (terminal instructions).\n")
 		return strings.TrimRight(b.String(), "\n")
 	}
 	arg = strings.TrimPrefix(arg, "/")

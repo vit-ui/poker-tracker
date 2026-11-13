@@ -138,6 +138,12 @@ the eight release binaries are built, packaged and published. Pushing a branch
 and its version tag together therefore starts only the release workflow.
 Compilation does not establish native ARM64 execution or installer acceptance.
 
+User update instructions belong near the beginning of the README and in the
+Telegram `/help update` topic (also linked from Menu → Info). Keep installed
+filenames aligned with `setup.iss`: combined and collector use `tracker.exe`,
+while Windows server uses `tracker-server.exe`. The Telegram entry explains the
+terminal operation; it does not start a remote update.
+
 The parser intentionally limits VPIP/PFR to Hold'em/Omaha preflop actions;
 mixed-game hand counts include stud/draw hands. Satellite classification requires
 structural summary clues, and `/scan` skips/counts tournaments needing an answer.

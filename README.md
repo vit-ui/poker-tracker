@@ -1,455 +1,387 @@
 # Poker Tracker
 
-A Windows background service that automatically tracks your PokerStars sessions, maintains your bankroll accounting, and exposes it all through a Telegram bot: session alerts, stats, and a hard-stop lock that closes PokerStars when you go on tilt.
+Track PokerStars cash games, Spin & Go and tournaments automatically, see your
+bankroll in Telegram, and set hard stops that close PokerStars when you reach
+your limits. Runs in the background on your Windows poker PC; an optional
+Windows or Linux server keeps your bot and history available while that PC is off.
 
-It starts on boot via Task Scheduler and runs unattended. PokerStars writes hand histories and tournament summaries to disk; the tracker parses them as they land, and you talk to it entirely through Telegram. Your data lives in **either a Google Sheet or a local SQLite file**, whichever you pick at install — and you can move it between the two later with a single command.
+**[Download the latest release](https://github.com/vit-ui/poker-tracker/releases/latest)**
+· [What's new](CHANGELOG.md) · [Already installed? Update](#updating)
 
-## Highlights
+## Contents
 
-- **Automatic parsing** of cash games, Spin & Go, and MTT sessions, read straight from PokerStars' hand-history and tournament-summary folders. Nothing is entered by hand.
-- **Your choice of storage:** a live **Google Sheet** you can open in a browser, or a single local **SQLite file** that needs no Google account and no configuration.
-- **Telegram summaries** after every session, weekly and monthly recaps, plus configurable alerts for downswings, session losses, losing streaks, and daily-loss limits. It also points out when you sit at a different stake than your previous cash session. Choose which of these fire — and filter each summary to only wins or only losses — from the `/notify` menu.
-- **Sheets connectivity awareness** (Google Sheets backend only): if the tracker can't reach Sheets, you get one plain heads-up that it's briefly unreachable — your results are saved locally and synced automatically when it's back — a heartbeat reminder every 30 minutes while it's still down, and a confirmation once queued writes have synced. No raw error spam (the technical detail goes to `tracker.log`), and no silent data gaps to discover later.
-- **Automatic hard stop.** When a limit you set is breached (a session loss, a rolling 30-day drawdown, a losing streak, or a daily-loss cap), it closes the PokerStars client and keeps it locked for a set duration.
-- **Satellite / ticket detection** flags tournaments likely entered with a ticket and asks you to confirm, so a free entry never counts as a cash buy-in against your bankroll.
-- **Freeroll / Kick-Off handling.** Tournaments with no buy-in in the summary (freerolls, Kick-Off ladders) still pay real knockout-bounty cash, so instead of dropping them the tracker asks whether you entered for free or paid — and records the bounty either way, so it always reaches your bankroll.
-- **One running ledger** for deposits, withdrawals, and every session net, so your true P&L stays correct through reloads.
-- **CSV export** on both backends, in identical format, so your data stays portable whichever storage you chose.
-- **Switch storage anytime** with `/storage`, which migrates your whole history between Google Sheets and the local file and verifies the copy before flipping over.
+- [Install and start tracking](#install-and-start-tracking)
+- [Everyday Telegram commands](#everyday-telegram-commands)
+- [Updating](#updating)
+- [Alerts and hard stops](#alerts-and-hard-stops)
+- [History, storage and exports](#history-storage-and-exports)
+- [Running on two machines](#running-on-two-machines)
+- [Troubleshooting and backups](#troubleshooting-and-backups)
+- [Limitations](#limitations)
+- [Development and license](#development-and-license)
 
-## Installing
+## Install and start tracking
 
-Telegram setup keeps your saved chat during reinstall and waits for a message from that chat. Messages from other chats cannot replace it. A fresh install still identifies your chat from the first message.
+1. On your Windows poker PC, enable PokerStars hand-history and tournament-summary
+   saving. Note the folders and your exact PokerStars screen name.
+2. Download **`PokerTracker-Setup-<version>.exe`** from
+   [Releases](https://github.com/vit-ui/poker-tracker/releases/latest) and run it.
+   One installer supports Intel/AMD and ARM PCs. Choose the all-local role to
+   keep everything on this PC, or [connect to a server](#running-on-two-machines).
+3. Choose **Telegram** setup (recommended) and finish in your bot's chat, or
+   **Manual** to enter the settings in the installer. Pick your storage:
 
-Windows setup suspends scheduled recovery while configuring and replacing the
-installation, then restores it on completion or cancellation. A normal Windows
-uninstall removes local player data, recovery journals and transfer state;
-silent uninstall preserves that state for an upgrade.
+   | Storage | What you need |
+   | --- | --- |
+   | **Local file (SQLite)** | Nothing extra. History lives in `tracker.db` beside the program. |
+   | **Google Sheets** | A Google Cloud service account with Sheets and Drive APIs enabled, and an empty sheet shared with it as Editor. |
 
-Windows upgrades keep saved preferences, credentials, pairing identity, history and pending cash/questions. Existing collector values are prefilled rather than replaced with empty answers. Unattended server setup respects `/SUPPRESSMSGBOXES`; interactive setup still displays its pairing information.
+4. Set the **base** Hand History and Tournament Summary folders, without the
+   screen-name subfolder. The tracker adds your screen name itself.
+5. In Telegram, use `/status` to check the tracker, `/scan` to import existing
+   history, and `/hardstop` to set your limits and lock duration.
 
+The official release includes its bot token. Only source builds need a token
+from [BotFather](https://t.me/BotFather). The tracker starts automatically at
+boot. Reinstalling in the same folder preserves settings and data, and Telegram
+setup accepts contact only from your saved chat.
 
-Download **`PokerTracker-Setup-<version>.exe`** from [Releases](../../releases) and run it — one installer for every PC (it detects your CPU, Intel/AMD or ARM, and installs the right build; there's no separate download to pick). The installer first asks **how you'd like to set up**:
+## Everyday Telegram commands
 
-- **Telegram (recommended)** — the installer launches the bot and you finish setup by chatting with it, **including choosing where your data lives**.
-- **Manual** — set everything up in the installer instead, starting with the storage backend.
+Start with **`/menu`**. Tap an item, **Back** to return, or **Done** to close a
+root menu. Use `/help <command>` for details, such as `/help stats` or
+**`/help update`**. Update instructions are also in **Menu → Info → How to update**.
 
-Your **storage backend** — asked in the chat on the Telegram path, or on its own page on the manual path — is either:
+| What you want | Command or example |
+| --- | --- |
+| Bankroll, recent P&L and lock status | `/status` |
+| Most recent session | `/lastsession` |
+| Overall performance | `/stats` |
+| Cash results for the past 7 days | `/stats cash week` |
+| Today's Spin & Go results | `/stats spins today` |
+| This month's tournament results | `/stats mtt month` |
+| Record a deposit or withdrawal in USD | `/deposit 50.00` · `/withdraw 20.00` |
+| Set hard-stop rules and duration | `/hardstop` |
+| Lock immediately for the configured duration | `/hardstop trigger` |
+| Warning thresholds | `/alerts` |
+| Choose summaries and alerts | `/notify` |
+| Download all history as three CSV files | `/export` |
+| Import existing PokerStars files | `/scan` |
 
-- **Google Sheets** — a live spreadsheet you can open in any browser. Requires a one-time Google Cloud service account.
-- **Local file** — everything lives in a single `tracker.db` next to the program. No Google account, nothing to share, nothing to configure.
+`/stats [cash|spins|mtt] [today|week|month|all]` defaults to all games and all time.
+Deposits and withdrawals change your bankroll, but never count as poker winnings
+or losses. Use the USD amount shown on PokerStars; comma decimals also work.
 
-You can switch between them anytime later with `/storage`. Either way, the service registers itself in Task Scheduler and starts automatically, including on every subsequent boot.
+Cash sessions appear after **2 minutes 30 seconds without a table-file update**,
+including updates while sitting out. Session-loss warnings and hard stops still
+work immediately, per hand. For satellites and zero-buy-in tournaments, answer
+the bot's ticket/cash or free/paid question so it can record the entry correctly;
+real knockout bounties are retained.
 
-Setup reads existing settings from the selected installation folder. When
-replacing or uninstalling the program, it stops tracker processes belonging
-to that folder. Builds for disposable installation tests use separate task
-names and uninstall registration; see [Contributing](CONTRIBUTING.md#disposable-windows-installations).
+## Updating
 
-Windows service tasks restart failures and check every minute for a stopped
-process. A running copy stays in place. The collector keeps enforcing active
-locks during server outages and reconnects itself every 30 seconds. Task recovery
-handles unexpected process failures.
+**Close PokerStars before updating your poker PC.** Run the command on each
+machine you want to update. It downloads the latest stable release and selects
+the correct role and CPU automatically.
 
-### Requirements
+### Windows
 
-- Windows, with PokerStars already installed.
-- **Only if you choose the Google Sheets backend:** a Google Cloud service account with access to the Sheets and Drive APIs, and a blank Google Sheet shared with it (Editor access). The local-file backend needs none of this.
-- A Telegram bot token (create one via [@BotFather](https://t.me/BotFather)) — only if you're building from source; the official release has one built in.
+Open **PowerShell**, then enter your installation folder (the default is
+`C:\poker-tracker`; use your chosen folder if different):
 
-## Running on two machines (optional)
+```powershell
+cd C:\poker-tracker
+.\tracker.exe --version
+.\tracker.exe --update
+```
 
-By default everything runs on your poker PC, so `/stats`, `/export`, and the rest only work while that PC is on. If you'd rather keep your data and commands available when it's off, you can split the tracker across two machines:
+This works for both all-local and installed collector roles: the Windows
+installer names both `tracker.exe`. For a **Windows server**, use:
 
-- **Server** (`tracker-server`) — runs on an always-on Windows or Linux machine with an amd64 or arm64 CPU (for example, a home server, a 64-bit Raspberry Pi, or a VPS). It stores your data, runs the Telegram bot, and enforces your rules.
-- **Client** (`tracker-client`) — runs on the poker PC (Windows). It watches PokerStars, streams file changes to the server, and enforces hard-stop locks.
+```powershell
+cd C:\poker-tracker
+.\tracker-server.exe --version
+.\tracker-server.exe --update
+```
 
-Setup:
+Accept the administrator prompt if Windows asks. A standalone collector kept
+under its download name uses `.\tracker-client.exe --update` instead.
 
-1. On the always-on machine, set up the server — one file per OS, download and run:
-   - **Linux:** download `PokerTracker-Server-linux.tar.gz`, extract it (double-click in your file manager, or `tar xzf PokerTracker-Server-linux.tar.gz`), and run the extracted **`PokerTracker-Server-linux`**. It detects your CPU and installs the right build into your home folder — no root. A setup window opens (a terminal prompt instead on a headless box). It asks for your password once, in a normal desktop dialog, only to enable start-on-boot; skip that and the server still runs while you're logged in.
-     - A fresh Google Sheets choice starts with SQLite so the bot can run before a Google key or sheet is connected. Then send `/storage sheets <sheet name or URL>` to upload the key and migrate to an empty shared sheet. Keep the poker PC connected and PokerStars closed for migration.
-     - To upgrade, rerun the installer. It stages the new executable and replaces it atomically, preserves saved configuration and data, and restarts the installation’s user service. Existing storage choices stay in place; use `/storage` to change them with verified migration.
-     - The setup window uses your desktop's standard dialog tool — **zenity** on GNOME and other GTK desktops (Ubuntu, Fedora, Mint, Xfce, MATE, Cinnamon…), **kdialog** on KDE Plasma (Kubuntu, openSUSE KDE…). On a desktop that has neither installed, or a headless box, setup falls back to **terminal prompts** — so run it from a terminal there rather than double-clicking. You can reprint the connection string anytime with `~/.local/share/poker-tracker/tracker-server --pair`.
-   - **Windows:** run `PokerTracker-Setup-<version>.exe` and choose **"Run a server on this PC"**. It asks whether to configure from Telegram (recommended — defaults to a local file, switch anytime with `/storage`) or set the storage backend here now — the same choice the Linux server offers — then sets everything up.
+### Linux server
 
-   Either way it shows a one-line **connection string** like `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
-2. On the poker PC, run `PokerTracker-Setup-<version>.exe` and choose **"Connect to a server"** (or run `tracker-client --setup`), then paste that connection string.
+Open a terminal as the user who installed the server:
 
-### Moving an existing all-local installation
+```sh
+~/.local/share/poker-tracker/tracker-server --version
+~/.local/share/poker-tracker/tracker-server --update
+```
 
-Use matching versions on both machines. Configure the server's storage first,
-then close PokerStars and rerun the Windows installer in the existing tracker
-folder. Choose **Connect to a server** and paste its connection string. The
-installer detects the combined executable and offers to transfer its history
-before changing this PC to collection only. Running `tracker-client --setup`
-alone does not transfer an existing combined installation.
+Wait for **`Updated ...`** or **`Already up to date`**. Run `--version` again to
+check the installed version. In split mode, update **both machines** to matching
+versions; updating the server does not update the poker PC.
 
-The destination must have empty history, no connected collector and no pending
-cash, tournament questions, collector edits or unconfirmed hard-stop deliveries.
-Saved Telegram chats must match; an unset destination chat is copied from the
-source. Pending Sheets writes must finish before transfer. Histories are never
-merged.
+Settings, credentials, history, pairing and active lock expiry stay in place.
+A previously running installation restarts; a stopped one stays stopped. The
+updater verifies downloads before stopping the running application and requires
+the new application to confirm startup before reporting success.
 
-The source pauses collection, drains accepted work and records pending cash.
-Preparation refuses unconfirmed hard-stop requests, including those triggered
-by recording that cash. Keep the tracker running until the collector confirms
-protection, then retry; the original lock expiry is preserved.
-The server receives and verifies the raw sessions, tournaments and ledger,
-including their IDs and running totals. Alerts, hard-stop rules, schedules,
-notifications and unanswered tournament questions move with them. Each machine
-keeps its own storage configuration, Google credentials and connection identity;
-Google keys are never transferred. Source history and the original executable
-are retained on the PC. Active protection keeps its original expiry.
-
-During preparation, the destination stops reading Telegram commands and the
-source continues to accept manual `/hardstop trigger` requests. Once the copy is
-verified, the source completes shutdown and cleanup before the collector starts.
-The destination then takes over Telegram polling and applies the copied policy.
-
-If interrupted, rerun the installer in the same folder with the **same server
-connection string**. Saved transfer progress is checked before continuing; a
-disconnection never counts as success. A confirmed rollback removes only rows
-owned by that transfer and restores the combined source. If the destination has
-accepted new history or pending work after activation, rollback is refused to
-preserve it. If its status cannot be confirmed, keep the saved files and retry
-when the server is reachable. A rolled-back destination stays in standby while
-the source resumes; a later verified transfer hands commands over again.
-
-Older executables that cannot identify their role must first be upgraded in
-their current role. Older protocol/schema combinations are unsupported.
-
-They talk over a single encrypted (TLS) connection the poker PC dials out to the server — only the poker PC needs to reach the server, and your phone always talks to Telegram, never the server directly. Configure storage, alerts, and thresholds from Telegram once paired.
-
-Server settings (`/alerts`, `/hardstop` rules and duration, `/schedule`)
-save immediately even while the poker PC is offline. An existing lock keeps its
-full duration. `/paths` and `/screenname` edits are saved in a durable server queue:
-the PC must confirm them before they take effect, because only it can validate
-its folders, save local collection settings and restart its watcher. The bot
-reports pending edits separately from the last PC-confirmed values. Connection
-loss preserves pending edits across restart; a reported validation failure stays
-pending until you send a corrected value. If saved folders are unavailable at
-startup, collection stays inactive and the collector stays connected to accept
-corrections; hard-stop enforcement continues.
-
-The collector’s enforcement loop stays alive while the server is disconnected,
-including when the server is unavailable at boot. It keeps checking an active
-lock every second and preserves its original expiry while reconnecting. TLS,
-certificate pinning and pairing authentication still apply to each connection.
-
-Collector-confirmed hard-stop expiry survives server restarts and collector
-disconnects and sent again when the collector reconnects. Reconnecting replaces
-the previous connection; lock replay and ordinary commands use the same frame
-writer. Folder and screen-name edits are durably queued; rescan requests remain
-one-shot commands.
-`/status` uses the collector’s observed protection state and reports when that
-state is unavailable. Lock times follow the poker PC’s timezone. Active locks show their expiry and
-remaining days, hours and minutes, rounding a partial minute up.
-
-Money is accounted for in whole USD cents. Extra fractional cents round up in
-magnitude when entered: $1.001 becomes $1.01. Dollar displays and CSV columns
-keep two decimal places.
-
-New money movements carry an operation ID in the existing ledger identity column,
-including CSV exports. Sheets recovery checks that ID before replaying a write.
-Legacy ledger rows and fallback entries with blank IDs remain readable; their
-recovery retains the older at-least-once behavior and may duplicate an append
-whose acknowledgement was lost. Equal amounts are never merged.
-
-Cash sessions are recorded after **2 minutes 30 seconds without a table-file
-update**, including updates while you sit out. The tracker saves processed
-pending cash snapshots in `pending_cash.json` beside its configuration. After
-restart it restores each table's remaining interval and asks the collector for
-the whole source file. An unchanged recovery upload keeps the original deadline;
-later corrections update the same stored session. Keep the PokerStars histories:
-they are the recovery source for bytes the tracker never received or processed.
-
-Hard-stop requests and collector receipts are durable. Recovery of the same
-trigger preserves its original expiry and cannot restart an expired lock;
-distinct new financial triggers can still enforce. The collector retains active
-protection independently of connectivity. Keep `lockfile.json` and
-`hardstop_deliveries.json` with the installation when backing it up or upgrading.
-Keep `collector_closures.json` on the poker PC and `closure_notifications.json`
-on the server (both are local in combined mode). These retain closure events
-and notification receipts through reconnects and restarts.
-While locked, it checks for a reopened PokerStars client every second and closes
-it again. Startup and newly received locks enforce immediately; the idle check
-remains every 30 seconds. Each successful tracker termination sends a Telegram
-notice with the original closure time, expiry and current remaining time. Idle
-checks and failed terminations send no closure-success notice. Offline events
-are delivered after reconnection; if their lock has expired, the message says
-it ended. Pending events block installation transfer until delivery catches up.
-Delivery is at least once: a crash after Telegram accepts a message but before
-the tracker saves confirmation can produce a duplicate.
-Use matching collector and server versions for recovery acknowledgements and
-whole-file resynchronization; older peers do not support these operations.
-
-## Using it
-
-Once installed, talk to your bot on Telegram. Every command also has detailed help via `/help <command>`. Expand any entry below for the details:
+**If `--update` is unrecognized:** install a current release in the existing
+folder first. Older releases have no updater. You can also upgrade by rerunning
+the latest Windows or Linux installer in the same location.
 
 <details>
-<summary><code>/menu</code> — the full menu</summary>
+<summary>Update recovery and installer details</summary>
 
-One place to reach everything, drilled into and back out of like BotFather — Back steps out one level, ✓ Done closes the menu. Groups: **Setup** (paths, schedule, screen name, storage, and — on the Google Sheets backend — sheet and credentials), **Notifications** (the `/notify` summaries and alerts), **Hard stop**, **Info** (status, last session, stats, export), **Money** (deposit, withdraw), and **Help**. Every item is also its own command, so you can skip the menu whenever you like.
+If replacement or startup fails, the updater attempts to restore the previous
+executable. On Windows, temporary recovery also covers a killed helper or a
+restart during replacement: boot/minute recovery restores an unconfirmed update
+and the previous task state, or keeps a durably confirmed update. Active locks
+retain their original expiry across the brief enforcement interruption.
 
-Usage example: `/menu`
+Do not run setup/uninstall concurrently with a terminal update. Windows may
+retain a `.tracker-previous-*` executable until uninstall because the terminal
+caller still has the old image open. Terminal updates do not rerun setup or
+change the version displayed by the Windows uninstaller.
+
+Development builds cannot update an installation. A release missing the required
+executable assets or `SHA256SUMS` must be installed with its installer.
+
+</details>
+
+## Alerts and hard stops
+
+Use **`/alerts`** for warnings and **`/hardstop`** for rules that close PokerStars.
+Set a duration before enabling a hard-stop rule or using `/hardstop trigger`.
+
+| Rule | Measures |
+| --- | --- |
+| Session loss | Loss in cash buy-ins, checked per hand |
+| Downswing | Drawdown in buy-ins from the rolling 30-day results peak |
+| Consecutive losses | Losing cash sessions |
+| Daily loss | USD losses across all games in your poker day |
+| Spin & Go daily loss | USD losses in Spin & Go in your poker day |
+
+Durations accept whole hours, days or weeks: **`12`**, **`48h`**, **`2d`**, **`1w`**.
+A hard stop runs its **full duration and cannot be cancelled**. Changing the
+configured duration does not change an existing lock's expiry. PokerStars is
+closed again if reopened while locked.
+
+An enabled hard-stop threshold must be at least its matching enabled alert
+threshold. Turn a rule off without losing its saved number; disabling a hard-stop
+rule asks for confirmation. `/schedule` sets the poker-day start hour (default
+**06:00**). `/notify` filters cash, tournament, weekly and monthly summaries to
+**Every**, **Only wins**, **Only losses**, or **Off**, and toggles stake-change notices.
+
+**While the poker PC is offline:** rules and schedules still save on the server.
+`/hardstop trigger` saves a request whose duration starts immediately. The PC
+applies only the remaining time when it reconnects; expired requests do not start
+a new lock. `/status` shows expiry, time remaining, offline state and pending PC
+confirmation. Dates follow the poker PC's last reported timezone across server
+restarts, refreshed when that PC reports again.
+
+The collector enforces an active lock even while disconnected from its server.
+Successful PokerStars closures produce Telegram notices; offline notices arrive
+after reconnection and keep the original closure time.
+
+## History, storage and exports
+
+| Task | Command |
+| --- | --- |
+| Import files already in your PokerStars folders | `/scan` |
+| Export cash sessions, tournaments and ledger | `/export` |
+| Show the current storage backend | `/storage` |
+| Move history to SQLite | `/storage local` |
+| Move history to an empty, shared Google Sheet | `/storage sheets My Tracker` |
+| Open the current sheet | `/sheet` |
+| Switch to a different sheet | `/sheet My Other Tracker` or `/sheet <URL>` |
+| Replace the Google service-account key | `/credentials`, then attach the JSON file |
+| Show or queue a new screen name | `/screenname` or `/screenname NewHandle99` |
+| Edit PokerStars base folders | `/paths` |
+| List configuration commands | `/config` |
+
+**Import:** `/scan` records silently, with one final report and no hard stops,
+alerts or session summaries. Already stored sessions are not duplicated.
+Tournaments needing ticket/cash or free/paid answers are skipped and counted.
+A large Sheets import can take a few minutes to sync.
+
+**Storage migration:** close PokerStars and keep the poker PC connected. The
+destination must be empty; histories are not merged. Confirm the row counts in
+Telegram. The tracker verifies the copy before switching and restarting. If
+needed, `/storage sheets ...` asks you to upload the service-account key first.
+Exports have the same three-file format on both backends, including headers for
+empty datasets.
+
+**Folder edits:** use the base folder without your screen name. Relative Windows
+paths resolve against the active desktop user's home; otherwise provide a full
+drive or UNC path. Drive-relative paths such as `C:AppData` are rejected.
+`/paths` and `/screenname` changes stay pending until the poker PC validates,
+saves and activates them. Invalid edits keep the previous settings; send a
+corrected value to replace a pending edit.
+
+**Accounting:** money uses whole USD cents; fractional cents round up in
+magnitude (`$1.001` → `$1.01`). Session corrections update the existing result
+and subsequent ledger totals. Deposits and withdrawals stay separate from
+results, drawdown and streak calculations. Bounties are included once.
+
+<details>
+<summary>Sheets connectivity and configuration changes</summary>
+
+If Sheets is unreachable, writes queue locally. The bot sends one notice, a
+reminder every 30 minutes while offline, and confirmation after syncing.
+New money movements carry operation IDs to avoid duplicate recovery writes.
+Older entries without IDs retain at-least-once recovery and may duplicate an
+append if its acknowledgement was lost; equal amounts are never merged.
+
+Queued writes must finish before migration or switching sheets. The tracker
+drains accepted work and records pending cash before switching. Migration copies
+raw history, IDs, totals and partial tournaments, and verifies counts, ledger
+amounts and bankroll. Sheets stores timestamps with minute precision.
+
+`/sheet <name or URL>` validates access and restarts automatically. `/credentials`
+validates a replacement against the active sheet before replacing the key; type
+`skip` to cancel. A restart-helper failure restores the previous setting or key.
+On SQLite, credentials can be saved for a later migration without restarting.
+
+</details>
+
+## Running on two machines
+
+Use this if you want Telegram commands and history available while your poker
+PC is off. Keep collector and server on **matching versions**.
+
+| Machine | Role |
+| --- | --- |
+| Windows poker PC | Collector: watches PokerStars files and enforces locks |
+| Always-on Windows or Linux machine | Server: stores history, runs Telegram and evaluates rules |
+
+1. Install the server:
+
+   - **Windows:** run `PokerTracker-Setup-<version>.exe` and choose **Run a server
+     on this PC**. Configure through Telegram or in the installer.
+   - **Linux (amd64 or arm64):** download `PokerTracker-Server-linux.tar.gz`,
+     extract it, and run `PokerTracker-Server-linux`. It installs in
+     `~/.local/share/poker-tracker` as your user. It asks for elevated approval
+     only to enable startup without login; you may skip that step.
+
+2. Copy the connection string shown by setup:
+   `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
+3. On the poker PC, run the Windows installer, choose **Connect to a server**,
+   and paste the string. You can also run `tracker-client --setup` for a fresh
+   standalone collector.
+
+The poker PC initiates an encrypted, authenticated TLS connection to the server.
+Only the PC needs to reach that server address; your phone communicates through
+Telegram. On Linux, print the connection string again with:
+
+```sh
+~/.local/share/poker-tracker/tracker-server --pair
+```
+
+Fresh server setup can start with SQLite before Google credentials are available.
+To move to Sheets afterward, pair the PC, close PokerStars, and use
+`/storage sheets <name or URL>` in Telegram.
+
+<details>
+<summary>Linux setup dialogs</summary>
+
+Desktop setup uses zenity on GTK desktops or kdialog on KDE. If neither is
+available, or on a headless machine, run the installer from a terminal to answer
+its prompts. The user service runs while logged in unless startup without login
+was enabled. Rerunning the installer preserves the existing storage choice.
+
 </details>
 
 <details>
-<summary><code>/status</code> — current bankroll and P&L</summary>
+<summary>Move an existing all-local installation to a server</summary>
 
-Shows your current bankroll, today / this week / this month P&L, and the expiry and remaining days, hours and minutes of any active hard-stop lock.
+Configure the destination server's storage first. Close PokerStars and rerun the
+Windows installer **in the existing tracker folder**, choose **Connect to a
+server**, and paste its connection string. Accept the offered history transfer.
+Running `tracker-client --setup` alone does not transfer an all-local installation.
 
-Usage example: `/status`
+The destination needs empty history, no connected collector, and no pending cash,
+tournament questions, collector edits or unconfirmed hard-stop deliveries. Saved
+Telegram chats must match; an unset destination chat is copied from the source.
+Pending Sheets writes must finish. Histories are never merged.
+
+History, running totals, rules, notifications, schedules and unanswered tournament
+questions move together. Each machine keeps its own Google credentials, storage
+configuration and pairing identity. Source history and the original executable
+are retained. Active protection keeps its original expiry. If protection has not
+been confirmed by the collector, keep the tracker running until it is confirmed
+and retry. The destination takes over Telegram only after verified handover.
+
+If interrupted, rerun setup in the same folder with the **same connection
+string**. A disconnection never counts as success. Verified rollback removes
+only transfer-owned rows and restores the source; it refuses to erase newly
+accepted destination work. If the destination cannot be reached, keep the saved
+files and retry later. Older executables unable to identify their role need an
+upgrade in their existing role first; older protocols/schemas are unsupported.
+
 </details>
+
+## Troubleshooting and backups
+
+| Symptom | What to check |
+| --- | --- |
+| No cash session yet | Wait 2 min 30 sec after the last table-file update. Check `/paths` and `/screenname`. |
+| No historical results after setup | Run `/scan`; review its skipped-tournament count. |
+| Folder/name edit stays pending | Keep the poker PC online. Check the bot's validation message and send a corrected value if needed. |
+| Saved folders unavailable at startup | Collection stays inactive. Correct `/paths`; commands and hard-stop enforcement remain available. |
+| Bot unavailable with an all-local setup | The poker PC must be on and connected. Use a separate server for access while it is off. |
+| Sheets unavailable | Let queued results sync; the bot reports recovery. |
+| `--update` unknown | Install the latest release in the existing folder first. |
+| Another failure | Check `tracker.log` beside the executable on the affected machine. |
+
+Back up the **installation folder**, including settings, local database,
+credentials, pairing and saved protection/recovery state. Keep the original
+PokerStars histories too: they recover file bytes the tracker had not received.
+A normal Windows uninstall removes local player data; silent uninstall preserves
+it for upgrades. Prefer the updater or rerun the installer to upgrade.
 
 <details>
-<summary><code>/lastsession</code> — summary of your most recent session</summary>
+<summary>Recovery files and background operation</summary>
 
-Full breakdown of the last session parsed: game type, stake or buy-in, net result, hands or finish position, duration, and updated bankroll.
+Preserve `pending_cash.json`, `lockfile.json`, `hardstop_deliveries.json`,
+`collector_observation.json`, `collector_clock.json`, `collector_closures.json`
+and `closure_notifications.json` with their respective installation. In split
+mode, closure receipts live on their respective PC/server; in all-local mode,
+they are together. Keep pending tournament questions and any saved transfer or
+update-recovery state as well.
 
-Usage example: `/lastsession`
+Pending cash retains each table's remaining quiet interval across restart and
+requests its source file again. An unchanged recovery upload preserves its
+deadline; later corrections update the existing session. Saved collector clocks
+preserve offline date windows and prefer the latest saved observation.
+
+Windows Task Scheduler restarts failures and checks every minute for a stopped
+process. The collector reconnects every 30 seconds, checks active locks every
+second and retains 30-second idle checks. Setup suspends scheduled recovery
+while replacing/configuring an installation and restores it on completion or
+cancellation. Controlled stops drain accepted work and save pending cash.
+
+Logs are capped at 5 MB with one `tracker.log.old`. If a log cannot open, logging
+is discarded. Technical errors are logged; user-facing notices go through the
+bot. Closure notifications are at least once: a crash after Telegram accepts a
+message but before its receipt is saved may produce a duplicate.
+
 </details>
 
-<details>
-<summary><code>/stats [cash|spins|mtt] [today|week|month|all]</code> — filtered statistics</summary>
-
-Volume, P&L, and win rates, filtered by game type and time range. `spins` covers Spin & Go, `mtt` covers multi-table tournaments. With no arguments it reports all game types, all-time.
-
-Usage examples:
-- `/stats` — all game types, all-time
-- `/stats cash week` — cash-game stats for the past 7 days
-- `/stats spins today` — Spin & Go stats for the current poker day
-- `/stats mtt month` — MTT stats for this calendar month
-</details>
-
-<details>
-<summary><code>/deposit &lt;amount&gt;</code> / <code>/withdraw &lt;amount&gt;</code> — log a bankroll transfer</summary>
-
-Records money moving into or out of PokerStars, using the USD value shown on PokerStars. Replies with your new bankroll. Transfers are kept separate from session results in the ledger, so a reload adjusts your bankroll without ever counting as winnings.
-
-Usage examples:
-- `/deposit 100`
-- `/withdraw 52.75`
-- `/deposit 12,50` — a comma decimal works too
-</details>
-
-<details>
-<summary><code>/export</code> — download all your data as CSV</summary>
-
-Exports the three data sets — cash sessions, tournaments, and the bankroll ledger — as three CSV files sent to you as Telegram documents. Output is identical on both the Google Sheets and SQLite backends.
-
-Usage example: `/export`
-</details>
-
-<details>
-<summary><code>/scan</code> — backfill history already sitting in your folders</summary>
-
-Walks both PokerStars folders and records every cash session and tournament that isn't stored yet — useful right after a new install to seed your existing history (the tracker otherwise only sees files that change while it's running). Records silently: no per-session summaries, no hard stops, no alerts. Tournaments that need an answer (a satellite's ticket-vs-cash, or a freeroll's buy-in) are skipped and counted — play or re-open those in live to record them. Safe to run more than once; already-stored sessions aren't duplicated. You get one message with the counts when it finishes. On the Google Sheets backend a large first scan is paced to stay within Google's rate limits, so it can take a few minutes to fully sync — let it settle before checking totals.
-
-Usage example: `/scan`
-</details>
-
-<details>
-<summary><code>/sheet [name or URL]</code> — link to your data, or switch spreadsheets</summary>
-
-Two jobs in one command: viewing and **switching spreadsheets**. With no argument, replies with the current spreadsheet's URL. With a sheet name or a pasted URL, switches the tracker to that spreadsheet — access is validated (and any missing tabs created) before anything is saved, then the service restarts itself to pick up the change. On the local-file backend there is no sheet; the command points you to `/export` instead.
-
-The current sheet's queued writes must sync first. Before switching, collection
-drains and pending cash finishes against the old sheet. An automatic restart
-failure restores the previous setting before collection resumes.
-
-Usage examples:
-- `/sheet` — show the current spreadsheet URL
-- `/sheet My Other Bankroll` — switch to a different sheet by name
-- `/sheet https://docs.google.com/spreadsheets/d/…` — switch by pasted URL
-</details>
-
-<details>
-<summary><code>/storage [local | sheets &lt;name or URL&gt;]</code> — view your storage, or migrate to the other backend</summary>
-
-With no argument, shows where your data lives. `/storage local` moves everything to the local file; `/storage sheets <sheet name or URL>` moves everything to an empty Google Sheet shared with your service account (if this install has no service-account key yet, you'll be prompted to upload it right there and the migration continues). Naming the storage you're already on changes nothing. The target must be empty — there is no merge. You confirm a summary of row counts before anything is copied (close PokerStars first so no hand is played mid-switch), and the copy is verified against your current bankroll before the backend is flipped, so a failed migration leaves you exactly where you were.
-
-The collector checks that PokerStars is closed before pausing collection. It
-drains accepted file updates, and the server records pending cash before copying.
-Commands received during migration are refused with a request to retry after
-restart. The poker PC must be connected in split mode, with matching collector
-and server versions supporting the pause/acknowledgement protocol.
-
-Verification compares the copied records and IDs, row counts, independently
-summed ledger amounts and bankroll. Partial tournaments and already-folded
-bounties are copied directly; Sheets retains its minute-level date precision.
-Later cash corrections recognize both historical backend ID formats and retain
-the copied ID, so a resumed or corrected file updates the existing result.
-
-Usage examples:
-- `/storage` — show the active storage
-- `/storage local` — migrate everything to the local file
-- `/storage sheets My New Tracker` — migrate everything to that (empty) sheet
-</details>
-
-<details>
-<summary><code>/screenname [name]</code> — view or change your PokerStars screen name</summary>
-
-With no argument, shows the last PC-confirmed screen name and any pending edit. With one, durably queues the change on the server, including while the PC is offline. The PC validates its screen-name subfolders, saves its own settings and activates the watcher before the bot confirms success. Capitalisation matters.
-
-Usage examples:
-- `/screenname` — show the current screen name
-- `/screenname NewHandle99` — change it
-</details>
-
-<details>
-<summary><code>/credentials</code> — swap the Google service account key</summary>
-
-Send the new `google_service_account.json` as an attachment, or type `skip` to keep the current one. On the Google Sheets backend the upload is staged and checked against the current sheet. If validation fails, the old key and sheet stay unchanged. A valid replacement drains accepted work, preserves pending cash and restarts the service; restart-helper failure restores the previous key before collection resumes. On the local-file backend the key is saved without a restart, ready for `/storage` migration to Google Sheets.
-
-Usage example: `/credentials` — then attach the JSON file
-</details>
-
-<details>
-<summary><code>/paths</code> — set your PokerStars folders</summary>
-
-Configures the base Hand History and Tournament Summary folders (the parent folders — not the screen-name subfolder underneath, which is added automatically). Required before any session can be tracked. Edits queue on the server until the PC validates and applies them; they do not change server-local paths. Forward slashes are converted on Windows. Relative paths resolve against the active Windows desktop user’s home, including when the collector runs as SYSTEM. If that user cannot be identified, send a full drive or UNC path. A drive-relative path such as `C:AppData` is rejected. Invalid edits preserve the previous collection settings and remain visible for correction.
-
-Usage example: `/paths` — then tap a field and reply with the folder, e.g. `C:\Users\you\AppData\Local\PokerStars\HandHistory`
-</details>
-
-<details>
-<summary><code>/alerts</code> — configure warning thresholds</summary>
-
-Set the warning-only thresholds: downswing, session loss, losing streak, daily loss, and Spin & Go daily loss. These warn you before the hard stop steps in. An alert can never be set higher than its matching hard-stop threshold, when that hard stop is configured.
-
-Tap a threshold to change its value or turn it off, then Back to step out — there's no Done button. Turning one off keeps its number (it just stops firing), so you can turn it back on later without retyping.
-
-Usage example: `/alerts` — then tap a field and reply with the value, e.g. `5`
-</details>
-
-<details>
-<summary><code>/hardstop</code> — configure the automatic lock</summary>
-
-Set the rules that close PokerStars and lock it for a fixed duration: session loss, rolling drawdown, consecutive losses, daily loss, Spin & Go daily loss, and how long the lock lasts. The duration must be set if any rule is; a hard stop can never be set lower than its matching alert threshold. Each rule can be turned off (it keeps its number for later), but since it's a safety lock, turning one off asks you to confirm first. **There is no cancel — once triggered, the lock runs its full duration.**
-
-The shared duration applies to manual and automatic triggers. Enter a positive
-whole amount: `12` means 12 hours, `48h` or `2d` means two days, and `1w` means
-one week. Units are case-insensitive; surrounding whitespace is allowed.
-Fractions, zero, negatives, unknown units and overflowing durations are rejected.
-Saving a new duration keeps an existing lock’s expiry. The menu and trigger
-confirmation show its expiry and remaining days, hours and minutes.
-
-Usage examples:
-
-- `/hardstop` — open the settings menu
-- `/hardstop trigger` — lock immediately, by hand (requires the duration to be configured)
-</details>
-
-<details>
-<summary><code>/schedule</code> — set your poker-day boundary</summary>
-
-Sets the hour (0–23) your poker day starts, used as the reset point for the daily-loss checks. Defaults to 6am.
-
-Usage example: `/schedule` — then tap the field and reply `6`
-</details>
-
-<details>
-<summary><code>/notify</code> — choose which messages the bot sends</summary>
-
-Two sections. **Summaries**: the cash, tournament, weekly, and monthly result summaries — each can be set to send on **every** result, only **wins**, only **losses**, or **off**; stake-change notices are a plain on/off. (For weekly and monthly, wins/losses is judged on the whole period's net.) **Alerts**: the same warning thresholds as `/alerts`. Everything defaults to on, so nothing changes until you turn something down.
-
-Usage example: `/notify`
-</details>
-
-<details>
-<summary><code>/config</code> — list the configuration commands</summary>
-
-Lists the configuration commands — `/menu`, `/paths`, `/alerts`, `/hardstop`, `/schedule`, and `/notify` — with a one-line description of each.
-
-Usage example: `/config`
-</details>
-
-<details>
-<summary><code>/help [command]</code> — command reference</summary>
-
-With no argument, lists every command. With a command name, explains it in detail with parameters and an example.
-
-Usage examples:
-- `/help` — list every command
-- `/help stats` — detailed help for `/stats`
-</details>
-
-## Parsing and import limitations
-
-VPIP/PFR count Hold'em and Omaha preflop actions. Stud and draw hands still
-contribute to the hand count, so mixed-game percentages are diluted and an
-all-stud/draw sample shows zero. This does not change money accounting.
-
-Satellite questions depend on structural clues in the summary. A satellite
-without those clues cannot be identified automatically. `/scan` skips and counts
-historical tournaments that require a ticket/cash or free/paid answer; it does
-not open those questions during import.
-
-## Notes
-
-This is a single-user tool built for one specific personal setup, and it's intentionally lean: no web UI, no REST API, no dashboard. Telegram and the installer are the only interfaces. It's provided as-is, with no warranty, and is not affiliated with or endorsed by PokerStars.
-
-Each background role writes a `tracker.log` next to its program for troubleshooting — errors plus a few milestones (start-up, hard stops, migrations). It's capped at 5 MB and rolls over to a single `tracker.log.old`. If the log cannot open, the service discards logging; it does not fall back to a hidden console. Unexpected termination of the required bot, worker or collector exits with failure so the service manager can restart the process.
-
-Controlled restarts and installation stops drain accepted work and save pending
-cash before closing the watcher, connections and database and removing temporary
-working files. Windows uses an installation-scoped shutdown event; Linux handles
-SIGTERM and SIGINT. Restart helpers wait for the old process to exit before
-starting its replacement. Active hard-stop locks keep their original expiry;
-shutdown does not clear or shorten them.
-
-## License
-
-© 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE): free for personal, noncommercial use, but you may not redistribute, modify, or use it commercially. See [`LICENSE`](LICENSE) for the full terms.
-
-### Offline hard stops
-
-`/hardstop trigger` saves a request even while the poker PC is offline. Its
-duration starts when requested, not when the PC reconnects. The collector applies
-only the remaining time; an expired request never starts another lock. `/status`
-and `/hardstop` show the server's saved copy and distinguish offline status and
-pending PC confirmation. Local collector lockfiles remain responsible for enforcement.
-Include `collector_observation.json` in installation backups.
-
-The server retains the collector's last reported timezone in
-`collector_clock.json`, including across restarts while the PC is offline. Include
-this file in backups. Network clocks retain the reported UTC offset; a later PC
-report refreshes it, including after a daylight-saving change.
-
-### Terminal updates
-
-Run the executable from its installation directory with `--version` or
-`--update`: `tracker.exe --update` on a Windows poker PC (combined or collector),
-`tracker-server.exe --update` on a Windows server, or `./tracker-server --update`
-on Linux. Standalone collector builds also support `tracker-client.exe --update`. Windows
-may request administrator approval. The command updates only that installation
-to the latest stable GitHub release; run it separately on each paired machine.
-
-Close PokerStars before updating a combined or collector installation. An active
-hard stop is allowed: its original expiry survives the brief enforcement
-interruption. Configuration, credentials, history and pairing remain in place.
-Previously running services restart; stopped installations stay stopped. Downloads
-and checksums are verified before stopping the owner. The new application must confirm startup before the updater reports success. If
-replacement fails or the process exits before confirming readiness, the updater
-attempts to restore and restart the previous executable.
-Windows can retain a `.tracker-previous-*` executable after an update because the
-terminal caller still has the old image mapped. Normal uninstall removes retained
-update executables.
-
-Install the first updater-capable release with the existing installer. Older
-releases have no `--update`; development builds have no release version and must
-not be used to update an installation. A release without the required executable
-assets and `SHA256SUMS` requires its installer. Updates do not run setup or refresh
-the Windows uninstaller's displayed installer version.
-
-Windows updates register a temporary recovery task before stopping the normal
-installation task. If the helper is killed or Windows restarts during replacement,
-recovery restores the previous executable and prior task state at the next
-recovery trigger (boot or the regular minute check). An update whose startup was
-already durably confirmed keeps the new executable. Recovery preserves player
-data and the original lock expiry. Do not run setup/uninstall concurrently with
-an active terminal update; setup/uninstall cancels temporary recovery when it
-takes ownership of the installation.
+## Limitations
+
+- Single-user PokerStars tool; all-local Telegram access requires the PC to be on.
+- VPIP/PFR use Hold'em and Omaha preflop actions. Stud/draw hands contribute to
+  hand counts, so mixed-game percentages are diluted and all-stud/draw shows zero.
+- Satellite detection needs structural clues in the summary; tournaments without
+  those clues may not be identified. `/scan` skips tournaments needing answers.
+- A hard-stop lock has no cancel or bypass command.
+
+## Development and license
+
+Builds, tests, architecture and contribution rules are in
+[CONTRIBUTING.md](CONTRIBUTING.md). Recent additions and fixes are in the
+[Changelog](CHANGELOG.md).
+
+© 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE).
+See the license for permissions and restrictions. Provided as-is, without
+warranty; not affiliated with or endorsed by PokerStars.

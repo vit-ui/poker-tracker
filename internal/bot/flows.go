@@ -250,7 +250,7 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 func isCommandAction(token string) bool {
 	switch token {
 	case "screenname", "storage", "sheet", "credentials", "scan",
-		"status", "lastsession", "stats", "export", "help":
+		"status", "lastsession", "stats", "export", "help", "update":
 		return true
 	}
 	return false
@@ -280,6 +280,8 @@ func (b *Bot) runCommandAction(chatID int64, token string) {
 		b.handleExportCommand(chatID)
 	case "help":
 		send(b.tg, chatID, helpText(""))
+	case "update":
+		send(b.tg, chatID, helpText("update"))
 	}
 }
 
@@ -895,6 +897,7 @@ func (b *Bot) renderInfoMenu(chatID int64, messageID int, path string) {
 		menuRow("Last session", "menu:"+path+":lastsession"),
 		menuRow("Stats", "menu:"+path+":stats"),
 		menuRow("Export", "menu:"+path+":export"),
+		menuRow("How to update", "menu:"+path+":update"),
 		navButton(path),
 	}
 	b.showMenu(chatID, messageID, "Info — tap one:", rows)
