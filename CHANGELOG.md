@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
+## Unreleased
+
+### Fixed
+
+- Show the Windows launch error or captured tracker shutdown error when setup
+  cannot stop an installation, and save failure details to a persistent temporary
+  log instead of displaying only a generic instruction to close the tracker.
+
 ## v4.11 — 2026-11-13
 
 ### Fixed

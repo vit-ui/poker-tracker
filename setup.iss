@@ -613,8 +613,10 @@ end;
 
 procedure StopInstallation();
 var
-  HelperPath: String;
-  ResultCode: Integer;
+  HelperPath, ErrorText, Details, LogPath: String;
+  ResultCode, I: Integer;
+  Started: Boolean;
+  Output: TExecOutput;
 begin
   CancelTerminalUpdateRecovery();
   SuspendScheduledRecovery();
@@ -635,9 +637,44 @@ begin
     ExtractTemporaryFile(HelperPath);
     HelperPath := ExpandConstant('{tmp}\') + HelperPath;
   end;
-  if not Exec(HelperPath, '--stop-installation "' + ExpandConstant('{app}') + '"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-    RaiseException('Could not stop this installation safely. Close its tracker process and try again.');
+  ErrorText := '';
+  Started := False;
+  try
+    Started := ExecAndCaptureOutput(HelperPath, '--stop-installation "' + ExpandConstant('{app}') + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode, Output);
+  except
+    ErrorText := 'Could not run the tracker shutdown helper: ' + GetExceptionMessage();
+  end;
+  if Started and (ResultCode = 0) then Exit;
+  if ErrorText = '' then
+  begin
+    if Started then
+      ErrorText := 'Tracker shutdown failed (exit code ' + IntToStr(ResultCode) + ').'
+    else
+      ErrorText := 'Could not start the tracker shutdown helper.' + #13#10 +
+        'Windows error ' + IntToStr(ResultCode) + ': ' + SysErrorMessage(ResultCode);
+  end;
+  Details := '';
+  for I := 0 to GetArrayLength(Output.StdErr) - 1 do
+    Details := Details + Output.StdErr[I] + #13#10;
+  if Trim(Details) = '' then
+    for I := 0 to GetArrayLength(Output.StdOut) - 1 do
+      Details := Details + Output.StdOut[I] + #13#10;
+  if Trim(Details) <> '' then
+    ErrorText := ErrorText + #13#10 + Trim(Details)
+  else if Started then
+    ErrorText := ErrorText + #13#10 + 'The helper returned no error details.';
+  if Output.Error then
+    ErrorText := ErrorText + #13#10 + 'Some helper output could not be captured.';
+  Log(ErrorText);
+  LogPath := AddBackslash(GetTempDir()) + 'PokerTracker-shutdown-error.log';
+  if SaveStringToFile(LogPath, ErrorText + #13#10 +
+    'Installation folder: ' + ExpandConstant('{app}') + #13#10 +
+    'Shutdown helper: ' + HelperPath + #13#10, False) then
+    ErrorText := ErrorText + #13#10 + #13#10 + 'Details saved to: ' + LogPath
+  else
+    ErrorText := ErrorText + #13#10 + #13#10 + 'Could not save the shutdown error log to: ' + LogPath;
+  RaiseException(ErrorText);
 end;
 
 function TransferHelperPath(): String;

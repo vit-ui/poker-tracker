@@ -160,6 +160,11 @@ the installation. An incomplete configuration asks for missing settings. If setu
 cannot read the existing configuration or identify its executable, it stops
 before installing; do not delete your configuration to bypass that error.
 
+If Windows setup cannot stop the tracker, the error shows whether its shutdown
+helper failed to start or returned an error, along with the available details.
+It also shows the saved `PokerTracker-shutdown-error.log` path in your Windows
+temporary folder. Share that log when reporting the failure.
+
 <details>
 <summary>Update recovery and installer details</summary>
 

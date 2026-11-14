@@ -226,6 +226,9 @@ changed and verified.
   overrides for collector, combined and server installations, including custom
   folders, cancellation and incomplete configuration. Silent tests with supplied
   answers verify those answers, not detection or default page navigation.
+  Shutdown failures must retain the helper's stderr (stdout when stderr is empty)
+  or the Windows launch error, and identify the saved temporary error log. Verify
+  both launch and process-exit failures with disposable native installer checks.
 - Linux installer upgrades stage beside the destination and rename atomically;
   never copy over a running executable. Re-registering the user unit must restart
   that exact installation identity, including when it is already enabled/running.
