@@ -23,7 +23,6 @@ jobs:
               run: go vet ./...
 
     build:
-        needs: check
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
@@ -113,7 +112,7 @@ jobs:
                   retention-days: 1
 
     release:
-        needs: installer
+        needs: [check, installer]
         runs-on: ubuntu-latest
         permissions:
             contents: write

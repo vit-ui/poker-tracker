@@ -133,9 +133,10 @@ Pull requests run `.github/workflows/ci.yml`: the full Go suite, vet, and eight
 pure-Go cross-builds (Windows combined/collector/server and Linux server, each on
 amd64 and arm64), without a bot token. Branch pushes do not trigger a workflow;
 run tests and vet locally before pushing work without a pull request.
-Version tags run `.github/workflows/release.yml`: tests and vet must pass before
-the eight release binaries are built, packaged and published. Pushing a branch
-and its version tag together therefore starts only the release workflow.
+Version tags run `.github/workflows/release.yml`: tests and vet run alongside
+building and packaging the eight release binaries. Publication requires both
+checks and installer packaging to succeed. Pushing a branch and its version tag
+together therefore starts only the release workflow.
 Compilation does not establish native ARM64 execution or installer acceptance.
 
 Update request state lives in `requested_update.json` on each installation.

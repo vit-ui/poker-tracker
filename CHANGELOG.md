@@ -4,18 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
 pulls its notes from the matching section below.
 
-## Unreleased
+## v4.11 — 2026-11-13
 
 ### Fixed
 
+- Run release checks and builds concurrently while requiring both checks and
+  installer packaging to pass before publication, removing the added serial wait.
 - Detect the existing Windows collector, combined or server role and default to
   upgrading it without repeating first-time setup or rewriting configuration.
   Configuration and role changes remain an explicit choice. Stop before making
   changes when the existing configuration or executable role cannot be read.
-
-## v4.11 — 2026-11-13
-
-### Fixed
 
 - Keep periodic Sheets recovery, cash finalization and hard-stop retries running
   alongside update-status checks.
