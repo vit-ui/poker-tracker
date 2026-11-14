@@ -47,6 +47,7 @@ func main() {
 	updater := update.Register(flag.CommandLine)
 	printRole := flag.Bool("role", false, "print this executable role")
 	roleFile := flag.String("role-output", "", "write the executable role to a setup result file")
+	validateConfig := flag.String("validate-config", "", "check an existing configuration for the installer without modifying it")
 	stopInstallation := flag.String("stop-installation", "", "stop tracker processes in the specified installation directory")
 	serve := flag.Bool("serve", false, "run the collector")
 	setup := flag.Bool("setup", false, "configure folders, screen name, and the server connection string")
@@ -61,6 +62,11 @@ func main() {
 	}
 
 	switch {
+	case *validateConfig != "":
+		if err := config.ValidateExistingConfig(*validateConfig); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case *printRole:
 		if *roleFile != "" {
 			if err := os.WriteFile(*roleFile, []byte("client"), 0600); err != nil {

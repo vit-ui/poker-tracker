@@ -215,6 +215,16 @@ changed and verified.
   must leave an existing config intact; collector pages start from saved values.
   Extend the ignored native role/upgrade checks when config fields change. Keep
   ordinary interactive pairing dialogs while honoring silent suppression flags.
+- Existing Windows installations default to an upgrade of the detected role,
+  with no configuration rewrite or first-time setup. Configuration/role changes
+  require the explicit wizard choice. The bundled collector's read-only
+  `--validate-config <path>` check rejects unreadable configuration before setup
+  proceeds; it must never create a missing file. Unknown or conflicting executable
+  roles stop setup instead of defaulting to all-local.
+  Validate the actual interactive wizard without `TESTROLE` or other answer
+  overrides for collector, combined and server installations, including custom
+  folders, cancellation and incomplete configuration. Silent tests with supplied
+  answers verify those answers, not detection or default page navigation.
 - Linux installer upgrades stage beside the destination and rename atomically;
   never copy over a running executable. Re-registering the user unit must restart
   that exact installation identity, including when it is already enabled/running.

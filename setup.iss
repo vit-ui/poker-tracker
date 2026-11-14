@@ -122,6 +122,9 @@ var
   // server storage-method page (run-a-server only). The all-local pages above
   // are unchanged in identity; only their order relative to PageMethod moved.
   PageRole: TInputOptionWizardPage;
+  PageUpgrade: TInputOptionWizardPage;
+  ExistingRole: Integer;
+  ExistingComplete: Boolean;
   PageConnection: TInputQueryWizardPage;
   PageTransfer: TOutputMsgWizardPage;
   ExistingCombined, ExistingRoleUnknown, IncompleteTransfer: Boolean;
@@ -197,6 +200,17 @@ end;
 function IsCombinedMode(): Boolean;
 begin
   Result := not IsClientMode() and not IsServerMode();
+end;
+
+function KeepExistingSettings(): Boolean;
+begin
+  Result := (ExistingRole >= 0) and (PageUpgrade.SelectedValueIndex = 0) and
+    (PageRole.SelectedValueIndex = ExistingRole) and not IncompleteTransfer;
+end;
+
+function UpgradeOnly(): Boolean;
+begin
+  Result := KeepExistingSettings() and ExistingComplete;
 end;
 
 // The six role×arch Check wrappers gate the [Files] entries: each pairs one role
@@ -441,7 +455,7 @@ end;
 // skipped (already set) — the two don't skip together.
 function CurrentScreenName(): String;
 begin
-  if ScreenNameAlreadySet and not IsClientMode() then
+  if ScreenNameAlreadySet and KeepExistingSettings() then
     Result := JSONExtractStringValue(ExistingConfigJSON, 'pokerstars_screen_name')
   else
     Result := PageScreenName.Values[0];
@@ -464,6 +478,7 @@ var
   Role, ServerMethod, Backend, Creds, Sheet, Answer: String;
 begin
   Role := ExpandConstant('{param:TESTROLE|}');
+  if Role <> '' then PageUpgrade.SelectedValueIndex := 1;
   if Role = 'client' then PageRole.SelectedValueIndex := 1
   else if Role = 'server' then PageRole.SelectedValueIndex := 2
   else if Role = 'combined' then PageRole.SelectedValueIndex := 0;
@@ -714,26 +729,58 @@ begin
     RaiseException('Could not extract update payload.');
 end;
 
+procedure RejectExistingInstallation(const Message: String);
+begin
+  SuppressibleMsgBox(Message, mbError, MB_OK, IDOK);
+  Abort;
+end;
+
 procedure InitializeWizard();
 var
-  MethodDescription, BackendDescription, RoleOutput, RoleText, TransferState: String;
+  MethodDescription, BackendDescription, RoleOutput, RoleText, TransferState, ExistingExe, ConfigFile, Helper: String;
   RoleResult: Integer;
 begin
   // WizardDirValue is available during initialization and includes /DIR and
   // the directory restored from this installation identity's uninstall entry.
-  ExistingConfigJSON := ReadFileAsString(AddBackslash(WizardDirValue) + 'config.json');
-  RoleOutput := ExpandConstant('{tmp}\existing-tracker-role.txt');
-  if FileExists(AddBackslash(WizardDirValue) + 'tracker.exe') then
+  ExistingRole := -1;
+  ConfigFile := AddBackslash(WizardDirValue) + 'config.json';
+  if FileExists(ConfigFile) then
   begin
-    if Exec(AddBackslash(WizardDirValue) + 'tracker.exe', '--role --role-output "' + RoleOutput + '"', '', SW_HIDE, ewWaitUntilTerminated, RoleResult) and (RoleResult = 0) then
+    if IsARM64 then Helper := 'tracker-client-arm64.exe'
+    else Helper := 'tracker-client-amd64.exe';
+    ExtractTemporaryFile(Helper);
+    Helper := ExpandConstant('{tmp}\') + Helper;
+    if not Exec(Helper, '--validate-config "' + ConfigFile + '"', '', SW_HIDE, ewWaitUntilTerminated, RoleResult) or (RoleResult <> 0) then
+      RejectExistingInstallation('Cannot read the existing configuration in ' + WizardDirValue + '. Repair it before running setup; no installation changes were made.');
+  end;
+  ExistingConfigJSON := ReadFileAsString(ConfigFile);
+  RoleOutput := ExpandConstant('{tmp}\existing-tracker-role.txt');
+  ExistingExe := AddBackslash(WizardDirValue) + 'tracker.exe';
+  if FileExists(AddBackslash(WizardDirValue) + 'tracker-server.exe') then
+  begin
+    if FileExists(ExistingExe) then
+      RejectExistingInstallation('Both tracker.exe and tracker-server.exe exist in ' + WizardDirValue + '. Resolve the conflicting installation roles before upgrading.');
+    ExistingExe := AddBackslash(WizardDirValue) + 'tracker-server.exe';
+  end;
+  if FileExists(ExistingExe) then
+  begin
+    if Exec(ExistingExe, '--role --role-output "' + RoleOutput + '"', '', SW_HIDE, ewWaitUntilTerminated, RoleResult) and (RoleResult = 0) then
     begin
       RoleText := Trim(ReadFileAsString(RoleOutput));
+      if RoleText = 'combined' then ExistingRole := 0
+      else if RoleText = 'client' then ExistingRole := 1
+      else if RoleText = 'server' then ExistingRole := 2;
       ExistingCombined := (RoleText = 'combined');
-      ExistingRoleUnknown := (RoleText <> 'combined') and (RoleText <> 'client');
+      ExistingRoleUnknown := (ExistingRole < 0) or
+        ((ExistingRole = 2) <> (ExtractFileName(ExistingExe) = 'tracker-server.exe'));
     end
     else ExistingRoleUnknown := True;
     DeleteFile(RoleOutput);
+    if ExistingRoleUnknown then
+      RejectExistingInstallation('Cannot identify the existing executable role in ' + WizardDirValue + '. Setup has not changed the installation.');
   end;
+  if (ExistingRole < 0) and FileExists(ConfigFile) then
+    RejectExistingInstallation('An existing configuration was found without its executable in ' + WizardDirValue + '. Restore the executable before upgrading so setup can identify its role.');
   TransferState := ReadFileAsString(AddBackslash(WizardDirValue) + 'source_transfer.json');
   RoleText := JSONExtractStringValue(TransferState, 'phase');
   IncompleteTransfer := (RoleText = 'preparing') or (RoleText = 'prepared') or (RoleText = 'stopping');
@@ -746,9 +793,9 @@ begin
     UsingSQLite := JSONExtractStringValue(ExistingConfigJSON, 'storage_backend') = 'sqlite';
   SheetAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_name') or
                       JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_id');
-  ScreenNameAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'pokerstars_screen_name');
-  HandHistoryAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'hand_history');
-  TournamentAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'tournament_summary');
+  ScreenNameAlreadySet := JSONExtractStringValue(ExistingConfigJSON, 'pokerstars_screen_name') <> '';
+  HandHistoryAlreadySet := JSONExtractStringValue(ExistingConfigJSON, 'hand_history') <> '';
+  TournamentAlreadySet := JSONExtractStringValue(ExistingConfigJSON, 'tournament_summary') <> '';
   CredentialsAlreadySet := FileExists(AddBackslash(WizardDirValue) + 'credentials\google_service_account.json');
   // On sqlite, Sheet/Credentials never get set by this wizard (there's no
   // Google step for that backend at all — ShouldSkipPage), so requiring
@@ -758,6 +805,15 @@ begin
   // BackendAlreadySet, or PageBackend's own default False otherwise).
   AllFieldsAlreadySet := BackendAlreadySet and ScreenNameAlreadySet and HandHistoryAlreadySet and
                           TournamentAlreadySet and (UsingSQLite or (SheetAlreadySet and CredentialsAlreadySet));
+  if ExistingRole = 0 then ExistingComplete := AllFieldsAlreadySet
+  else if ExistingRole = 1 then
+    ExistingComplete := ScreenNameAlreadySet and HandHistoryAlreadySet and TournamentAlreadySet and
+      (JSONExtractStringValue(ExistingConfigJSON, 'connection_string') <> '')
+  else if ExistingRole = 2 then
+    ExistingComplete := BackendAlreadySet and (UsingSQLite or (SheetAlreadySet and CredentialsAlreadySet)) and
+      (JSONExtractStringValue(ExistingConfigJSON, 'pair_token') <> '') and
+      FileExists(AddBackslash(WizardDirValue) + 'server_cert.pem') and
+      FileExists(AddBackslash(WizardDirValue) + 'server_key.pem');
 
   // The two cases that DO show this page get their own wording — nothing
   // (fresh) vs something-but-not-everything (partial) — so it's never the
@@ -810,7 +866,15 @@ begin
   // always-on machine). Anchored at wpWelcome — it collects no {app}-dependent
   // value, so it needn't sit past wpSelectDir like the pages below.
   // ShouldSkipPage hides the pages that don't apply to the chosen role.
-  PageRole := CreateInputOptionPage(wpWelcome,
+  PageUpgrade := CreateInputOptionPage(wpWelcome, 'Existing installation',
+    'Upgrade Poker Tracker',
+    'Installation folder: ' + WizardDirValue + #13#10 +
+    'Upgrade keeps your existing role, configuration and history. Missing settings will be requested if setup is incomplete.', True, False);
+  PageUpgrade.Add('Upgrade existing installation (recommended)');
+  PageUpgrade.Add('Change configuration or role');
+  PageUpgrade.SelectedValueIndex := 0;
+
+  PageRole := CreateInputOptionPage(PageUpgrade.ID,
     'Setup Type',
     'How will you run Poker Tracker?',
     'Run everything on this PC unless you are using the optional two-machine split. In the split, the poker PC runs "Connect to a server" and a separate always-on machine runs "Run a server on this PC".',
@@ -819,6 +883,16 @@ begin
   PageRole.Add('Connect to a server (this PC is the poker PC)');
   PageRole.Add('Run a server on this PC (stores data, runs the bot)');
   PageRole.SelectedValueIndex := 0;
+  if ExistingRole >= 0 then
+  begin
+    PageRole.SelectedValueIndex := ExistingRole;
+    if ExistingRole = 0 then RoleText := 'All-local'
+    else if ExistingRole = 1 then RoleText := 'Collector (connects to a server)'
+    else RoleText := 'Server';
+    PageUpgrade.SubCaptionLabel.Caption := 'Detected role: ' + RoleText + #13#10 +
+      'Installation folder: ' + WizardDirValue + #13#10 +
+      'Upgrade keeps your configuration and history. Missing settings will be requested if setup is incomplete.';
+  end;
 
   PageConnection := CreateInputQueryPage(PageRole.ID,
     'Connect to a Server',
@@ -914,6 +988,20 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  if PageID = PageUpgrade.ID then
+  begin Result := (ExistingRole < 0) or IncompleteTransfer; Exit; end;
+  if PageID = PageRole.ID then
+  begin Result := KeepExistingSettings(); Exit; end;
+  if UpgradeOnly() then
+  begin
+    Result := (PageID = PageConnection.ID) or (PageID = PageServerMethod.ID) or
+      (PageID = PageMethod.ID) or (PageID = PageBackend.ID) or
+      (PageID = PageCredentials.ID) or (PageID = PageWaiting.ID) or
+      (PageID = PageSheetName.ID) or (PageID = PageScreenName.ID) or
+      (PageID = PageHandHistoryDir.ID) or (PageID = PageTournamentDir.ID) or
+      (PageID = PageTransfer.ID);
+    Exit;
+  end;
   if PageID = PageTransfer.ID then begin Result := not NeedsTransfer(); Exit; end;
   // Run-a-server mode shows PageServerMethod (configure from Telegram vs set
   // storage here) and, when the player sets storage here, the storage backend
@@ -949,6 +1037,12 @@ begin
     Result := (PageID = PageBackend.ID) or (PageID = PageMethod.ID) or
               (PageID = PageCredentials.ID) or (PageID = PageWaiting.ID) or
               (PageID = PageSheetName.ID) or (PageID = PageServerMethod.ID);
+    if KeepExistingSettings() then
+      Result := Result or
+        ((PageID = PageConnection.ID) and (PageConnection.Values[0] <> '')) or
+        ((PageID = PageScreenName.ID) and ScreenNameAlreadySet) or
+        ((PageID = PageHandHistoryDir.ID) and HandHistoryAlreadySet) or
+        ((PageID = PageTournamentDir.ID) and TournamentAlreadySet);
     Exit;
   end;
   // All-local mode never shows the connection-string or run-a-server pages.
@@ -970,7 +1064,7 @@ begin
   // isn't meaningfully set yet when this page itself is what's being
   // asked about — there's nothing for either path to ask when every
   // field is already configured, so there's no method choice to make.
-  if (PageID = PageMethod.ID) and AllFieldsAlreadySet then
+  if (PageID = PageMethod.ID) and AllFieldsAlreadySet and KeepExistingSettings() then
   begin
     Result := True;
     Exit;
@@ -1007,11 +1101,11 @@ begin
       Result := True
     else if (PageID = PageSheetName.ID) and (SheetAlreadySet or UsingSQLite) then
       Result := True
-    else if (PageID = PageScreenName.ID) and ScreenNameAlreadySet then
+    else if (PageID = PageScreenName.ID) and ScreenNameAlreadySet and KeepExistingSettings() then
       Result := True
-    else if (PageID = PageHandHistoryDir.ID) and HandHistoryAlreadySet then
+    else if (PageID = PageHandHistoryDir.ID) and HandHistoryAlreadySet and KeepExistingSettings() then
       Result := True
-    else if (PageID = PageTournamentDir.ID) and TournamentAlreadySet then
+    else if (PageID = PageTournamentDir.ID) and TournamentAlreadySet and KeepExistingSettings() then
       Result := True;
   end;
 end;
@@ -1419,7 +1513,16 @@ var
 begin
   Result := True;
 
-  if CurPageID = PageBackend.ID then
+  if CurPageID = PageUpgrade.ID then
+  begin
+    if PageUpgrade.SelectedValueIndex = 0 then
+    begin
+      PageRole.SelectedValueIndex := ExistingRole;
+      UsingTelegram := False;
+      ServerUseTelegram := False;
+    end;
+  end
+  else if CurPageID = PageBackend.ID then
     UsingSQLite := (PageBackend.SelectedValueIndex = 1)
 
   else if CurPageID = PageServerMethod.ID then
@@ -1616,6 +1719,18 @@ begin
   end;
   if CurStep = ssPostInstall then
   begin
+    if UpgradeOnly() then
+    begin
+      if IsServerMode() then
+      begin
+        if not Exec(ExpandConstant('{app}\tracker-server.exe'), '--install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+          RaiseException('Could not register the upgraded server task.');
+        if not Exec('schtasks.exe', '/Run /TN "{#ServerTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+          RaiseException('Could not start the upgraded server task.');
+      end
+      else RegisterScheduledTask();
+      Exit;
+    end;
     ExistingConfigJSON := ReadFileAsString(ExpandConstant('{app}\config.json'));
     // Connect-to-server: the client binary is already installed as tracker.exe
     // ([Files] Check: IsClientMode). Write its config (connection string +
@@ -1700,17 +1815,17 @@ begin
         SheetIDRaw := JSONStringOrNull(SheetID);
       end;
 
-      if ScreenNameAlreadySet then
+      if ScreenNameAlreadySet and KeepExistingSettings() then
         ScreenNameRaw := JSONFieldRaw(ExistingConfigJSON, 'pokerstars_screen_name')
       else
         ScreenNameRaw := '"' + JSONEscape(PageScreenName.Values[0]) + '"';
 
-      if HandHistoryAlreadySet then
+      if HandHistoryAlreadySet and KeepExistingSettings() then
         HandHistoryRaw := JSONFieldRaw(ExistingConfigJSON, 'hand_history')
       else
         HandHistoryRaw := '"' + JSONEscape(PageHandHistoryDir.Values[0]) + '"';
 
-      if TournamentAlreadySet then
+      if TournamentAlreadySet and KeepExistingSettings() then
         TournamentRaw := JSONFieldRaw(ExistingConfigJSON, 'tournament_summary')
       else
         TournamentRaw := '"' + JSONEscape(PageTournamentDir.Values[0]) + '"';

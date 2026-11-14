@@ -90,6 +90,40 @@ func TestLoadConfig_MissingFileCreatesAllNulls(t *testing.T) {
 	}
 }
 
+func TestValidateExistingConfigDoesNotChangeInstallation(t *testing.T) {
+	for _, tt := range []struct {
+		name, content      string
+		missing, wantError bool
+	}{
+		{name: "configured", content: `{"setup":{"connection_string":"tracker://example.invalid:8443/test#fp=test","pokerstars_screen_name":"AnonHero01"},"paths":{"hand_history":"C:\\Hands","tournament_summary":"C:\\Summaries"}}`},
+		{name: "incomplete", content: `{"setup":{},"paths":{}}`},
+		{name: "malformed", content: `{"setup":`, wantError: true},
+		{name: "wrong field type", content: `{"setup":{"connection_string":42}}`, wantError: true},
+		{name: "empty", wantError: true},
+		{name: "missing", missing: true, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if !tt.missing {
+				if err := os.WriteFile(path, []byte(tt.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := config.ValidateExistingConfig(path); (err != nil) != tt.wantError {
+				t.Fatalf("validation error = %v, want error %v", err, tt.wantError)
+			}
+			after, err := os.ReadFile(path)
+			if tt.missing {
+				if !os.IsNotExist(err) {
+					t.Fatalf("validation created a configuration: %v", err)
+				}
+			} else if err != nil || string(after) != tt.content {
+				t.Fatalf("validation changed configuration: %q, %v", after, err)
+			}
+		})
+	}
+}
+
 func TestSaveConfig_LoadConfig_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 

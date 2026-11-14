@@ -153,6 +153,13 @@ the new application to confirm startup before reporting success.
 folder first. Older releases have no updater. You can also upgrade by rerunning
 the latest Windows or Linux installer in the same location.
 
+The Windows installer shows the detected role and installation folder. Leave
+**Upgrade existing installation** selected to keep your settings and skip setup
+questions. Use **Change configuration or role** only when you intend to change
+the installation. An incomplete configuration asks for missing settings. If setup
+cannot read the existing configuration or identify its executable, it stops
+before installing; do not delete your configuration to bypass that error.
+
 <details>
 <summary>Update recovery and installer details</summary>
 
