@@ -50,7 +50,8 @@ setup accepts contact only from your saved chat.
 
 Start with **`/menu`**. Tap an item, **Back** to return, or **Done** to close a
 root menu. Use `/help <command>` for details, such as `/help stats` or
-**`/help update`**. Updates are also in **Menu → Info → Updates**.
+**`/help update`**. For terminal update instructions, use `/help update terminal`.
+Updates are also in **Menu → Info → Updates**.
 
 | What you want | Command or example |
 | --- | --- |

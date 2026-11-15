@@ -12,6 +12,14 @@ pulls its notes from the matching section below.
   cannot stop an installation, and save failure details to a persistent temporary
   log instead of displaying only a generic instruction to close the tracker.
 
+### Changed
+
+- Shorten Telegram command help with clear steps, sections and examples. Keep
+  `/help update` focused on Telegram updates and move terminal commands and
+  older-install guidance to `/help update terminal`.
+- Correct screen-name and folder help to describe queued PC confirmation, and
+  clarify that switching Google Sheets restarts the tracker automatically.
+
 ## v4.11 — 2026-11-13
 
 ### Fixed

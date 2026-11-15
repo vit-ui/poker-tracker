@@ -41,117 +41,220 @@ var commandList = []struct {
 }
 
 var commandHelp = map[string]string{
-	"help": "Use /help alone to list all commands. Use /help <command> to get details on a specific one. Example: /help stats",
-	"update": "Use /update to see versions and saved update requests. Choose the poker PC, server or both.\n" +
-		"Direct commands: /update pc, /update server, /update all, /update check.\n" +
-		"Requests persist after the bot confirms saving them. An offline PC receives its request when it connects. The poker PC waits for PokerStars to close; no further command is needed. The server updates independently. Both targets use the release selected when you asked.\n" +
-		"The bot checks at startup and daily, with one notice per new version. It installs only after you request /update, and reports completion or failure after restart.\n" +
-		"If the bot's own server is off, Telegram retains unreceived commands for at most 24 hours; wait for the bot's saved-request confirmation.\n" +
-		"Versions 4.8/4.9 need a one-time manual installer upgrade in the existing folder before using packaged updates.\n" +
-		"Terminal alternative:\n" +
-		"1. Close PokerStars before updating the poker PC.\n" +
-		"2. Windows: open PowerShell in your installation folder (default C:\\poker-tracker) and run:\n" +
-		"  .\\tracker.exe --update\n" +
-		"  Windows server: .\\tracker-server.exe --update\n" +
-		"  Standalone collector named tracker-client.exe: .\\tracker-client.exe --update\n" +
-		"  Accept the administrator prompt if Windows asks.\n" +
-		"  Linux server (as the user who installed it):\n" +
-		"  ~/.local/share/poker-tracker/tracker-server --update\n" +
-		"3. Wait for Updated ... or Already up to date. Check the installed version by replacing --update with --version.\n" +
-		"This downloads the latest stable release for that machine's role and CPU. Settings, credentials, history, pairing and active lock expiry are preserved. A previously running installation restarts; a stopped one stays stopped.\n" +
-		"In split mode, update both machines separately to matching versions.\n" +
-		"If --update is unrecognized, install a current release in the existing folder first:\n" +
-		"https://github.com/vit-ui/poker-tracker/releases/latest\n" +
-		"Reading /help update does not start an update.",
-	"stats": "Shows performance stats.\n" +
-		"Usage: /stats [cash|spins|mtt] [today|week|month|all]\n" +
-		"Both arguments are optional. Default is all-time stats for all game types.\n" +
-		"Examples:\n" +
-		"  /stats — all-time, all game types\n" +
-		"  /stats cash — cash game stats, all time\n" +
-		"  /stats spins week — Spin & Go stats for the past 7 days\n" +
-		"  /stats mtt month — MTT stats for this calendar month\n" +
-		"  /stats cash month — cash game stats for this calendar month",
-	"deposit": "Logs a deposit to your bankroll ledger.\n" +
-		"Usage: /deposit <amount>\n" +
-		"Enter the USD amount shown on PokerStars after the deposit clears — not BRL.\n" +
-		"Example: /deposit 50.00",
-	"withdraw": "Logs a withdrawal from your bankroll ledger.\n" +
-		"Usage: /withdraw <amount>\n" +
-		"Enter the USD amount shown on PokerStars — not BRL.\n" +
-		"Example: /withdraw 20.00",
-	"hardstop": "Configures hard stop rules or triggers one manually.\n" +
-		"Usage (configure): /hardstop — opens the settings menu\n" +
-		"Usage (manual trigger): /hardstop trigger — activates a hard stop immediately\n" +
-		"Fields: session loss (buy-ins), downswing (buy-ins, rolling 30-day peak), consecutive losses (sessions), daily loss (all games, $), Spin & Go daily loss ($), duration (12, 48h, 2d or 1w).\n" +
-		"The hard stop closes PokerStars and blocks the launcher for the configured duration. Existing locks keep their expiry when you save a new duration.\n" +
-		"Duration must be configured before using /hardstop trigger.\n" +
-		"A hard stop threshold can never be set lower than its corresponding alert threshold, if that alert is configured.",
-	"alerts": "Configures notification alert thresholds.\n" +
-		"Usage: /alerts — opens the settings menu\n" +
-		"Fields: downswing (buy-ins, rolling 30-day peak), session loss (buy-ins), losing streak (sessions), daily loss (all games, $), Spin & Go daily loss ($).\n" +
-		"Alerts fire automatically and require no further action from you.\n" +
-		"An alert threshold can never be set higher than its corresponding hard stop threshold, if that hard stop is configured.",
-	"lastsession": "Shows the summary of the last recorded session (cash or Spin & Go).\n" +
-		"Usage: /lastsession\n" +
-		"No arguments.",
-	"menu": "Opens the full menu — a single place to reach everything:\n" +
-		"  Setup — paths, schedule, screen name, storage, and (on the Sheets backend) sheet and credentials\n" +
-		"  Notifications — the /notify menu (summaries and alerts)\n" +
-		"  Hard stop — the hard-stop rules\n" +
-		"  Info — status, last session, stats, export, updates\n" +
-		"  Money — deposit, withdraw\n" +
-		"  Help\n" +
-		"Use /update for updates or /help update for instructions. Drill in and tap Back to step out; Done closes a root menu.",
-	"status": "Shows current bankroll and profit/loss.\n" +
-		"Usage: /status\n" +
-		"No arguments.",
-	"sheet": "With no argument, returns the URL of your Google Sheets tracker. With an argument, switches to a different sheet — send its name (resolved via Drive) or paste its full URL. Validates access before saving; requires a restart of the tracker service to take effect.\n" +
-		"Usage: /sheet [name or URL]\n" +
-		"Examples:\n" +
-		"  /sheet — show the current sheet URL\n" +
-		"  /sheet My Other Bankroll — switch by name\n" +
-		"  /sheet https://docs.google.com/spreadsheets/d/... — switch by URL",
-	"storage": "Shows where your data is stored, or migrates your entire history to the other backend and restarts the tracker on it.\n" +
-		"Usage:\n" +
-		"  /storage — show the current storage\n" +
-		"  /storage local — switch to the local file\n" +
-		"  /storage sheets <sheet name or URL> — switch to Google Sheets (an empty sheet shared with your service account; if this install has no credentials yet, you'll be prompted to upload the google_service_account.json right here and the migration continues)\n" +
-		"The target must be empty — there's no merge. You'll see a confirmation with row counts before anything is copied; close PokerStars first so no hand is played mid-switch. Nothing changes until the copy is verified.",
-	"export": "Exports all your data as CSV files: cash sessions, tournaments, bankroll ledger.\n" +
-		"Usage: /export\n" +
-		"No arguments. Works on both storage backends and produces identical output either way. Sends three files, one per data set — an empty data set still sends a header-only file.",
-	"scan": "Backfills from your PokerStars folders: reads every hand-history and tournament-summary file and records any cash session or tournament that isn't stored yet. Useful right after a new install to seed your history.\n" +
-		"Usage: /scan\n" +
-		"No arguments. Records silently — no per-session summaries, no hard stops, no alerts. Tournaments that need an answer (satellite ticket-vs-cash, or a freeroll buy-in) are skipped and counted; play or re-open those in live to record them. Safe to run more than once — already-stored sessions aren't duplicated. You'll get one message with the counts when it finishes. On the Google Sheets backend a large first scan can take a few minutes to fully sync (Sheets rate-limits writes); your data is never lost, and re-running /scan once it settles reports the full totals.",
-	"credentials": "Swaps the Google service account credentials file used to access Sheets/Drive.\n" +
-		"Usage: /credentials — then send the google_service_account.json file as an attachment, or type skip to cancel.\n" +
-		"The new key is checked against the current sheet before replacement. If validation fails, the existing key and sheet are kept.\n" +
-		"On Sheets, accepted work drains before the service restarts automatically. A failed restart helper restores the old key.\n" +
-		"On the local-file backend, this is how you provide the credentials /storage needs before migrating to Google Sheets.",
-	"screenname": "Gets or changes your PokerStars screen name (exact capitalisation matters).\n" +
-		"Usage: /screenname [name]\n" +
-		"With no argument, shows the current screen name. With an argument, changes it and restarts the watcher immediately — no service restart needed.\n" +
-		"Examples:\n" +
-		"  /screenname — show the current screen name\n" +
-		"  /screenname NewHandle99 — change it",
-	"paths": "Configures the PokerStars hand history and tournament summary folder locations.\n" +
-		"Usage: /paths — opens the settings menu\n" +
-		"Enter the base folder only — not the folder with your screen name in it.",
-	"config": "Lists the available configuration commands.\n" +
-		"Usage: /config\n" +
-		"No arguments.",
-	"notify": "Chooses which messages the bot sends you.\n" +
-		"Usage: /notify — opens the notifications menu\n" +
-		"Two sections:\n" +
-		"  Summaries — the cash, tournament, weekly, and monthly result summaries. Each can be set to Every, Only wins, Only losses, or Off. Stake-change notices are a plain On/Off.\n" +
-		"  Alerts — the warning thresholds (same as /alerts).\n" +
-		"For weekly and monthly, wins/losses is judged on the whole period's net.",
-	"schedule": "Sets the hour your poker day starts, used for the daily loss\n" +
-		"hard stop and alert thresholds.\n" +
-		"Usage: /schedule — opens the settings menu\n" +
-		"Default is 6 (6am local time) if never set.\n" +
-		"Example: set to 6 if you never play before 6am.",
+	"help": `Help
+
+/help — list all commands
+/help <command> — show instructions
+
+Example: /help update`,
+	"update": `Updates
+
+1. Open /update and choose the poker PC, server or both.
+2. Wait for the bot to confirm the request was saved.
+3. Close PokerStars to let the poker PC update.
+
+Shortcuts
+/update pc — update the poker PC
+/update server — update the server (split setup)
+/update all — update both
+/update check — check for a new release
+
+What happens next
+• The PC waits for PokerStars to close; offline PCs wait until they reconnect. No further command is needed.
+• The server updates independently. Requests keep the selected release.
+• The bot reports success or failure after restart.
+• Settings, credentials, history, pairing and lock expiry are kept.
+
+Checks run at startup and daily; you get one notice per new version. Updates install only when requested.
+
+If the bot is offline, wait for its saved-request confirmation. Telegram keeps unreceived commands for up to 24 hours.
+
+Older installs or terminal commands:
+/help update terminal
+
+Reading /help update does not start an update.`,
+	"update terminal": `Update from a terminal
+
+Close PokerStars before updating the poker PC.
+On Windows, open PowerShell in the installation folder (default: C:\poker-tracker).
+
+Poker PC:
+.\tracker.exe --update
+
+Windows server:
+.\tracker-server.exe --update
+
+Standalone collector named tracker-client.exe:
+.\tracker-client.exe --update
+
+Accept the administrator prompt if asked.
+
+Linux server (run as the user who installed it):
+~/.local/share/poker-tracker/tracker-server --update
+
+After running
+• Wait for "Updated ..." or "Already up to date".
+• Replace --update with --version to check the installed version.
+• In split mode, update both machines separately to matching versions.
+
+The command installs the latest stable release for this machine's role and CPU. Settings, credentials, history, pairing and lock expiry are kept. Running installations restart; stopped ones stay stopped.
+
+Older installs
+Versions 4.8/4.9 need a one-time manual installer upgrade in the existing folder. If --update is unrecognized, install the current release there first:
+https://github.com/vit-ui/poker-tracker/releases/latest
+
+For Telegram updates: /help update`,
+	"stats": `Performance stats
+
+/stats [cash|spins|mtt] [today|week|month|all]
+Both filters are optional. Default: all games, all time.
+
+Examples
+/stats — all games, all time
+/stats cash — cash games, all time
+/stats spins week — Spin & Go, past 7 days
+/stats mtt month — MTTs, current calendar month`,
+	"deposit": `Log a deposit
+
+/deposit <amount>
+Example: /deposit 50.00
+
+Use the USD amount shown on PokerStars after the deposit clears, not BRL.`,
+	"withdraw": `Log a withdrawal
+
+/withdraw <amount>
+Example: /withdraw 20.00
+
+Use the USD amount shown on PokerStars, not BRL.`,
+	"hardstop": `Hard stops
+
+/hardstop — configure rules and duration
+/hardstop trigger — activate immediately (set a duration first)
+
+Limits
+• Session loss: buy-ins
+• Downswing: buy-ins below the rolling 30-day peak
+• Losing streak: consecutive losing sessions
+• Daily loss: USD across all games
+• Spin & Go daily loss: USD
+• Duration: e.g. 12, 48h, 2d or 1w
+
+A hard stop closes PokerStars and blocks the launcher for the full duration. Changing the duration keeps an active lock's original expiry.
+
+Each hard stop limit must be at least its matching alert limit.`,
+	"alerts": `Alerts
+
+/alerts — configure warning limits
+
+Limits
+• Downswing: buy-ins below the rolling 30-day peak
+• Session loss: buy-ins
+• Losing streak: consecutive losing sessions
+• Daily loss: USD across all games
+• Spin & Go daily loss: USD
+
+Alerts are sent automatically. Each alert limit must be at most its matching hard stop limit.`,
+	"lastsession": `/lastsession
+
+Show the last recorded cash or Spin & Go session summary.`,
+	"menu": `Main menu
+
+/menu — open the full menu
+
+• Setup — folders, schedule, screen name, storage, sheet (Sheets only) and credentials
+• Notifications — summaries and alerts
+• Hard stop — rules and duration
+• Info — status, last session, stats, export and updates
+• Money — deposits and withdrawals
+• Help — command list
+
+Tap Back to go up a level or Done to close a root menu.
+For update instructions: /help update`,
+	"status": `/status
+
+Show your bankroll and profit/loss for today, this week and this month.`,
+	"sheet": `Google Sheet
+
+/sheet — show the current sheet URL
+/sheet <name or URL> — switch sheets
+
+Examples
+/sheet My Other Bankroll
+/sheet https://docs.google.com/spreadsheets/d/...
+
+Sheets storage only. Access is checked before saving; the tracker then restarts automatically.`,
+	"storage": `Data storage
+
+/storage — show current storage
+/storage local — switch to a local file
+/storage sheets <name or URL> — switch to Google Sheets
+
+Before switching
+• Close PokerStars.
+• The destination must be empty; existing data cannot be merged.
+• For Sheets, share the sheet with your service account. If credentials are missing, the bot asks for google_service_account.json.
+
+The bot shows row counts and asks for confirmation before copying. It verifies the full history, then switches storage and restarts.`,
+	"export": `Export data
+
+/export — download three CSV files
+
+• Cash sessions
+• Tournaments
+• Bankroll ledger
+
+Works with local storage and Google Sheets. Empty data sets still include column headers.`,
+	"scan": `Import existing history
+
+/scan — import missing sessions and tournaments from your PokerStars folders
+
+• Safe to repeat: saved sessions are not duplicated.
+• No session summaries, alerts or hard stops during import.
+• Tournaments needing a ticket/cash or buy-in answer are skipped and counted; play or reopen them live to record them.
+• One message reports the totals when the scan finishes.
+
+A large first import to Google Sheets may need a few minutes to sync. Run /scan again after syncing for the full totals.`,
+	"credentials": `Google credentials
+
+1. Send /credentials.
+2. Attach google_service_account.json, or type skip to cancel.
+
+With Sheets storage, the bot checks access to the current sheet before replacing the key and restarting. Failed validation keeps the old key and sheet; a failed restart helper restores the old key.
+
+With local storage, this supplies credentials for a later switch using /storage sheets <name or URL>.`,
+	"screenname": `PokerStars screen name
+
+/screenname — show the last confirmed name and any pending change
+/screenname NewHandle99 — change your name (exact capitalisation matters)
+
+Changes are queued until the poker PC validates and confirms them, then collection restarts with the new name.`,
+	"paths": `PokerStars folders
+
+/paths — configure hand history and tournament summary locations
+
+• Enter the base folder, without the screen-name subfolder.
+• Relative paths start at the active Windows desktop user's home. Use a full path if no desktop user is available.
+• Changes are queued until the poker PC validates and confirms them.`,
+	"config": `/config
+
+List the configuration commands. Use /menu to open the full menu.`,
+	"notify": `Notifications
+
+/notify — choose which messages you receive
+
+Summaries
+• Cash, tournament, weekly and monthly results: Every, Only wins, Only losses or Off
+• Stake changes: On or Off
+• Weekly/monthly wins and losses use the whole period's net result.
+
+Alerts
+Configure warning limits, also available through /alerts.`,
+	"schedule": `Poker day start
+
+/schedule — set the start hour for daily loss alerts and hard stops
+
+Default: 6 (6am local time).
+Example: choose 6 if you never play before 6am.`,
 }
 
 func helpText(arg string) string {
@@ -162,7 +265,7 @@ func helpText(arg string) string {
 		for _, c := range commandList {
 			fmt.Fprintf(&b, "/%s — %s\n", c.name, c.desc)
 		}
-		b.WriteString("\nUpdate instructions: /help update.\n")
+		b.WriteString("\nDetails: /help <command>\nExample: /help update\n")
 		return strings.TrimRight(b.String(), "\n")
 	}
 	arg = strings.TrimPrefix(arg, "/")

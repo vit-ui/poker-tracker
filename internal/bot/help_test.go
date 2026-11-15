@@ -54,12 +54,8 @@ func TestUpdateHelp(t *testing.T) {
 		t.Run(arg, func(t *testing.T) {
 			got := helpText(arg)
 			for _, want := range []string{
-				"Close PokerStars", `C:\poker-tracker`, `.\tracker.exe --update`,
-				`.\tracker-server.exe --update`, `.\tracker-client.exe --update`,
-				"~/.local/share/poker-tracker/tracker-server --update",
-				"--version", "update both machines separately", "does not start an update",
+				"Close PokerStars", "does not start an update", "/help update terminal",
 				"/update pc", "/update server", "/update all", "waits for PokerStars to close", "daily",
-				"Versions 4.8/4.9 need a one-time manual installer upgrade",
 			} {
 				if !strings.Contains(got, want) {
 					t.Errorf("update help missing %q", want)
@@ -67,6 +63,29 @@ func TestUpdateHelp(t *testing.T) {
 			}
 			if len([]rune(got)) > 4096 {
 				t.Error("update help exceeds Telegram message limit")
+			}
+		})
+	}
+}
+
+func TestTerminalUpdateHelp(t *testing.T) {
+	for _, arg := range []string{"update terminal", "/update terminal", " UPDATE TERMINAL "} {
+		t.Run(arg, func(t *testing.T) {
+			got := helpText(arg)
+			for _, want := range []string{
+				"Close PokerStars", `C:\poker-tracker`, `.\tracker.exe --update`,
+				`.\tracker-server.exe --update`, `.\tracker-client.exe --update`,
+				"~/.local/share/poker-tracker/tracker-server --update",
+				"--version", "update both machines separately",
+				"Versions 4.8/4.9 need a one-time manual installer upgrade",
+				"/help update",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("terminal update help missing %q", want)
+				}
+			}
+			if len([]rune(got)) > 4096 {
+				t.Error("terminal update help exceeds Telegram message limit")
 			}
 		})
 	}
