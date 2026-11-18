@@ -342,21 +342,24 @@ func EvaluateTournament(t parsers.Tournament, cfg *config.Config, ledger []stora
 	return err
 }
 
-// ManualTrigger decides a hard stop on demand, for /hardstop trigger: it loads
-// the configured duration and, if set, calls onTrigger("manual", duration).
-// Errors if duration_hours is unset.
-func ManualTrigger(configPath string, onTrigger func(reason string, durationHours int)) error {
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
+// ManualTrigger uses an explicit one-time duration or the configured default.
+// It validates without changing configuration.
+func ManualTrigger(configPath string, overrideHours *int, onTrigger func(reason string, durationHours int)) error {
+	durationHours := overrideHours
+	if durationHours == nil {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
+		}
+		durationHours = cfg.Hardstop.DurationHours
+	}
+	if durationHours == nil {
+		return fmt.Errorf("no saved duration; use /hardstop now 10h or configure one with /hardstop")
+	}
+	if _, err := Duration(*durationHours); err != nil {
 		return err
 	}
-	if cfg.Hardstop.DurationHours == nil {
-		return fmt.Errorf("duration_hours is not configured, run /hardstop first")
-	}
-	if _, err := Duration(*cfg.Hardstop.DurationHours); err != nil {
-		return err
-	}
-	onTrigger("manual", *cfg.Hardstop.DurationHours)
+	onTrigger("manual", *durationHours)
 	return nil
 }
 

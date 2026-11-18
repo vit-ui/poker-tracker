@@ -654,7 +654,7 @@ func TestEvaluateSessionLoss(t *testing.T) {
 	}
 }
 
-// TestManualTrigger covers /hardstop trigger's path: it loads the duration
+// TestManualTrigger covers /hardstop now's path: it loads the duration
 // from a real config.json and refuses when duration_hours was never set.
 func TestManualTrigger(t *testing.T) {
 	t.Run("locks for the configured duration with reason manual", func(t *testing.T) {
@@ -667,7 +667,7 @@ func TestManualTrigger(t *testing.T) {
 		}
 
 		ch := make(chan string, 1)
-		if err := ManualTrigger(configPath, lockWriter(lockPath, ch)); err != nil {
+		if err := ManualTrigger(configPath, nil, lockWriter(lockPath, ch)); err != nil {
 			t.Fatalf("ManualTrigger: %v", err)
 		}
 		lock, err := config.LoadLock(lockPath)
@@ -687,7 +687,7 @@ func TestManualTrigger(t *testing.T) {
 			t.Fatalf("SaveConfig: %v", err)
 		}
 
-		if err := ManualTrigger(configPath, lockWriter(lockPath, make(chan string, 1))); err == nil {
+		if err := ManualTrigger(configPath, nil, lockWriter(lockPath, make(chan string, 1))); err == nil {
 			t.Fatal("ManualTrigger = nil error, want the not-configured error")
 		}
 		if lock, _ := config.LoadLock(lockPath); lock != nil {

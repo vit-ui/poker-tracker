@@ -1290,12 +1290,35 @@ func (b *Bot) startAlertsFlow(chatID int64)   { b.renderAlertsMenu(chatID, 0, "a
 func (b *Bot) startHardstopFlow(chatID int64) { b.renderHardstopMenu(chatID, 0, "hardstop", "") }
 func (b *Bot) startScheduleFlow(chatID int64) { b.renderScheduleMenu(chatID, 0, "schedule") }
 
-// handleHardstopCommand implements /hardstop. "trigger" fires a manual hard
-// stop; anything else opens the hard-stop menu.
+// manualHardstopRequested is shared by normal routing and the maintenance bypass.
+func manualHardstopRequested(args string) bool {
+	fields := strings.Fields(args)
+	return len(fields) > 0 && fields[0] == "now"
+}
+
+// handleHardstopCommand shares the durable manual-lock path for saved and one-time durations.
 func (b *Bot) handleHardstopCommand(chatID int64, args string) {
-	if strings.TrimSpace(args) == "trigger" {
+	fields := strings.Fields(args)
+	if len(fields) > 0 && !manualHardstopRequested(args) {
+		send(b.tg, chatID, "Use /hardstop now [duration] to lock immediately, e.g. /hardstop now 10h. Use /hardstop to configure rules.")
+		return
+	}
+	if len(fields) > 0 {
+		if len(fields) > 2 {
+			send(b.tg, chatID, "Usage: /hardstop now [duration], e.g. 10h or 1d.")
+			return
+		}
+		var overrideHours *int
+		if len(fields) == 2 {
+			hours, err := hardstop.ParseDurationHours(fields[1])
+			if err != nil {
+				send(b.tg, chatID, err.Error())
+				return
+			}
+			overrideHours = &hours
+		}
 		var requested config.LockFile
-		err := hardstop.ManualTrigger(b.configPath, func(reason string, duration int) {
+		err := hardstop.ManualTrigger(b.configPath, overrideHours, func(reason string, duration int) {
 			requested, _, _ = hardstop.BuildTrigger(reason, duration, time.Now().UTC())
 			if b.updateID != 0 {
 				requested.TriggerID = fmt.Sprintf("hardstop:manual:%d:%d:%d", b.tg.Self.ID, chatID, b.updateID)
@@ -1304,7 +1327,7 @@ func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 			}
 		})
 		if err != nil {
-			send(b.tg, chatID, "Configure duration first with /hardstop")
+			send(b.tg, chatID, "Could not start hard stop: "+err.Error())
 			return
 		}
 		path := filepath.Join(filepath.Dir(b.configPath), "hardstop_deliveries.json")

@@ -489,8 +489,8 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	}
 
 	if b.migrating || b.ownerPaused || b.deploymentPaused() {
-		if msg := update.Message; msg != nil && msg.IsCommand() && msg.Command() == "hardstop" && strings.TrimSpace(msg.CommandArguments()) == "trigger" {
-			b.handleHardstopCommand(senderChatID, "trigger")
+		if msg := update.Message; msg != nil && msg.IsCommand() && msg.Command() == "hardstop" && manualHardstopRequested(msg.CommandArguments()) {
+			b.handleHardstopCommand(senderChatID, msg.CommandArguments())
 			return
 		}
 		if update.CallbackQuery != nil {

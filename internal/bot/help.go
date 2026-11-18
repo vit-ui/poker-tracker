@@ -144,7 +144,11 @@ Use the USD amount shown on PokerStars, not BRL.`,
 	"hardstop": `Hard stops
 
 /hardstop — configure rules and duration
-/hardstop trigger — activate immediately (set a duration first)
+/hardstop now — activate immediately using the saved duration
+/hardstop now 10h — lock for 10 hours this time
+/hardstop now 1d — lock for one day this time
+
+Overrides accept whole hours, days or weeks (10, 10h, 1d, 1w). They work without a saved duration and do not change automatic settings. An existing longer lock cannot be shortened.
 
 Limits
 • Session loss: buy-ins

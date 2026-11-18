@@ -414,3 +414,5 @@ a pending report must never replace a terminal result for the same request.
 ### Money movement changes
 
 Deposits, withdrawals and rewards share the bot money-entry handler and `AppendLedgerEntry` path, including operation identities and Sheets recovery. Keep movement types excluded from results-only math. Transaction reports reuse the worker, ledger reads, statistics date boundaries and USD formatter; history pages must make every matching movement reachable.
+
+Manual `/hardstop now [duration]` requests reuse the duration parser and durable lock-delivery path. Overrides must not update automatic settings, shorten an active lock, wait for storage, or lose request identity during offline replay.

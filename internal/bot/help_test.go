@@ -90,3 +90,29 @@ func TestTerminalUpdateHelp(t *testing.T) {
 		})
 	}
 }
+
+func TestRewardTransactionAndManualStopHelp(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		want    []string
+	}{
+		{"reward", []string{"/reward <amount>", "USD", "game results"}},
+		{"transactions", []string{"/transactions history", "Previous/Next", "default period is all"}},
+		{"hardstop", []string{"/hardstop now 10h", "/hardstop now 1d", "do not change automatic settings"}},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			text := helpText(tc.command)
+			for _, want := range tc.want {
+				if !strings.Contains(text, want) {
+					t.Fatalf("missing %q", want)
+				}
+			}
+			if len([]rune(text)) > 4096 {
+				t.Fatal("help exceeds Telegram limit")
+			}
+			if strings.Contains(text, "/hardstop trigger") {
+				t.Fatal("retired command in help")
+			}
+		})
+	}
+}

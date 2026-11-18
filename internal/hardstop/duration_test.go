@@ -52,7 +52,7 @@ func TestDurationAndBuildTrigger(t *testing.T) {
 			t.Fatal(err)
 		}
 		triggered := false
-		err = ManualTrigger(path, func(string, int) { triggered = true })
+		err = ManualTrigger(path, nil, func(string, int) { triggered = true })
 		if triggered != (test.duration > 0) || (err != nil) != (test.duration == 0) {
 			t.Fatalf("manual duration %d: triggered=%v err=%v", hours, triggered, err)
 		}
@@ -90,5 +90,53 @@ func TestRemainingAndClosureMessage(t *testing.T) {
 	delayed := ClosureMessage(event, now.Add(49*time.Hour))
 	if !strings.Contains(delayed, "Closed at: 2026-11-05 11:00:00") || !strings.Contains(delayed, "Lock ended: 2026-11-07 12:00") || strings.Contains(delayed, "Remaining:") {
 		t.Fatal(delayed)
+	}
+}
+
+func TestManualDurationOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		saved, override, want int
+		valid                 bool
+	}{
+		{"saved default", 48, 0, 48, true},
+		{"ten hours", 48, 10, 10, true},
+		{"one day", 48, 24, 24, true},
+		{"unset with override", 0, 10, 10, true},
+		{"unset without override", 0, 0, 0, false},
+		{"negative override", 48, -1, 0, false},
+		{"overflow", 48, math.MaxInt, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			cfg := &config.Config{}
+			if tc.saved != 0 {
+				cfg.Hardstop.DurationHours = &tc.saved
+			}
+			if err := config.SaveConfig(path, cfg); err != nil {
+				t.Fatal(err)
+			}
+			var override *int
+			if tc.override != 0 {
+				override = &tc.override
+			}
+			got := 0
+			err := ManualTrigger(path, override, func(reason string, hours int) {
+				if reason != "manual" {
+					t.Fatal(reason)
+				}
+				got = hours
+			})
+			if (err == nil) != tc.valid || got != tc.want {
+				t.Fatal(got, err)
+			}
+			saved, err := config.LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.saved == 0 && saved.Hardstop.DurationHours != nil || tc.saved != 0 && (saved.Hardstop.DurationHours == nil || *saved.Hardstop.DurationHours != tc.saved) {
+				t.Fatal("configuration changed")
+			}
+		})
 	}
 }

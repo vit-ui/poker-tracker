@@ -65,7 +65,7 @@ Updates are also in **Menu → Info → Updates**.
 | View movement totals or paged history | `/transactions month` · `/transactions history all` |
 | Check versions or request an update | `/update` |
 | Set hard-stop rules and duration | `/hardstop` |
-| Lock immediately for the configured duration | `/hardstop trigger` |
+| Lock immediately for the configured duration | `/hardstop now` |
 | Warning thresholds | `/alerts` |
 | Choose summaries and alerts | `/notify` |
 | Download all history as three CSV files | `/export` |
@@ -192,7 +192,8 @@ Development builds cannot update an installation.
 ## Alerts and hard stops
 
 Use **`/alerts`** for warnings and **`/hardstop`** for rules that close PokerStars.
-Set a duration before enabling a hard-stop rule or using `/hardstop trigger`.
+Set a duration before enabling a hard-stop rule or using `/hardstop now` without an override.
+Use `/hardstop now 10h` or `/hardstop now 1d` for a one-time duration, even without a saved duration. Whole hours, days and weeks are supported; saved automatic settings stay unchanged and an existing longer lock cannot be shortened.
 
 | Rule | Measures |
 | --- | --- |
@@ -214,7 +215,7 @@ rule asks for confirmation. `/schedule` sets the poker-day start hour (default
 **Every**, **Only wins**, **Only losses**, or **Off**, and toggles stake-change notices.
 
 **While the poker PC is offline:** rules and schedules still save on the server.
-`/hardstop trigger` saves a request whose duration starts immediately. The PC
+`/hardstop now` saves a request whose duration starts immediately. The PC
 applies only the remaining time when it reconnects; expired requests do not start
 a new lock. `/status` shows expiry, time remaining, offline state and pending PC
 confirmation. Dates follow the poker PC's last reported timezone across server

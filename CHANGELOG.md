@@ -19,6 +19,8 @@ pulls its notes from the matching section below.
 
 ### Changed
 
+- Replace `/hardstop trigger` with `/hardstop now`; accept one-time durations such as `10h` or `1d` without changing automatic settings or shortening active locks.
+
 - Shorten Telegram command help with clear steps, sections and examples. Keep
   `/help update` focused on Telegram updates and move terminal commands and
   older-install guidance to `/help update terminal`.
