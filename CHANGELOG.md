@@ -6,6 +6,8 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+## v4.13 — 2026-11-18
+
 ### Fixed
 
 - Let elevated Windows setup, uninstall and update helpers verify SYSTEM-owned tracker processes by temporarily enabling the administrator token’s existing debug privilege, then restoring it. Preserve installation-path checks and graceful cleanup.
