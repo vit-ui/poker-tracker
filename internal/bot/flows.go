@@ -90,21 +90,23 @@ func validateNotAbove[T ~int | ~int64 | ~float64](value T, other *T, valueLabel,
 	return nil
 }
 
-// handleDepositWithdraw implements /deposit and /withdraw. kind is
-// "deposit" or "withdrawal" — passed directly as the Bankroll Ledger Type.
-func (b *Bot) handleDepositWithdraw(chatID int64, args, kind string) {
+// handleMoneyMovement shares recording, recovery and confirmation for all money movements.
+func (b *Bot) handleMoneyMovement(chatID int64, args, kind string) {
 	amountCents, err := parsePositiveMoney(args)
 	if err != nil {
-		if kind == "deposit" {
-			send(b.tg, chatID, "Invalid amount. Usage: /deposit <usd_amount> — enter the USD amount shown on PokerStars after the deposit clears, not BRL.")
-		} else {
-			send(b.tg, chatID, "Invalid amount. Usage: /withdraw <usd_amount> — enter the USD amount shown on PokerStars, not BRL.")
+		command := kind
+		if kind == "withdrawal" {
+			command = "withdraw"
 		}
+		send(b.tg, chatID, "Invalid amount. Usage: /"+command+" <usd_amount> — enter the USD amount shown on PokerStars, not BRL.")
 		return
 	}
 
 	ledgerAmountCents := amountCents
 	label := "Deposit"
+	if kind == "reward" {
+		label = "Reward"
+	}
 	if kind == "withdrawal" {
 		ledgerAmountCents = -amountCents
 		label = "Withdrawal"
@@ -230,7 +232,7 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 	case last == "on":
 		b.reset()
 		b.turnOn(chatID, messageID, strings.TrimSuffix(path, ":on"))
-	case last == "deposit" || last == "withdraw":
+	case last == "deposit" || last == "withdraw" || last == "reward":
 		b.beginMoneyEntry(chatID, messageID, path)
 	case isCommandAction(last):
 		// A hub shortcut to an existing command — runs it (which sends its own
@@ -250,7 +252,7 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 func isCommandAction(token string) bool {
 	switch token {
 	case "screenname", "storage", "sheet", "credentials", "scan",
-		"status", "lastsession", "stats", "export", "help", "update":
+		"status", "lastsession", "stats", "export", "help", "update", "transactions":
 		return true
 	}
 	return false
@@ -280,6 +282,8 @@ func (b *Bot) runCommandAction(chatID int64, token string) {
 		b.handleExportCommand(chatID)
 	case "help":
 		send(b.tg, chatID, helpText(""))
+	case "transactions":
+		b.handleTransactionsCommand(chatID, "")
 	case "update":
 		b.handleUpdateCommand(chatID, "")
 	}
@@ -907,19 +911,18 @@ func (b *Bot) renderMoneyMenu(chatID int64, messageID int, path string) {
 	rows := [][]tgbotapi.InlineKeyboardButton{
 		menuRow("Deposit", "menu:"+path+":deposit"),
 		menuRow("Withdraw", "menu:"+path+":withdraw"),
+		menuRow("Reward", "menu:"+path+":reward"),
+		menuRow("Transactions", "menu:"+path+":transactions"),
 		navButton(path),
 	}
-	b.showMenu(chatID, messageID, "Money — log a deposit or withdrawal:", rows)
+	b.showMenu(chatID, messageID, "Money — record a deposit, withdrawal or reward, or view transactions:", rows)
 }
 
-// beginMoneyEntry prompts for a deposit/withdrawal amount. path is the full
-// menu path (its last segment "deposit"/"withdraw"), stored as the field so the
+// beginMoneyEntry prompts for a money movement amount. Its menu path is
+// stored as the field so the
 // reply re-renders the money menu at its real depth under the hub.
 func (b *Bot) beginMoneyEntry(chatID int64, messageID int, path string) {
-	verb := "deposit"
-	if strings.HasSuffix(path, "withdraw") {
-		verb = "withdraw"
-	}
+	verb := path[strings.LastIndex(path, ":")+1:]
 	b.flow = "menu"
 	b.field = path
 	b.menuMessageID = messageID
@@ -1097,17 +1100,17 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 	key := segs[len(segs)-1]
 	flow := segs[len(segs)-2]
 
-	// Money entry (Deposit / Withdraw) doesn't touch config — handleDepositWithdraw
+	// Money entry (Deposit / Withdraw / Reward) doesn't touch config — handleMoneyMovement
 	// sends its own confirmation or error. key is the menu token; map it to the
 	// ledger kind.
 	if flow == "money" {
-		kind := "deposit"
+		kind := key
 		if key == "withdraw" {
 			kind = "withdrawal"
 		}
 		messageID := b.menuMessageID
 		b.reset()
-		b.handleDepositWithdraw(chatID, text, kind)
+		b.handleMoneyMovement(chatID, text, kind)
 		b.renderScreen(chatID, messageID, parentPath(target))
 		return
 	}

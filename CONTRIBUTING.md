@@ -410,3 +410,7 @@ behavior or ARM64 execution.
 Update-status checks must not prevent the bot's idle maintenance from being queued.
 Collector update acknowledgements and asynchronous reports may arrive out of order;
 a pending report must never replace a terminal result for the same request.
+
+### Money movement changes
+
+Deposits, withdrawals and rewards share the bot money-entry handler and `AppendLedgerEntry` path, including operation identities and Sheets recovery. Keep movement types excluded from results-only math. Transaction reports reuse the worker, ledger reads, statistics date boundaries and USD formatter; history pages must make every matching movement reachable.

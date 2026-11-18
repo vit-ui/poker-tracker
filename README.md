@@ -61,7 +61,8 @@ Updates are also in **Menu → Info → Updates**.
 | Cash results for the past 7 days | `/stats cash week` |
 | Today's Spin & Go results | `/stats spins today` |
 | This month's tournament results | `/stats mtt month` |
-| Record a deposit or withdrawal in USD | `/deposit 50.00` · `/withdraw 20.00` |
+| Record a deposit, withdrawal or reward in USD | `/deposit 50.00` · `/withdraw 20.00` · `/reward 2.50` |
+| View movement totals or paged history | `/transactions month` · `/transactions history all` |
 | Check versions or request an update | `/update` |
 | Set hard-stop rules and duration | `/hardstop` |
 | Lock immediately for the configured duration | `/hardstop trigger` |
@@ -431,3 +432,9 @@ Builds, tests, architecture and contribution rules are in
 © 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE).
 See the license for permissions and restrictions. Provided as-is, without
 warranty; not affiliated with or endorsed by PokerStars.
+
+### Rewards and transactions
+
+Use `/reward <USD amount>` for chest or promotional money. Like deposits and withdrawals, rewards affect bankroll but not game P&L, drawdown, streaks or loss limits.
+
+`/transactions [today|week|month|all]` shows separate movement totals and their net bankroll change, defaulting to all time. Add `history` before the period to browse every matching movement, newest first, using Previous/Next buttons. No history appears unless requested. Today starts at midnight, week covers the last seven days, and month starts on the first, matching `/stats`.

@@ -12,7 +12,7 @@ import (
 // LedgerEntry represents a row in the Bankroll Ledger.
 type LedgerEntry struct {
 	Date              time.Time
-	Type              string // "deposit" | "withdrawal" | "cash_session" | "tournament"
+	Type              string // "deposit" | "withdrawal" | "reward" | "cash_session" | "tournament"
 	AmountCents       money.Cents
 	RunningTotalCents money.Cents
 	SessionID         string // cash/tournament identity, money operation ID, or blank on legacy movements

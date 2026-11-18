@@ -16,7 +16,7 @@ func TestMoneyIdentitiesSurviveRestartAndMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-	if err := source.AppendLedgerEntry("deposit", 100, now, "money:first"); err != nil {
+	if err := source.AppendLedgerEntry("reward", 100, now, "money:first"); err != nil {
 		t.Fatal(err)
 	}
 	source.Close()
@@ -30,7 +30,7 @@ func TestMoneyIdentitiesSurviveRestartAndMigration(t *testing.T) {
 		amountCents money.Cents
 		id          string
 	}{
-		{"deposit", 100, "money:first"},
+		{"reward", 100, "money:first"},
 		{"deposit", 100, "money:second"},
 		{"withdrawal", -25, "money:withdrawal"},
 		{"withdrawal", -25, "money:withdrawal"},
@@ -66,7 +66,7 @@ func TestMoneyIdentitiesSurviveRestartAndMigration(t *testing.T) {
 	if _, err := storage.Migrate(source, target); err != nil {
 		t.Fatal(err)
 	}
-	if err := target.AppendLedgerEntry("deposit", 100, now, "money:first"); err != nil {
+	if err := target.AppendLedgerEntry("reward", 100, now, "money:first"); err != nil {
 		t.Fatal(err)
 	}
 	copied, err := target.ExportSnapshot()

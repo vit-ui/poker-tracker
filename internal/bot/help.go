@@ -22,6 +22,8 @@ var commandList = []struct {
 	{"update", "Check versions and queue updates for the poker PC or server."},
 	{"deposit", "Log a deposit to your bankroll ledger."},
 	{"withdraw", "Log a withdrawal from your bankroll ledger."},
+	{"reward", "Record chest or promotional money in your bankroll."},
+	{"transactions", "Show deposits, withdrawals and rewards; optional history."},
 	{"status", "Show current bankroll and P&L."},
 	{"lastsession", "Show the summary of the last recorded session."},
 	{"stats", "Show filtered performance stats."},
@@ -120,6 +122,19 @@ Examples
 Example: /deposit 50.00
 
 Use the USD amount shown on PokerStars after the deposit clears, not BRL.`,
+	"reward": `Record a reward
+
+/reward <amount>
+Example: /reward 2.50
+
+Enter chest or promotional money in USD. Rewards increase bankroll without changing game results or loss limits.`,
+	"transactions": `Transactions
+
+/transactions [today|week|month|all] — separate totals and net bankroll change
+/transactions history [period] — totals and every movement, with Previous/Next pages
+
+The default period is all. Today starts at midnight, week means the last seven days, and month starts on the first. History is shown only when requested.
+Example: /transactions history month`,
 	"withdraw": `Log a withdrawal
 
 /withdraw <amount>
@@ -165,7 +180,7 @@ Show the last recorded cash or Spin & Go session summary.`,
 • Notifications — summaries and alerts
 • Hard stop — rules and duration
 • Info — status, last session, stats, export and updates
-• Money — deposits and withdrawals
+• Money — deposits, withdrawals, rewards and transaction reports
 • Help — command list
 
 Tap Back to go up a level or Done to close a root menu.

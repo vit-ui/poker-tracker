@@ -561,6 +561,8 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	data := cb.Data
 
 	switch {
+	case strings.HasPrefix(data, "transactions:"):
+		b.handleTransactionsCallback(chatID, messageID, strings.TrimPrefix(data, "transactions:"))
 	case strings.HasPrefix(data, "update:"):
 		b.handleUpdateCommand(chatID, strings.TrimPrefix(data, "update:"))
 	case strings.HasPrefix(data, "satellite_cash:"):
@@ -589,10 +591,14 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 	case "start":
 		send(b.tg, chatID, "Welcome to Poker Tracker. Use the menu below any time — or type a command directly.")
 		b.startMenuFlow(chatID)
+	case "reward":
+		b.handleMoneyMovement(chatID, msg.CommandArguments(), "reward")
+	case "transactions":
+		b.handleTransactionsCommand(chatID, msg.CommandArguments())
 	case "deposit":
-		b.handleDepositWithdraw(chatID, msg.CommandArguments(), "deposit")
+		b.handleMoneyMovement(chatID, msg.CommandArguments(), "deposit")
 	case "withdraw":
-		b.handleDepositWithdraw(chatID, msg.CommandArguments(), "withdrawal")
+		b.handleMoneyMovement(chatID, msg.CommandArguments(), "withdrawal")
 	case "status":
 		b.handleStatus(chatID)
 	case "lastsession":

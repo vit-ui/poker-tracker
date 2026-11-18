@@ -6,6 +6,11 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+### Added
+
+- Record chest and promotional money with `/reward`, separately from deposits and game results.
+- Show movement totals with `/transactions` and browse complete period history with `/transactions history` and Previous/Next buttons.
+
 ### Fixed
 
 - Show the Windows launch error or captured tracker shutdown error when setup

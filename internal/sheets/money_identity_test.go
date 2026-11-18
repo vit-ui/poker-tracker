@@ -15,7 +15,7 @@ import (
 func TestIdentifiedMoneyRecoveryReconcilesLostAcknowledgement(t *testing.T) {
 	fake := &fakeSheets{failWrites: true}
 	client := newTestClient(t, fake)
-	err := client.AppendLedgerEntry("deposit", 100, time.Unix(1000, 0), "money:lost-response")
+	err := client.AppendLedgerEntry("reward", 100, time.Unix(1000, 0), "money:lost-response")
 	var writeErr *storage.WriteError
 	if !errors.As(err, &writeErr) || !writeErr.Queued {
 		t.Fatalf("failed write not durably queued: %v", err)
@@ -53,7 +53,7 @@ func TestIdentifiedMoneyRecoveryReconcilesLostAcknowledgement(t *testing.T) {
 			t.Fatalf("recovery duplicated an accepted write: %+v", request)
 		}
 	}
-	if err := restarted.AppendLedgerEntry("deposit", 100, time.Unix(1000, 0), "money:lost-response"); err != nil {
+	if err := restarted.AppendLedgerEntry("reward", 100, time.Unix(1000, 0), "money:lost-response"); err != nil {
 		t.Fatal(err)
 	}
 }
