@@ -6,6 +6,8 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+## v4.12 — 2026-11-18
+
 ### Added
 
 - Record chest and promotional money with `/reward`, separately from deposits and game results.
