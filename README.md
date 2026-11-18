@@ -443,3 +443,5 @@ Use `/reward <USD amount>` for chest or promotional money. Like deposits and wit
 Windows updates synchronize the version shown in Settings → Apps after the new executable confirms startup. Portable installations do not create an installed-app entry. A metadata error means the executable updated but Windows could not refresh its display fields; the error does not roll back a confirmed update.
 
 Rebuilt releases with the same version are skipped by `/update`. Install the rebuilt package manually if that version is already installed. Telegram command suggestions are managed separately through BotFather’s `/setcommands`; updating the executable does not replace that list.
+
+Windows setup, uninstall and update helpers use administrator access to verify and gracefully stop tracker processes running as SYSTEM. They temporarily enable the administrator token’s existing debug privilege and restore its previous state afterward; installation-path checks remain in effect. Accept the Windows administrator prompt when upgrading.

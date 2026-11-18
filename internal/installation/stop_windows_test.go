@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -33,6 +34,24 @@ func TestStop(t *testing.T) {
 		<-done
 		return
 	}
+	// Exercise the elevated installer's disabled initial privilege state too.
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token); err != nil {
+		t.Fatal(err)
+	}
+	defer token.Close()
+	var luid windows.LUID
+	if err := windows.LookupPrivilegeValue(nil, windows.StringToUTF16Ptr("SeDebugPrivilege"), &luid); err != nil {
+		t.Fatal(err)
+	}
+	disabled := windows.Tokenprivileges{PrivilegeCount: 1}
+	disabled.Privileges[0] = windows.LUIDAndAttributes{Luid: luid}
+	var original windows.Tokenprivileges
+	var size uint32
+	if err := windows.AdjustTokenPrivileges(token, false, &disabled, uint32(unsafe.Sizeof(original)), &original, &size); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.AdjustTokenPrivileges(token, false, &original, 0, nil, nil)
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +115,14 @@ func TestStop(t *testing.T) {
 			if err := children[1].Wait(); err != nil {
 				t.Fatalf("other installation termination: %v", err)
 			}
+			var prior windows.Tokenprivileges
+			if err := windows.AdjustTokenPrivileges(token, false, &disabled, uint32(unsafe.Sizeof(prior)), &prior, &size); err != nil {
+				t.Fatal(err)
+			}
+			if prior.PrivilegeCount != 0 {
+				t.Fatal("shutdown did not restore debug privilege")
+			}
+
 		})
 	}
 }

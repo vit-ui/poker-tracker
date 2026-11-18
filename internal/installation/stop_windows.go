@@ -16,10 +16,40 @@ import (
 func Stop(dir string) error { return StopExcept(dir, 0) }
 
 // StopExcept also excludes the terminal updater, which has no service shutdown event.
-func StopExcept(dir string, excludedPID int) error {
+func StopExcept(dir string, excludedPID int) (result error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return fmt.Errorf("resolving installation directory: %w", err)
+	}
+	// Elevated installers must explicitly enable their existing debug privilege
+	// to inspect SYSTEM-owned task processes. Restore the prior token state on
+	// every exit; ordinary users retain same-user shutdown behavior.
+	if windows.GetCurrentProcessToken().IsElevated() {
+		var token windows.Token
+		if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token); err != nil {
+			return fmt.Errorf("opening shutdown verification token: %w", err)
+		}
+		defer token.Close()
+		privilege, err := windows.UTF16PtrFromString("SeDebugPrivilege")
+		if err != nil {
+			return err
+		}
+		var luid windows.LUID
+		if err := windows.LookupPrivilegeValue(nil, privilege, &luid); err != nil {
+			return fmt.Errorf("locating shutdown verification privilege: %w", err)
+		}
+		state := windows.Tokenprivileges{PrivilegeCount: 1}
+		state.Privileges[0] = windows.LUIDAndAttributes{Luid: luid, Attributes: windows.SE_PRIVILEGE_ENABLED}
+		var previous windows.Tokenprivileges
+		var size uint32
+		if err := windows.AdjustTokenPrivileges(token, false, &state, uint32(unsafe.Sizeof(previous)), &previous, &size); err != nil {
+			return fmt.Errorf("enabling shutdown verification privilege: %w", err)
+		}
+		defer func() {
+			if err := windows.AdjustTokenPrivileges(token, false, &previous, 0, nil, nil); err != nil {
+				result = errors.Join(result, fmt.Errorf("restoring shutdown verification privilege: %w", err))
+			}
+		}()
 	}
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {

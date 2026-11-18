@@ -418,3 +418,5 @@ Deposits, withdrawals and rewards share the bot money-entry handler and `AppendL
 Manual `/hardstop now [duration]` requests reuse the duration parser and durable lock-delivery path. Overrides must not update automatic settings, shorten an active lock, wait for storage, or lose request identity during offline replay.
 
 Windows updater metadata changes must target the existing 64-bit installer uninstall key for the same installation ID and directory. Reuse the synchronization function after confirmed replacement and confirmed recovery; never run it on rollback. Test only disposable registry entries, preserving unrelated values. Metadata failures retain confirmed executables and recovery state.
+
+Windows shutdown verification must work with debug privilege initially disabled in an elevated token and a real SYSTEM-owned fixture. Check exact-path isolation, caller/updater exclusions, graceful cleanup, and restoration of the previous privilege state on success and error. Never test against the working installation or kill processes by name.
