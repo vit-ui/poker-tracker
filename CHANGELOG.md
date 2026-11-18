@@ -6,6 +6,10 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+### Fixed
+
+- Synchronize Windows installed-app version and display name after confirmed updates, including recovery, without rerunning setup.
+
 ## v4.12 — 2026-11-18
 
 ### Added

@@ -56,6 +56,7 @@ func runHelper(path string, args []string) error {
 
 type serviceState struct {
 	target, name                     string
+	installationID                   string
 	Exists, Enabled, Running, Manual bool
 	release                          func()
 	parent                           int
@@ -63,7 +64,7 @@ type serviceState struct {
 }
 
 func inspectService(target, role, id string, parent int) (*serviceState, error) {
-	s := &serviceState{target: target, name: installation.TaskName(id, role == "server"), parent: parent}
+	s := &serviceState{target: target, installationID: id, name: installation.TaskName(id, role == "server"), parent: parent}
 	release, err := installation.AcquireTransferLock(filepath.Dir(target))
 	if err != nil {
 		return nil, err

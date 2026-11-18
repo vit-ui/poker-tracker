@@ -164,7 +164,7 @@ func recoverPendingUpdate(target, role, id string, parent int) (string, error) {
 	if err := validateRecovery(*state, target, name); err != nil {
 		return "", err
 	}
-	s := &serviceState{target: target, name: name, Exists: state.TaskExists, Enabled: state.TaskEnabled, Running: state.TaskRunning, Manual: state.Manual, parent: parent, recovery: state}
+	s := &serviceState{target: target, installationID: id, name: name, Exists: state.TaskExists, Enabled: state.TaskEnabled, Running: state.TaskRunning, Manual: state.Manual, parent: parent, recovery: state}
 	if s.Exists {
 		output, err := powershell(s.taskScript() + `[xml]$xml=$task.Xml; if([string]$xml.Task.Actions.Exec.Command -ne ` + psLiteral(target) + `){throw 'Installation task target changed during update'}`)
 		if err != nil {
@@ -183,6 +183,11 @@ func recoverPendingUpdate(target, role, id string, parent int) (string, error) {
 	}
 	if err := restartAndConfirm(s, version); err != nil {
 		return "", fmt.Errorf("restarting recovered installation: %w", err)
+	}
+	if state.Confirmed {
+		if err := s.syncMetadata(version); err != nil {
+			return "", err
+		}
 	}
 	if err := s.finishUpdate(); err != nil {
 		return "", err

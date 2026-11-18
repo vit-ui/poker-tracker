@@ -398,6 +398,9 @@ func replace(target, staged string, service *serviceState, newVersion, oldVersio
 	if err := service.confirmUpdate(); err != nil {
 		return fmt.Errorf("persisting update confirmation; recovery remains armed: %w", err)
 	}
+	if err := service.syncMetadata(newVersion); err != nil {
+		return err
+	}
 	if err := service.finishUpdate(); err != nil {
 		return fmt.Errorf("finishing update recovery: %w", err)
 	}

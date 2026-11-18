@@ -439,3 +439,7 @@ warranty; not affiliated with or endorsed by PokerStars.
 Use `/reward <USD amount>` for chest or promotional money. Like deposits and withdrawals, rewards affect bankroll but not game P&L, drawdown, streaks or loss limits.
 
 `/transactions [today|week|month|all]` shows separate movement totals and their net bankroll change, defaulting to all time. Add `history` before the period to browse every matching movement, newest first, using Previous/Next buttons. No history appears unless requested. Today starts at midnight, week covers the last seven days, and month starts on the first, matching `/stats`.
+
+Windows updates synchronize the version shown in Settings → Apps after the new executable confirms startup. Portable installations do not create an installed-app entry. A metadata error means the executable updated but Windows could not refresh its display fields; the error does not roll back a confirmed update.
+
+Rebuilt releases with the same version are skipped by `/update`. Install the rebuilt package manually if that version is already installed. Telegram command suggestions are managed separately through BotFather’s `/setcommands`; updating the executable does not replace that list.

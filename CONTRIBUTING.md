@@ -416,3 +416,5 @@ a pending report must never replace a terminal result for the same request.
 Deposits, withdrawals and rewards share the bot money-entry handler and `AppendLedgerEntry` path, including operation identities and Sheets recovery. Keep movement types excluded from results-only math. Transaction reports reuse the worker, ledger reads, statistics date boundaries and USD formatter; history pages must make every matching movement reachable.
 
 Manual `/hardstop now [duration]` requests reuse the duration parser and durable lock-delivery path. Overrides must not update automatic settings, shorten an active lock, wait for storage, or lose request identity during offline replay.
+
+Windows updater metadata changes must target the existing 64-bit installer uninstall key for the same installation ID and directory. Reuse the synchronization function after confirmed replacement and confirmed recovery; never run it on rollback. Test only disposable registry entries, preserving unrelated values. Metadata failures retain confirmed executables and recovery state.
