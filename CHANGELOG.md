@@ -6,10 +6,6 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
-### Fixed
-
-- Synchronize Windows installed-app version and display name after confirmed updates, including recovery, without rerunning setup.
-
 ## v4.12 — 2026-11-18
 
 ### Added
@@ -18,6 +14,8 @@ pulls its notes from the matching section below.
 - Show movement totals with `/transactions` and browse complete period history with `/transactions history` and Previous/Next buttons.
 
 ### Fixed
+
+- Synchronize Windows installed-app version and display name after confirmed updates, including recovery, without rerunning setup.
 
 - Show the Windows launch error or captured tracker shutdown error when setup
   cannot stop an installation, and save failure details to a persistent temporary
