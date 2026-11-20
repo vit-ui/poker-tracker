@@ -28,36 +28,40 @@ func (t ScanTally) String() string {
 
 func (t *ScanTally) HandHistory(store Store, path, screenName string, splitCash bool) error {
 	var firstErr error
-	recordFailure := func(err error) {
-		t.Failed++
-		slog.Error("scanning hand history", "err", err)
-		if firstErr == nil {
+	err := parsers.ScanHandHistory(path, screenName, splitCash, func(session *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) bool {
+		if err := t.RecordHandHistory(store, session, tournament, err); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return true
+	})
+	if err != nil {
+		if err := t.RecordHandHistory(store, nil, nil, err); firstErr == nil {
 			firstErr = err
 		}
 	}
-	err := parsers.ScanHandHistory(path, screenName, splitCash, func(session *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) {
-		if err != nil {
-			recordFailure(err)
-			return
-		}
+	return firstErr
+}
+
+// RecordHandHistory applies one parsed group on the storage owner.
+func (t *ScanTally) RecordHandHistory(store Store, session *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) error {
+	if err == nil {
 		if session != nil {
-			if err := store.AppendCashSession(*session); err != nil {
-				recordFailure(err)
-			} else {
+			err = store.AppendCashSession(*session)
+			if err == nil {
 				t.Cash++
 			}
-			return
-		}
-		if err := store.UpdateTournamentHandStats(tournament.TournamentID, tournament.VPIP, tournament.PFR, tournament.Hands, tournament.BountyCents, tournament.IsKnockout); err != nil {
-			recordFailure(err)
 		} else {
-			t.TournamentHistories++
+			err = store.UpdateTournamentHandStats(tournament.TournamentID, tournament.VPIP, tournament.PFR, tournament.Hands, tournament.BountyCents, tournament.IsKnockout)
+			if err == nil {
+				t.TournamentHistories++
+			}
 		}
-	})
-	if err != nil {
-		recordFailure(err)
 	}
-	return firstErr
+	if err != nil {
+		t.Failed++
+		slog.Error("scanning hand history", "err", err)
+	}
+	return err
 }
 
 func (t *ScanTally) TournamentSummary(store Store, path, screenName string) error {

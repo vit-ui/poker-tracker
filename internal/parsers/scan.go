@@ -53,7 +53,7 @@ func handTournamentID(header string) string {
 
 // ScanHandHistory indexes hand locations on disk, then passes each group
 // through the regular parser. The contents of the export stay on disk.
-func ScanHandHistory(path, screenName string, splitCash bool, visit func(*CashSession, *TournamentHandStats, error)) error {
+func ScanHandHistory(path, screenName string, splitCash bool, visit func(*CashSession, *TournamentHandStats, error) bool) error {
 	if screenName == "" {
 		return fmt.Errorf("set the PokerStars screen name before scanning")
 	}
@@ -67,7 +67,9 @@ func ScanHandHistory(path, screenName string, splitCash bool, visit func(*CashSe
 		return err
 	}
 	if skipped > 0 {
-		visit(nil, nil, fmt.Errorf("%d incomplete, unidentified or repeated hands skipped", skipped))
+		if !visit(nil, nil, fmt.Errorf("%d incomplete, unidentified or repeated hands skipped", skipped)) {
+			return nil
+		}
 	}
 	if len(groups) == 0 {
 		return fmt.Errorf("no complete PokerStars hands found")
@@ -95,7 +97,9 @@ func ScanHandHistory(path, screenName string, splitCash bool, visit func(*CashSe
 			readers = append(readers, io.NewSectionReader(f, hand.offset, hand.bytes), strings.NewReader("\n"))
 		}
 		session, tournament, _, err, _ := parseCash(io.MultiReader(readers...), "scanned hand group", screenName, cashAgg{}, 0, false)
-		visit(session, tournament, err)
+		if !visit(session, tournament, err) {
+			return nil
+		}
 	}
 	return nil
 }
