@@ -61,7 +61,17 @@ type UpdateReply struct {
 	Error     string
 }
 
+// ScanChunk belongs to one explicitly requested file, isolated from watcher offsets.
+type ScanChunk struct {
+	RequestID  string
+	ScreenName string
+	Bytes      []byte
+	Done       bool
+	Error      string
+}
+
 type Upload struct {
+	Scan            *ScanChunk
 	Update          *config.UpdateReport
 	UpdateReply     *UpdateReply
 	collector       <-chan struct{} `json:"-"`
@@ -106,6 +116,7 @@ const (
 	CommandClosureAck       = "closure_ack"
 	CommandReplayClosures   = "replay_closures"
 	CommandRescan           = "rescan"
+	CommandScanFile         = "scan_file"
 	CommandResyncFiles      = "resync_files"
 	CommandPauseCollection  = "pause_collection"
 	CommandDrainCollection  = "drain_collection"
@@ -116,6 +127,7 @@ const (
 
 // Command is sent from the server to the client.
 type Command struct {
+	ScanPath  string
 	Update    *config.UpdateRequest
 	ClosureID string
 	Files     []string

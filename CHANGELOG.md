@@ -6,6 +6,8 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+- Extend `/scan` to handle mixed hand-history exports from a poker-PC file path or a Telegram attachment.
+
 ## v4.13 — 2026-11-18
 
 ### Fixed

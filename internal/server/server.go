@@ -39,7 +39,7 @@ import (
 // faster session record after quitting against a higher chance of a mid-session
 // break tripping it early (a resumed table then re-writes on the next quiet
 // period — an idempotent upsert).
-const cashSessionSummaryQuietPeriod = 150 * time.Second
+const cashSessionSummaryQuietPeriod = parsers.CashQuietPeriod
 
 // parseEntry is one file's carried incremental-parse state plus when it was
 // last touched, so idle entries can be evicted (see parseStateCap/TTL).
@@ -303,7 +303,14 @@ func (s *Server) Run() error {
 	// importCounts accumulates what the current /scan backfill records, reset by
 	// the ImportStart marker and reported by ImportDone. Touched only on this
 	// goroutine.
-	var importCounts importTally
+	var importCounts storage.ScanTally
+	var folderScan bool
+	var scanningFile *fileScan
+	defer func() {
+		if scanningFile != nil {
+			scanningFile.close()
+		}
+	}()
 
 	// parseStates carries per-file incremental parse state so a growing session
 	// file is resumed from its last byte offset instead of re-parsed from zero
@@ -468,7 +475,7 @@ func (s *Server) Run() error {
 		var commands chan<- transport.Command
 		var command transport.Command
 		restoringLock := false
-		var disconnected <-chan struct{}
+		var disconnected, scanDisconnected <-chan struct{}
 		if heldOperation == nil {
 			uploads = s.link.Uploads
 			endings = sessionEndChan
@@ -497,6 +504,12 @@ func (s *Server) Run() error {
 						commands, command = s.link.Commands, *next
 					}
 				}
+			}
+		}
+		if scanningFile != nil {
+			scanDisconnected = scanningFile.disconnected
+			if commands == nil && !scanningFile.sent {
+				commands, command = s.link.Commands, scanningFile.command
 			}
 		}
 		select {
@@ -579,7 +592,7 @@ func (s *Server) Run() error {
 			}
 			continue
 		case call := <-s.TransferCalls:
-			if (call.Request.Kind == transport.TransferReserve || call.Request.Kind == transport.TransferBegin) && len(s.link.Uploads) > 0 {
+			if (call.Request.Kind == transport.TransferReserve || call.Request.Kind == transport.TransferBegin) && (scanningFile != nil || folderScan || len(s.link.Uploads) > 0) {
 				call.Reply <- receiver.reply(call.Request.ID, fmt.Errorf("accepted collector uploads have not drained"))
 			} else {
 				call.Reply <- receiver.handle(call.Request)
@@ -599,6 +612,7 @@ func (s *Server) Run() error {
 			}
 			continue
 		case <-s.link.ConnectionChanged:
+			folderScan = false
 			updateQueue.sent = false
 			closures.retry()
 			settingsQueue.inflight = nil
@@ -621,9 +635,16 @@ func (s *Server) Run() error {
 				settingsQueue.inflight = &config.CollectorChange{ID: command.RequestID, Settings: *command.Settings}
 			} else if command.Kind == transport.CommandUpdate {
 				updateQueue.sent = true
+			} else if command.Kind == transport.CommandScanFile {
+				scanningFile.sent = true
 			} else {
 				pendingCollection.sent = true
 			}
+			continue
+		case <-scanDisconnected:
+			scanningFile.request.Reply <- storage.OperationResult{Err: fmt.Errorf("the poker PC disconnected before the file finished transferring")}
+			scanningFile.close()
+			scanningFile = nil
 			continue
 		case <-disconnected:
 			pendingCollection.finish(collectorFailure())
@@ -642,6 +663,31 @@ func (s *Server) Run() error {
 		case operation := <-operations:
 			if receiver.reserved() {
 				operation.Reply <- storage.OperationResult{Err: fmt.Errorf("destination is reserved for deployment transfer")}
+				continue
+			}
+			if operation.ScanPath != "" || operation.ScanAttachment != "" {
+				if scanningFile != nil || folderScan {
+					operation.Reply <- storage.OperationResult{Err: fmt.Errorf("a scan is already in progress")}
+					continue
+				}
+				if operation.ScanAttachment != "" {
+					var screenName string
+					if settings := settingsQueue.state.Confirmed; settings != nil && settings.ScreenName != nil {
+						screenName = *settings.ScreenName
+					}
+					operation.Reply <- scanHandFile(s.store, operation.ScanAttachment, screenName)
+					continue
+				}
+				done := s.link.CollectorDone()
+				select {
+				case <-done:
+					operation.Reply <- storage.OperationResult{Err: fmt.Errorf("the poker PC is offline")}
+				default:
+					scanningFile = &fileScan{
+						request: operation, disconnected: done,
+						command: transport.Command{Kind: transport.CommandScanFile, RequestID: nextRequestID(), ScanPath: operation.ScanPath},
+					}
+				}
 				continue
 			}
 			if operation.Updates {
@@ -757,6 +803,16 @@ func (s *Server) Run() error {
 			return fmt.Errorf("collector upload reached reserved deployment destination")
 		}
 		connection, current := s.link.UploadConnection(up)
+		if chunk := up.Scan; chunk != nil {
+			if current && scanningFile != nil && connection == scanningFile.disconnected && scanningFile.command.RequestID == chunk.RequestID {
+				if result, complete := scanningFile.accept(s.store, *chunk); complete {
+					scanningFile.request.Reply <- result
+					scanningFile.close()
+					scanningFile = nil
+				}
+			}
+			continue
+		}
 		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil || up.ConfigReply != nil || up.Update != nil || up.UpdateReply != nil) && !current {
 			continue
 		}
@@ -922,11 +978,13 @@ func (s *Server) Run() error {
 		// reports it.
 		switch up.Type {
 		case transport.ImportStart:
-			importCounts = importTally{}
+			folderScan = true
+			importCounts = storage.ScanTally{}
 			continue
 		case transport.ImportDone:
-			s.alertChan <- importReport(importCounts)
-			importCounts = importTally{}
+			folderScan = false
+			s.alertChan <- importCounts.String()
+			importCounts = storage.ScanTally{}
 			continue
 		}
 
@@ -968,7 +1026,12 @@ func (s *Server) Run() error {
 		// alerts, no summary, no quiet-period deferral — and never touches the
 		// live evaluation path below.
 		if up.Import {
-			recordDrainFailure(s.importUpload(path, up, screenName, &importCounts))
+			switch up.Type {
+			case "cash":
+				recordDrainFailure(importCounts.HandHistory(s.store, path, screenName, false))
+			case "tournament":
+				recordDrainFailure(importCounts.TournamentSummary(s.store, path, screenName))
+			}
 			continue
 		}
 
@@ -1482,75 +1545,6 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 		s.alertChan <- cashSessionSummaryText(session, bankrollCents)
 	}
 	return nil
-}
-
-// importTally counts what a /scan backfill recorded, for the completion report.
-type importTally struct {
-	cash        int // cash sessions appended
-	tournaments int // tournaments appended
-	skipped     int // tournaments skipped for needing a player answer
-}
-
-// importUpload records one /scan file silently — no hard stop, no alerts, no
-// summary, no quiet-period deferral. A cash file appends its session
-// immediately; a cash file that's actually a tournament hand enriches its
-// tournament row (not counted as a session). A tournament summary appends
-// unless it needs a player answer (a likely satellite, or a zero-buy-in
-// freeroll), which is skipped and counted so the player knows to play it in
-// live. Parse/store failures are logged and skipped. Idempotent: re-running a
-// scan re-upserts identical rows.
-func (s *Server) importUpload(path string, up transport.Upload, screenName string, tally *importTally) error {
-	switch up.Type {
-	case "cash":
-		session, tourneyStats, err := parsers.ParseCashFile(path, screenName)
-		if err != nil {
-			slog.Error("import: parsing cash file", "file", up.FileID, "err", err)
-			return err
-		}
-		switch {
-		case session != nil:
-			if err := s.store.AppendCashSession(*session); err != nil {
-				slog.Error("import: appending cash session", "file", up.FileID, "err", err)
-				return err
-			}
-			tally.cash++
-		case tourneyStats != nil:
-			if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyCents, tourneyStats.IsKnockout); err != nil {
-				slog.Error("import: updating tournament hand stats", "tournament_id", tourneyStats.TournamentID, "err", err)
-				return err
-			}
-		}
-	case "tournament":
-		t, err := parsers.ParseTournamentFile(path, screenName)
-		if err != nil {
-			slog.Error("import: parsing tournament", "file", up.FileID, "err", err)
-			return err
-		}
-		// Skip the ones the live pipeline would queue for a player answer:
-		// recording them without the answer would corrupt bankroll (a ticket
-		// counted as cash) or store a wrong zero buy-in. Skipping also protects
-		// any already-answered row from being clobbered on a re-scan.
-		if t.LikelySatellite || t.BuyInCents == 0 {
-			tally.skipped++
-			return nil
-		}
-		if _, err := s.store.AppendTournament(t); err != nil {
-			slog.Error("import: appending tournament", "tournament_id", t.TournamentID, "err", err)
-			return err
-		}
-		tally.tournaments++
-	}
-	return nil
-}
-
-// importReport is the one message a /scan sends when it finishes: what it
-// recorded, and how many tournaments it skipped for needing a player answer.
-func importReport(t importTally) string {
-	msg := fmt.Sprintf("📥 Scan complete — recorded %d cash session(s) and %d tournament(s).", t.cash, t.tournaments)
-	if t.skipped > 0 {
-		msg += fmt.Sprintf("\nSkipped %d tournament(s) that need a ticket-vs-cash or buy-in answer — play or re-open those in live to record them.", t.skipped)
-	}
-	return msg
 }
 
 // tournamentAlertText formats the post-tournament summary alert. When the

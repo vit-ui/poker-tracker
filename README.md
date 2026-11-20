@@ -229,7 +229,8 @@ after reconnection and keep the original closure time.
 
 | Task | Command |
 | --- | --- |
-| Import files already in your PokerStars folders | `/scan` |
+| Scan files already in your PokerStars folders | `/scan` |
+| Scan one PokerStars hand-history file | `/scan file` |
 | Export cash sessions, tournaments and ledger | `/export` |
 | Show the current storage backend | `/storage` |
 | Move history to SQLite | `/storage local` |
@@ -241,10 +242,15 @@ after reconnection and keep the original closure time.
 | Edit PokerStars base folders | `/paths` |
 | List configuration commands | `/config` |
 
-**Import:** `/scan` records silently, with one final report and no hard stops,
-alerts or session summaries. Already stored sessions are not duplicated.
-Tournaments needing ticket/cash or free/paid answers are skipped and counted.
-A large Sheets import can take a few minutes to sync.
+**Scan:** `/scan` scans the configured folders. `/scan file` accepts a single
+PokerStars `.txt` export, either as a path on the connected poker PC or as a
+Telegram attachment up to 20 MB. An export can contain multiple cash sessions
+and tournaments. Tournament summaries still supply final results. Scans
+produce one result report without hard stops or session summaries. Exact
+repeats update the same records. A partially overlapping cash export can
+produce another session row when its first hand differs. Tournament summaries
+that need a ticket/cash or free/paid answer are skipped and counted. Large
+Sheets scans are paced under the API quota.
 
 **Storage migration:** close PokerStars and keep the poker PC connected. The
 destination must be empty; histories are not merged. Confirm the row counts in

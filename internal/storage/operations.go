@@ -17,6 +17,8 @@ import (
 )
 
 type Operation struct {
+	ScanPath                   string // requested path on the poker PC
+	ScanAttachment             string // staged Telegram file on the storage machine
 	Updates                    bool
 	UpdateRequest              *config.UpdateRequest
 	CollectorSettings          bool
@@ -35,6 +37,7 @@ type Operation struct {
 
 // OperationResult is consumed on the bot event loop, where replies are sent.
 type OperationResult struct {
+	Scan              ScanTally
 	Updates           config.CollectorUpdates
 	CollectorSettings config.CollectorSettingsState
 	CollectorOnline   bool

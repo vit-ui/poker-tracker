@@ -67,3 +67,23 @@ func ResolveCollection(cfg *Config, change CollectorSettings) (CollectorSettings
 	}
 	return settings, nil
 }
+
+// ResolveCollectorScanPath resolves a single .txt file on the poker PC.
+func ResolveCollectorScanPath(input string) (string, error) {
+	path := strings.Trim(strings.TrimSpace(input), `"`)
+	if !strings.EqualFold(filepath.Ext(path), ".txt") {
+		return "", fmt.Errorf("send the path to a PokerStars .txt file")
+	}
+	path, err := collectorAbsolutePath(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("reading scan file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("the scan path must be a regular file")
+	}
+	return path, nil
+}

@@ -167,6 +167,12 @@ structural summary clues, and `/scan` skips/counts tournaments needing an answer
 Preserve these limitations in documentation until their behavior is explicitly
 changed and verified.
 
+## Hand-history scans
+
+Keep export grouping on the server. The collector streams a requested file
+without parsing it. Test with the anonymized mixed export fixture and use
+disposable storage for larger private exports.
+
 ## Code style
 
 - Run `gofmt` before every commit; `go vet ./...` should be clean.

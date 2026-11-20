@@ -225,7 +225,8 @@ The bot shows row counts and asks for confirmation before copying. It verifies t
 Works with local storage and Google Sheets. Empty data sets still include column headers.`,
 	"scan": `Import existing history
 
-/scan — import missing sessions and tournaments from your PokerStars folders
+/scan — scan your PokerStars folders
+/scan file — scan one .txt export by poker-PC path or Telegram upload (up to 20 MB)
 
 • Safe to repeat: saved sessions are not duplicated.
 • No session summaries, alerts or hard stops during import.

@@ -68,7 +68,8 @@ type Bot struct {
 	// supplies it: both builds send a CommandRescan down the link, which the
 	// collector (in-process or remote) turns into a walk of the watched folders.
 	// The bot only asks; the collector does the walk and the server records.
-	requestRescan func()
+	requestRescan  func()
+	fileScanActive bool
 
 	// now returns the time the read-side date windows (/status, /stats, weekly
 	// and monthly summaries) anchor to. The all-local build passes time.Now; the
@@ -513,6 +514,10 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	// A document upload has no Text — the check below would otherwise
 	// silently drop it. This is the only flow that ever expects a file
 	// instead of a text reply.
+	if msg.Document != nil && b.flow == "scan" && b.field == "upload" {
+		b.handleScanAttachment(msg.Chat.ID, msg.Document)
+		return
+	}
 	if b.field == "file" && msg.Document != nil {
 		switch b.flow {
 		case "credentials":
@@ -546,6 +551,8 @@ func (b *Bot) handleFlowReply(msg *tgbotapi.Message) {
 		b.handleCredentialsTextReply(msg.Chat.ID, msg.Text)
 	case "storage_credentials":
 		b.handleStorageCredentialsText(msg.Chat.ID, msg.Text)
+	case "scan":
+		b.handleScanReply(msg.Chat.ID, msg.Text)
 	case "freeroll_buyin":
 		b.handleFreerollBuyInReply(msg.Chat.ID, msg.Text)
 	}
@@ -561,6 +568,8 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	data := cb.Data
 
 	switch {
+	case strings.HasPrefix(data, "scan:"):
+		b.handleScanChoice(chatID, messageID, strings.TrimPrefix(data, "scan:"))
 	case strings.HasPrefix(data, "transactions:"):
 		b.handleTransactionsCallback(chatID, messageID, strings.TrimPrefix(data, "transactions:"))
 	case strings.HasPrefix(data, "update:"):
@@ -612,7 +621,14 @@ func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 	case "export":
 		b.handleExportCommand(chatID)
 	case "scan":
-		b.handleScanCommand(chatID)
+		switch strings.TrimSpace(msg.CommandArguments()) {
+		case "":
+			b.handleScanCommand(chatID)
+		case "file":
+			b.renderScanMenu(chatID, 0, "scan")
+		default:
+			send(b.tg, chatID, "Use /scan to scan folders or /scan file for a single file.")
+		}
 	case "credentials":
 		b.startCredentialsFlow(chatID)
 	case "screenname":

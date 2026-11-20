@@ -164,7 +164,11 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 		base = prior.agg
 	}
 
-	r := bufio.NewReader(f)
+	return parseCash(f, path, screenName, base, startOffset, prior != nil)
+}
+
+func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset int64, resuming bool) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
+	r := bufio.NewReader(in)
 
 	// st is the working aggregate (includes every hand finalized so far);
 	// committed is a snapshot taken at each hand header, so it always excludes
@@ -257,7 +261,7 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 			// A non-nil prior stores the byte offset of a hand header; if the
 			// first line we read there isn't one, the file was rewritten in
 			// place, so bail to the full-parse fallback.
-			if firstLine && prior != nil && !isHandHeader(line) {
+			if firstLine && resuming && !isHandHeader(line) {
 				return nil, nil, nil, nil, false
 			}
 			firstLine = false
@@ -271,12 +275,7 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 				if strings.Contains(line, "Tournament #") {
 					if !st.isTournament {
 						st.isTournament = true
-						if tidx := strings.Index(line, "Tournament #"); tidx >= 0 {
-							rest := line[tidx+len("Tournament #"):]
-							if end := strings.Index(rest, ","); end > 0 {
-								st.tournamentID = rest[:end]
-							}
-						}
+						st.tournamentID = handTournamentID(line)
 					}
 				} else {
 					if st.bigBlindCents == 0 {
@@ -303,28 +302,11 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 						st.stake = "NL" + strconv.FormatInt(int64(bbCents), 10)
 					}
 
-					// Timestamp is after the last " - " in the header.
-					tsPart := line
-					for {
-						idx := strings.Index(tsPart, " - ")
-						if idx == -1 {
-							break
+					if t := handTime(line); !t.IsZero() {
+						if st.firstTime.IsZero() {
+							st.firstTime = t
 						}
-						tsPart = tsPart[idx+3:]
-					}
-					ts := tsPart
-					// PokerStars sometimes emits single-digit hours ("1:01:07" not "01:01:07").
-					if len(ts) >= 18 && ts[12] == ':' {
-						ts = ts[:11] + "0" + ts[11:]
-					}
-					if len(ts) >= 19 {
-						t, err := time.Parse("2006/01/02 15:04:05", ts[:19])
-						if err == nil {
-							if st.firstTime.IsZero() {
-								st.firstTime = t
-							}
-							st.lastTime = t
-						}
+						st.lastTime = t
 					}
 				}
 

@@ -234,6 +234,10 @@ func (b *Bot) handleExportCommand(chatID int64) {
 // that can guard — an unconfigured install no-ops there with a log line. The
 // completion report (with counts) arrives later via alertChan.
 func (b *Bot) handleScanCommand(chatID int64) {
+	if b.fileScanActive {
+		send(b.tg, chatID, "A file scan is already in progress.")
+		return
+	}
 	b.requestRescan()
 	send(b.tg, chatID, "📥 Scanning your folders for anything not yet recorded — I'll report what I record when it's done.")
 }

@@ -74,7 +74,14 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 	requests := make(chan transport.Command)
 	commandsDone := make(chan struct{})
 	go func() { defer close(commandsDone); c.applyCommands(dead, finished, requests) }()
-	defer func() { close(finished); <-commandsDone }()
+	var scanDone <-chan struct{}
+	defer func() {
+		close(finished)
+		<-commandsDone
+		if scanDone != nil {
+			<-scanDone
+		}
+	}()
 	lock, err := config.LoadLock(c.enforcer.path)
 	status := &transport.CollectorStatus{Lock: lock}
 	if c.Updater != nil {
@@ -159,6 +166,8 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 			return fmt.Errorf("file watcher stopped: %w", c.collection.active.err)
 		case <-dead:
 			return nil
+		case <-scanDone:
+			scanDone = nil
 		case cmd := <-requests:
 			var err error
 			switch cmd.Kind {
@@ -223,6 +232,28 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 				}
 				continue
 
+			case transport.CommandScanFile:
+				if scanDone != nil {
+					select {
+					case <-scanDone:
+						scanDone = nil
+					default:
+					}
+				}
+				if paused || scanDone != nil {
+					chunk := &transport.ScanChunk{RequestID: cmd.RequestID, Done: true, Error: "The poker PC is busy. Try the scan later."}
+					if !c.send(transport.Upload{Scan: chunk}, dead) {
+						return nil
+					}
+					continue
+				}
+				done := make(chan struct{})
+				scanDone = done
+				go func() {
+					defer close(done)
+					c.streamScanFile(cmd, configPath, dead, finished)
+				}()
+				continue
 			case transport.CommandRescan:
 				if !paused {
 					c.rescan(configPath, dead)

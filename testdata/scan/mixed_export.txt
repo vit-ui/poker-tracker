@@ -1,0 +1,225 @@
+﻿PokerStars anonymized hand history export
+
+PokerStars Hand #281000000017:  Hold'em No Limit ($0.01/$0.02 USD) - 2025/02/10 23:02:00 ET
+Table 'CashTest' 6-max Seat #1 is the button
+Seat 1: AnonPlayer02 ($0.63 in chips)
+Seat 2: AnonPlayer04 ($1.66 in chips)
+Seat 3: AnonPlayer05 ($1.17 in chips)
+Seat 4: AnonExportHero ($1.19 in chips)
+Seat 5: AnonPlayer01 ($2.66 in chips)
+Seat 6: AnonPlayer03 ($4.47 in chips)
+AnonPlayer04: posts small blind $0.01
+AnonPlayer05: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonExportHero [Th 3c]
+AnonExportHero: folds
+AnonPlayer01: folds
+AnonPlayer03: folds
+AnonPlayer02: folds
+AnonPlayer04: folds
+Uncalled bet ($0.01) returned to AnonPlayer05
+AnonPlayer05 collected $0.02 from pot
+*** SUMMARY ***
+Total pot $0.02 | Rake $0
+Seat 1: AnonPlayer02 (button) folded before Flop (didn't bet)
+Seat 2: AnonPlayer04 (small blind) folded before Flop
+Seat 3: AnonPlayer05 (big blind) collected ($0.02)
+Seat 4: AnonExportHero folded before Flop (didn't bet)
+Seat 5: AnonPlayer01 folded before Flop (didn't bet)
+Seat 6: AnonPlayer03 folded before Flop (didn't bet)
+
+Hand #281000000017:
+
+PokerStars Hand #281000000016: Tournament #9800000001, Freeroll  Hold'em No Limit - Level III (50/100) - 2025/02/10 22:00:00 ET
+Table 'TournamentTestA' 4-max Seat #1 is the button
+Seat 1: AnonPlayer07 (200 in chips, $1.32 bounty)
+Seat 2: AnonExportHero (2450 in chips, $0.88 bounty)
+Seat 4: AnonPlayer06 (1350 in chips, $0.88 bounty)
+AnonExportHero: posts small blind 50
+AnonPlayer06: posts big blind 100
+*** HOLE CARDS ***
+Dealt to AnonExportHero [4s Qd]
+AnonPlayer07: raises 100 to 200 and is all-in
+AnonExportHero: calls 150
+AnonPlayer06: calls 100
+*** FLOP *** [5d Ks 2d]
+AnonExportHero: checks
+AnonPlayer06: checks
+*** TURN *** [5d Ks 2d] [6c]
+AnonExportHero: checks
+AnonPlayer06: checks
+*** RIVER *** [5d Ks 2d 6c] [3h]
+AnonExportHero: bets 1900
+AnonPlayer06: folds
+Uncalled bet (1900) returned to AnonExportHero
+*** SHOW DOWN ***
+AnonExportHero: shows [4s Qd] (a straight, Deuce to Six)
+AnonPlayer07: shows [As 7c] (high card Ace)
+AnonExportHero collected 600 from pot
+AnonExportHero wins $0.49 for eliminating AnonPlayer07 and their own bounty increases by $0.66 to $1.54
+AnonPlayer07 finished the tournament in 3rd place
+*** SUMMARY ***
+Total pot 600 | Rake 0
+Board [5d Ks 2d 6c 3h]
+Seat 1: AnonPlayer07 (button) showed [As 7c] and lost with high card Ace
+Seat 2: AnonExportHero (small blind) showed [4s Qd] and won (600) with a straight, Deuce to Six
+Seat 4: AnonPlayer06 (big blind) folded on the River
+
+Hand #281000000016:
+
+PokerStars Hand #281000000015:  Hold'em No Limit ($0.01/$0.02 USD) - 2025/02/10 23:01:00 ET
+Table 'CashOther' 6-max Seat #6 is the button
+Seat 1: AnonPlayer02 ($0.67 in chips)
+Seat 2: AnonPlayer04 ($1.68 in chips)
+Seat 3: AnonPlayer05 ($1.17 in chips)
+Seat 4: AnonExportHero ($0.91 in chips)
+Seat 5: AnonPlayer01 ($2.66 in chips)
+Seat 6: AnonPlayer03 ($4.72 in chips)
+AnonPlayer02: posts small blind $0.01
+AnonPlayer04: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonExportHero [Jh 9h]
+AnonPlayer05: folds
+AnonExportHero: raises $0.02 to $0.04
+AnonPlayer01: folds
+AnonPlayer03: calls $0.04
+AnonPlayer02: calls $0.03
+AnonPlayer04: folds
+*** FLOP *** [As 8h 9c]
+AnonPlayer02: checks
+AnonExportHero: bets $0.07
+AnonPlayer03: calls $0.07
+AnonPlayer02: folds
+*** TURN *** [As 8h 9c] [Ah]
+AnonExportHero: bets $0.14
+AnonPlayer03: calls $0.14
+*** RIVER *** [As 8h 9c Ah] [4c]
+AnonExportHero: bets $0.02
+AnonPlayer03: folds
+Uncalled bet ($0.02) returned to AnonExportHero
+AnonExportHero collected $0.53 from pot
+AnonExportHero: doesn't show hand
+*** SUMMARY ***
+Total pot $0.56 | Rake $0.03
+Board [As 8h 9c Ah 4c]
+Seat 1: AnonPlayer02 (small blind) folded on the Flop
+Seat 2: AnonPlayer04 (big blind) folded before Flop
+Seat 3: AnonPlayer05 folded before Flop (didn't bet)
+Seat 4: AnonExportHero collected ($0.53)
+Seat 5: AnonPlayer01 folded before Flop (didn't bet)
+Seat 6: AnonPlayer03 (button) folded on the River
+
+Hand #281000000015:
+
+PokerStars Hand #281000000014: Tournament #9800000002, $0.46+$0.04 USD Hold'em No Limit - Level I (10/20) - 2025/02/10 22:01:00 ET
+Table 'TournamentTestB' 3-max Seat #1 is the button
+Seat 1: AnonPlayer08 (500 in chips)
+Seat 2: AnonExportHero (500 in chips)
+Seat 3: AnonPlayer09 (500 in chips)
+AnonExportHero: posts small blind 10
+AnonPlayer09: posts big blind 20
+*** HOLE CARDS ***
+Dealt to AnonExportHero [Jd Th]
+AnonPlayer08: folds
+AnonExportHero: raises 20 to 40
+AnonPlayer09: calls 20
+*** FLOP *** [8c 9s Qh]
+AnonExportHero: bets 460 and is all-in
+AnonPlayer09: calls 460 and is all-in
+*** TURN *** [8c 9s Qh] [Ac]
+*** RIVER *** [8c 9s Qh Ac] [2d]
+*** SHOW DOWN ***
+AnonExportHero: shows [Jd Th] (a straight, Eight to Queen)
+AnonPlayer09: shows [8h Qd] (two pair, Queens and Eights)
+AnonExportHero collected 1000 from pot
+AnonPlayer09 finished the tournament in 3rd place
+*** SUMMARY ***
+Total pot 1000 | Rake 0
+Board [8c 9s Qh Ac 2d]
+Seat 1: AnonPlayer08 (button) folded before Flop (didn't bet)
+Seat 2: AnonExportHero (small blind) showed [Jd Th] and won (1000) with a straight, Eight to Queen
+Seat 3: AnonPlayer09 (big blind) showed [8h Qd] and lost with two pair, Queens and Eights
+
+Hand #281000000014:
+
+PokerStars Hand #281000000013:  Hold'em No Limit ($0.01/$0.02 USD) - 2025/02/10 23:00:00 ET
+Table 'CashTest' 6-max Seat #5 is the button
+Seat 1: AnonPlayer02 ($0.69 in chips)
+Seat 2: AnonPlayer04 ($1.68 in chips)
+Seat 3: AnonPlayer05 ($1.06 in chips)
+Seat 4: AnonExportHero ($1 in chips)
+Seat 5: AnonPlayer01 ($2.66 in chips)
+Seat 6: AnonPlayer03 ($4.73 in chips)
+AnonPlayer03: posts small blind $0.01
+AnonPlayer02: posts big blind $0.02
+AnonExportHero: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonExportHero [4c Jc]
+AnonPlayer04: folds
+AnonPlayer05: raises $0.07 to $0.09
+AnonExportHero: calls $0.07
+AnonPlayer01: folds
+AnonPlayer03: folds
+AnonPlayer02: folds
+*** FLOP *** [5h Qd 2h]
+AnonPlayer05: bets $0.20
+AnonExportHero: folds
+Uncalled bet ($0.20) returned to AnonPlayer05
+AnonPlayer05 collected $0.20 from pot
+*** SUMMARY ***
+Total pot $0.21 | Rake $0.01
+Board [5h Qd 2h]
+Seat 1: AnonPlayer02 (big blind) folded before Flop
+Seat 2: AnonPlayer04 folded before Flop (didn't bet)
+Seat 3: AnonPlayer05 collected ($0.20)
+Seat 4: AnonExportHero folded on the Flop
+Seat 5: AnonPlayer01 (button) folded before Flop (didn't bet)
+Seat 6: AnonPlayer03 (small blind) folded before Flop
+
+Hand #281000000013:
+
+PokerStars Hand #281000000012:  Hold'em No Limit ($0.01/$0.02 USD) - 2025/02/10 23:05:00 ET
+Table 'CashTest' 6-max Seat #2 is the button
+Seat 1: AnonPlayer02 ($0.63 in chips)
+Seat 2: AnonPlayer04 ($1.65 in chips)
+Seat 3: AnonPlayer05 ($1.18 in chips)
+Seat 4: AnonExportHero ($1.19 in chips)
+Seat 5: AnonPlayer01 ($2.66 in chips)
+Seat 6: AnonPlayer03 ($4.47 in chips)
+AnonPlayer05: posts small blind $0.01
+AnonExportHero: posts big blind $0.02
+*** HOLE CARDS ***
+Dealt to AnonExportHero [5s Ad]
+AnonPlayer01: folds
+AnonPlayer03: folds
+AnonPlayer02: raises $0.05 to $0.07
+AnonPlayer04: folds
+AnonPlayer05: calls $0.06
+AnonExportHero: calls $0.05
+*** FLOP *** [5h 2d 2s]
+AnonPlayer05: checks
+AnonExportHero: bets $0.10
+AnonPlayer02: raises $0.10 to $0.20
+AnonPlayer05: folds
+AnonExportHero is disconnected
+AnonExportHero is connected
+AnonExportHero: raises $0.10 to $0.30
+AnonPlayer02: raises $0.26 to $0.56 and is all-in
+AnonExportHero: calls $0.26
+*** TURN *** [5h 2d 2s] [4s]
+*** RIVER *** [5h 2d 2s 4s] [3h]
+*** SHOW DOWN ***
+AnonExportHero: shows [5s Ad] (a straight, Ace to Five)
+AnonPlayer02: shows [Kc Kd] (two pair, Kings and Deuces)
+AnonExportHero collected $1.26 from pot
+*** SUMMARY ***
+Total pot $1.33 | Rake $0.07
+Board [5h 2d 2s 4s 3h]
+Seat 1: AnonPlayer02 showed [Kc Kd] and lost with two pair, Kings and Deuces
+Seat 2: AnonPlayer04 (button) folded before Flop (didn't bet)
+Seat 3: AnonPlayer05 (small blind) folded on the Flop
+Seat 4: AnonExportHero (big blind) showed [5s Ad] and won ($1.26) with a straight, Ace to Five
+Seat 5: AnonPlayer01 folded before Flop (didn't bet)
+Seat 6: AnonPlayer03 folded before Flop (didn't bet)
+
+Hand #281000000012:
