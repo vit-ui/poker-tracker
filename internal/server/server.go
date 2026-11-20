@@ -1043,7 +1043,7 @@ func (s *Server) Run() error {
 		if up.Import {
 			switch up.Type {
 			case "cash":
-				recordDrainFailure(importCounts.HandHistory(s.store, path, screenName, false))
+				recordDrainFailure(importCounts.HandHistory(s.store, path, screenName))
 			case "tournament":
 				recordDrainFailure(importCounts.TournamentSummary(s.store, path, screenName))
 			}

@@ -5,6 +5,7 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Keep complete single-table scans aligned with live session identity.
 - Let live hand and lock processing continue between file-scan writes.
 - Evaluate live cash losses only after the hand reaches its summary.
 - Evaluate loss streaks and drawdowns by play date so historical imports

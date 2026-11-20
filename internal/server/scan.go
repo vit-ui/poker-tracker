@@ -85,7 +85,7 @@ func (s *fileScan) start(path, screenName string, removeFile bool) {
 				return false
 			}
 		}
-		err := parsers.ScanHandHistory(path, screenName, true, func(cash *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) bool {
+		err := parsers.ScanHandHistory(path, screenName, func(cash *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) bool {
 			return send(scanResult{cash: cash, tournament: tournament, err: err})
 		})
 		send(scanResult{err: err, done: true})

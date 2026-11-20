@@ -26,9 +26,9 @@ func (t ScanTally) String() string {
 	return msg
 }
 
-func (t *ScanTally) HandHistory(store Store, path, screenName string, splitCash bool) error {
+func (t *ScanTally) HandHistory(store Store, path, screenName string) error {
 	var firstErr error
-	err := parsers.ScanHandHistory(path, screenName, splitCash, func(session *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) bool {
+	err := parsers.ScanHandHistory(path, screenName, func(session *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) bool {
 		if err := t.RecordHandHistory(store, session, tournament, err); err != nil && firstErr == nil {
 			firstErr = err
 		}

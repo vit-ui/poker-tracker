@@ -1,12 +1,15 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/client"
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -101,5 +104,52 @@ func TestScanMixedFile(t *testing.T) {
 				t.Fatal("scan produced live alerts")
 			}
 		})
+	}
+}
+
+func TestFileScanDoesNotDuplicateFullLiveCashFile(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "testdata", "scan", "mixed_export.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(fixture), "PokerStars Hand #")
+	var contents string
+	for _, id := range []string{"281000000013", "281000000017", "281000000012"} {
+		for _, part := range parts {
+			if strings.HasPrefix(part, id) {
+				contents += "PokerStars Hand #" + part
+			}
+		}
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cash.txt")
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := parsers.ParseCashFile(path, "AnonExportHero")
+	if err != nil || session.Hands != 3 || session.NetCents != 54 {
+		t.Fatalf("unexpected live parse: %+v (%v)", session, err)
+	}
+	db, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.AppendCashSession(*session); err != nil {
+		t.Fatal(err)
+	}
+	var tally storage.ScanTally
+	if err := tally.HandHistory(db, path, "AnonExportHero"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AppendCashSession(*session); err != nil {
+		t.Fatal(err)
+	}
+	bankroll, err := db.GetCurrentBankroll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bankroll != session.NetCents {
+		t.Fatalf("scan and live upsert yield %d cents, want %d cents", bankroll, session.NetCents)
 	}
 }

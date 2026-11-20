@@ -53,7 +53,7 @@ func handTournamentID(header string) string {
 
 // ScanHandHistory indexes hand locations on disk, then passes each group
 // through the regular parser. The contents of the export stay on disk.
-func ScanHandHistory(path, screenName string, splitCash bool, visit func(*CashSession, *TournamentHandStats, error) bool) error {
+func ScanHandHistory(path, screenName string, visit func(*CashSession, *TournamentHandStats, error) bool) error {
 	if screenName == "" {
 		return fmt.Errorf("set the PokerStars screen name before scanning")
 	}
@@ -74,13 +74,16 @@ func ScanHandHistory(path, screenName string, splitCash bool, visit func(*CashSe
 	if len(groups) == 0 {
 		return fmt.Errorf("no complete PokerStars hands found")
 	}
-	// Preserve normal folder-scan boundaries for traditional per-table files.
-	splitCash = splitCash || len(groups) > 1
+	// A complete single-table file uses the same hand order and identity as
+	// live collection. Mixed exports can contain several table visits.
+	mixed := len(groups) > 1
 	var sessions [][]scannedHand
 	for _, hands := range groups {
-		slices.SortFunc(hands, compareScannedHands)
+		if mixed {
+			slices.SortFunc(hands, compareScannedHands)
+		}
 		start := 0
-		if splitCash && !hands[0].tournament {
+		if mixed && !hands[0].tournament {
 			for i := 1; i < len(hands); i++ {
 				if hands[i].at.Sub(hands[i-1].at) >= CashQuietPeriod {
 					sessions = append(sessions, hands[start:i])
