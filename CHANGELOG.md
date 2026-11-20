@@ -5,6 +5,8 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Keep the destination intact when a storage migration is refused or interrupted.
+
 ## [4.0.0](https://github.com/vit-ui/poker-tracker/compare/v3.0.0...v4.0.0) (2026-11-20)
 
 - Rebuild the release history around the installation and updater compatibility

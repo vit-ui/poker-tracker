@@ -94,7 +94,7 @@ func (b *Bot) closeMenu(chatID int64, messageID int) {
 		b.storageResetMessageID = 0
 	}
 	if ps := b.pendingSwitch; ps != nil && ps.messageID == messageID {
-		b.discardTarget(ps)
+		closeStore(ps.dst)
 		b.pendingSwitch = nil
 	}
 	if _, err := b.tg.Request(tgbotapi.NewDeleteMessage(chatID, messageID)); err != nil {

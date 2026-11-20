@@ -997,6 +997,17 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 		return err
 	}
 	defer tx.Rollback()
+	var hasRows bool
+	if err := tx.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM cash_sessions)
+			OR EXISTS(SELECT 1 FROM tournaments)
+			OR EXISTS(SELECT 1 FROM bankroll_ledger)
+	`).Scan(&hasRows); err != nil {
+		return fmt.Errorf("checking destination inside import transaction: %w", err)
+	}
+	if hasRows {
+		return fmt.Errorf("destination database is not empty")
+	}
 
 	// A blank session ID (sheets rows from before v1.4, when the column was
 	// added — never backfilled) is stored as NULL, the same blank↔NULL mapping
