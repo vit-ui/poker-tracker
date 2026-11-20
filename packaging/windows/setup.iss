@@ -1,4 +1,4 @@
-; Poker Tracker installer. Compiled ONCE by .github/workflows/release.yml (a
+; Poker Tracker installer. Compiled ONCE by .github/workflows/package.yml (a
 ; single iscc run, no per-arch define) into ONE installer that carries every
 ; role's binary for BOTH CPU architectures (x64 and ARM64) and installs the
 ; matching one at runtime. ArchitecturesInstallIn64BitMode below covers x64 +

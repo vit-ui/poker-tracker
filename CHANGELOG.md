@@ -1,10 +1,56 @@
 # Changelog
 
-All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases are tagged `vX.Y`, and each GitHub Release
-pulls its notes from the matching section below.
+Release Please tracks new releases with `vMAJOR.MINOR.PATCH` tags. The legacy
+entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
+
+- Rebuild the release history around the installation and updater compatibility
+  changes. Release Please opens a release PR and publishes the verified
+  installers after the maintainer merges it.
+- Group Windows and Linux packaging by platform and check pull requests with
+  shared CI and Conventional Commit tooling.
+- The final reconstructed era includes safe shutdown and recovery, installer
+  upgrades that preserve the existing role and data, and the package-based
+  updater. Old `v4.8` and `v4.9` builds used raw download assets and require
+  an installer upgrade to adopt that format.
+- This era also includes Telegram update controls, separate reward and money
+  reports, one-time hard-stop durations, mixed-file scans, and storage reset
+  with a recovery snapshot. Use `/hardstop now` in place of `/hardstop trigger`.
+- Historical installers through this release contain no Telegram credential.
+  Users on the former `v5.0` should keep that installation until `v5.0.1`
+  is available through `/update`.
+
+## Reconstructed historical releases
+
+| Release | Source commit | Installers |
+| --- | --- | --- |
+| `v1.0.0` | [62c4262](https://github.com/vit-ui/poker-tracker/commit/62c426228b9f8177219cb9fea726982c8ebfb7b4) | Windows |
+| `v2.0.0` | [e76db5c](https://github.com/vit-ui/poker-tracker/commit/e76db5cfe3bf8b8c44e027759b6bff57a0dc1108) | Windows and Linux |
+| `v3.0.0` | [97789b3](https://github.com/vit-ui/poker-tracker/commit/97789b37f6124e7bfd46130a03c87c2c0ed6c74c) | Windows and Linux |
+
+### 3.0.0
+
+Store money and saved loss thresholds in integer cents. Older dollar-based
+SQLite and settings data require migration or reconfiguration. This era adds
+split deployment handover, collector reconnection, and safer service shutdown.
+File scans import history, and export drops the unused Time Analysis CSV.
+
+### 2.0.0
+
+Move Linux installations from the system-wide root service to a per-user
+systemd service. Set up an existing Linux server under the intended user.
+Includes optional SQLite storage, CSV export, Telegram menus, and separate
+collector and server roles. One Windows installer supports both architectures.
+The rebuilt Windows installer applies the Inno syntax correction from old
+`v4.1` in its build copy.
+
+### 1.0.0
+
+First stable Windows release. Tracks cash and tournaments through Google
+Sheets and sends results and loss-limit alerts through Telegram.
+
+## Legacy release notes
 
 ## v5.0 — 2026-11-19
 

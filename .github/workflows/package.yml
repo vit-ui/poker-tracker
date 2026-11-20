@@ -1,0 +1,142 @@
+name: Package installers
+
+on:
+    workflow_call:
+        inputs:
+            source:
+                description: Source commit or tag
+                required: true
+                type: string
+            version:
+                description: Three-part version without the v prefix
+                required: true
+                type: string
+
+permissions:
+    contents: read
+
+env:
+    CGO_ENABLED: "0"
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        outputs:
+            windows_dir: ${{ steps.build.outputs.windows_dir }}
+            windows_name: ${{ steps.build.outputs.windows_name }}
+            split: ${{ steps.build.outputs.split }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.source }}
+                  persist-credentials: false
+            - uses: actions/setup-go@v5
+              with:
+                  go-version-file: go.mod
+            - name: Build Windows payloads
+              id: build
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  set -euo pipefail
+                  [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+                  mkdir -p windows-payloads
+                  if [[ ! -d cmd/client ]]; then
+                      GOOS=windows GOARCH=amd64 go build -trimpath \
+                          -ldflags "-s -w -H=windowsgui -X main.Version=v$VERSION" \
+                          -o windows-payloads/tracker.exe ./cmd/tracker
+                      printf '%s\n' 'split=false' 'windows_dir=.' 'windows_name=Setup.exe' >> "$GITHUB_OUTPUT"
+                      exit
+                  fi
+
+                  for arch in amd64 arm64; do
+                      GOOS=windows GOARCH=$arch go build -trimpath \
+                          -ldflags "-s -w -H=windowsgui -X main.Version=v$VERSION" \
+                          -o "windows-payloads/tracker-$arch.exe" ./cmd/tracker
+                      GOOS=windows GOARCH=$arch go build -trimpath \
+                          -ldflags "-s -w -X main.Version=v$VERSION" \
+                          -o "windows-payloads/tracker-client-$arch.exe" ./cmd/client
+                      GOOS=windows GOARCH=$arch go build -trimpath \
+                          -ldflags "-s -w -X main.Version=v$VERSION" \
+                          -o "windows-payloads/tracker-server-windows-$arch.exe" ./cmd/server
+                  done
+
+                  windows_dir=packaging/windows
+                  if [[ ! -f "$windows_dir/setup.iss" ]]; then
+                      windows_dir=.
+                  fi
+                  printf '%s\n' 'split=true' "windows_dir=$windows_dir" \
+                      "windows_name=PokerTracker-Setup-$VERSION.exe" >> "$GITHUB_OUTPUT"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: windows-payloads
+                  path: windows-payloads/*.exe
+                  if-no-files-found: error
+                  retention-days: 1
+            - name: Build Linux server bundle
+              if: steps.build.outputs.split == 'true'
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  set -euo pipefail
+                  sudo apt-get update
+                  sudo apt-get install -y makeself
+                  makeself_bin="$(command -v makeself || command -v makeself.sh)"
+                  bundle_dir="$(mktemp -d)"
+                  for arch in amd64 arm64; do
+                      GOOS=linux GOARCH=$arch go build -trimpath \
+                          -ldflags "-s -w -X main.Version=v$VERSION" \
+                          -o "$bundle_dir/tracker-server-$arch" ./cmd/server
+                  done
+                  installer=packaging/linux/install.sh
+                  if [[ ! -f "$installer" ]]; then
+                      installer=packaging/install.sh
+                  fi
+                  install -m 755 "$installer" "$bundle_dir/install.sh"
+                  "$makeself_bin" --nox11 "$bundle_dir" PokerTracker-Server-linux "Poker Tracker Server installer" ./install.sh
+                  tar -czf PokerTracker-Server-linux.tar.gz PokerTracker-Server-linux
+            - uses: actions/upload-artifact@v4
+              if: steps.build.outputs.split == 'true'
+              with:
+                  name: linux-installer
+                  path: PokerTracker-Server-linux.tar.gz
+                  if-no-files-found: error
+                  retention-days: 1
+
+    windows:
+        needs: build
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.source }}
+                  persist-credentials: false
+            - uses: actions/download-artifact@v4
+              with:
+                  name: windows-payloads
+                  path: ${{ needs.build.outputs.windows_dir }}
+            - name: Apply the historical v2.0.0 Inno syntax fix
+              if: inputs.source == 'e76db5cfe3bf8b8c44e027759b6bff57a0dc1108'
+              shell: bash
+              run: |
+                  sed -i -e 's/\r$//' -e "/Pair your poker PC by choosing .*pasting this:/s/ +$//" \
+                      -e 's/^      #13#10 + #13#10 + Conn/      + #13#10 + #13#10 + Conn/' setup.iss
+            - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+              with:
+                  path: ${{ needs.build.outputs.windows_dir }}/setup.iss
+                  options: /O+ "/DAppVersion=${{ inputs.version }}"
+            - name: Stage installer for publication
+              shell: bash
+              env:
+                  INSTALLER_DIR: ${{ needs.build.outputs.windows_dir }}
+                  INSTALLER_NAME: ${{ needs.build.outputs.windows_name }}
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  mkdir -p packages
+                  cp "$INSTALLER_DIR/Output/$INSTALLER_NAME" "packages/PokerTracker-Setup-$VERSION.exe"
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: windows-installer
+                  path: packages/*.exe
+                  if-no-files-found: error
+                  retention-days: 1

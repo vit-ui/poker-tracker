@@ -1,0 +1,6 @@
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+version_scheme = "semver2"
+version_provider = "scm"
+pre_bump_hooks = ["echo 'Merge a Release Please pull request to release.' >&2; exit 1"]

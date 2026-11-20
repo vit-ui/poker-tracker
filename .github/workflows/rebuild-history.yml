@@ -1,0 +1,96 @@
+name: Build historical installers
+
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Historical release to build
+                required: true
+                type: choice
+                options: ['1.0.0', '2.0.0', '3.0.0']
+            publish:
+                description: Publish the verified historical installers
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+concurrency:
+    group: poker-tracker-history-${{ inputs.version }}
+    cancel-in-progress: false
+
+jobs:
+    select:
+        runs-on: ubuntu-latest
+        outputs:
+            source: ${{ steps.source.outputs.sha }}
+        steps:
+            - name: Select the original source snapshot
+              id: source
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  case "$VERSION" in
+                      1.0.0) sha=62c426228b9f8177219cb9fea726982c8ebfb7b4 ;;
+                      2.0.0) sha=e76db5cfe3bf8b8c44e027759b6bff57a0dc1108 ;;
+                      3.0.0) sha=97789b37f6124e7bfd46130a03c87c2c0ed6c74c ;;
+                      *) exit 1 ;;
+                  esac
+                  echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+    package:
+        needs: select
+        uses: ./.github/workflows/package.yml
+        with:
+            source: ${{ needs.select.outputs.source }}
+            version: ${{ inputs.version }}
+
+    publish:
+        if: inputs.publish && github.ref == 'refs/heads/master'
+        needs: [select, package]
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        env:
+            GH_TOKEN: ${{ github.token }}
+            GH_REPO: ${{ github.repository }}
+            VERSION: ${{ inputs.version }}
+            SOURCE: ${{ needs.select.outputs.source }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  fetch-depth: 0
+            - uses: actions/download-artifact@v4
+              with:
+                  name: windows-installer
+            - uses: actions/download-artifact@v4
+              if: inputs.version != '1.0.0'
+              with:
+                  name: linux-installer
+            - name: Publish the historical release
+              run: |
+                  set -euo pipefail
+                  tag="v$VERSION"
+                  if sha="$(git rev-parse -q --verify "refs/tags/$tag^{commit}")"; then
+                      [[ "$sha" == "$SOURCE" ]]
+                  fi
+                  notes="$(mktemp)"
+                  awk -v heading="### $VERSION" '
+                      $0 == heading { capture = 1; next }
+                      capture && /^##/ { exit }
+                      capture { print }
+                  ' CHANGELOG.md > "$notes"
+                  grep -q '[^[:space:]]' "$notes"
+                  printf '\nHistorical installer. This build has no Telegram credential.\n' >> "$notes"
+                  if release="$(gh release view "$tag" --json isDraft,targetCommitish)"; then
+                      jq -e --arg source "$SOURCE" '.isDraft and .targetCommitish == $source' <<< "$release" >/dev/null
+                  else
+                      gh release create "$tag" --target "$SOURCE" --title "$tag" --notes-file "$notes" --draft --latest=false
+                  fi
+                  files=("PokerTracker-Setup-$VERSION.exe")
+                  if [[ "$VERSION" != 1.0.0 ]]; then
+                      files+=(PokerTracker-Server-linux.tar.gz)
+                  fi
+                  bash packaging/publish.sh "$tag" false "${files[@]}"

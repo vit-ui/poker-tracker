@@ -1,0 +1,15 @@
+pre-commit:
+  commands:
+    secrets:
+      run: gitleaks git --staged --redact
+
+commit-msg:
+  commands:
+    lint-message:
+      run: cz check --allow-abort --commit-msg-file {1}
+
+pre-push:
+  scripts:
+    check_force_push.sh:
+      runner: bash
+      use_stdin: true

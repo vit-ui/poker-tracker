@@ -1,6 +1,6 @@
 #!/bin/sh
 # Startup script for the PokerTracker-Server-linux self-extracting installer
-# (built with makeself in .github/workflows/release.yml). makeself unpacks the
+# (built with makeself in .github/workflows/package.yml). makeself unpacks the
 # archive to a temporary directory and runs this script from there, with both
 # server binaries (tracker-server-amd64, tracker-server-arm64) alongside it. We
 # pick the one for this CPU, install it into the user's home (no root), run

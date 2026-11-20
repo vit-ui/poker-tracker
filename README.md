@@ -86,6 +86,12 @@ real knockout bounties are retained.
 
 ## Updating
 
+The reconstructed releases through `v4.0.0` are historical packages. They
+ship without a Telegram credential. If you already use the former `v5.0`,
+keep that installation and use `/update` when the follow-up `v5.0.1` release
+is available.
+
+
 ### From Telegram
 
 Send **`/update`**, then choose **Update poker PC**, **Update server** or
@@ -444,7 +450,7 @@ message but before its receipt is saved may produce a duplicate.
 ## Development and license
 
 Builds, tests, architecture and contribution rules are in
-[CONTRIBUTING.md](CONTRIBUTING.md). Recent additions and fixes are in the
+[contributor guide](.github/CONTRIBUTING.md). Recent additions and fixes are in the
 [Changelog](CHANGELOG.md).
 
 © 2026 Vitor Cipriano. Released under the [PolyForm Strict License 1.0.0](LICENSE).

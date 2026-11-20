@@ -22,8 +22,8 @@ Three binaries share the `internal/` packages: `cmd/tracker` (all-local, both ro
 # Local build for the host platform (all three binaries).
 go build ./...
 
-# Release builds, as CI (release.yml) does them.
-# TELEGRAM_BOT_TOKEN is injected at build time — never stored in the repo.
+# Release builds, as the packaging workflow does them.
+# Supply an optional token only in a disposable local test build.
 
 # All-local (combined) — Windows GUI, with the bot token.
 GOOS=windows GOARCH=amd64 go build -trimpath \
@@ -45,21 +45,21 @@ GOOS=linux GOARCH=arm64 go build -trimpath \
 
 The release ships **two files**: one Windows installer and one Linux server bundle.
 
-- **Windows — one installer for everything.** CI runs `iscc` **once** (no `/DArch`), producing `PokerTracker-Setup-<version>.exe`. It carries all three roles' binaries for **both** CPU architectures; `ArchitecturesInstallIn64BitMode=x64compatible arm64` plus per-file `IsARM64` Check wrappers (`setup.iss`) install the matching one at runtime. The role page picks all-local / connect-to-a-server / run-a-server-here.
-- **Linux server — one self-extracting file.** CI packs both Linux server builds + `packaging/install.sh` into a `makeself` archive `PokerTracker-Server-linux`, shipped inside `PokerTracker-Server-linux.tar.gz` (the tarball preserves the execute bit a raw download would lose). Running it detects the CPU, installs the right build into the user's home, and registers a **per-user** systemd service (`~/.config/systemd/user`, no root) via `tracker-server --install`; enabling start-on-boot without login is the one privileged step (`loginctl enable-linger` through `pkexec`/`sudo`, and optional). The Windows server role registers a `PokerTrackerServer` Task Scheduler task the same way.
+- **Windows — one installer for everything.** CI runs `iscc` **once** (no `/DArch`), producing `PokerTracker-Setup-<version>.exe`. It carries all three roles' binaries for **both** CPU architectures; `ArchitecturesInstallIn64BitMode=x64compatible arm64` plus per-file `IsARM64` Check wrappers (`packaging/windows/setup.iss`) install the matching one at runtime. The role page picks all-local / connect-to-a-server / run-a-server-here.
+- **Linux server — one self-extracting file.** CI packs both Linux server builds + `packaging/linux/install.sh` into a `makeself` archive `PokerTracker-Server-linux`, shipped inside `PokerTracker-Server-linux.tar.gz` (the tarball preserves the execute bit a raw download would lose). Running it detects the CPU, installs the right build into the user's home, and registers a **per-user** systemd service (`~/.config/systemd/user`, no root) via `tracker-server --install`; enabling start-on-boot without login is the one privileged step (`loginctl enable-linger` through `pkexec`/`sudo`, and optional). The Windows server role registers a `PokerTrackerServer` Task Scheduler task the same way.
 
-Changing what `iscc`/makeself produce (output names, artifact list) requires a matching update to `.github/workflows/release.yml`.
+Changing what `iscc`/makeself produce (output names, artifact list) requires a matching update to `.github/workflows/package.yml`.
 
 ### Disposable Windows installations
 
 Compile the combined and server binaries with the same unique, alphanumeric
 test identity, for example `-ldflags "-X main.InstallationID=isolation123"`,
-and compile `setup.iss` with `/DInstallationID=isolation123`. Build the collector
+and compile `packaging/windows/setup.iss` with `/DInstallationID=isolation123`. Build the collector
 normally. The installer uses separate task names, installation-directory
 defaults and uninstall registration for that identity; production builds leave
 it empty and retain `Poker Tracker` and `PokerTrackerServer`.
 
-Stage all six Windows payloads in a disposable source copy and compile there.
+Stage all six Windows payloads beside the moved installer script in a disposable source copy and compile there.
 Use a separate test bot and empty spreadsheet for integration tests. Do not
 inject the working bot token into a disposable combined/server build. Native
 installer and process-isolation checks require an elevated Windows session;
@@ -133,10 +133,9 @@ Pull requests run `.github/workflows/ci.yml`: the full Go suite, vet, and eight
 pure-Go cross-builds (Windows combined/collector/server and Linux server, each on
 amd64 and arm64), without a bot token. Branch pushes do not trigger a workflow;
 run tests and vet locally before pushing work without a pull request.
-Version tags run `.github/workflows/release.yml`: tests and vet run alongside
-building and packaging the eight release binaries. Publication requires both
-checks and installer packaging to succeed. Pushing a branch and its version tag
-together therefore starts only the release workflow.
+Pull requests and the release workflow share the same Go checks and eight
+cross-build targets. The packaging workflow builds the installers from the
+approved release tag before publication.
 Compilation does not establish native ARM64 execution or installer acceptance.
 
 Update request state lives in `requested_update.json` on each installation.
@@ -150,7 +149,7 @@ Go tests and cross-builds alone do not verify it.
 
 User update instructions belong near the beginning of the README and in the
 Telegram `/help update` topic and `/update` menu (also linked from Menu → Info). Keep installed
-filenames aligned with `setup.iss`: combined and collector use `tracker.exe`,
+filenames aligned with `packaging/windows/setup.iss`: combined and collector use `tracker.exe`,
 while Windows server uses `tracker-server.exe`. `/update` accepts local or durable
 collector requests through the worker and authenticates the configured chat.
 `/help update` focuses on Telegram requests and links to `/help update terminal`
@@ -336,31 +335,56 @@ headers and use one atomic write for the three history datasets.
 
 ## Commits
 
-- Stage files by name (`git add <path>`), never `git add -A`.
-- One logical unit per commit: imperative title ≤ 72 chars, a short body, and a
-  `Co-Authored-By` trailer when applicable.
-- Commit only after the change is verified against real data or real
-  interactions — a clean build and passing tests alone are not sufficient for
-  runtime/Telegram/installer changes.
+- Install Commitizen, Gitleaks, and Lefthook, then run `lefthook install`.
+- Stage files by name and make one verified logical change per commit. Use a
+  Conventional Commit title up to 72 characters and the applicable
+  `Co-Authored-By` trailer. Use `fix` for a patch, `feat` for a minor change,
+  and `!` or `BREAKING CHANGE` for incompatible changes.
+- Verify runtime, Telegram, and installer changes directly where applicable.
+  Document any checks that need a disposable native installation.
 
 ## Releases
 
-- Pushing a `vX.Y` tag triggers `.github/workflows/release.yml`, which builds
-  the binaries and installers and publishes a **public GitHub Release**.
-- Add a matching `## vX.Y — <date>` section to [CHANGELOG.md](CHANGELOG.md)
-  **before** tagging — the release job extracts that section as the release
-  description, and **fails the release** if no section matches the tag (the
-  heading must start exactly `## vX.Y ` — tag, then a space).
-- To check the extraction before pushing a tag, run the job's exact awk
-  locally and confirm it prints the section:
+Release Please opens or updates a release PR after checks pass on `master`.
+Approve the PR's Actions run, verify the proposed version and notes, and merge
+the PR when the release is ready. GitHub Actions builds from the resulting
+`vMAJOR.MINOR.PATCH` tag. A draft becomes public only after both installer
+digests match. If packaging or upload fails, rerun the failed jobs on that
+workflow run so the draft and tag remain pinned. Manual tag pushes do not build
+or publish anything.
 
-  ```bash
-  TAG=v2.8; awk -v h="## ${TAG} " \
-    'index($0,h)==1{g=1;next} /^## /&&g{exit} g{print}' CHANGELOG.md
-  ```
-- Tag and push only after verifying the build end-to-end (a real session, a
-  Telegram round-trip, an installer upgrade). Releases are never automated from
-  a commit.
+The repository owner must enable **Allow GitHub Actions to create and approve
+pull requests** under Actions settings. The workflow uses its built-in token.
+
+### Rebuild the historical releases
+
+1. Dispatch **Build historical installers** from `master` for `1.0.0`,
+   `2.0.0`, and `3.0.0`. Inspect each run's named installer artifacts. The
+   first version has a Windows installer. The other two also have a Linux
+   bundle. The installers contain no embedded Telegram credential.
+   The v2.0.0 build copy applies the Inno syntax correction from old v4.1.
+   Its tag still points to the original source commit.
+2. Dispatch the same workflow with **Publish the verified historical installers**
+   enabled for each version. It uses the curated changelog notes, verifies the
+   uploaded digests, and publishes against the original commit without setting
+   it as latest. Using the workflow token to create historical tags keeps the
+   old tag-triggered workflows from running.
+3. The bootstrap manifest starts at restored `v3.0.0`. Include a
+   `Release-As: 4.0.0` footer on the transition commit. Dispatch **Release**
+   on `master` once the reconstructed baseline is published. Review the
+   release PR's body and changelog together, using the curated notes for the
+   whole final era, before merging. The follow-up with the audit fixes uses
+   its own release PR.
+4. Confirm the rebuilt release is latest and its two assets have matching
+   digests. Inventory the legacy release and tag names and SHAs before removing
+   the legacy releases, assets, and corresponding tags. The original branches
+   and commits preserve the historical source. Keep the old Telegram bot active
+   for the migration.
+
+The reconstructed releases through `v4.0.0` contain no working Telegram token.
+An existing `v5.0` installation stays in place until it can use `/update` to
+move to the follow-up `v5.0.1` release. These archived installers should be
+identified as such in their release notes.
 
 Hard-stop display state (`collector_observation.json`) is a config-owned server
 copy. Never use it as live protection confirmation for migration or deployment.
