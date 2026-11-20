@@ -1085,9 +1085,11 @@ func (s *Server) Run() error {
 				prior = e.state
 			}
 			session, tourneyStats, newState, err := parsers.ParseCashFileFrom(path, screenName, prior)
-			if err != nil {
-				recordDrainFailure(err)
-				slog.Error("parsing cash file", "file", up.FileID, "err", err)
+			if err != nil || session == nil && tourneyStats == nil {
+				if err != nil {
+					recordDrainFailure(err)
+					slog.Error("parsing cash file", "file", up.FileID, "err", err)
+				}
 				if _, exists := pendingSessions[up.FileID]; exists {
 					activity[up.FileID] = lastActivity
 					clocks[up.FileID] = up.ClientClock

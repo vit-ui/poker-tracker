@@ -107,6 +107,9 @@ type ParseState struct {
 // for tournament hand history files. Exactly one of the two will be non-nil.
 func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats *TournamentHandStats, err error) {
 	session, tourneyStats, _, err = ParseCashFileFrom(path, screenName, nil)
+	if err == nil && session == nil && tourneyStats == nil {
+		err = fmt.Errorf("no complete dealt cash hands found in %s", path)
+	}
 	return session, tourneyStats, err
 }
 
@@ -116,6 +119,7 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 // same growing file — it seeks to prior.consumedOffset and scans only the new
 // bytes, folding them into the carried accumulators. The returned ParseState
 // must be passed back on the next parse of this file.
+// An in-progress cash hand with no earlier completed hand has no result yet.
 //
 // The optimization never affects correctness: if the file is shorter than
 // prior.consumedOffset, or the resume point no longer begins with a hand
@@ -180,6 +184,8 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 
 	var (
 		handActive         bool
+		handHasSummary     bool
+		sawUnfinishedCash  bool
 		inPreflop          bool
 		playerDealt        bool
 		playerVPIP         bool
@@ -216,6 +222,11 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 		if !handActive {
 			return
 		}
+		if !st.isTournament && !handHasSummary {
+			st = committed
+			playerDealt = false
+			sawUnfinishedCash = true
+		}
 		if playerDealt {
 			st.hands++
 			handNetCents, err := money.Add(handCollectedCents, handUncalledCents)
@@ -235,6 +246,7 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 			}
 		}
 		handActive = false
+		handHasSummary = false
 		inPreflop = false
 		playerDealt = false
 		playerVPIP = false
@@ -359,7 +371,11 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 			case strings.HasPrefix(line, "*** RIVER ***"):
 				streetTotalCents = 0
 
-			case line == "*** SHOW DOWN ***", line == "*** SUMMARY ***":
+			case line == "*** SHOW DOWN ***":
+				inPreflop = false
+
+			case line == "*** SUMMARY ***":
+				handHasSummary = true
 				inPreflop = false
 
 			case strings.HasPrefix(line, ap+"posts "):
@@ -440,11 +456,13 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 	if amountErr != nil {
 		return nil, nil, nil, fmt.Errorf("accumulating hand amounts: %w", amountErr), true
 	}
+	newState := &ParseState{agg: committed, consumedOffset: newConsumedOffset}
+	if st.hands == 0 && sawUnfinishedCash {
+		return nil, nil, newState, nil, true
+	}
 	if st.hands == 0 {
 		return nil, nil, nil, fmt.Errorf("no dealt hands found in %s", path), true
 	}
-
-	newState := &ParseState{agg: committed, consumedOffset: newConsumedOffset}
 
 	if st.isTournament {
 		if st.tournamentID == "" {

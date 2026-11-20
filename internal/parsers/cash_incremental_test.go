@@ -10,6 +10,40 @@ import (
 	"testing"
 )
 
+func TestParseCashFileFromWaitsForHandSummary(t *testing.T) {
+	const hero = "AuditHero"
+	const actions = "PokerStars Hand #300000000001: Hold'em No Limit ($0.01/$0.02 USD) - 2026/07/13 15:00:00 ET\n" +
+		"*** HOLE CARDS ***\nDealt to AuditHero [Ad Kd]\nAuditHero: bets $0.25\n"
+	const payout = "AuditHero collected $0.53 from pot\n*** SUMMARY ***\nTotal pot $0.53 | Rake $0\n"
+	path := filepath.Join(t.TempDir(), "live.txt")
+	var prior *ParseState
+	for _, tc := range []struct {
+		name     string
+		content  string
+		wantHand bool
+	}{
+		{"during betting", actions, false},
+		{"with payout and summary", actions + payout, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			session, _, state, err := ParseCashFileFrom(path, hero, prior)
+			if err != nil || state == nil {
+				t.Fatalf("parse state = %v, error = %v", state, err)
+			}
+			prior = state
+			if !tc.wantHand && session != nil {
+				t.Fatalf("incomplete hand counted as %+v", session)
+			}
+			if tc.wantHand && (session == nil || session.Hands != 1 || session.NetCents != 28) {
+				t.Fatalf("completed session = %+v, want one hand and 28 cents", session)
+			}
+		})
+	}
+}
+
 // handHeaderOffsets returns the byte offset of every hand-header line in data,
 // so a test can truncate the file at hand boundaries (right before a header)
 // and get a prefix that holds only complete hands.

@@ -5,6 +5,7 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Evaluate live cash losses only after the hand reaches its summary.
 - Evaluate loss streaks and drawdowns by play date so historical imports
   leave recent losses visible to protection.
 - Keep the destination intact when a storage migration is refused or interrupted.
