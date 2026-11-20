@@ -7,6 +7,7 @@ pulls its notes from the matching section below.
 ## Unreleased
 
 - Extend `/scan` to handle mixed hand-history exports from a poker-PC file path or a Telegram attachment.
+- Add `/storage reset` to clear history in the active backend after backing it up.
 
 ## v4.13 — 2026-11-18
 

@@ -233,6 +233,7 @@ after reconnection and keep the original closure time.
 | Scan one PokerStars hand-history file | `/scan file` |
 | Export cash sessions, tournaments and ledger | `/export` |
 | Show the current storage backend | `/storage` |
+| Clear history in the current database or Sheet | `/storage reset` |
 | Move history to SQLite | `/storage local` |
 | Move history to an empty, shared Google Sheet | `/storage sheets My Tracker` |
 | Open the current sheet | `/sheet` |
@@ -251,6 +252,13 @@ repeats update the same records. A partially overlapping cash export can
 produce another session row when its first hand differs. Tournament summaries
 that need a ticket/cash or free/paid answer are skipped and counted. Large
 Sheets scans are paced under the API quota.
+
+**Storage reset:** Close PokerStars and keep the poker PC connected. Run
+`/storage reset` and confirm to empty cash sessions, tournaments, and the
+bankroll ledger in the active backend. The tracker saves a recovery snapshot
+in `storage-backups/` on the storage machine first. The database path or Sheet
+ID, settings, and active locks are preserved. Use `/scan` to reimport old files
+when you want them back in history.
 
 **Storage migration:** close PokerStars and keep the poker PC connected. The
 destination must be empty; histories are not merged. Confirm the row counts in

@@ -205,6 +205,7 @@ Sheets storage only. Access is checked before saving; the tracker then restarts 
 	"storage": `Data storage
 
 /storage — show current storage
+/storage reset — clear the active database or sheet after confirmation and backup
 /storage local — switch to a local file
 /storage sheets <name or URL> — switch to Google Sheets
 

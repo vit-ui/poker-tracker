@@ -173,6 +173,12 @@ Keep export grouping on the server. The collector streams a requested file
 without parsing it. Test with the anonymized mixed export fixture and use
 disposable storage for larger private exports.
 
+## Storage reset
+
+Exercise reset with disposable SQLite data or the Sheets HTTP test seam.
+Verify the recovery snapshot before clearing the active backend. Preserve
+headers and use one atomic write for the three history datasets.
+
 ## Code style
 
 - Run `gofmt` before every commit; `go vet ./...` should be clean.

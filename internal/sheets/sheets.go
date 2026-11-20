@@ -148,6 +148,19 @@ func ResolveSheetID(serviceAccountPath, sheetName string) (string, error) {
 	return ids[0], nil
 }
 
+type tabDef struct {
+	name    string
+	headers []interface{}
+}
+
+func historyTabs() [3]tabDef {
+	return [3]tabDef{
+		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}},
+		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}},
+		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
+	}
+}
+
 func (c *Client) ensureTabs() error {
 	titles, err := c.svc.spreadsheetTabTitles(c.spreadsheetID)
 	if err != nil {
@@ -159,18 +172,7 @@ func (c *Client) ensureTabs() error {
 		existing[title] = true
 	}
 
-	type tabDef struct {
-		name    string
-		headers []interface{}
-	}
-
-	tabs := []tabDef{
-		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}},
-		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}},
-		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
-	}
-
-	for _, tab := range tabs {
+	for _, tab := range historyTabs() {
 		if !existing[tab.name] {
 			if err := c.svc.addSheet(c.spreadsheetID, tab.name); err != nil {
 				return fmt.Errorf("creating tab %q: %w", tab.name, err)
@@ -1646,6 +1648,18 @@ func (c *Client) PendingWrites() int {
 	c.fallbackMu.Lock()
 	defer c.fallbackMu.Unlock()
 	return len(c.fallback)
+}
+
+// ClearHistory clears the active store's history in place, preserving tab
+// headers, formatting and cells outside the tracker tables.
+func (c *Client) ClearHistory() error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	columns := make(map[string]int, len(historyTabs()))
+	for _, tab := range historyTabs() {
+		columns[tab.name] = len(tab.headers)
+	}
+	return c.svc.clearHistoryValues(c.spreadsheetID, columns)
 }
 
 // ClearAllData deletes every data row (row 2 onward) from all three tabs,

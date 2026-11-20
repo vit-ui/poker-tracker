@@ -29,7 +29,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-const storageUsage = "Usage:\n" + "/storage — show where your data is stored\n" + "/storage local — switch to the local file\n" + "/storage sheets <sheet name or URL> — switch to Google Sheets (needs an empty sheet shared with your service account)"
+const storageUsage = "Usage:\n/storage reset — clear the active storage history\n" + "/storage — show where your data is stored\n" + "/storage local — switch to the local file\n" + "/storage sheets <sheet name or URL> — switch to Google Sheets (needs an empty sheet shared with your service account)"
 
 // pendingBackendSwitch holds the target backend prepared during /storage
 // preflight, kept until the player confirms or cancels. The target store is
@@ -53,6 +53,10 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 	// prepared target (closing and removing the empty db it may have created)
 	// and abandons a half-started inline credentials upload.
 	b.discardPendingSwitch()
+	if b.storageResetMessageID != 0 {
+		b.clearKeyboard(chatID, b.storageResetMessageID)
+		b.storageResetMessageID = 0
+	}
 	if b.flow == "storage_credentials" {
 		b.reset()
 	}
@@ -67,6 +71,11 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 		} else {
 			send(b.tg, chatID, "Storage: local file (tracker.db next to the tracker). Use /export to get your data as CSV.\nSwitch with /storage sheets <sheet name or URL>")
 		}
+		return
+	}
+
+	if strings.EqualFold(args, "reset") {
+		b.confirmStorageReset(chatID)
 		return
 	}
 

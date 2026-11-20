@@ -705,6 +705,10 @@ func (s *Server) Run() error {
 				continue
 			}
 			if operation.PrepareMigration || operation.PrepareRestart {
+				if scanningFile != nil || folderScan {
+					operation.Reply <- storage.OperationResult{Err: fmt.Errorf("wait for the scan to finish before changing storage or configuration")}
+					continue
+				}
 				if err := config.CheckUpdatesIdle(filepath.Dir(s.configPath)); err != nil {
 					operation.Reply <- storage.OperationResult{Err: err}
 					continue

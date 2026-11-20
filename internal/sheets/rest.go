@@ -316,3 +316,46 @@ func dollarCells(rows [][]interface{}) [][]interface{} {
 	}
 	return result
 }
+
+// clearHistoryValues clears only values in the supplied grid ranges, in one
+// atomic spreadsheet update. The ranges start after the header rows.
+func (s *restService) clearHistoryValues(spreadsheetID string, columnsByTitle map[string]int) error {
+	var out struct {
+		Sheets []struct {
+			Properties struct {
+				ID    int    `json:"sheetId"`
+				Title string `json:"title"`
+			} `json:"properties"`
+		} `json:"sheets"`
+	}
+	if err := s.doJSON(http.MethodGet, s.baseURL+spreadsheetID+"?fields=sheets.properties(sheetId,title)", nil, &out); err != nil {
+		return fmt.Errorf("looking up history tab IDs: %w", err)
+	}
+	type gridRange struct {
+		SheetID        int `json:"sheetId"`
+		StartRowIndex  int `json:"startRowIndex"`
+		EndColumnIndex int `json:"endColumnIndex"`
+	}
+	type updateCells struct {
+		Range  gridRange `json:"range"`
+		Fields string    `json:"fields"`
+	}
+	type request struct {
+		UpdateCells updateCells `json:"updateCells"`
+	}
+	body := struct {
+		Requests []request `json:"requests"`
+	}{}
+	for _, sheet := range out.Sheets {
+		if columns, exists := columnsByTitle[sheet.Properties.Title]; exists {
+			body.Requests = append(body.Requests, request{UpdateCells: updateCells{
+				Range:  gridRange{SheetID: sheet.Properties.ID, StartRowIndex: 1, EndColumnIndex: columns},
+				Fields: "userEnteredValue",
+			}})
+		}
+	}
+	if len(body.Requests) != len(columnsByTitle) {
+		return fmt.Errorf("one or more tracker history tabs are missing")
+	}
+	return s.doJSON(http.MethodPost, s.baseURL+spreadsheetID+":batchUpdate", body, nil)
+}

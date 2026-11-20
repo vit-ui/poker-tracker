@@ -79,7 +79,8 @@ type Bot struct {
 
 	// pendingSwitch holds a /storage migration awaiting the player's
 	// confirmation tap. Touched only on the bot event loop, like conversation.
-	pendingSwitch *pendingBackendSwitch
+	pendingSwitch         *pendingBackendSwitch
+	storageResetMessageID int
 
 	// pendingStorageSheetArg holds the sheet name/URL from a /storage sheets
 	// migration that paused to collect the service-account key inline, resumed
@@ -582,6 +583,8 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.recordFreerollEntry(chatID, messageID, strings.TrimPrefix(data, "freeroll_free:"), 0)
 	case strings.HasPrefix(data, "freeroll_paid:"):
 		b.beginFreerollBuyInEntry(chatID, messageID, strings.TrimPrefix(data, "freeroll_paid:"))
+	case data == "storage:reset:yes" || data == "storage:reset:no":
+		b.resolveStorageReset(chatID, messageID, data == "storage:reset:yes")
 	case data == "storage:yes":
 		b.resolveStorageSwitch(chatID, messageID, true)
 	case data == "storage:no":
