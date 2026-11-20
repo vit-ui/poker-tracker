@@ -5,6 +5,8 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+## [4.0.0](https://github.com/vit-ui/poker-tracker/compare/v3.0.0...v4.0.0) (2026-11-20)
+
 - Rebuild the release history around the installation and updater compatibility
   changes. Release Please opens a release PR and publishes the verified
   installers after the maintainer merges it.
