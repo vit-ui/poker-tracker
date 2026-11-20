@@ -19,6 +19,28 @@ entries below use the version labels in effect when those changes shipped.
 - Remove saved storage reset snapshots on normal Windows uninstall and
   preserve them during silent uninstall.
 
+## [5.0.1](https://github.com/vit-ui/poker-tracker/compare/v4.0.0...v5.0.1) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **telegram:** connect a personal bot during the upgrade
+
+### Features
+
+* **telegram:** connect a personal bot during the upgrade ([bbbdbd4](https://github.com/vit-ui/poker-tracker/commit/bbbdbd4235b5873754d8825fc575600a78714297))
+
+
+### Bug Fixes
+
+* **hardstop:** evaluate results in play order ([4c7783c](https://github.com/vit-ui/poker-tracker/commit/4c7783c48fbf72067221847e67e1ce544983fc78))
+* **hardstop:** wait for the cash hand summary ([f58f795](https://github.com/vit-ui/poker-tracker/commit/f58f7954693976ab83d8686348eb1ff1d1398ef9))
+* **installer:** remove reset snapshots on normal uninstall ([f0c5246](https://github.com/vit-ui/poker-tracker/commit/f0c5246bdb67ff3babd6f328884caf4a35f5d578))
+* **scan:** preserve bounty totals across partial imports ([8b003a5](https://github.com/vit-ui/poker-tracker/commit/8b003a5e950a980244f080306854b20f3e0b0492))
+* **scan:** preserve complete cash file identity ([1fe501a](https://github.com/vit-ui/poker-tracker/commit/1fe501a418d915631a215c64f34bca075472a6a5))
+* **scan:** yield to live processing between file imports ([60bc558](https://github.com/vit-ui/poker-tracker/commit/60bc558a73289e5a469d39c665d13d2eb37efc29))
+* **storage:** preserve the destination when migration stops ([52de7c6](https://github.com/vit-ui/poker-tracker/commit/52de7c673ae927194c45966899a2396e7e6bbedd))
+
 ## [4.0.0](https://github.com/vit-ui/poker-tracker/compare/v3.0.0...v4.0.0) (2026-11-20)
 
 - Rebuild the release history around the installation and updater compatibility
