@@ -9,6 +9,7 @@ package hardstop
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -110,10 +111,18 @@ func consecutiveLossStreak(entries []storage.LedgerEntry) int {
 // session rows. Returns fewer than n rows when entries has fewer than n
 // session rows in total.
 func recentSessionRows(entries []storage.LedgerEntry, n int) []storage.LedgerEntry {
-	rows := sessionOnly(entries)
+	rows := chronologicalSessions(entries)
 	if len(rows) > n {
 		rows = rows[len(rows)-n:]
 	}
+	return rows
+}
+
+func chronologicalSessions(entries []storage.LedgerEntry) []storage.LedgerEntry {
+	rows := sessionOnly(entries)
+	slices.SortStableFunc(rows, func(a, b storage.LedgerEntry) int {
+		return a.Date.Compare(b.Date)
+	})
 	return rows
 }
 
@@ -217,8 +226,8 @@ func ComputeEquityCurve(rows []storage.LedgerEntry) (peakCents, currentCents mon
 	return peakCents, sumCents
 }
 
-// DownswingEquityCurve windows entries — the full Bankroll Ledger in
-// chronological order — to the rolling 30 days ending at now (see
+// DownswingEquityCurve windows the full Bankroll Ledger to the rolling
+// 30 days ending at now (see
 // rollingWindowStart/inRollingWindow; the boundary is exclusive), filters
 // them to poker results only (see sessionOnly), and returns the resulting
 // equity curve. Shared by the hard stop check and the downswing alert.
@@ -230,7 +239,7 @@ func DownswingEquityCurve(entries []storage.LedgerEntry, now time.Time) (peakCen
 			windowed = append(windowed, e)
 		}
 	}
-	return ComputeEquityCurve(sessionOnly(windowed))
+	return ComputeEquityCurve(chronologicalSessions(windowed))
 }
 
 // DownswingExceeds reports whether the equity-curve peakCents minus currentCents
