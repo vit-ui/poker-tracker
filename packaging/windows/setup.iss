@@ -1924,6 +1924,7 @@ begin
     DeleteFile(ExpandConstant('{app}\tracker-transfer.exe'));
     DelTree(ExpandConstant('{app}\tracker-source-*.exe'), False, True, False);
     DeleteFile(ExpandConstant('{app}\tracker.db'));
+    DelTree(ExpandConstant('{app}\storage-backups'), True, True, False);
     // Server role's TLS material (absent on combined/client installs).
     DeleteFile(ExpandConstant('{app}\server_cert.pem'));
     DeleteFile(ExpandConstant('{app}\server_key.pem'));

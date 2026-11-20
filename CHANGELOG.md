@@ -5,6 +5,8 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Remove saved storage reset snapshots on normal Windows uninstall and
+  preserve them during silent uninstall.
 - Preserve recorded tournament bounties when scanning partial exports.
 - Keep complete single-table scans aligned with live session identity.
 - Let live hand and lock processing continue between file-scan writes.
