@@ -5,6 +5,14 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+## [5.0.1](https://github.com/vit-ui/poker-tracker/compare/v4.0.0...v5.0.1) (2026-11-20)
+
+### Update from the former v5.0 release
+
+Start with `/update` in your existing Telegram chat. Once Tracker starts, click **Connect Telegram** in the Windows update window to link your own bot. On a headless Linux server, run `~/.local/share/poker-tracker/tracker-server --connect-telegram`. Tracker keeps its settings and history and continues automatic protection while Telegram setup is pending.
+
+### Changes
+
 - Keep the destination intact when a storage migration is refused or interrupted.
 - Evaluate loss streaks and drawdowns by play date so historical imports
   leave recent losses visible to protection.
