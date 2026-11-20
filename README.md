@@ -71,6 +71,9 @@ Updates are also in **Menu → Info → Updates**.
 | Download all history as three CSV files | `/export` |
 | Import existing PokerStars files | `/scan` |
 
+Telegram menus close with **Done** or after five minutes without interaction.
+Tournament questions and operation results stay in chat.
+
 `/stats [cash|spins|mtt] [today|week|month|all]` defaults to all games and all time.
 Deposits and withdrawals change your bankroll, but never count as poker winnings
 or losses. Use the USD amount shown on PokerStars; comma decimals also work.

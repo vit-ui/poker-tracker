@@ -37,6 +37,7 @@ const storageUsage = "Usage:\n/storage reset — clear the active storage histor
 // into it, cancelling discards it. Single-goroutine access on the bot event loop, same
 // as conversation, so no locking.
 type pendingBackendSwitch struct {
+	messageID int
 	target    string        // "sheets" | "sqlite"
 	dst       storage.Store // constructed and validated empty; sheets target has its write-ahead fallback disabled
 	sheetName *string       // config fields to persist on confirm (sheets target only)
@@ -52,10 +53,11 @@ func (b *Bot) handleStorageCommand(chatID int64, args string) {
 	// A second /storage before answering a pending confirmation discards the
 	// prepared target (closing and removing the empty db it may have created)
 	// and abandons a half-started inline credentials upload.
-	b.discardPendingSwitch()
+	if ps := b.pendingSwitch; ps != nil {
+		b.closeMenu(chatID, ps.messageID)
+	}
 	if b.storageResetMessageID != 0 {
-		b.clearKeyboard(chatID, b.storageResetMessageID)
-		b.storageResetMessageID = 0
+		b.closeMenu(chatID, b.storageResetMessageID)
 	}
 	if b.flow == "storage_credentials" {
 		b.reset()
@@ -165,18 +167,20 @@ func (b *Bot) prepareAndConfirmSwitch(chatID int64, target, sheetArg string) {
 		bankrollCents = snap.Ledger[n-1].RunningTotalCents
 	}
 
-	b.pendingSwitch = &pendingBackendSwitch{target: target, dst: dst, sheetName: sheetName, sheetID: sheetID}
+	ps := &pendingBackendSwitch{target: target, dst: dst, sheetName: sheetName, sheetID: sheetID}
 
 	text := fmt.Sprintf(
 		"⚠️ Switch storage: %s → %s\n\nThis copies everything to the new backend and restarts the tracker on it:\n• %d cash sessions\n• %d tournaments\n• %d ledger entries\nCurrent bankroll: $%s\n\nClose PokerStars first — the collector will check before pausing collection. Proceed?", backendLabel(b.currentBackend()), backendLabel(target),
 		len(snap.CashSessions), len(snap.Tournaments), len(snap.Ledger), bankrollCents)
-	markup := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Migrate", "storage:yes"),
-			tgbotapi.NewInlineKeyboardButtonData("✖ Cancel", "storage:no"),
-		),
-	)
-	b.sendMessageWithKeyboard(text, markup)
+	ps.messageID = b.showMenu(chatID, 0, text, [][]tgbotapi.InlineKeyboardButton{
+		menuRow("Migrate", "storage:yes"),
+		menuRow("Cancel", "storage:no"),
+	})
+	if ps.messageID == 0 {
+		b.discardTarget(ps)
+		return
+	}
+	b.pendingSwitch = ps
 }
 
 // handleStorageCredentialsDocument saves the service-account key uploaded
@@ -246,14 +250,13 @@ func (b *Bot) prepareTarget(target, sheetArg string) (dst storage.Store, sheetNa
 // stays on the current backend, and the half-written target is rolled back to
 // empty for a clean retry.
 func (b *Bot) resolveStorageSwitch(chatID int64, messageID int, confirmed bool) {
-	b.clearKeyboard(chatID, messageID)
-
 	ps := b.pendingSwitch
-	if ps == nil {
+	if ps == nil || ps.messageID != messageID {
 		send(b.tg, chatID, "That switch already expired. Run /storage again.")
 		return
 	}
 	b.pendingSwitch = nil
+	b.closeMenu(chatID, messageID)
 
 	if !confirmed {
 		// Nothing was written to the target — discard, don't roll back.
@@ -376,15 +379,6 @@ func (b *Bot) discardTarget(ps *pendingBackendSwitch) {
 			slog.Error("removing unused target database", "err", err)
 		}
 	}
-}
-
-// discardPendingSwitch drops a prepared-but-unanswered switch.
-func (b *Bot) discardPendingSwitch() {
-	if b.pendingSwitch == nil {
-		return
-	}
-	b.discardTarget(b.pendingSwitch)
-	b.pendingSwitch = nil
 }
 
 // currentBackend reports which backend the live store is — the store's

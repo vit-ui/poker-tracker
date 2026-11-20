@@ -6,9 +6,12 @@ pulls its notes from the matching section below.
 
 ## Unreleased
 
+## v5.0 — 2026-11-19
+
 - Extend `/scan` to handle mixed hand-history exports from a poker-PC file path or a Telegram attachment.
 - Add `/storage reset` to clear history in the active backend after backing it up.
 - Keep Updates and transaction history in the Telegram menu with Back and Done navigation.
+- Delete Telegram menus after five idle minutes and reject taps on expired buttons.
 
 ## v4.13 — 2026-11-18
 

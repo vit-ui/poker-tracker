@@ -114,6 +114,7 @@ func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 // install this is how the credentials /storage needs to migrate to
 // Google Sheets get onto the machine in the first place.
 func (b *Bot) startCredentialsFlow(chatID int64) {
+	b.reset()
 	b.flow = "credentials"
 	b.field = "file"
 	send(b.tg, chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")

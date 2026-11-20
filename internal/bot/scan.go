@@ -25,7 +25,7 @@ func (b *Bot) renderScanMenu(chatID int64, messageID int, path string) {
 }
 
 func (b *Bot) handleScanChoice(chatID int64, messageID int, choice string) {
-	b.reset()
+	b.resetMenuPrompt(messageID)
 	switch choice {
 	case "folders":
 		b.handleScanCommand(chatID)

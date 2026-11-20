@@ -70,6 +70,7 @@ type Bot struct {
 	// The bot only asks; the collector does the walk and the server records.
 	requestRescan  func()
 	fileScanActive bool
+	menus          map[menuKey]*openMenu
 
 	// now returns the time the read-side date windows (/status, /stats, weekly
 	// and monthly summaries) anchor to. The all-local build passes time.Now; the
@@ -107,6 +108,7 @@ type conversation struct {
 func (c *conversation) reset() {
 	c.flow = ""
 	c.field = ""
+	c.menuMessageID = 0
 }
 
 // Run starts the bot in serve mode. Forwards alerts from alertChan to
@@ -149,6 +151,14 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
+	menuTimer := time.NewTimer(0)
+	menuTimer.Stop()
+	defer menuTimer.Stop()
+	defer func() {
+		for key := range b.menus {
+			b.closeMenu(key.chatID, key.messageID)
+		}
+	}()
 	var poller *updatePoller
 	var updates <-chan tgbotapi.Update
 	nextUpdate := 0
@@ -214,7 +224,16 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			closures = nil
 			closureResults, closureReply = notifications.Results, *closureResult
 		}
+		var menuExpiry <-chan time.Time
+		if next := b.nextMenuExpiry(); !next.IsZero() {
+			menuTimer.Reset(time.Until(next))
+			menuExpiry = menuTimer.C
+		} else {
+			menuTimer.Stop()
+		}
 		select {
+		case <-menuExpiry:
+			b.expireMenus(time.Now())
 		case result := <-releaseResults:
 			b.finishReleaseCheck(result)
 		case event := <-closures:
@@ -505,6 +524,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		return
 	}
 
+	b.expireMenus(time.Now())
 	if update.CallbackQuery != nil {
 		b.handleCallback(update.CallbackQuery)
 		return
@@ -515,6 +535,9 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	// A document upload has no Text — the check below would otherwise
 	// silently drop it. This is the only flow that ever expects a file
 	// instead of a text reply.
+	if msg.Document != nil {
+		b.refreshMenuPrompt(msg.Chat.ID)
+	}
 	if msg.Document != nil && b.flow == "scan" && b.field == "upload" {
 		b.handleScanAttachment(msg.Chat.ID, msg.Document)
 		return
@@ -535,6 +558,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	}
 
 	if b.field != "" && !strings.HasPrefix(msg.Text, "/") {
+		b.refreshMenuPrompt(msg.Chat.ID)
 		b.handleFlowReply(msg)
 		return
 	}
@@ -560,13 +584,25 @@ func (b *Bot) handleFlowReply(msg *tgbotapi.Message) {
 }
 
 func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
-	if _, err := b.tg.Request(tgbotapi.NewCallback(cb.ID, "")); err != nil {
-		slog.Error("answering callback query", "err", err)
-	}
-
 	chatID := cb.Message.Chat.ID
 	messageID := cb.Message.MessageID
 	data := cb.Data
+	key := menuKey{chatID, messageID}
+	stale := menuCallback(data) && !b.acceptMenuCallback(key, data)
+	answer := ""
+	if stale {
+		answer = "This menu or button has expired."
+	}
+	if _, err := b.tg.Request(tgbotapi.NewCallback(cb.ID, answer)); err != nil {
+		slog.Error("answering callback query", "err", err)
+	}
+	if stale {
+		if b.menus[key] == nil {
+			// The message may predate this process. Its buttons are inert.
+			_, _ = b.tg.Request(tgbotapi.NewDeleteMessage(chatID, messageID))
+		}
+		return
+	}
 
 	switch {
 	case strings.HasPrefix(data, "scan:"):

@@ -22,25 +22,18 @@ func (b *Bot) confirmStorageReset(chatID int64) {
 	if b.currentBackend() == "sheets" {
 		destination = b.store.GetSheetURL()
 	}
-	msg := tgbotapi.NewMessage(chatID, "Reset "+destination+"? This empties cash sessions, tournaments, and the bankroll ledger. A recovery snapshot is saved on the storage machine. Close PokerStars and keep the poker PC connected before confirming.")
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+	text := "Reset " + destination + "? This empties cash sessions, tournaments, and the bankroll ledger. A recovery snapshot is saved on the storage machine. Close PokerStars and keep the poker PC connected before confirming."
+	b.storageResetMessageID = b.showMenu(chatID, 0, text, [][]tgbotapi.InlineKeyboardButton{
 		menuRow("Reset history", "storage:reset:yes"),
 		menuRow("Cancel", "storage:reset:no"),
-	)
-	sent, err := b.tg.Send(msg)
-	if err != nil {
-		send(b.tg, chatID, "Could not open the reset confirmation.")
-		return
-	}
-	b.storageResetMessageID = sent.MessageID
+	})
 }
 
 func (b *Bot) resolveStorageReset(chatID int64, messageID int, confirmed bool) {
 	if b.storageResetMessageID == 0 || messageID != b.storageResetMessageID {
 		return
 	}
-	b.storageResetMessageID = 0
-	b.clearKeyboard(chatID, messageID)
+	b.closeMenu(chatID, messageID)
 	if !confirmed {
 		send(b.tg, chatID, "Storage reset cancelled.")
 		return

@@ -17,6 +17,7 @@ type releaseCheckResult struct {
 	version, action, requestID string
 	chatID                     int64
 	messageID                  int
+	menuRevision               uint64
 	menuPath                   string
 	err                        error
 }
@@ -50,7 +51,7 @@ func (b *Bot) handleUpdateAction(chatID int64, messageID int, path, arg string) 
 		return
 	}
 	id := fmt.Sprintf("telegram-update:%d:%d:%s", b.tg.Self.ID, b.updateID, action)
-	b.checkRelease(releaseCheckResult{chatID: chatID, action: action, requestID: id, messageID: messageID, menuPath: path})
+	b.checkRelease(releaseCheckResult{chatID: chatID, action: action, requestID: id, messageID: messageID, menuPath: path, menuRevision: b.menuRevision(chatID, messageID)})
 }
 
 func (b *Bot) openUpdateMenu(chatID int64, messageID int, path string) {
@@ -58,8 +59,11 @@ func (b *Bot) openUpdateMenu(chatID int64, messageID int, path string) {
 		send(b.tg, chatID, "Install the current release before requesting Telegram updates. See /help update.")
 		return
 	}
+	revision := b.menuRevision(chatID, messageID)
 	b.queueUpdates(nil, func(result storage.OperationResult) {
-		b.renderUpdateMenu(chatID, messageID, path, result)
+		if b.menuCurrent(chatID, messageID, revision) {
+			b.renderUpdateMenu(chatID, messageID, path, result)
+		}
 	})
 }
 
@@ -163,7 +167,7 @@ func (b *Bot) finishReleaseCheck(checked releaseCheckResult) {
 	}
 	b.queueUpdates(nil, func(result storage.OperationResult) {
 		b.observeUpdates(result)
-		if checked.chatID != 0 {
+		if checked.chatID != 0 && b.menuCurrent(checked.chatID, checked.messageID, checked.menuRevision) {
 			b.renderUpdateMenu(checked.chatID, checked.messageID, checked.menuPath, result)
 		}
 	})

@@ -180,33 +180,17 @@ func navButton(path string) []tgbotapi.InlineKeyboardButton {
 	return menuRow("✓ Done", "menu:cancel")
 }
 
-// showMenu sends a fresh keyboard message when messageID is 0 (a command
-// opening a menu) or edits the existing one in place otherwise (a drill-down
-// tap).
-func (b *Bot) showMenu(chatID int64, messageID int, text string, rows [][]tgbotapi.InlineKeyboardButton) {
-	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	if messageID == 0 {
-		sendWithKeyboard(b.tg, chatID, text, markup)
-		return
-	}
-	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, markup)
-	if _, err := b.tg.Send(edit); err != nil {
-		slog.Error("editing menu message", "err", err)
-	}
-}
-
 // handleMenuCallback routes a "menu:"-prefixed callback (path is everything
 // after that prefix). Actions (:set, :off, leave) run and re-render; anything
 // else is a screen path handed to renderScreen.
 func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 	if path == "cancel" {
-		b.reset()
-		b.clearKeyboard(chatID, messageID)
+		b.closeMenu(chatID, messageID)
 		return
 	}
 	segs := strings.Split(path, ":")
 	if segs[0] == "leave" {
-		b.reset()
+		b.resetMenuPrompt(messageID)
 		b.handleHardstopLeave(chatID, messageID, strings.TrimPrefix(path, "leave:"))
 		return
 	}
@@ -216,33 +200,33 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 		// Starts a value entry — sets the conversation state itself.
 		b.beginValueEntry(chatID, messageID, strings.TrimSuffix(path, ":set"))
 	case last == "toggle":
-		b.reset()
+		b.resetMenuPrompt(messageID)
 		b.toggleStakeChange(chatID, messageID, strings.TrimSuffix(path, ":toggle"))
 	case isSummaryMode(last) && strings.Contains(path, "summaries"):
 		// A summary mode pick ("...:every|wins|losses|off"). Checked before the
 		// plain ":off" case below, which "off" would otherwise also match.
-		b.reset()
+		b.resetMenuPrompt(messageID)
 		b.setSummaryMode(chatID, messageID, path)
 	case last == "off":
-		b.reset()
+		b.resetMenuPrompt(messageID)
 		b.requestTurnOff(chatID, messageID, strings.TrimSuffix(path, ":off"))
 	case last == "offconfirm":
-		b.reset()
+		b.resetMenuPrompt(messageID)
 		b.doTurnOff(chatID, messageID, strings.TrimSuffix(path, ":offconfirm"))
 	case last == "on":
-		b.reset()
+		b.resetMenuPrompt(messageID)
 		b.turnOn(chatID, messageID, strings.TrimSuffix(path, ":on"))
 	case last == "deposit" || last == "withdraw" || last == "reward":
 		b.beginMoneyEntry(chatID, messageID, path)
 	case isCommandAction(last):
 		// A hub shortcut to an existing command — runs it (which sends its own
 		// output or starts its flow); the menu message stays for more taps.
-		b.reset()
-		b.runCommandAction(chatID, last)
+		b.resetMenuPrompt(messageID)
+		b.runCommandAction(chatID, messageID, last)
 	default:
 		// Any navigation abandons a pending value entry so a later stray
 		// text message isn't applied to the field it was prompting for.
-		b.reset()
+		b.resetMenuPrompt(messageID)
 		b.renderScreen(chatID, messageID, path)
 	}
 }
@@ -260,7 +244,7 @@ func isCommandAction(token string) bool {
 
 // runCommandAction invokes the command a hub button stands for. These send
 // their own messages (or start their own flow), leaving the menu in place.
-func (b *Bot) runCommandAction(chatID int64, token string) {
+func (b *Bot) runCommandAction(chatID int64, messageID int, token string) {
 	switch token {
 	case "screenname":
 		b.handleScreenNameCommand(chatID, "")
@@ -270,6 +254,7 @@ func (b *Bot) runCommandAction(chatID int64, token string) {
 		b.handleSheetCommand(chatID, "")
 	case "credentials":
 		b.startCredentialsFlow(chatID)
+		b.menuMessageID = messageID
 	case "status":
 		b.handleStatus(chatID)
 	case "lastsession":
@@ -610,8 +595,7 @@ func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 
 // handleHardstopLeave enforces the duration guard when leaving the hard-stop
 // menu: if any rule is set with no duration_hours, it re-renders with a warning
-// and stays; otherwise it navigates to the parent (or clears the keyboard at a
-// root).
+// and stays; otherwise it navigates to the parent or closes the root.
 func (b *Bot) handleHardstopLeave(chatID int64, messageID int, menuPath string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -627,7 +611,7 @@ func (b *Bot) handleHardstopLeave(chatID int64, messageID int, menuPath string) 
 		b.renderScreen(chatID, messageID, parent)
 		return
 	}
-	b.clearKeyboard(chatID, messageID)
+	b.closeMenu(chatID, messageID)
 }
 
 func hardstopRuleSetWithoutDuration(cfg *config.Config) bool {

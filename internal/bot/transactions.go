@@ -62,6 +62,7 @@ func (b *Bot) handleTransactionsCallback(chatID int64, messageID int, data strin
 }
 
 func (b *Bot) showTransactions(chatID int64, messageID int, path, period string, since time.Time, history bool, page int) {
+	revision := b.menuRevision(chatID, messageID)
 	var text string
 	var rows [][]tgbotapi.InlineKeyboardButton
 	b.queueOperation(func(store storage.Store) storage.OperationResult {
@@ -92,6 +93,9 @@ func (b *Bot) showTransactions(chatID int64, messageID int, path, period string,
 		}
 		return storage.OperationResult{}
 	}, func(result storage.OperationResult) {
+		if !b.menuCurrent(chatID, messageID, revision) {
+			return
+		}
 		if result.Err != nil {
 			send(b.tg, chatID, "Could not load transactions. Please try again.")
 			return
