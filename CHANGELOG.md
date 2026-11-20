@@ -29,6 +29,13 @@ entries below use the version labels in effect when those changes shipped.
 | `v2.0.0` | [e76db5c](https://github.com/vit-ui/poker-tracker/commit/e76db5cfe3bf8b8c44e027759b6bff57a0dc1108) | Windows and Linux |
 | `v3.0.0` | [97789b3](https://github.com/vit-ui/poker-tracker/commit/97789b37f6124e7bfd46130a03c87c2c0ed6c74c) | Windows and Linux |
 
+## [4.0.0](https://github.com/vit-ui/poker-tracker/compare/v3.0.0...v4.0.0) (2026-11-20)
+
+
+### Build System
+
+* reorganize packaging and adopt Release Please ([372fec0](https://github.com/vit-ui/poker-tracker/commit/372fec03030d86558d6a92bf24b6226537ae3839))
+
 ### 3.0.0
 
 Store money and saved loss thresholds in integer cents. Older dollar-based
