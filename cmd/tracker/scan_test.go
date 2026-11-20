@@ -107,6 +107,53 @@ func TestScanMixedFile(t *testing.T) {
 	}
 }
 
+func TestPartialTournamentExportKeepsRecordedBounty(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	at := time.Date(2025, 2, 10, 12, 0, 0, 0, time.UTC)
+	const id = "9800000001"
+	if _, err := db.AppendTournament(parsers.Tournament{
+		Date: at, TournamentID: id, Type: "mtt", BuyInCents: 100, NetCents: -100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateTournamentHandStats(id, 20, 10, 25, 149, true); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "testdata", "scan", "mixed_export.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hand, found := strings.Cut(string(fixture), "PokerStars Hand #281000000016")
+	if !found {
+		t.Fatal("missing tournament hand")
+	}
+	lines, _, found := strings.Cut(hand, "PokerStars Hand #281000000015")
+	if !found {
+		t.Fatal("missing following hand")
+	}
+	path := filepath.Join(dir, "partial.txt")
+	if err := os.WriteFile(path, []byte("PokerStars Hand #281000000016"+lines), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var tally storage.ScanTally
+	if err := tally.HandHistory(db, path, "AnonExportHero"); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := db.ExportSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tourney := snap.Tournaments[0]
+	if tourney.BountyWonCents != 149 || tourney.NetCents != 49 {
+		t.Fatalf("scan result=%+v, bounty=%d net=%d, ledger=%d; want bounty=149 net=49 ledger=49", tally, tourney.BountyWonCents, tourney.NetCents, snap.Ledger[0].AmountCents)
+	}
+}
+
 func TestFileScanDoesNotDuplicateFullLiveCashFile(t *testing.T) {
 	fixture, err := os.ReadFile(filepath.Join("..", "..", "testdata", "scan", "mixed_export.txt"))
 	if err != nil {

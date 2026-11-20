@@ -51,7 +51,7 @@ func (t *ScanTally) RecordHandHistory(store Store, session *parsers.CashSession,
 				t.Cash++
 			}
 		} else {
-			err = store.UpdateTournamentHandStats(tournament.TournamentID, tournament.VPIP, tournament.PFR, tournament.Hands, tournament.BountyCents, tournament.IsKnockout)
+			err = store.ScanTournamentHandStats(*tournament)
 			if err == nil {
 				t.TournamentHistories++
 			}
