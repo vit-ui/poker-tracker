@@ -11,9 +11,9 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +23,7 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
+	"github.com/vit-ui/self-tracker/internal/uiprompt"
 	"github.com/vit-ui/self-tracker/internal/update"
 )
 
@@ -38,8 +39,8 @@ var apiEndpoint = tgbotapi.APIEndpoint
 // Telegram connection, the storage backend, the on-disk config/lockfile
 // paths, and the watcher-restart callback main.go provides — so they aren't
 // threaded hand-to-hand through every handler call. It also embeds the
-// single configured chat's conversation state. Setup-mode code (RunSetup,
-// EnsureSheetID) runs before a Bot exists and stays plain functions; the
+// single configured chat's conversation state. Setup-mode code runs before a
+// Bot exists and stays plain functions. The
 // worker-side alert evaluators (alerts.go) run on the worker goroutine,
 // which has no Bot, and stay plain functions too.
 type Bot struct {
@@ -57,6 +58,7 @@ type Bot struct {
 	pendingOperations  []pendingOperation
 	taskName           string
 	tg                 *tgbotapi.BotAPI
+	chatID             int64
 	store              storage.Store
 	configPath         string
 	lockStatusText     func() (string, error)
@@ -123,35 +125,13 @@ func (c *conversation) reset() {
 // stop ends command intake; drained closes after accepted operations finish (also
 // after a successful restart request). The owner then stops producers/worker and
 // closes alertChan. Run joins the update poller before returning.
-func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}, updater *update.Agent) error {
-	if botToken == "" {
-		var err error
-		botToken, err = waitForTelegramToken(configPath, alertChan, stop, ready)
-		if err != nil {
-			return err
-		}
-		if botToken == "" {
-			if drained != nil {
-				close(drained)
-			}
-			for range alertChan {
-			}
-			return nil
-		}
-		ready = nil
-	}
-
-	tgBot, err := newTelegramBot(botToken)
-	if err != nil {
-		return fmt.Errorf("starting Telegram bot failed; check its token and connection")
-	}
+func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}, updater *update.Agent) error {
 
 	b := &Bot{
 		updater:            updater,
 		releaseResults:     make(chan releaseCheckResult, 1),
 		worker:             worker,
 		taskName:           taskName,
-		tg:                 tgBot,
 		store:              store,
 		configPath:         configPath,
 		currentLock:        currentLock,
@@ -162,6 +142,13 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		requestRescan:      requestRescan,
 		now:                now,
 	}
+
+	var sender telegramSender
+	sender.resume()
+	defer sender.interrupt()
+	ownerDone := make(chan struct{})
+	defer close(ownerDone)
+	controls, stop = sender.watchOwner(controls, stop, ownerDone)
 
 	var lastWeeklySent, lastMonthlySent, lastHeartbeatCheck time.Time
 	var sheetsDown bool
@@ -178,27 +165,63 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 	}()
 	var poller *updatePoller
 	var updates <-chan tgbotapi.Update
-	nextUpdate := 0
-	if !standby {
-		poller = startUpdatePoller(tgBot, nextUpdate)
-		updates = poller.updates
-		if updater != nil {
-			b.checkRelease(releaseCheckResult{})
+	var connection telegramConnection
+	reconnect := time.NewTicker(3 * time.Second)
+	defer reconnect.Stop()
+	var cancelProbe context.CancelFunc
+	var candidates <-chan telegramConnection
+	var probing telegramCredentials
+	stopProbe := func() {
+		if cancelProbe != nil {
+			cancelProbe()
 		}
-	} else {
-		b.ownerPaused = true
+		cancelProbe, candidates = nil, nil
 	}
-	defer func() {
+	defer stopProbe()
+	connect := func() {
+		credentials, err := loadTelegramCredentials(configPath)
+		if candidates != nil && credentials == probing && err == nil {
+			return
+		}
+		stopProbe()
+		result := make(chan telegramConnection, 1)
+		candidates, probing = result, credentials
+		if err != nil || credentials == connection.credentials || credentials.token == "" {
+			result <- telegramConnection{credentials: credentials, needsSetup: credentials.token == "" && err == nil, err: err}
+			return
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelProbe = cancel
+		go func() {
+			result <- probeTelegram(ctx, credentials)
+		}()
+	}
+	b.ownerPaused = standby
+	pollingPaused := standby
+	nextUpdate := 0
+	stopPoller := func() {
 		if poller != nil {
 			poller.stop()
+			poller, updates = nil, nil
 		}
-	}()
+	}
+	startPoller := func() {
+		if b.tg != nil && poller == nil && !pollingPaused {
+			poller = startUpdatePoller(b.tg, nextUpdate)
+			updates = poller.updates
+		}
+	}
+	defer stopPoller()
+	if !standby && updater != nil {
+		b.checkRelease(releaseCheckResult{})
+	}
+	connect()
 	if ready != nil {
 		ready <- struct{}{}
 	}
 	var active *pendingOperation
 	var results <-chan storage.OperationResult
-	stopping, notified := false, false
+	stopping, notified, prompted := false, false, false
 	var pausedReply chan error
 	var closureResult *ClosureResult
 	for {
@@ -206,11 +229,9 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			stopping = true
 		}
 		if stopping {
-			if poller != nil {
-				poller.stop()
-				poller = nil
-			}
-			updates = nil
+			stopPoller()
+			stopProbe()
+			reconnect.Stop()
 			ticker.Stop()
 			stop = nil
 		}
@@ -249,6 +270,48 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			menuTimer.Stop()
 		}
 		select {
+		case <-reconnect.C:
+			connect()
+		case next := <-candidates:
+			stopProbe()
+			if stopping {
+				continue
+			}
+			if !prompted && !standby && next.needsSetup {
+				prompted = true
+				if err := uiprompt.ShowPendingTelegramSetup(); err != nil {
+					slog.Error("opening Connect Telegram", "err", err)
+				}
+			}
+			if next.err != nil {
+				if !connection.failed {
+					slog.Error("connecting Telegram", "err", next.err)
+				}
+				connection.failed = true
+				continue
+			}
+			connection.failed = false
+			if next.credentials == connection.credentials {
+				startPoller()
+				continue
+			}
+			if active != nil || len(b.pendingOperations) > 0 {
+				continue
+			}
+			stopPoller()
+			b.reset()
+			b.menus = nil
+			if b.pendingSwitch != nil {
+				closeStore(b.pendingSwitch.dst)
+			}
+			b.pendingSwitch, b.storageResetMessageID, b.pendingStorageSheetArg = nil, 0, ""
+			connection = next
+			b.tg, b.chatID = next.bot, next.credentials.chatID
+			if b.tg != nil {
+				b.tg.Client = &sender
+			}
+			nextUpdate = 0
+			startPoller()
 		case <-menuExpiry:
 			b.expireMenus(time.Now())
 		case result := <-releaseResults:
@@ -259,27 +322,31 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		case closureResults <- closureReply:
 			closureResult = nil
 		case control := <-controls:
+			select {
+			case <-stop:
+				stopping = true
+			default:
+				sender.resume()
+			}
 			if control.Pause {
 				if b.migrating || pausedReply != nil {
 					control.Reply <- fmt.Errorf("a configuration operation is already in progress")
 				} else {
 					b.ownerPaused = true
-					if control.StopPolling && poller != nil {
-						poller.stop()
-						poller = nil
-						updates = nil
+					if control.StopPolling {
+						pollingPaused = true
+						stopPoller()
 					}
 					pausedReply = control.Reply
 				}
 			} else {
 				b.ownerPaused = false
+				pollingPaused = false
+				standby = false
 				if b.updater != nil && b.lastReleaseCheck.IsZero() {
 					b.checkRelease(releaseCheckResult{})
 				}
-				if poller == nil {
-					poller = startUpdatePoller(tgBot, nextUpdate)
-					updates = poller.updates
-				}
+				startPoller()
 				control.Reply <- nil
 			}
 			continue
@@ -299,7 +366,8 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			complete(result)
 		case update, ok := <-updates:
 			if !ok {
-				return fmt.Errorf("telegram update stream closed")
+				stopPoller()
+				continue
 			}
 			nextUpdate = update.UpdateID + 1
 			b.handleUpdate(update)
@@ -341,6 +409,9 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 				}
 			}
 
+			if b.tg == nil {
+				continue
+			}
 			realNow := time.Now()
 			now := b.now()
 			if realNow.Sub(lastHeartbeatCheck) >= 30*time.Minute {
@@ -400,27 +471,15 @@ func heartbeatEvent(down bool, since time.Time, err error, wasDown bool) (msg st
 	}
 }
 
-// configuredChatID reads the configured Telegram chat ID from config.json.
-// ok is false if no chat ID is configured yet or it cannot be parsed.
-func configuredChatID(configPath string) (chatID int64, ok bool) {
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		slog.Error("loading config for telegram send", "err", err)
-		return 0, false
-	}
-	if cfg.Setup.TelegramChatID == nil {
-		return 0, false
-	}
-	chatID, err = strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)
-	if err != nil {
-		slog.Error("parsing telegram chat id", "err", err)
-		return 0, false
-	}
-	return chatID, true
+func (b *Bot) connectedChat() (int64, bool) {
+	return b.chatID, b.tg != nil && b.chatID > 0
 }
 
 // send sends text to chatID.
 func send(tgBot *tgbotapi.BotAPI, chatID int64, text string) {
+	if tgBot == nil {
+		return
+	}
 	if _, err := tgBot.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
 		slog.Error("sending telegram message", "err", err)
 	}
@@ -456,7 +515,7 @@ func (b *Bot) clearKeyboard(chatID int64, messageID int) {
 // If no chat ID is configured yet, the message is silently discarded — with
 // no chat there is nowhere to deliver or report it.
 func (b *Bot) sendMessage(text string) {
-	chatID, ok := configuredChatID(b.configPath)
+	chatID, ok := b.connectedChat()
 	if !ok {
 		return
 	}
@@ -478,7 +537,7 @@ func (b *Bot) summaryModeAllows(netCents money.Cents, pick func(config.Notificat
 
 // sendMessageWithKeyboard is sendMessage with an inline keyboard attached.
 func (b *Bot) sendMessageWithKeyboard(text string, markup tgbotapi.InlineKeyboardMarkup) {
-	chatID, ok := configuredChatID(b.configPath)
+	chatID, ok := b.connectedChat()
 	if !ok {
 		return
 	}
@@ -487,44 +546,17 @@ func (b *Bot) sendMessageWithKeyboard(text string, markup tgbotapi.InlineKeyboar
 
 func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	b.updateID = update.UpdateID
-	if update.CallbackQuery != nil && update.CallbackQuery.Message == nil {
-		if _, err := b.tg.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Already resolved.")); err != nil {
-			slog.Error("answering callback query", "err", err)
-		}
-		return
-	}
-	var senderChatID int64
+	var chat *tgbotapi.Chat
 	switch {
 	case update.Message != nil:
-		senderChatID = update.Message.Chat.ID
-	case update.CallbackQuery != nil:
-		senderChatID = update.CallbackQuery.Message.Chat.ID
-	default:
+		chat = update.Message.Chat
+	case update.CallbackQuery != nil && update.CallbackQuery.Message != nil:
+		chat = update.CallbackQuery.Message.Chat
+	}
+	if !privateChat(chat) || chat.ID != b.chatID {
 		return
 	}
-
-	cfg, err := config.LoadConfig(b.configPath)
-	if err != nil {
-		slog.Error("loading config for incoming update", "err", err)
-		return
-	}
-	senderChatIDStr := strconv.FormatInt(senderChatID, 10)
-	if cfg.Setup.TelegramChatID == nil {
-		var err error
-		cfg, err = config.UpdateConfig(b.configPath, func(current *config.Config) error {
-			if current.Setup.TelegramChatID == nil {
-				current.Setup.TelegramChatID = &senderChatIDStr
-			}
-			return nil
-		})
-		if err != nil {
-			slog.Error("saving telegram chat id", "err", err)
-			return
-		}
-	}
-	if *cfg.Setup.TelegramChatID != senderChatIDStr {
-		return // not the configured chat — ignore silently
-	}
+	senderChatID := chat.ID
 
 	if b.migrating || b.ownerPaused || b.deploymentPaused() {
 		if msg := update.Message; msg != nil && msg.IsCommand() && msg.Command() == "hardstop" && manualHardstopRequested(msg.CommandArguments()) {

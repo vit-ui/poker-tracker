@@ -43,9 +43,14 @@ Windows or Linux server keeps your bot and history available while that PC is of
 5. In Telegram, use `/status` to check the tracker, `/scan` to import existing
    history, and `/hardstop` to set your limits and lock duration.
 
-Tracker saves the token in the installation’s protected credentials folder.
-The tracker starts automatically at boot. Reinstalling in the same folder
-preserves Telegram access, settings, and data.
+Pair the bot in a private chat. Open **Connect Telegram** from Tracker to
+replace a token and pair the replacement with your linked account. For an
+installation linked to a group, confirm the move to a private chat during setup.
+On Linux, run `./tracker-server --connect-telegram` from the installation folder.
+
+Tracker saves the token in its protected credentials folder. Tracking and
+automatic protection continue while Telegram is unavailable. Reinstalling in
+the same folder preserves Telegram access, settings, and data.
 
 ## Everyday Telegram commands
 
@@ -263,11 +268,14 @@ after reconnection and keep the original closure time.
 PokerStars `.txt` export, either as a path on the connected poker PC or as a
 Telegram attachment up to 20 MB. An export can contain multiple cash sessions
 and tournaments. Tournament summaries still supply final results. Scans
-produce one result report without hard stops or session summaries. Exact
-repeats update the same records. A partially overlapping cash export can
-produce another session row when its first hand differs. Tournament summaries
-that need a ticket/cash or free/paid answer are skipped and counted. Large
-Sheets scans are paced under the API quota.
+produce one result report without hard stops or session summaries. The report
+counts new and already-recorded cash hands. Live file corrections update the
+original contributions and ledger totals. Older aggregate sessions keep their
+recorded totals, and a matching live file can add their hand IDs.
+
+Tournament imports use the largest available playing sample and reconcile
+knockout bounties separately. Tournament summaries that need a ticket/cash or
+free/paid answer are skipped and counted. Sheets scans follow API quota pacing.
 
 **Storage reset:** Close PokerStars and keep the poker PC connected. Run
 `/storage reset` and confirm to empty cash sessions, tournaments, and the
@@ -413,8 +421,8 @@ update finishes. Do not run setup/uninstall while a background update is active.
 Back up the **installation folder**, including settings, local database,
 credentials, pairing and saved protection/recovery state. Keep the original
 PokerStars histories too: they recover file bytes the tracker had not received.
-A normal Windows uninstall removes local player data and storage reset backups.
-Silent uninstall preserves them for upgrades. Prefer the updater or rerun the
+A normal Windows uninstall removes both credentials, local player data, and
+storage reset backups. Silent uninstall preserves them for upgrades. Prefer the updater or rerun the
 installer to upgrade.
 
 <details>

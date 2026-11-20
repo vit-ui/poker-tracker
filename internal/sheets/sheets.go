@@ -155,7 +155,7 @@ type tabDef struct {
 
 func historyTabs() [3]tabDef {
 	return [3]tabDef{
-		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID"}},
+		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID", "Hand Details"}},
 		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}},
 		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
 	}
@@ -484,13 +484,14 @@ type tournamentRowSnapshot struct {
 	hasNetUSD   bool // false while the row is still a hand-file-only partial row
 	netCents    money.Cents
 	bountyCents money.Cents
+	hands       int
 }
 
 // readTournamentRow reads the fields of an existing Tournaments row (by
 // 1-based sheet rowIndex) needed to compute a bounty-reconciled NetCents/Type
 // from either side of the two-file correlation.
 func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) {
-	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:M%d", rowIndex, rowIndex))
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:N%d", rowIndex, rowIndex))
 	if err != nil {
 		return tournamentRowSnapshot{}, fmt.Errorf("reading tournament row %d: %w", rowIndex, err)
 	}
@@ -499,6 +500,7 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 	}
 	row := resp.Values[0]
 	var snap tournamentRowSnapshot
+	snap.hands = parseInt(cell(row, 13))
 	if len(row) > 0 {
 		if date, err := parseSheetDate(row[0]); err == nil {
 			snap.date = date
@@ -744,15 +746,20 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 	if isKnockout {
 		typeOut = storage.AppendKnockoutSuffix(snap.typeVal)
 	}
-	data := []valueRange{
-		{
+	var data []valueRange
+	if storage.UseTournamentSample(preserveBounty, hands, snap.hands) {
+		data = append(data, valueRange{
 			Range:  fmt.Sprintf("Tournaments!J%d:L%d", rowIndex, rowIndex),
 			Values: [][]interface{}{{vpip, pfr, bountyCents}},
-		},
-		{
+		}, valueRange{
 			Range:  fmt.Sprintf("Tournaments!N%d", rowIndex),
 			Values: [][]interface{}{{hands}},
-		},
+		})
+	} else {
+		data = append(data, valueRange{
+			Range:  fmt.Sprintf("Tournaments!L%d", rowIndex),
+			Values: [][]interface{}{{bountyCents}},
+		})
 	}
 	if typeOut != snap.typeVal {
 		data = append(data, valueRange{
@@ -814,6 +821,7 @@ type fallbackEntry struct {
 	QueuedAt  time.Time            `json:"queued_at,omitempty"`
 	Kind      string               `json:"kind"`
 	Cash      *parsers.CashSession `json:"cash,omitempty"`
+	CashHands *cashHandWrite       `json:"cash_hands,omitempty"`
 	Summary   *parsers.Tournament  `json:"summary,omitempty"`
 	HandStats *handStatsArgs       `json:"hand_stats,omitempty"`
 	Ledger    *ledgerArgs          `json:"ledger,omitempty"`
@@ -905,20 +913,25 @@ func (c *Client) writeTournamentHandStats(id string, vpip, pfr float64, hands in
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	key := fallbackKindStats + ":" + id
+	stats := handStatsArgs{TournamentID: id, VPIP: vpip, PFR: pfr, Hands: hands, BountyCents: bountyCents, IsKnockout: knockout, PreserveBounty: preserveBounty}
 	if preserveBounty {
 		c.fallbackMu.Lock()
 		pending := c.fallback[key].HandStats
 		c.fallbackMu.Unlock()
-		if pending != nil && !pending.PreserveBounty {
-			// A partial export cannot replace queued cumulative live data.
-			return nil
+		if pending != nil {
+			if !storage.UseTournamentSample(true, hands, pending.Hands) {
+				stats.Hands, stats.VPIP, stats.PFR = pending.Hands, pending.VPIP, pending.PFR
+			}
+			stats.BountyCents = max(stats.BountyCents, pending.BountyCents)
+			stats.IsKnockout = stats.IsKnockout || pending.IsKnockout
+			stats.PreserveBounty = pending.PreserveBounty
 		}
 	}
-	entry := fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{TournamentID: id, VPIP: vpip, PFR: pfr, Hands: hands, BountyCents: bountyCents, IsKnockout: knockout, PreserveBounty: preserveBounty}}
+	entry := fallbackEntry{Kind: fallbackKindStats, HandStats: &stats}
 	if err := c.prepareQueuedReplacement(key, entry); err != nil {
 		return err
 	}
-	if err := c.rawUpdateTournamentHandStats(id, vpip, pfr, hands, bountyCents, knockout, preserveBounty); err != nil {
+	if err := c.applyHandStats(stats); err != nil {
 		return c.queueWriteFailure(key, entry, err)
 	}
 	if err := c.retireFallback(key); err != nil {
@@ -926,6 +939,11 @@ func (c *Client) writeTournamentHandStats(id string, vpip, pfr float64, hands in
 	}
 	c.flush()
 	return nil
+}
+
+func (c *Client) applyHandStats(stats handStatsArgs) error {
+	return c.rawUpdateTournamentHandStats(stats.TournamentID, stats.VPIP, stats.PFR, stats.Hands,
+		stats.BountyCents, stats.IsKnockout, stats.PreserveBounty)
 }
 
 // If an older snapshot is queued, persist its replacement before attempting a
@@ -1014,6 +1032,9 @@ func (c *Client) cacheFailed(key string, entry fallbackEntry) error {
 	}
 	entry.QueuedAt = time.Now()
 	c.fallbackMu.Lock()
+	if previous, exists := c.fallback[key]; exists && entry.CashHands != nil {
+		entry.QueuedAt = previous.QueuedAt
+	}
 	c.fallback[key] = entry
 	err := c.persistFallbackLocked()
 	c.fallbackMu.Unlock()
@@ -1052,12 +1073,19 @@ func (c *Client) flush() {
 		}
 		return left.Before(right)
 	})
+	cashBlocked := false
 	for _, key := range keys {
 		entry := c.fallback[key]
+		isCash := entry.Cash != nil || entry.CashHands != nil
+		if cashBlocked && isCash {
+			continue
+		}
 		if c.resolveFallbackEntry(entry) {
 			removed[key] = entry
 			delete(c.fallback, key)
 			changed = true
+		} else if isCash {
+			cashBlocked = true
 		}
 	}
 	var persistErr error
@@ -1081,6 +1109,9 @@ func (c *Client) flush() {
 // replay itself failed transiently — to retry after the next successful write.
 func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 	switch entry.Kind {
+	case "cash_hands":
+		_, err := c.rawRecordCashHands(*entry.CashHands)
+		return err == nil
 	case fallbackKindCash:
 		sheetHands, exists, err := c.cashSheetHandCount(CashSessionID(entry.Cash.Date, entry.Cash.FirstHandID))
 		if err != nil {
@@ -1091,17 +1122,17 @@ func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 		}
 		return c.rawAppendCashSession(*entry.Cash) == nil
 	case fallbackKindStats:
-		sheetHands, exists, err := c.tournamentSheetHandCount(entry.HandStats.TournamentID)
-		if err != nil {
-			return false
+		stats := *entry.HandStats
+		if !stats.PreserveBounty {
+			sheetHands, exists, err := c.tournamentSheetHandCount(stats.TournamentID)
+			if err != nil {
+				return false
+			}
+			if flushDecision(stats.Hands, sheetHands, exists) == flushDiscard {
+				return true
+			}
 		}
-		if flushDecision(entry.HandStats.Hands, sheetHands, exists) == flushDiscard {
-			return true
-		}
-		return c.rawUpdateTournamentHandStats(
-			entry.HandStats.TournamentID, entry.HandStats.VPIP, entry.HandStats.PFR,
-			entry.HandStats.Hands, entry.HandStats.BountyCents, entry.HandStats.IsKnockout, entry.HandStats.PreserveBounty,
-		) == nil
+		return c.applyHandStats(stats) == nil
 	case fallbackKindSummary:
 		_, err := c.rawAppendTournament(*entry.Summary)
 		return err == nil
@@ -1279,11 +1310,15 @@ func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord
 	if err != nil {
 		return nil, fmt.Errorf("reading cash sessions: %w", err)
 	}
-	if len(resp.Values) <= 1 {
+	return readCashValues(resp.Values, since)
+}
+
+func readCashValues(values [][]interface{}, since time.Time) ([]storage.CashSessionRecord, error) {
+	if len(values) <= 1 {
 		return nil, nil
 	}
 	var result []storage.CashSessionRecord
-	for _, row := range resp.Values[1:] {
+	for _, row := range values[1:] {
 		rec, ok, err := parseCashRow(row)
 		if err != nil {
 			return nil, err
@@ -1331,7 +1366,8 @@ func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool, er
 		},
 		SessionID: fmt.Sprint(cell(row, 9)),
 	}
-	return rec, true, nil
+	rec.HandDetails, err = decodeCashMetadata(row)
+	return rec, err == nil, err
 }
 
 // GetCashSessionsSince returns all Cash Sessions rows where Date >= t.
@@ -1531,7 +1567,11 @@ func (c *Client) GetAllTournaments() ([]storage.TournamentRecord, error) {
 func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	cash, err := c.GetAllCashSessions()
+	values, err := c.cashValues()
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	cash, err := readCashValues(values, time.Time{})
 	if err != nil {
 		return storage.Snapshot{}, err
 	}
@@ -1550,35 +1590,31 @@ func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
 	}, nil
 }
 
-// ImportSnapshot writes a whole snapshot into an empty spreadsheet, one
-// batched append per tab (three API calls, not one per row — a real history
-// would otherwise stall against the Sheets write quota). Every value is
-// written verbatim: session IDs, dates (truncated to the tab's minute
-// precision), running totals, and each tournament's already-bounty-folded Net
-// and Prize Won are stored as-read, never recomputed. The caller
-// (storage.Migrate) guarantees the tabs hold only their header row first.
+// ImportSnapshot writes raw storage rows to the verified empty destination.
+// The cash metadata and ledger enter the destination in the same batch.
 func (c *Client) ImportSnapshot(snap storage.Snapshot) error {
 	if err := storage.ValidateSnapshot(snap); err != nil {
 		return err
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	if rows := buildCashRows(snap.CashSessions); len(rows) > 0 {
-		if err := c.svc.valuesAppend(c.spreadsheetID, "Cash Sessions!A1", rows); err != nil {
-			return fmt.Errorf("importing cash sessions: %w", err)
+	var writes []gridWrite
+	for _, tab := range []struct {
+		name string
+		rows [][]interface{}
+	}{
+		{cashHistoryTab, buildCashRows(snap.CashSessions)},
+		{"Tournaments", buildTournamentRows(snap.Tournaments)},
+		{"Bankroll Ledger", buildLedgerRows(snap.Ledger)},
+	} {
+		if len(tab.rows) > 0 {
+			writes = append(writes, gridWrite{tab.name, 1, 0, tab.rows})
 		}
 	}
-	if rows := buildTournamentRows(snap.Tournaments); len(rows) > 0 {
-		if err := c.svc.valuesAppend(c.spreadsheetID, "Tournaments!A1", rows); err != nil {
-			return fmt.Errorf("importing tournaments: %w", err)
-		}
+	if len(writes) == 0 {
+		return nil
 	}
-	if rows := buildLedgerRows(snap.Ledger); len(rows) > 0 {
-		if err := c.svc.valuesAppend(c.spreadsheetID, "Bankroll Ledger!A1", rows); err != nil {
-			return fmt.Errorf("importing bankroll ledger: %w", err)
-		}
-	}
-	return nil
+	return c.svc.writeHistoryGrid(c.spreadsheetID, writes)
 }
 
 // buildCashRows / buildTournamentRows / buildLedgerRows map records to the
@@ -1592,6 +1628,7 @@ func buildCashRows(sessions []storage.CashSessionRecord) [][]interface{} {
 			s.Date.UTC().Format(dateFormat), s.Stake, s.Hands, s.DurationMin,
 			s.NetCents, s.RakeCents, s.BB100, s.VPIP, s.PFR, s.SessionID,
 		}
+		rows[i] = append(rows[i], encodeCashMetadata(s.HandDetails)...)
 	}
 	return rows
 }
@@ -1681,21 +1718,22 @@ func (c *Client) ClearHistory() error {
 	for _, tab := range historyTabs() {
 		columns[tab.name] = len(tab.headers)
 	}
-	return c.svc.clearHistoryValues(c.spreadsheetID, columns)
-}
-
-// ClearAllData deletes every data row (row 2 onward) from all three tabs,
-// leaving the header rows. Used to roll a spreadsheet back to empty after a
-// failed migration import, so a retry passes the empty-target check.
-func (c *Client) ClearAllData() error {
-	c.mutationMu.Lock()
-	defer c.mutationMu.Unlock()
-	for _, tab := range []string{"Cash Sessions", "Tournaments", "Bankroll Ledger"} {
-		if err := c.svc.valuesClear(c.spreadsheetID, tab+"!A2:Z"); err != nil {
-			return fmt.Errorf("clearing %s: %w", tab, err)
+	cash, err := c.cashValues()
+	if err != nil {
+		return err
+	}
+	extra := make(map[int]int)
+	for i, row := range cash {
+		if width := cashMetadataWidth(row); i > 0 && width > 1 {
+			extra[i] = 10 + min(width, len(row)-10)
 		}
 	}
-	return nil
+	return c.svc.clearHistoryValues(c.spreadsheetID, columns, extra)
+}
+
+// ClearAllData rolls a transfer-owned sheet back to empty history.
+func (c *Client) ClearAllData() error {
+	return c.ClearHistory()
 }
 
 func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {

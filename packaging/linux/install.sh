@@ -42,12 +42,11 @@ echo
 # connection string. Opens a window on a graphical desktop; prints to the
 # terminal on a headless box.
 "$DEST/tracker-server" --setup
-if ! "$DEST/tracker-server" --connect-telegram; then
+# Start configured tracking before asking for the optional Telegram pairing.
+"$DEST/tracker-server" --install
+if [ ! -f "$DEST/credentials/telegram.token" ] && ! "$DEST/tracker-server" --connect-telegram; then
     echo "Telegram setup can be resumed with $DEST/tracker-server --connect-telegram"
 fi
-
-# Register/restart the intended per-user service and offer start-on-boot.
-"$DEST/tracker-server" --install
 
 echo
 echo "Done. Use your linked Telegram bot to configure storage, alerts, and thresholds."

@@ -3,8 +3,10 @@ package sheets
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +31,8 @@ func TestClearHistoryUsesSingleAtomicBatch(t *testing.T) {
 			calls := make(chan []request, 2)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/values/"):
+					io.WriteString(w, `{"values":[["Date"]]}`)
 				case r.Method == http.MethodGet && r.URL.Path == "/active-id":
 					fmt.Fprint(w, test.tabs)
 				case r.Method == http.MethodPost && r.URL.Path == "/active-id:batchUpdate":
@@ -66,7 +70,7 @@ func TestClearHistoryUsesSingleAtomicBatch(t *testing.T) {
 			if len(requests) != 3 {
 				t.Fatalf("got %d requests, want 3", len(requests))
 			}
-			widths := map[int]int{0: 10, 2: 14, 3: 5}
+			widths := map[int]int{0: 11, 2: 14, 3: 5}
 			for _, req := range requests {
 				grid := req.UpdateCells.Range
 				id, hasID := grid["sheetId"]

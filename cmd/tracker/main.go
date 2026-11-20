@@ -79,6 +79,7 @@ func main() {
 	transferActivate := flag.Bool("transfer-activate", false, "activate verified deployment transfer")
 	transferComplete := flag.Bool("transfer-complete", false, "record completed collector cutover")
 	transferRollback := flag.Bool("transfer-rollback", false, "roll back a transfer-owned destination and restore source")
+	resolveStorage := flag.Bool("resolve-storage", false, "validate and save the selected storage settings")
 	connectTelegram := flag.Bool("connect-telegram", false, "link this installation to your Telegram bot")
 	flag.Parse()
 	if handled, err := updater.Handle(flag.CommandLine, "combined", Version, InstallationID); handled {
@@ -96,6 +97,18 @@ func main() {
 			os.Exit(1)
 		}
 
+	case *resolveStorage:
+		cfg, err := config.LoadConfig(configPath)
+		if err == nil {
+			err = backend.ResolveSheetsSetup(cfg, serviceAccountPath)
+		}
+		if err == nil {
+			err = config.SaveConfig(configPath, cfg)
+		}
+		if err != nil {
+			_ = uiprompt.TelegramSetupMessage(err.Error())
+			os.Exit(1)
+		}
 	case *transferStage != "":
 		runTransfer(func() error { return deployment.Stage(configPath, *transferStage) })
 	case *transferComplete:
@@ -156,15 +169,14 @@ func runSetup(installerOwnsTask bool) {
 		panic("stopping this installation before setup: " + err.Error())
 	}
 
-	if err := bot.ConnectTelegram(configPath); err != nil {
+	token, err := bot.TelegramTokenForSetup(configPath)
+	if err == nil {
+		err = bot.RunSetup(token, configPath, serviceAccountPath)
+	}
+	if err != nil {
 		_ = uiprompt.TelegramSetupMessage(err.Error())
 		os.Exit(1)
 	}
-	token, err := config.LoadTelegramToken(configPath)
-	if err != nil || token == "" {
-		os.Exit(1)
-	}
-	bot.RunSetup(token, configPath, serviceAccountPath)
 	if installerOwnsTask {
 		return
 	}
@@ -243,16 +255,7 @@ func runServe() (failure error) {
 	go func() { defer close(enforcementDone); enforcer.Run(enforcementStop) }()
 	defer func() { close(enforcementStop); <-enforcementDone }()
 
-	// Construct the storage backend (shared with the split server via
-	// internal/backend). On the sheets path this blocks in EnsureSheetID until a
-	// sheet is configured; the watcher/server/bot goroutines can't run without a
-	// store, so it resolves first.
-	telegramToken, err := config.LoadTelegramToken(configPath)
-	if err != nil {
-		return err
-	}
-
-	sc, backendName, err := backend.Open(telegramToken, configPath, serviceAccountPath, dbPath, fallbackPath)
+	sc, backendName, err := backend.Open(configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
 		slog.Error("opening storage backend", "err", err)
 		return err
@@ -325,7 +328,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(telegramToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
+		botDone <- bot.Run(alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
 	}()
 	startupStop := make(chan struct{})
 	defer close(startupStop)

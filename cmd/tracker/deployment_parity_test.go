@@ -279,6 +279,12 @@ func TestDeploymentChannelsAndTLSRecordAndAlertParity(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(p.root, "lockfile.json")); !os.IsNotExist(err) {
 				t.Fatalf("alert-only settings created lockfile: %v", err)
 			}
+			for _, row := range snapshot.CashSessions {
+				for i := range row.HandDetails {
+					// The two fixtures use distinct poker-PC directories.
+					row.HandDetails[i].LiveSource = ""
+				}
+			}
 			if network {
 				if !reflect.DeepEqual(snapshot, reference) {
 					t.Fatalf("TLS snapshot differs from channels\nTLS=%+v\nchannels=%+v", snapshot, reference)

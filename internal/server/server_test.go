@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -756,9 +757,8 @@ func TestServer_ImportFreerollHandFileLeavesNoMoney(t *testing.T) {
 	}
 }
 
-// TestServer_ImportIdempotent runs the same scan twice: the second run
-// re-upserts the same rows (cash by session ID, tournament by TournamentID)
-// rather than duplicating them, and reports the same counts.
+// TestServer_ImportIdempotent checks that repeated scans report previously
+// recorded cash hands and leave the ledger unchanged.
 func TestServer_ImportIdempotent(t *testing.T) {
 	store, link, alertChan := startCapturingServer(t)
 	ups := []transport.Upload{
@@ -770,8 +770,8 @@ func TestServer_ImportIdempotent(t *testing.T) {
 	second := feedImport(t, link, alertChan, ups...)
 	bankroll2Cents, _ := store.GetCurrentBankroll()
 
-	if first != second {
-		t.Errorf("report changed on re-scan:\n first: %q\nsecond: %q", first, second)
+	if !strings.Contains(first, "4 new, 0 already recorded") || !strings.Contains(second, "0 new, 4 already recorded") {
+		t.Errorf("unexpected scan reports:\n first: %q\nsecond: %q", first, second)
 	}
 	if !closeEnoughServer(bankroll1Cents, bankroll2Cents) {
 		t.Errorf("bankroll drifted on re-scan: %v → %v", bankroll1Cents, bankroll2Cents)
@@ -1052,7 +1052,7 @@ func TestEndCashSession_PrunesTimer(t *testing.T) {
 		fileID: {Date: storage.AsStoredClock(time.Now()), Stake: "NL2", BuyInCents: 200, NetCents: -100, Hands: 10, DurationMin: 8, FirstHandID: "h1"},
 	}
 	firedAlerts := make(map[string]bool)
-	srv.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, func(string, int, string) {})
+	srv.endCashSession(fileID, "", pendingSessions, summaryTimers, firedAlerts, func(string, int, string) {})
 
 	if _, ok := summaryTimers[fileID]; ok {
 		t.Error("summaryTimers entry not pruned — the per-table timer leaks")
@@ -1239,7 +1239,8 @@ func TestServer_StreamingChunksMatchWholeFile(t *testing.T) {
 	// the money-and-stats payload, which must be identical.
 	got.SessionID = ""
 	want.SessionID = ""
-	if got != want {
+	got.HandDetails, want.HandDetails = nil, nil
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("streamed session != whole-file session:\n streamed=%+v\n whole   =%+v", got, want)
 	}
 }

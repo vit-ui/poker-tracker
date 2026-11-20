@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/money"
@@ -124,7 +125,7 @@ func VerifySnapshot(expected, actual Snapshot, precision time.Duration) error {
 	}
 	for i, want := range expected.CashSessions {
 		got := actual.CashSessions[i]
-		if want.SessionID != got.SessionID || !sameDate(want.Date, got.Date, precision) || want.Stake != got.Stake ||
+		if !slices.Equal(want.HandDetails, got.HandDetails) || want.SessionID != got.SessionID || !sameDate(want.Date, got.Date, precision) || want.Stake != got.Stake ||
 			want.Hands != got.Hands || want.DurationMin != got.DurationMin ||
 			!(want.NetCents == got.NetCents) || !(want.RakeCents == got.RakeCents) ||
 			!sameNumber(want.BB100, got.BB100, 1e-9) || !sameNumber(want.VPIP, got.VPIP, 1e-9) || !sameNumber(want.PFR, got.PFR, 1e-9) {

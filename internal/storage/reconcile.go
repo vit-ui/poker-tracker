@@ -10,6 +10,12 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
+// UseTournamentSample reports whether to replace the stored playing stats.
+// Live files carry the cumulative record and can correct an earlier parse.
+func UseTournamentSample(imported bool, incoming, recorded int) bool {
+	return !imported || incoming > recorded
+}
+
 // This file holds the pure reconciliation math both backends share. The two
 // backends must never diverge in how they compute the player's money, so the
 // functions live here exactly once and each backend's I/O code calls them —
@@ -182,9 +188,22 @@ func ValidateTournament(tournament parsers.Tournament) error {
 
 // ValidateSnapshot checks a raw snapshot before any import writes are made.
 func ValidateSnapshot(snapshot Snapshot) error {
+	owners := make(map[string]string)
 	for _, session := range snapshot.CashSessions {
 		if err := ValidateCashSession(session.CashSession); err != nil {
 			return fmt.Errorf("cash session %s: %w", session.SessionID, err)
+		}
+		if len(session.HandDetails) > 0 && (session.SessionID == "" || len(session.HandDetails) != session.Hands) {
+			return fmt.Errorf("cash session %s has inconsistent hand metadata", session.SessionID)
+		}
+		for _, hand := range session.HandDetails {
+			if hand.ID == "" || hand.At.IsZero() || hand.At.Year() < 1 || hand.At.Year() > 9999 || hand.BigBlindCents <= 0 {
+				return fmt.Errorf("cash session %s has an invalid hand contribution", session.SessionID)
+			}
+			if owner, exists := owners[hand.ID]; exists {
+				return fmt.Errorf("cash hand %s has duplicate ownership in %s and %s", hand.ID, owner, session.SessionID)
+			}
+			owners[hand.ID] = session.SessionID
 		}
 	}
 	for _, tournament := range snapshot.Tournaments {

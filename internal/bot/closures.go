@@ -24,7 +24,7 @@ type ClosureResult struct {
 
 func (b *Bot) sendClosure(event config.ClosureEvent) ClosureResult {
 	result := ClosureResult{ID: event.ID}
-	chatID, ok := configuredChatID(b.configPath)
+	chatID, ok := b.connectedChat()
 	if !ok {
 		result.Err = fmt.Errorf("no configured Telegram chat for closure notification")
 		return result

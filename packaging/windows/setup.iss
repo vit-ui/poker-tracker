@@ -88,17 +88,15 @@ Source: "tracker-client-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 
 [UninstallDelete]
 ; tracker.exe itself is removed automatically (tracked via [Files] above).
-; credentials was written by [Code] at install time, so Inno doesn't know
-; about it unless listed. config.json, lockfile.json, and
+; config.json, lockfile.json, credentials, and
 ; pending_tournaments.json are deliberately NOT listed here — a fixed AppId
 ; run of a new Setup.exe installs over the top without ever invoking this
-; uninstaller, so those three survive an upgrade regardless; the guard in
+; uninstaller, so those files survive an upgrade regardless; the guard in
 ; CurUninstallStepChanged below only matters for an actual uninstall
 ; (Control Panel / manually running unins000.exe), where it distinguishes a
 ; real removal from a silent one (e.g. a future chained old-version
 ; uninstall before install) and deletes them only for the former. {app}
 ; itself is removed last, once it's empty.
-Type: files; Name: "{app}\credentials\google_service_account.json"
 Type: dirifempty; Name: "{app}\credentials"
 Type: dirifempty; Name: "{app}"
 
@@ -1721,8 +1719,6 @@ begin
       ExpandConstant('{app}') + ' and run: tracker-server.exe --setup', mbError, MB_OK);
     Exit;
   end;
-  if not WizardSilent() then
-    Exec(ExePath, '--connect-telegram', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if (not Exec(ExePath, '--install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     MsgBox('Could not register the server boot task. Run tracker-server.exe --install from an elevated prompt.', mbError, MB_OK)
   else
@@ -1880,9 +1876,17 @@ begin
           HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock,
           JSONFieldRaw(ExistingConfigJSON, 'connection_string')),
         False);
-      if not WizardSilent() then
-        Exec(ExpandConstant('{app}\tracker.exe'), '--connect-telegram', ExpandConstant('{app}'),
-          SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      if not Exec(ExpandConstant('{app}\tracker.exe'), '--resolve-storage', ExpandConstant('{app}'),
+        SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+      begin
+        if ExistingConfigJSON = '' then
+          DeleteFile(ExpandConstant('{app}\config.json'))
+        else
+          SaveStringToFile(ExpandConstant('{app}\config.json'), ExistingConfigJSON, False);
+        if not CredentialsAlreadySet then
+          DeleteFile(ExpandConstant('{app}\credentials\google_service_account.json'));
+        RaiseException('Storage setup is incomplete. Check the spreadsheet and service-account key, then rerun setup.');
+      end;
       RegisterScheduledTask();
     end
     else
@@ -1906,10 +1910,12 @@ begin
   begin
     DeletePlayerState('config.json');
     DeleteFile(ExpandConstant('{app}\credentials\telegram.token'));
+    DeleteFile(ExpandConstant('{app}\credentials\google_service_account.json'));
     DeletePlayerState('lockfile.json');
     DeletePlayerState('pending_tournaments.json');
     DeletePlayerState('sheets_fallback.json');
     DeletePlayerState('pending_cash.json');
+    DelTree(ExpandConstant('{app}\pending-cash-history'), True, True, False);
     DeletePlayerState('hardstop_deliveries.json');
     DeletePlayerState('collector_settings.json');
     DeletePlayerState('collector_observation.json');

@@ -151,3 +151,13 @@ func launchInDesktop(exe string, args ...string) error {
 	windows.CloseHandle(proc.Process)
 	return nil
 }
+
+func ConfirmTelegramSetup(message string) (bool, error) {
+	value, err := windows.UTF16PtrFromString(message)
+	if err != nil {
+		return false, err
+	}
+	title := windows.StringToUTF16Ptr("Poker Tracker - Connect Telegram")
+	answer, err := windows.MessageBox(0, value, title, windows.MB_OKCANCEL|windows.MB_ICONINFORMATION)
+	return answer == 1, err
+}

@@ -54,6 +54,8 @@ $close.Add_Click({ $form.Close() })
 $form.CancelButton = $close
 $form.Controls.AddRange(@($title,$text,$progress,$connect,$close))
 
+$initialCredential = Get-Item -LiteralPath $credentialPath -ErrorAction SilentlyContinue
+$initialWrite = $initialCredential.LastWriteTimeUtc
 $refresh = {
     $job = $null
     try {
@@ -61,9 +63,15 @@ $refresh = {
             $job = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
         }
     } catch { return }
-    if ($requestID -and $job.request.id -ne $requestID) { return }
-    $pendingSetup = $allowSetup -and !(Test-Path -LiteralPath $credentialPath)
-    $connect.Visible = $pendingSetup -and (!$job -or $job.state -eq 'succeeded')
+    if ($requestID -and $job.request.id -ne $requestID) {
+        $title.Text = 'Poker Tracker Update'
+        $text.Text = 'Preparing the update.'
+        return
+    }
+    $credential = Get-Item -LiteralPath $credentialPath -ErrorAction SilentlyContinue
+    $setupWindow = !$requestID
+    $pendingSetup = $allowSetup -and (!$credential -or ($setupWindow -and $credential.LastWriteTimeUtc -eq $initialWrite))
+    $connect.Visible = $pendingSetup -and ($setupWindow -and (!$job -or $job.state -eq 'failed') -or $job.state -eq 'succeeded')
     $progress.Visible = $job -and $job.state -ne 'succeeded' -and $job.state -ne 'failed'
     $title.Text = if ($job) { 'Poker Tracker ' + $job.request.version } else { 'Telegram setup' }
     $text.Text = switch ($job.state) {

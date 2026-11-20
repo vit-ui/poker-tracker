@@ -1,12 +1,5 @@
 package bot
 
-// Setup-mode code: --setup's sequential wizard (RunSetup), the --serve
-// startup guard that recovers a missing sheet ID (EnsureSheetID), and the
-// blocking Telegram read helpers they share. Everything here runs before a
-// Bot value exists — RunSetup has no storage backend or watcher yet, and
-// EnsureSheetID runs before bot.Run opens its own connection — so these are
-// plain functions, not Bot methods.
-
 import (
 	"fmt"
 	"io"
@@ -20,6 +13,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"github.com/vit-ui/self-tracker/internal/backend"
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 )
@@ -39,24 +33,21 @@ import (
 // install then does nothing but the chat handshake and a "still all set"
 // confirmation. Reinstalls wait for contact from the saved chat; fresh installs
 // detect their chat from the first text message.
-func RunSetup(token, configPath, serviceAccountPath string) {
+func RunSetup(token, configPath, serviceAccountPath string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		slog.Error("loading setup config", "err", err)
-		return
+		return fmt.Errorf("loading setup config: %w", err)
 	}
 	var allowedChatID int64
 	if cfg.Setup.TelegramChatID != nil {
 		allowedChatID, err = strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)
 		if err != nil || allowedChatID == 0 {
-			slog.Error("invalid saved setup chat id")
-			return
+			return fmt.Errorf("invalid saved setup chat ID")
 		}
 	}
 	tgBot, err := newTelegramBot(token)
 	if err != nil {
-		slog.Error("starting telegram bot", "err", err)
-		return
+		return fmt.Errorf("starting Telegram setup: check the token and network")
 	}
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
@@ -64,8 +55,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 	defer tgBot.StopReceivingUpdates()
 	chatID := waitForFirstMessage(updates, allowedChatID)
 	if chatID == 0 {
-		slog.Error("setup update stream closed before chat contact")
-		return
+		return fmt.Errorf("setup update stream closed before chat contact")
 	}
 	chatIDStr := strconv.FormatInt(chatID, 10)
 	cfg, err = config.UpdateConfig(configPath, func(current *config.Config) error {
@@ -77,8 +67,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		return nil
 	})
 	if err != nil {
-		slog.Error("saving setup chat", "err", err)
-		return
+		return fmt.Errorf("saving setup chat: %w", err)
 	}
 	_, credentialsErr := os.Stat(serviceAccountPath)
 	// StorageBackend deliberately excluded: setup.iss's WritePreSeedConfig
@@ -100,9 +89,9 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 	// step below (credentials, sheet) — a sqlite install must never need
 	// Google credentials on disk, so this has to be decided before either
 	// of those runs.
-	var backend string
+	var backendName string
 	if cfg.Setup.StorageBackend != nil {
-		backend = *cfg.Setup.StorageBackend
+		backendName = *cfg.Setup.StorageBackend
 		send(tgBot, chatID, "✅ Keeping existing storage backend.")
 	} else {
 		markup := tgbotapi.NewInlineKeyboardMarkup(
@@ -112,12 +101,12 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 			),
 		)
 		sendWithKeyboard(tgBot, chatID, "How do you want to store your data?", markup)
-		backend = strings.TrimPrefix(waitForCallbackChoice(tgBot, updates, chatID, "storage:sheets", "storage:sqlite"), "storage:")
-		cfg.Setup.StorageBackend = &backend
+		backendName = strings.TrimPrefix(waitForCallbackChoice(tgBot, updates, chatID, "storage:sheets", "storage:sqlite"), "storage:")
+		cfg.Setup.StorageBackend = &backendName
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			slog.Error("saving config", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
-			return
+			return err
 		}
 		send(tgBot, chatID, "✅ Storage backend saved.")
 	}
@@ -129,7 +118,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 	// rerun there's no reason to ask again for a file that's already
 	// correct on disk. "skip" is still accepted as a manual fallback for
 	// --setup run standalone.
-	if backend == "sqlite" {
+	if backendName == "sqlite" {
 		// no-op: sqlite installs skip every Google step below
 	} else if credentialsErr == nil {
 		send(tgBot, chatID, "✅ Keeping existing credentials file.")
@@ -162,9 +151,17 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 	// in setup.iss). Accepts either a pasted Sheets URL (ID is already
 	// known, no Drive lookup needed) or a sheet name (resolved via the
 	// Drive API) — see resolveSheetInput.
-	if backend == "sqlite" {
+	if backendName == "sqlite" {
 		// no-op: sqlite installs have no Google Sheet
 	} else if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
+		if err := backend.ResolveSheetsSetup(cfg, serviceAccountPath); err != nil {
+			send(tgBot, chatID, err.Error())
+			return err
+		}
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			send(tgBot, chatID, err.Error())
+			return err
+		}
 		send(tgBot, chatID, "✅ Keeping existing Google Sheet.")
 	} else {
 		send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
@@ -190,7 +187,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 			if err := config.SaveConfig(configPath, cfg); err != nil {
 				slog.Error("saving config", "err", err)
 				send(tgBot, chatID, "Something went wrong. Check logs.")
-				return
+				return err
 			}
 			send(tgBot, chatID, "✅ Connected to sheet.")
 			break
@@ -221,7 +218,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			slog.Error("saving config", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
-			return
+			return err
 		}
 		send(tgBot, chatID, "✅ Screen name saved.")
 	}
@@ -235,7 +232,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			slog.Error("saving config", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
-			return
+			return err
 		}
 	}
 
@@ -248,117 +245,20 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			slog.Error("saving config", "err", err)
 			send(tgBot, chatID, "Something went wrong. Check logs.")
-			return
+			return err
 		}
 	}
 
 	// Step 6 — Complete.
 	send(tgBot, chatID, "✅ Setup complete! Poker Tracker will start automatically on next login.\nSend /start to configure alerts and hard stop rules.")
-}
-
-// EnsureSheetID guarantees Setup.GoogleSheetID is set before --serve
-// continues starting up after the missing setting is supplied. If it's already
-// configured, this returns immediately without touching Telegram at all —
-// the normal case once --setup has run.
-//
-// Otherwise it opens its own bot connection (bot.Run and its watcher/worker
-// goroutines can't start yet without a sheets client, so nothing else can
-// ask through Telegram at this point in startup) and blocks until a working
-// sheet ID is saved, asking through whichever chat is already configured —
-// or the first chat to message in if even that's unset. The connection is
-// torn down via StopReceivingUpdates before returning, so it doesn't keep
-// polling Telegram alongside the fresh connection bot.Run opens right after.
-func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error) {
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		return "", fmt.Errorf("loading config: %w", err)
-	}
-	if cfg.Setup.GoogleSheetID != nil {
-		return *cfg.Setup.GoogleSheetID, nil
-	}
-
-	// A name may already be sitting here from a step that couldn't
-	// resolve it itself — setup.iss's manual-install path collects a
-	// sheet name via a native dialog, but has no Drive API access from
-	// Pascal Script to turn it into an ID, so it saves the name alone and
-	// leaves the ID null for this function to finish later. Try it before
-	// ever bothering Telegram: if it resolves and the sheet is reachable,
-	// this returns immediately with zero user interaction, instead of
-	// silently discarding something already provided and asking again
-	// from scratch.
-	if cfg.Setup.GoogleSheetName != nil {
-		name, id, err := resolveSheetInput(serviceAccountPath, *cfg.Setup.GoogleSheetName)
-		if err == nil {
-			_, clientErr := sheets.NewClient(serviceAccountPath, id, "")
-			if clientErr == nil {
-				cfg.Setup.GoogleSheetName = name
-				cfg.Setup.GoogleSheetID = &id
-				if err := config.SaveConfig(configPath, cfg); err != nil {
-					return "", fmt.Errorf("saving config: %w", err)
-				}
-				return id, nil
-			}
-		}
-	}
-
-	tgBot, err := newTelegramBot(token)
-	if err != nil {
-		return "", fmt.Errorf("starting telegram bot: %w", err)
-	}
-	defer tgBot.StopReceivingUpdates()
-
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 30
-	updates := tgBot.GetUpdatesChan(u)
-
-	var chatID int64
-	if cfg.Setup.TelegramChatID != nil {
-		chatID, err = strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)
-		if err != nil {
-			return "", fmt.Errorf("parsing telegram chat id: %w", err)
-		}
-	} else {
-		chatID = waitForFirstMessage(updates, 0)
-		chatIDStr := strconv.FormatInt(chatID, 10)
-		cfg.Setup.TelegramChatID = &chatIDStr
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			return "", fmt.Errorf("saving config: %w", err)
-		}
-	}
-
-	send(tgBot, chatID, "Your Google Sheet isn't configured. Send the sheet name or paste its full URL to continue.\n(Create a blank sheet and share it with the service account before answering)")
-	for {
-		reply := readReply(tgBot, updates, chatID)
-		if looksLikeCommand(reply) {
-			send(tgBot, chatID, "Commands aren't available until the sheet is configured — send your Google Sheet name or paste its URL to continue.")
-			continue
-		}
-		name, id, err := resolveSheetInput(serviceAccountPath, reply)
-		if err != nil {
-			send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
-			continue
-		}
-		_, clientErr := sheets.NewClient(serviceAccountPath, id, "")
-		if clientErr != nil {
-			send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", clientErr))
-			continue
-		}
-
-		cfg.Setup.GoogleSheetName = name
-		cfg.Setup.GoogleSheetID = &id
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			return "", fmt.Errorf("saving config: %w", err)
-		}
-		send(tgBot, chatID, "✅ Connected to sheet.")
-		return id, nil
-	}
+	return nil
 }
 
 // waitForFirstMessage blocks until the first text message arrives on
 // updates from allowedChatID, or any chat when it is zero, and returns its ID.
 func waitForFirstMessage(updates tgbotapi.UpdatesChannel, allowedChatID int64) int64 {
 	for update := range updates {
-		if update.Message == nil || update.Message.Chat == nil || update.Message.Text == "" ||
+		if update.Message == nil || !privateChat(update.Message.Chat) || update.Message.Text == "" ||
 			allowedChatID != 0 && update.Message.Chat.ID != allowedChatID {
 			continue
 		}
@@ -371,7 +271,7 @@ func waitForFirstMessage(updates tgbotapi.UpdatesChannel, allowedChatID int64) i
 // updates, ignoring messages from any other chat.
 func readReply(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64) string {
 	for update := range updates {
-		if update.Message == nil || update.Message.Chat.ID != chatID || update.Message.Text == "" {
+		if update.Message == nil || !privateChat(update.Message.Chat) || update.Message.Chat.ID != chatID || update.Message.Text == "" {
 			continue
 		}
 		return update.Message.Text
@@ -387,7 +287,7 @@ func readReply(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID i
 // than the Bot's handleCallback.
 func waitForCallbackChoice(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64, accepted ...string) string {
 	for update := range updates {
-		if update.CallbackQuery == nil || update.CallbackQuery.Message == nil || update.CallbackQuery.Message.Chat.ID != chatID {
+		if update.CallbackQuery == nil || update.CallbackQuery.Message == nil || !privateChat(update.CallbackQuery.Message.Chat) || update.CallbackQuery.Message.Chat.ID != chatID {
 			continue
 		}
 		for _, a := range accepted {
@@ -409,7 +309,7 @@ func waitForCallbackChoice(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChann
 // RunSetup, and the /credentials command's document upload.
 func readReplyOrDocument(tgBot *tgbotapi.BotAPI, updates tgbotapi.UpdatesChannel, chatID int64) (text, fileID string) {
 	for update := range updates {
-		if update.Message == nil || update.Message.Chat.ID != chatID {
+		if update.Message == nil || !privateChat(update.Message.Chat) || update.Message.Chat.ID != chatID {
 			continue
 		}
 		if update.Message.Document != nil {
@@ -429,7 +329,11 @@ func downloadTelegramFile(tgBot *tgbotapi.BotAPI, fileID, destPath string) error
 	if err != nil {
 		return fmt.Errorf("getting file url: %w", err)
 	}
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("building Telegram download request")
+	}
+	resp, err := tgBot.Client.Do(req)
 	if err != nil {
 		return fmt.Errorf("downloading file: %w", err)
 	}
@@ -469,7 +373,7 @@ func extractSheetIDFromURL(input string) (id string, ok bool) {
 // looksLikeCommand reports whether reply is a Telegram slash command
 // rather than an actual answer — sent reflexively (habit, or just
 // checking whether the bot is alive) while a setup prompt is blocking on
-// free text. RunSetup and EnsureSheetID's blocking prompts have no
+// free text. RunSetup's blocking prompts have no
 // command dispatch at all yet (the real command loop, bot.Run, doesn't
 // exist until setup finishes), so without this check a stray "/status"
 // either gets silently accepted as if it were the real answer (e.g.

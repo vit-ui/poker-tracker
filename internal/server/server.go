@@ -8,6 +8,7 @@ package server
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -177,8 +178,13 @@ func (s *Server) ClientNow() time.Time {
 // bytes at that position, rebuilding the growing hand-history file the
 // collector is streaming.
 func (s *Server) reconstruct(up transport.Upload) (string, error) {
-	name := fmt.Sprintf("%x", sha256.Sum256([]byte(up.FileID)))
-	path := filepath.Join(s.workDir, name)
+	path := filepath.Join(s.workDir, cashWorkingName(up.FileID))
+	if up.Type == "cash" && !up.Import {
+		path = s.cashHistoryPath(up.FileID)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return "", fmt.Errorf("creating cash history directory: %w", err)
+		}
+	}
 	if up.Offset == 0 {
 		if err := os.WriteFile(path, up.Bytes, 0644); err != nil {
 			return "", fmt.Errorf("writing working file: %w", err)
@@ -197,6 +203,40 @@ func (s *Server) reconstruct(up transport.Upload) (string, error) {
 		return "", fmt.Errorf("truncating working file: %w", err)
 	}
 	return path, nil
+}
+
+func cashWorkingName(fileID string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fileID)))
+}
+
+func (s *Server) cashHistoryPath(fileID string) string {
+	return filepath.Join(filepath.Dir(s.configPath), "pending-cash-history", cashWorkingName(fileID))
+}
+
+func (s *Server) pruneCashHistory(pending map[string]string) {
+	dir := filepath.Dir(s.cashHistoryPath(""))
+	files, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		slog.Error("reading pending cash history directory", "err", err)
+		return
+	}
+	keep := make(map[string]bool)
+	for fileID := range pending {
+		keep[cashWorkingName(fileID)] = true
+	}
+	for _, file := range files {
+		if !file.IsDir() && len(file.Name()) == sha256.Size*2 && !keep[file.Name()] {
+			if _, err := hex.DecodeString(file.Name()); err != nil {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, file.Name())); err != nil {
+				slog.Error("removing completed cash history", "err", err)
+			}
+		}
+	}
 }
 
 // Run is the worker loop: it receives uploads, reconstructs and parses each
@@ -250,6 +290,7 @@ func (s *Server) Run() error {
 		}
 	}()
 	pendingSessions := make(map[string]parsers.CashSession)
+	pendingScreenNames := make(map[string]string)
 	sessionEndChan := make(chan cashEndSignal)
 	workerDone := make(chan struct{})
 	defer close(workerDone)
@@ -265,6 +306,9 @@ func (s *Server) Run() error {
 	}
 	for _, entry := range recovered {
 		pendingSessions[entry.FileID] = entry.Session
+		if entry.ScreenName != "" {
+			pendingScreenNames[entry.FileID] = entry.ScreenName
+		}
 		activity[entry.FileID] = entry.LastActivity
 		clocks[entry.FileID] = entry.ClientClock
 		if entry.ClientClock.After(recoveryClock) {
@@ -275,13 +319,15 @@ func (s *Server) Run() error {
 		remaining := remainingCashQuiet(s.QuietPeriod, entry.LastActivity, time.Now())
 		armCashSessionEnd(summaryTimers, entry.FileID, remaining, sessionEndChan, workerDone)
 	}
+	s.pruneCashHistory(pendingScreenNames)
+	defer s.pruneCashHistory(pendingScreenNames)
 	if !clockKnown {
 		s.updateClock(recoveryClock)
 	}
 	persistPending := func() error {
 		entries := make([]config.PendingCash, 0, len(pendingSessions))
 		for file, session := range pendingSessions {
-			entries = append(entries, config.PendingCash{FileID: file, Session: session, LastActivity: activity[file], ClientClock: clocks[file]})
+			entries = append(entries, config.PendingCash{FileID: file, Session: session, LastActivity: activity[file], ClientClock: clocks[file], ScreenName: pendingScreenNames[file]})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].FileID < entries[j].FileID })
 		return config.SavePendingCash(journalPath, entries)
@@ -371,7 +417,7 @@ func (s *Server) Run() error {
 		if err := saveDeliveries(); err != nil {
 			deliveriesDirty = true
 			slog.Error("persisting outgoing hard stop", "err", err)
-			s.alertChan <- "⚠️ Could not save the hard-stop delivery locally. Protection is being requested; keep the tracker running and check logs."
+			bot.PostAlert(s.alertChan, "⚠️ Could not save the hard-stop delivery locally. Protection is being requested; keep the tracker running and check logs.")
 		} else {
 			deliveriesDirty = false
 		}
@@ -379,7 +425,7 @@ func (s *Server) Run() error {
 
 	finalizeCash := func(fileID string) error {
 		snapshot, present := pendingSessions[fileID]
-		if err := s.endCashSession(fileID, pendingSessions, summaryTimers, firedAlerts, enforce); err != nil {
+		if err := s.endCashSession(fileID, pendingScreenNames[fileID], pendingSessions, summaryTimers, firedAlerts, enforce); err != nil {
 			return err
 		}
 		if deliveriesDirty && present {
@@ -393,6 +439,7 @@ func (s *Server) Run() error {
 		}
 		delete(activity, fileID)
 		delete(clocks, fileID)
+		delete(pendingScreenNames, fileID)
 		return persistPending()
 	}
 	var pendingCollection *collectionOperation
@@ -856,7 +903,7 @@ func (s *Server) Run() error {
 					return err
 				}
 				if status.CollectionError != "" {
-					s.alertChan <- "⚠️ Collection is inactive on the poker PC: " + status.CollectionError + "\nThe collector remains connected so /paths and /screenname can correct it. Hard-stop enforcement remains active."
+					bot.PostAlert(s.alertChan, "⚠️ Collection is inactive on the poker PC: "+status.CollectionError+"\nThe collector remains connected so /paths and /screenname can correct it. Hard-stop enforcement remains active.")
 				}
 			}
 			continue
@@ -882,7 +929,7 @@ func (s *Server) Run() error {
 				return err
 			}
 			if message != "" {
-				s.alertChan <- message
+				bot.PostAlert(s.alertChan, message)
 			}
 			continue
 		}
@@ -899,7 +946,7 @@ func (s *Server) Run() error {
 			}
 			if reply.Error != "" {
 				if !lockFailures[reply.TriggerID] {
-					s.alertChan <- "⚠️ The collector could not complete hard-stop protection. Keep it running and check its logs."
+					bot.PostAlert(s.alertChan, "⚠️ The collector could not complete hard-stop protection. Keep it running and check its logs.")
 					lockFailures[reply.TriggerID] = true
 				}
 				continue
@@ -927,7 +974,7 @@ func (s *Server) Run() error {
 				restoredLockSent = true
 			}
 			if reply.Lock != nil {
-				s.alertChan <- hardstop.LockMessage(*reply.Lock, s.ClientNow())
+				bot.PostAlert(s.alertChan, hardstop.LockMessage(*reply.Lock, s.ClientNow()))
 			}
 			continue
 		}
@@ -998,7 +1045,7 @@ func (s *Server) Run() error {
 			continue
 		case transport.ImportDone:
 			folderScan = false
-			s.alertChan <- importCounts.String()
+			bot.PostAlert(s.alertChan, importCounts.String())
 			importCounts = storage.ScanTally{}
 			continue
 		}
@@ -1030,7 +1077,7 @@ func (s *Server) Run() error {
 			recordDrainFailure(fmt.Errorf("screen name missing for drained file %s", up.FileID))
 			slog.Error("pokerstars screen name not configured, skipping file", "file", up.FileID)
 			if !screenNameWarned {
-				s.alertChan <- "🔧 I found a poker file but don't know your PokerStars screen name yet — I can't track anything until it's set. Open /menu → Setup → Screen name."
+				bot.PostAlert(s.alertChan, "🔧 I found a poker file but don't know your PokerStars screen name yet — I can't track anything until it's set. Open /menu → Setup → Screen name.")
 				screenNameWarned = true
 			}
 			continue
@@ -1146,6 +1193,7 @@ func (s *Server) Run() error {
 				// quiet-period timer; the last hand's session is what gets
 				// written when the table falls quiet.
 				pendingSessions[up.FileID] = *session
+				pendingScreenNames[up.FileID] = screenName
 				activity[up.FileID] = lastActivity
 				clocks[up.FileID] = up.ClientClock
 				if err := persistPending(); err != nil {
@@ -1160,10 +1208,10 @@ func (s *Server) Run() error {
 					recordDrainFailure(err)
 					slog.Error("updating tournament hand stats", "err", err, "tournament_id", tourneyStats.TournamentID)
 					if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
-						s.alertChan <- msg
+						bot.PostAlert(s.alertChan, msg)
 					}
 				} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
-					s.alertChan <- msg
+					bot.PostAlert(s.alertChan, msg)
 				}
 			} else {
 				slog.Error("ParseCashFile returned no session and no tournament stats", "file", up.FileID)
@@ -1228,10 +1276,10 @@ func (s *Server) Run() error {
 				slog.Error("appending tournament to sheets", "err", err,
 					"date", t.Date.Format("2006-01-02 15:04"), "tournament_id", t.TournamentID)
 				if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
-					s.alertChan <- msg
+					bot.PostAlert(s.alertChan, msg)
 				}
 			} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
-				s.alertChan <- msg
+				bot.PostAlert(s.alertChan, msg)
 			}
 			// Fetched after the write, like the cash branch — and always
 			// including the ledger here, since the post-tournament alert below
@@ -1246,7 +1294,7 @@ func (s *Server) Run() error {
 			bot.EvaluateDownswingAlert(t.BuyInCents, &evalCfg, ledger, bankrollCents, evalNow, s.alertChan)
 			evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankrollCents, evalNow, s.alertChan, firedAlerts, "tournament:"+t.TournamentID)
 			if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.TournamentSummary), netCents) {
-				s.alertChan <- tournamentAlertText(t, netCents, bankrollCents)
+				bot.PostAlert(s.alertChan, tournamentAlertText(t, netCents, bankrollCents))
 			}
 		}
 	}
@@ -1492,7 +1540,7 @@ func armCashSessionEnd(timers map[string]*cashTimer, fileID string, quietPeriod 
 // this table's quiet-period timer alongside its pending session. Runs on the
 // worker goroutine, so pendingSessions/summaryTimers/firedAlerts stay
 // single-threaded.
-func (s *Server) endCashSession(fileID string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*cashTimer, firedAlerts map[string]bool, enforce func(reason string, durationHours int, triggerID string)) error {
+func (s *Server) endCashSession(fileID, screenName string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*cashTimer, firedAlerts map[string]bool, enforce func(reason string, durationHours int, triggerID string)) error {
 	session, ok := pendingSessions[fileID]
 	if !ok {
 		return nil
@@ -1512,16 +1560,29 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 	evalNow := s.ClientNow()
 
 	before := sheetsPending(s.store)
-	if err := s.store.AppendCashSession(session); err != nil {
-		slog.Error("appending cash session to sheets", "err", err,
+	var writeErr error
+	if screenName == "" {
+		writeErr = s.store.AppendCashSession(session)
+	} else {
+		hands, err := parsers.CashHands(s.cashHistoryPath(fileID), screenName)
+		if err != nil {
+			return fmt.Errorf("reading cash hands for %s: %w", fileID, err)
+		}
+		if len(hands) == 0 {
+			return fmt.Errorf("no completed hands remain for %s", fileID)
+		}
+		_, writeErr = s.store.RecordCashHands(session, hands, cashWorkingName(fileID))
+	}
+	if err := writeErr; err != nil {
+		slog.Error("recording cash session", "err", err,
 			"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
 			"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
 		if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
-			s.alertChan <- msg
+			bot.PostAlert(s.alertChan, msg)
 		}
 		return fmt.Errorf("persisting cash session %s: %w", fileID, err)
 	} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
-		s.alertChan <- msg
+		bot.PostAlert(s.alertChan, msg)
 	}
 
 	delete(pendingSessions, fileID)
@@ -1559,7 +1620,7 @@ func (s *Server) endCashSession(fileID string, pendingSessions map[string]parser
 	// Post-session summary, gated by its notification mode against the final
 	// net (raw cfg — the effective copy blanks thresholds, not notifications).
 	if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.CashSessionSummary), session.NetCents) {
-		s.alertChan <- cashSessionSummaryText(session, bankrollCents)
+		bot.PostAlert(s.alertChan, cashSessionSummaryText(session, bankrollCents))
 	}
 	return nil
 }

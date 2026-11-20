@@ -5,6 +5,19 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Keep configured tracking, storage and automatic hard stops running while
+  Telegram is unconfigured or unreachable. Use Connect Telegram to replace a
+  token live and pair only with a private chat.
+- Resolve and validate Google Sheets storage during setup. Show progress from
+  the start of Windows updates and allow the window to close during the update.
+- Count each cash hand once across overlapping imports and live collection.
+  Show new and already-recorded hands in scan reports, and retain ownership in
+  storage transfers and recovery.
+- Preserve tournament stats from the largest import sample and reconcile
+  knockout bounties independently.
+- Support custom Linux service paths with spaces and systemd special characters.
+  Preserve the Google service-account key during silent Windows uninstall.
+
 ## [5.0.1](https://github.com/vit-ui/poker-tracker/compare/v4.0.0...v5.0.1) (2026-11-20)
 
 ### Update from the former v5.0 release

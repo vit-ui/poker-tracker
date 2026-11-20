@@ -55,3 +55,8 @@ func ShowPendingTelegramSetup() error {
 func EnsureTelegramSetupPrivileges() (bool, error) {
 	return true, nil
 }
+
+func ConfirmTelegramSetup(message string) (bool, error) {
+	answer, err := New().Choose("Connect Telegram", message, []string{"Continue", "Cancel"})
+	return answer == "Continue", err
+}

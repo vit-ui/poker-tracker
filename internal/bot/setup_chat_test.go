@@ -7,7 +7,11 @@ import (
 
 func TestSetupContactKeepsSavedChat(t *testing.T) {
 	message := func(chat int64, text string) tgbotapi.Update {
-		return tgbotapi.Update{Message: &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chat}, Text: text}}
+		kind := "private"
+		if chat < 0 {
+			kind = "group"
+		}
+		return tgbotapi.Update{Message: &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chat, Type: kind}, Text: text}}
 	}
 	for _, tc := range []struct {
 		name    string
@@ -17,7 +21,7 @@ func TestSetupContactKeepsSavedChat(t *testing.T) {
 	}{
 		{"fresh first sender", 0, []tgbotapi.Update{message(123, "/start"), message(4242, "hello")}, 123},
 		{"saved private chat", 4242, []tgbotapi.Update{message(123, "/start"), message(4242, "hello")}, 4242},
-		{"saved group", -4242, []tgbotapi.Update{message(123, "/start"), message(-4242, "hello")}, -4242},
+		{"saved group", -4242, []tgbotapi.Update{message(123, "/start"), message(-4242, "hello")}, 0},
 		{"foreign chat cannot replace saved", 4242, []tgbotapi.Update{message(123, "hello")}, 0},
 		{"non text ignored", 4242, []tgbotapi.Update{{}, {Message: &tgbotapi.Message{Text: "missing chat"}}, message(4242, ""), message(4242, "/start")}, 4242},
 		{"closed stream", 0, nil, 0},

@@ -233,7 +233,7 @@ func (b *Bot) observeUpdates(result storage.OperationResult) {
 		slog.Error("reading update notices", "err", err)
 		return
 	}
-	chatID, ok := configuredChatID(b.configPath)
+	chatID, ok := b.connectedChat()
 	if !ok {
 		return
 	}

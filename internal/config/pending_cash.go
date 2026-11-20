@@ -14,6 +14,7 @@ import (
 // activity. Absolute activity times restore the remaining quiet interval;
 // session dates retain their stored wall-clock representation.
 type PendingCash struct {
+	ScreenName   string              `json:"screen_name,omitempty"`
 	FileID       string              `json:"file_id"`
 	Session      parsers.CashSession `json:"session"`
 	ClientClock  time.Time           `json:"client_clock,omitempty"`

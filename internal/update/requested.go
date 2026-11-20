@@ -15,6 +15,9 @@ import (
 )
 
 func launchRequested(target, role, installationID, requestID string) error {
+	if err := uiprompt.ShowUpdateProgress(target, requestID, role != "client"); err != nil {
+		slog.Error("opening update window", "err", err)
+	}
 	dir, err := os.MkdirTemp("", "poker-tracker-request-")
 	if err != nil {
 		return err
@@ -32,9 +35,7 @@ func launchRequested(target, role, installationID, requestID string) error {
 		os.RemoveAll(dir)
 		return err
 	}
-	if err := uiprompt.ShowUpdateProgress(target, requestID, role != "client"); err != nil {
-		slog.Error("opening update window", "err", err)
-	}
+
 	return nil
 }
 

@@ -119,7 +119,20 @@ func TestRecoveredCashShorterReplacementUpdatesSameSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := recoveryFixture(t)
-	if err := config.SavePendingCash(journal, []config.PendingCash{{FileID: "table", Session: session, LastActivity: time.Now()}}); err != nil {
+	const hero = "AnonHero01"
+	fixture := filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt")
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyDir := filepath.Join(dir, "pending-cash-history")
+	if err := os.Mkdir(historyDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(historyDir, cashWorkingName("table")), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePendingCash(journal, []config.PendingCash{{FileID: "table", Session: session, LastActivity: time.Now(), ScreenName: hero}}); err != nil {
 		t.Fatal(err)
 	}
 	store, err := sqlitestore.NewStore(filepath.Join(dir, "test.db"))
@@ -128,15 +141,15 @@ func TestRecoveredCashShorterReplacementUpdatesSameSession(t *testing.T) {
 	}
 	defer store.Close()
 	// An earlier write may have succeeded before interruption of journal retirement.
-	if err := store.AppendCashSession(session); err != nil {
+	hands, err := parsers.CashHands(fixture, hero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordCashHands(session, hands, cashWorkingName("table")); err != nil {
 		t.Fatal(err)
 	}
 	_, link, stop := runRecoveredWorker(t, store, path, 100*time.Millisecond)
 	defer stop()
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	offsets := handHeaderOffsetsBytes(data)
 	link.Uploads <- transport.Upload{FileID: "table", Type: "cash", ScreenName: "AnonHero01", Bytes: data[:offsets[2]], Recovery: true, FileActivity: time.Now(), ClientClock: time.Now()}
 	waitForCashSession(t, store, 2)

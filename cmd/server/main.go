@@ -168,12 +168,7 @@ func runServe() (failure error) {
 	debug.SetGCPercent(50)
 	debug.SetMemoryLimit(128 << 20)
 
-	telegramToken, err := config.LoadTelegramToken(configPath)
-	if err != nil {
-		return err
-	}
-
-	sc, backendName, err := backend.Open(telegramToken, configPath, serviceAccountPath, dbPath, fallbackPath)
+	sc, backendName, err := backend.Open(configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
 		slog.Error("opening storage backend", "err", err)
 		return err
@@ -247,7 +242,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(telegramToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
+		botDone <- bot.Run(alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
 	}()
 	destinationStop, destinationDone := make(chan struct{}), make(chan struct{})
 	destinationOwner := &deployment.DestinationOwner{Path: configPath, Requests: link.Transfers, Worker: workerTransfers, Controls: ownerControls, Stop: destinationStop, Standby: deployment.DestinationStandby(transferState)}
@@ -336,7 +331,7 @@ func runServe() (failure error) {
 	return failure
 }
 
-func runSetup(backend, sheetName, sheetID string) {
+func runSetup(storageChoice, sheetName, sheetID string) {
 	p := uiprompt.New()
 
 	// Generate the TLS cert/key once and keep them; the fingerprint the client
@@ -366,7 +361,11 @@ func runSetup(backend, sheetName, sheetID string) {
 		token := randomToken()
 		cfg.Setup.PairToken = &token
 	}
-	applyStorageChoice(cfg, p, backend, sheetName, sheetID)
+	applyStorageChoice(cfg, p, storageChoice, sheetName, sheetID)
+	if err := backend.ResolveSheetsSetup(cfg, serviceAccountPath); err != nil {
+		_ = uiprompt.TelegramSetupMessage(err.Error())
+		os.Exit(1)
+	}
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "saving config:", err)
 		os.Exit(1)
@@ -385,11 +384,7 @@ func applyStorageChoice(cfg *config.Config, p *uiprompt.Prompter, backend, sheet
 		return
 	}
 	if backend == "sqlite" || backend == "sheets" {
-		b := backend
-		if backend == "sheets" && runtime.GOOS == "linux" {
-			b = sheetsBootstrap(p)
-		}
-		cfg.Setup.StorageBackend = &b
+		cfg.Setup.StorageBackend = &backend
 		if backend == "sheets" {
 			if sheetName != "" {
 				n := sheetName

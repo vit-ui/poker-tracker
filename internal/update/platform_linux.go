@@ -47,13 +47,14 @@ func inspectService(target, role, id string, parent int) (*serviceState, error) 
 		}
 	}()
 	result, err := exec.Command("systemctl", "--user", "show", s.name, "--property=ExecStart", "--property=MainPID", "--property=ActiveState", "--property=LoadState").CombinedOutput()
+	var mainPID int
 	if err == nil {
 		properties := string(result)
 		s.managed = strings.Contains(properties, "path="+target+" ;")
 		for _, line := range strings.Split(properties, "\n") {
 			if strings.HasPrefix(line, "MainPID=") {
-				pid, _ := strconv.Atoi(strings.TrimPrefix(line, "MainPID="))
-				s.running = s.managed && pid > 0
+				mainPID, _ = strconv.Atoi(strings.TrimPrefix(line, "MainPID="))
+				s.running = s.managed && mainPID > 0
 			}
 		}
 	}
@@ -76,7 +77,13 @@ func inspectService(target, role, id string, parent int) (*serviceState, error) 
 				return nil, readErr
 			}
 			if !s.managed && strings.Contains(string(cgroup), "/"+s.name) {
-				return nil, fmt.Errorf("cannot verify the service owning this installation")
+				// The generated unit can use a fixed shell command which
+				// execs the server. Verify the unit's actual main process
+				// and executable when ExecStart names the shell.
+				if pid != mainPID || !strings.Contains(string(cgroup), "/"+s.name+"\n") {
+					return nil, fmt.Errorf("cannot verify the service owning this installation")
+				}
+				s.managed, s.running = true, true
 			}
 			s.pids = append(s.pids, pid)
 		}

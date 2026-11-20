@@ -230,12 +230,6 @@ func (s *restService) valuesAppend(spreadsheetID, rng string, values [][]interfa
 		valueRange{Values: dollarCells(values)}, nil)
 }
 
-// valuesClear deletes the values in a range, leaving the cells empty. Used to
-// roll back a partially-written migration import.
-func (s *restService) valuesClear(spreadsheetID, rng string) error {
-	return s.doJSON(http.MethodPost, s.valuesURL(spreadsheetID, rng, ":clear", ""), struct{}{}, nil)
-}
-
 // valuesBatchUpdate writes several disjoint ranges in one call.
 func (s *restService) valuesBatchUpdate(spreadsheetID string, data []valueRange) error {
 	for i := range data {
@@ -319,7 +313,7 @@ func dollarCells(rows [][]interface{}) [][]interface{} {
 
 // clearHistoryValues clears only values in the supplied grid ranges, in one
 // atomic spreadsheet update. The ranges start after the header rows.
-func (s *restService) clearHistoryValues(spreadsheetID string, columnsByTitle map[string]int) error {
+func (s *restService) clearHistoryValues(spreadsheetID string, columnsByTitle map[string]int, cashMetadataEnds map[int]int) error {
 	var out struct {
 		Sheets []struct {
 			Properties struct {
@@ -332,9 +326,11 @@ func (s *restService) clearHistoryValues(spreadsheetID string, columnsByTitle ma
 		return fmt.Errorf("looking up history tab IDs: %w", err)
 	}
 	type gridRange struct {
-		SheetID        int `json:"sheetId"`
-		StartRowIndex  int `json:"startRowIndex"`
-		EndColumnIndex int `json:"endColumnIndex"`
+		SheetID          int `json:"sheetId"`
+		StartRowIndex    int `json:"startRowIndex"`
+		EndColumnIndex   int `json:"endColumnIndex"`
+		EndRowIndex      int `json:"endRowIndex,omitempty"`
+		StartColumnIndex int `json:"startColumnIndex,omitempty"`
 	}
 	type updateCells struct {
 		Range  gridRange `json:"range"`
@@ -346,16 +342,101 @@ func (s *restService) clearHistoryValues(spreadsheetID string, columnsByTitle ma
 	body := struct {
 		Requests []request `json:"requests"`
 	}{}
+	found := 0
 	for _, sheet := range out.Sheets {
 		if columns, exists := columnsByTitle[sheet.Properties.Title]; exists {
+			found++
 			body.Requests = append(body.Requests, request{UpdateCells: updateCells{
 				Range:  gridRange{SheetID: sheet.Properties.ID, StartRowIndex: 1, EndColumnIndex: columns},
 				Fields: "userEnteredValue",
 			}})
+			if sheet.Properties.Title == cashHistoryTab {
+				for row, end := range cashMetadataEnds {
+					body.Requests = append(body.Requests, request{UpdateCells: updateCells{
+						Range:  gridRange{SheetID: sheet.Properties.ID, StartRowIndex: row, EndRowIndex: row + 1, StartColumnIndex: columns, EndColumnIndex: end},
+						Fields: "userEnteredValue",
+					}})
+				}
+			}
 		}
 	}
-	if len(body.Requests) != len(columnsByTitle) {
+	if found != len(columnsByTitle) {
 		return fmt.Errorf("one or more tracker history tabs are missing")
 	}
 	return s.doJSON(http.MethodPost, s.baseURL+spreadsheetID+":batchUpdate", body, nil)
+}
+
+type gridWrite struct {
+	tab         string
+	row, column int
+	values      [][]interface{}
+}
+
+// writeHistoryGrid applies cash ownership, row totals and the whole ledger
+// cascade in the same atomic batch, expanding the grid where necessary.
+func (s *restService) writeHistoryGrid(spreadsheetID string, writes []gridWrite) error {
+	type gridSize struct {
+		Rows    int `json:"rowCount"`
+		Columns int `json:"columnCount"`
+	}
+	type tab struct {
+		ID    int      `json:"sheetId"`
+		Title string   `json:"title"`
+		Size  gridSize `json:"gridProperties"`
+	}
+	var out struct {
+		Sheets []struct {
+			Properties tab `json:"properties"`
+		} `json:"sheets"`
+	}
+	if err := s.doJSON(http.MethodGet, s.baseURL+spreadsheetID+"?fields=sheets.properties(sheetId,title,gridProperties(rowCount,columnCount))", nil, &out); err != nil {
+		return fmt.Errorf("reading history grid sizes: %w", err)
+	}
+	tabs := make(map[string]tab)
+	for _, sheet := range out.Sheets {
+		tabs[sheet.Properties.Title] = sheet.Properties
+	}
+
+	var requests []map[string]interface{}
+	for _, write := range writes {
+		props, exists := tabs[write.tab]
+		if !exists {
+			return fmt.Errorf("history tab %q is missing", write.tab)
+		}
+		columns := write.column
+		rows := make([]map[string]interface{}, len(write.values))
+		for i, row := range dollarCells(write.values) {
+			columns = max(columns, write.column+len(row))
+			cells := make([]map[string]interface{}, len(row))
+			for j, value := range row {
+				name := "numberValue"
+				if _, ok := value.(string); ok {
+					name = "stringValue"
+				}
+				cells[j] = map[string]interface{}{"userEnteredValue": map[string]interface{}{name: value}}
+			}
+			rows[i] = map[string]interface{}{"values": cells}
+		}
+		for _, size := range []struct {
+			dimension string
+			length    int
+		}{
+			{"ROWS", write.row + len(rows) - props.Size.Rows},
+			{"COLUMNS", columns - props.Size.Columns},
+		} {
+			if size.length > 0 {
+				requests = append(requests, map[string]interface{}{"appendDimension": map[string]interface{}{
+					"sheetId": props.ID, "dimension": size.dimension, "length": size.length,
+				}})
+			}
+		}
+		props.Size.Rows = max(props.Size.Rows, write.row+len(rows))
+		props.Size.Columns = max(props.Size.Columns, columns)
+		tabs[write.tab] = props
+		requests = append(requests, map[string]interface{}{"updateCells": map[string]interface{}{
+			"start": map[string]int{"sheetId": props.ID, "rowIndex": write.row, "columnIndex": write.column},
+			"rows":  rows, "fields": "userEnteredValue",
+		}})
+	}
+	return s.doJSON(http.MethodPost, s.baseURL+spreadsheetID+":batchUpdate", map[string]interface{}{"requests": requests}, nil)
 }

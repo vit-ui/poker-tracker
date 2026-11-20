@@ -7,6 +7,7 @@ package sqlitestore
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS cash_sessions (
 	bb100 REAL NOT NULL,
 	vpip REAL NOT NULL,
 	pfr REAL NOT NULL,
-	session_id TEXT UNIQUE
+	session_id TEXT UNIQUE,
+	hand_details TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -94,7 +96,7 @@ var expectedColumns = []tableDef{
 	{"cash_sessions", []columnDef{
 		{"date", "TEXT"}, {"stake", "TEXT"}, {"hands", "INTEGER"},
 		{"duration_min", "INTEGER"}, {"net_cents", "INTEGER"}, {"rake_cents", "INTEGER"},
-		{"bb100", "REAL"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"session_id", "TEXT"},
+		{"bb100", "REAL"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"session_id", "TEXT"}, {"hand_details", "TEXT"},
 	}},
 	{"tournaments", []columnDef{
 		{"date", "TEXT"}, {"type", "TEXT"}, {"tournament_id", "TEXT"},
@@ -263,6 +265,50 @@ func (s *Store) appendCashSession(tx *sql.Tx, session parsers.CashSession) error
 	return s.upsertLedgerCashSessionRow(tx, id, session.Date, session.NetCents)
 }
 
+// RecordCashHands writes ownership, session totals and the ledger in a single transaction.
+func (s *Store) RecordCashHands(session parsers.CashSession, hands []parsers.CashHand, liveSource string) (storage.CashWrite, error) {
+	var result storage.CashWrite
+	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
+	ids, err := json.Marshal(storage.CashHandIDs(hands))
+	if err != nil {
+		return result, err
+	}
+	err = s.write(func(tx *sql.Tx) error {
+		rows, err := tx.Query(cashRowsQuery+` WHERE session_id IN (?,?) OR EXISTS (
+			SELECT 1 FROM json_each(cash_sessions.hand_details) h WHERE json_extract(h.value, '$.id') IN (SELECT value FROM json_each(?))
+		) ORDER BY id`, keys[0], keys[1], string(ids))
+		if err != nil {
+			return fmt.Errorf("looking up cash hand owners: %w", err)
+		}
+		records, err := readCashRows(rows)
+		if err != nil {
+			return err
+		}
+		changed, counts, err := storage.ReconcileCashHands(records, session, hands, liveSource)
+		if err != nil {
+			return err
+		}
+		for _, row := range changed {
+			if err := s.upsertCashSessionsRow(tx, row.SessionID, row.CashSession); err != nil {
+				return err
+			}
+			raw, err := json.Marshal(row.HandDetails)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec("UPDATE cash_sessions SET hand_details = ? WHERE session_id = ?", string(raw), row.SessionID); err != nil {
+				return fmt.Errorf("writing cash hand ownership: %w", err)
+			}
+			if err := s.upsertLedgerCashSessionRow(tx, row.SessionID, row.Date, row.NetCents); err != nil {
+				return err
+			}
+		}
+		result = counts
+		return nil
+	})
+	return result, err
+}
+
 func (s *Store) upsertCashSessionsRow(tx *sql.Tx, id string, session parsers.CashSession) error {
 	_, err := tx.Exec(`
 		INSERT INTO cash_sessions (date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id)
@@ -412,15 +458,16 @@ type tournamentSnapshot struct {
 	hasNetUSD   bool // false while the row is still a hand-file-only partial row
 	netCents    money.Cents
 	bountyCents money.Cents
+	hands       sql.NullInt64
 }
 
 func (s *Store) readTournamentSnapshot(tx *sql.Tx, tournamentID string) (snap tournamentSnapshot, found bool, err error) {
 	var date sql.NullString
 	var buyInCents, netCents, bountyCents sql.NullInt64
 	row := tx.QueryRow(`
-		SELECT date, type, buy_in_cents, net_cents, bounty_cents FROM tournaments WHERE tournament_id = ?
+		SELECT date, type, buy_in_cents, net_cents, bounty_cents, hands FROM tournaments WHERE tournament_id = ?
 	`, tournamentID)
-	if err := row.Scan(&date, &snap.typeVal, &buyInCents, &netCents, &bountyCents); err != nil {
+	if err := row.Scan(&date, &snap.typeVal, &buyInCents, &netCents, &bountyCents, &snap.hands); err != nil {
 		if err == sql.ErrNoRows {
 			return tournamentSnapshot{}, false, nil
 		}
@@ -580,9 +627,16 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 		typeOut = storage.AppendKnockoutSuffix(snap.typeVal)
 	}
 
+	if storage.UseTournamentSample(preserveBounty, hands, int(snap.hands.Int64)) {
+		if _, err := tx.Exec(`
+			UPDATE tournaments SET vpip = ?, pfr = ?, hands = ? WHERE tournament_id = ?
+		`, vpip, pfr, hands, tournamentID); err != nil {
+			return fmt.Errorf("updating playing stats for tournament %s: %w", tournamentID, err)
+		}
+	}
 	if _, err := tx.Exec(`
-		UPDATE tournaments SET type = ?, vpip = ?, pfr = ?, hands = ?, bounty_cents = ? WHERE tournament_id = ?
-	`, typeOut, vpip, pfr, hands, bountyCents, tournamentID); err != nil {
+		UPDATE tournaments SET type = ?, bounty_cents = ? WHERE tournament_id = ?
+	`, typeOut, bountyCents, tournamentID); err != nil {
 		return fmt.Errorf("updating hand stats for tournament %s: %w", tournamentID, err)
 	}
 
@@ -706,31 +760,41 @@ func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error
 // and GetAllCashSessions are both thin wrappers over this single query,
 // differing only in the date cutoff and whether the caller wants the
 // Session ID kept or discarded.
+const cashRowsQuery = `SELECT date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id, hand_details FROM cash_sessions`
+
 func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord, error) {
-	rows, err := s.db.Query(`
-		SELECT date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id
-		FROM cash_sessions WHERE date >= ? ORDER BY id ASC
-	`, since.UTC().Format(dateFormat))
+	rows, err := s.db.Query(cashRowsQuery+` WHERE date >= ? ORDER BY id ASC`, since.UTC().Format(dateFormat))
 	if err != nil {
 		return nil, fmt.Errorf("reading cash sessions: %w", err)
 	}
+	return readCashRows(rows)
+}
+
+func readCashRows(rows *sql.Rows) ([]storage.CashSessionRecord, error) {
 	defer rows.Close()
 
 	var result []storage.CashSessionRecord
 	for rows.Next() {
 		var dateStr, stake string
-		var sessionID sql.NullString // NULL on migrated pre-v1.4 sheets rows
+		var sessionID, details sql.NullString
 		var hands, durationMin int
 		var netCents, rakeCents money.Cents
 		var bb100, vpip, pfr float64
-		if err := rows.Scan(&dateStr, &stake, &hands, &durationMin, &netCents, &rakeCents, &bb100, &vpip, &pfr, &sessionID); err != nil {
+		if err := rows.Scan(&dateStr, &stake, &hands, &durationMin, &netCents, &rakeCents, &bb100, &vpip, &pfr, &sessionID, &details); err != nil {
 			return nil, fmt.Errorf("scanning cash session row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
 		if err != nil {
 			return nil, fmt.Errorf("parsing cash session date %q: %w", dateStr, err)
 		}
+		var handDetails []parsers.CashHand
+		if details.Valid {
+			if err := json.Unmarshal([]byte(details.String), &handDetails); err != nil {
+				return nil, fmt.Errorf("decoding cash hand ownership: %w", err)
+			}
+		}
 		result = append(result, storage.CashSessionRecord{
+			HandDetails: handDetails,
 			CashSession: parsers.CashSession{
 				Date:        date,
 				Stake:       stake,
@@ -1026,11 +1090,19 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 	// UNIQUE, so any number of such legacy rows import cleanly, and no live
 	// upsert can ever match them — live writes always carry a computed ID.
 	for _, c := range snap.CashSessions {
+		var details sql.NullString
+		if len(c.HandDetails) > 0 {
+			raw, err := json.Marshal(c.HandDetails)
+			if err != nil {
+				return err
+			}
+			details = nullString(string(raw))
+		}
 		if _, err := tx.Exec(`
-			INSERT INTO cash_sessions (date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO cash_sessions (date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id, hand_details)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, c.Date.UTC().Format(dateFormat), c.Stake, c.Hands, c.DurationMin, c.NetCents, c.RakeCents,
-			c.BB100, c.VPIP, c.PFR, nullString(c.SessionID)); err != nil {
+			c.BB100, c.VPIP, c.PFR, nullString(c.SessionID), details); err != nil {
 			return fmt.Errorf("importing cash session %s: %w", c.SessionID, err)
 		}
 	}

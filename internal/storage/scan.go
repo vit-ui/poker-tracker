@@ -10,10 +10,12 @@ import (
 // ScanTally counts recorded rows and omissions from a silent scan.
 type ScanTally struct {
 	Cash, Tournaments, TournamentHistories, Skipped, Failed int
+	NewCashHands, RecordedCashHands                         int
 }
 
 func (t ScanTally) String() string {
 	msg := fmt.Sprintf("📥 Scan complete — recorded %d cash session(s) and %d tournament(s).", t.Cash, t.Tournaments)
+	msg += fmt.Sprintf("\nCash hands: %d new, %d already recorded.", t.NewCashHands, t.RecordedCashHands)
 	if t.TournamentHistories > 0 {
 		msg += fmt.Sprintf("\nUpdated hand history for %d tournament(s). Summaries supply final results.", t.TournamentHistories)
 	}
@@ -28,14 +30,14 @@ func (t ScanTally) String() string {
 
 func (t *ScanTally) HandHistory(store Store, path, screenName string) error {
 	var firstErr error
-	err := parsers.ScanHandHistory(path, screenName, func(session *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) bool {
-		if err := t.RecordHandHistory(store, session, tournament, err); err != nil && firstErr == nil {
+	err := parsers.ScanHandHistory(path, screenName, func(session *parsers.CashSession, hands []parsers.CashHand, tournament *parsers.TournamentHandStats, err error) bool {
+		if err := t.RecordHandHistory(store, session, hands, tournament, err); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		return true
 	})
 	if err != nil {
-		if err := t.RecordHandHistory(store, nil, nil, err); firstErr == nil {
+		if err := t.RecordHandHistory(store, nil, nil, nil, err); firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -43,12 +45,17 @@ func (t *ScanTally) HandHistory(store Store, path, screenName string) error {
 }
 
 // RecordHandHistory applies one parsed group on the storage owner.
-func (t *ScanTally) RecordHandHistory(store Store, session *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) error {
+func (t *ScanTally) RecordHandHistory(store Store, session *parsers.CashSession, hands []parsers.CashHand, tournament *parsers.TournamentHandStats, err error) error {
 	if err == nil {
 		if session != nil {
-			err = store.AppendCashSession(*session)
+			var counts CashWrite
+			counts, err = store.RecordCashHands(*session, hands, "")
 			if err == nil {
-				t.Cash++
+				if counts.New > 0 {
+					t.Cash++
+				}
+				t.NewCashHands += counts.New
+				t.RecordedCashHands += counts.Recorded
 			}
 		} else {
 			err = store.ScanTournamentHandStats(*tournament)

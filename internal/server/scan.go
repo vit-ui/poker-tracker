@@ -23,6 +23,7 @@ type fileScan struct {
 
 type scanResult struct {
 	cash       *parsers.CashSession
+	hands      []parsers.CashHand
 	tournament *parsers.TournamentHandStats
 	err        error
 	done       bool
@@ -85,8 +86,8 @@ func (s *fileScan) start(path, screenName string, removeFile bool) {
 				return false
 			}
 		}
-		err := parsers.ScanHandHistory(path, screenName, func(cash *parsers.CashSession, tournament *parsers.TournamentHandStats, err error) bool {
-			return send(scanResult{cash: cash, tournament: tournament, err: err})
+		err := parsers.ScanHandHistory(path, screenName, func(cash *parsers.CashSession, hands []parsers.CashHand, tournament *parsers.TournamentHandStats, err error) bool {
+			return send(scanResult{cash: cash, hands: hands, tournament: tournament, err: err})
 		})
 		send(scanResult{err: err, done: true})
 	}()
@@ -99,7 +100,7 @@ func (s *fileScan) record(store storage.Store, parsed scanResult) {
 		}
 		return
 	}
-	if err := s.result.Scan.RecordHandHistory(store, parsed.cash, parsed.tournament, parsed.err); err != nil && s.result.Err == nil {
+	if err := s.result.Scan.RecordHandHistory(store, parsed.cash, parsed.hands, parsed.tournament, parsed.err); err != nil && s.result.Err == nil {
 		s.result.Err = err
 	}
 }

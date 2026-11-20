@@ -25,6 +25,7 @@ package bot
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -50,7 +51,7 @@ func EvaluateSessionLossAlert(session parsers.CashSession, cfg *config.Config, b
 	}
 
 	buyins := -money.Ratio(session.NetCents, session.BuyInCents)
-	alertChan <- fmt.Sprintf("⚠️ Session loss alert\nLost %.1f buy-ins this session ($%s)\nBankroll: $%s", buyins, strings.TrimPrefix(session.NetCents.String(), "-"), bankrollCents())
+	PostAlert(alertChan, fmt.Sprintf("⚠️ Session loss alert\nLost %.1f buy-ins this session ($%s)\nBankroll: $%s", buyins, strings.TrimPrefix(session.NetCents.String(), "-"), bankrollCents()))
 }
 
 // EvaluateDownswingAlert sends a warning (not a hard stop) if the rolling
@@ -71,7 +72,7 @@ func EvaluateDownswingAlert(buyInCents money.Cents, cfg *config.Config, ledger [
 	}
 
 	buyins := money.Ratio(peakCents, buyInCents) - money.Ratio(currentCents, buyInCents)
-	alertChan <- fmt.Sprintf("⚠️ Downswing alert\nDown %.1f buy-ins from your 30-day peak\nPeak: $%s  Current: $%s\nBankroll: $%s", buyins, peakCents, currentCents, bankrollCents)
+	PostAlert(alertChan, fmt.Sprintf("⚠️ Downswing alert\nDown %.1f buy-ins from your 30-day peak\nPeak: $%s  Current: $%s\nBankroll: $%s", buyins, peakCents, currentCents, bankrollCents))
 }
 
 // EvaluateLosingStreakAlert sends a warning (not a hard stop) when the
@@ -88,7 +89,7 @@ func EvaluateLosingStreakAlert(cfg *config.Config, ledger []storage.LedgerEntry,
 		return false
 	}
 
-	alertChan <- fmt.Sprintf("⚠️ Losing streak alert\n%d losing sessions in a row\nBankroll: $%s", *cfg.Alerts.LosingStreakCount, bankrollCents)
+	PostAlert(alertChan, fmt.Sprintf("⚠️ Losing streak alert\n%d losing sessions in a row\nBankroll: $%s", *cfg.Alerts.LosingStreakCount, bankrollCents))
 	return true
 }
 
@@ -111,7 +112,7 @@ func EvaluateDailyLossAlert(cfg *config.Config, ledger []storage.LedgerEntry, ba
 	for _, e := range entries {
 		netCents += e.AmountCents
 	}
-	alertChan <- fmt.Sprintf("⚠️ Daily loss alert\nDown $%s across all games this poker day\nBankroll: $%s", strings.TrimPrefix(netCents.String(), "-"), bankrollCents)
+	PostAlert(alertChan, fmt.Sprintf("⚠️ Daily loss alert\nDown $%s across all games this poker day\nBankroll: $%s", strings.TrimPrefix(netCents.String(), "-"), bankrollCents))
 	return true
 }
 
@@ -133,7 +134,7 @@ func EvaluateSpingoDailyLossAlert(cfg *config.Config, dayTournaments []parsers.T
 	for _, t := range spingos {
 		netCents += t.NetCents
 	}
-	alertChan <- fmt.Sprintf("⚠️ Spin & Go drain alert\nDown $%s on Spin & Gos this poker day\nBankroll: $%s", strings.TrimPrefix(netCents.String(), "-"), bankrollCents)
+	PostAlert(alertChan, fmt.Sprintf("⚠️ Spin & Go drain alert\nDown $%s on Spin & Gos this poker day\nBankroll: $%s", strings.TrimPrefix(netCents.String(), "-"), bankrollCents))
 	return true
 }
 
@@ -155,7 +156,7 @@ func EvaluateStakeChangeAlert(session parsers.CashSession, sc storage.Store, ale
 	if !ok || prev == session.Stake {
 		return nil
 	}
-	alertChan <- fmt.Sprintf("🃏 Stake change detected\nPrevious cash session: %s\nThis session: %s", prev, session.Stake)
+	PostAlert(alertChan, fmt.Sprintf("🃏 Stake change detected\nPrevious cash session: %s\nThis session: %s", prev, session.Stake))
 	return nil
 }
 
@@ -184,4 +185,13 @@ func previousStake(sessions []parsers.CashSession, current parsers.CashSession) 
 		return "", false
 	}
 	return sessions[best].Stake, true
+}
+
+// PostAlert keeps the storage owner independent of Telegram network I/O.
+func PostAlert(alerts chan<- string, text string) {
+	select {
+	case alerts <- text:
+	default:
+		slog.Error("Telegram alert queue is full")
+	}
 }

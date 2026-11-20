@@ -24,7 +24,8 @@ type LedgerEntry struct {
 // whether) it's persisted. Used only by /export, which needs every column.
 type CashSessionRecord struct {
 	parsers.CashSession
-	SessionID string
+	SessionID   string
+	HandDetails []parsers.CashHand `json:",omitempty"`
 }
 
 // TournamentRecord is a full Tournaments row, including the two
@@ -66,6 +67,7 @@ func (s Snapshot) IsEmpty() bool {
 // is exactly the operations the worker, bot, and hardstop code call.
 type Store interface {
 	AppendCashSession(session parsers.CashSession) error
+	RecordCashHands(session parsers.CashSession, hands []parsers.CashHand, liveSource string) (CashWrite, error)
 	AppendTournament(t parsers.Tournament) (money.Cents, error)
 	UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error
 	ScanTournamentHandStats(parsers.TournamentHandStats) error

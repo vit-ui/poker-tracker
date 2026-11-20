@@ -21,7 +21,7 @@ import (
 // handleSheetCommand implements /sheet. With no argument, replies with the
 // current sheet's URL (the original, only behavior). With an argument
 // (a sheet name or a pasted URL — same resolveSheetInput branch RunSetup
-// and EnsureSheetID use), switches to a different Google Sheet: validates
+// uses), switches to a different Google Sheet: validates
 // with sheets.NewClient (which also creates any missing tabs on the new
 // sheet) before saving, so an unreachable sheet is never persisted.
 //

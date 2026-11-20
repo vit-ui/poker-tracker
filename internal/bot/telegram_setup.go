@@ -1,16 +1,15 @@
 package bot
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/fsnotify/fsnotify"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -33,132 +32,180 @@ func newTelegramBot(token string) (*tgbotapi.BotAPI, error) {
 	return tgbotapi.NewBotAPIWithClient(token, apiEndpoint, telegramHTTPClient{})
 }
 
-// ConnectTelegram provisions a bot for this installation. The short pairing
-// code proves the incoming chat is the one controlled by the person at setup.
+// ConnectTelegram provisions a first or replacement bot from local setup.
 func ConnectTelegram(configPath string) error {
-	token, err := config.LoadTelegramToken(configPath)
-	if err != nil || token != "" {
-		return err
-	}
 	proceed, err := uiprompt.EnsureTelegramSetupPrivileges()
 	if err != nil || !proceed {
 		return err
 	}
-	for token == "" {
-		value, err := uiprompt.AskTelegramToken()
+	oldToken, err := config.LoadTelegramToken(configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	saved := chatIDValue(cfg)
+	if saved < 0 {
+		confirm, err := uiprompt.ConfirmTelegramSetup("This installation is linked to a group. Switch to a private chat?")
+		if err != nil || !confirm {
+			return err
+		}
+	}
+	for {
+		token, err := uiprompt.AskTelegramToken()
 		if err != nil {
 			return err
 		}
-		if value == "" {
+		if token == "" {
 			return fmt.Errorf("Telegram setup was closed")
 		}
-		tg, err := newTelegramBot(value)
+		tg, err := newTelegramBot(token)
 		if err != nil {
 			if err := uiprompt.TelegramSetupMessage("Tracker could not verify that token. Check your connection and paste the token BotFather gave you."); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := pairTelegram(configPath, tg, value); err != nil {
-			return err
+		if token != oldToken || saved <= 0 {
+			if err := pairTelegram(configPath, tg, token, saved); err != nil {
+				return err
+			}
 		}
-		return uiprompt.TelegramSetupMessage("Telegram is connected. Open @" + tg.Self.UserName + " to use Poker Tracker.")
+		if err := uiprompt.TelegramSetupMessage("Telegram is connected. Open @" + tg.Self.UserName + " to use Poker Tracker."); err != nil {
+			slog.Error("displaying Telegram connection confirmation", "err", err)
+		}
+		return nil
 	}
-	return nil
 }
 
-func pairTelegram(configPath string, tg *tgbotapi.BotAPI, token string) error {
-	cfg, err := config.LoadConfig(configPath)
+// TelegramTokenForSetup reuses an existing private pairing for the setup wizard.
+func TelegramTokenForSetup(path string) (string, error) {
+	credentials, err := loadTelegramCredentials(path)
+	if err != nil || credentials.token != "" {
+		return credentials.token, err
+	}
+	if err := ConnectTelegram(path); err != nil {
+		return "", err
+	}
+	credentials, err = loadTelegramCredentials(path)
+	if err == nil && credentials.token == "" {
+		err = fmt.Errorf("finish Connect Telegram before using the Telegram setup wizard")
+	}
+	return credentials.token, err
+}
+
+func chatIDValue(cfg *config.Config) int64 {
+	if cfg.Setup.TelegramChatID == nil {
+		return 0
+	}
+	id, _ := strconv.ParseInt(*cfg.Setup.TelegramChatID, 10, 64)
+	return id
+}
+
+func privateChat(chat *tgbotapi.Chat) bool {
+	return chat != nil && chat.IsPrivate() && chat.ID > 0
+}
+
+func pairTelegram(configPath string, tg *tgbotapi.BotAPI, token string, saved int64) error {
+	code := "/start " + rand.Text()
+	instructions := "Open https://t.me/" + tg.Self.UserName + " in a private chat and send:\n\n" + code
+	answer, err := uiprompt.ConfirmTelegramSetup(instructions + "\n\nContinue after sending the code.")
 	if err != nil {
 		return err
 	}
-	code := "/start " + rand.Text()
-	instructions := "Open https://t.me/" + tg.Self.UserName + " in Telegram and send:\n\n" + code + "\n\nThen return to this window and continue."
-	if err := uiprompt.TelegramSetupMessage(instructions); err != nil {
-		return err
+	if !answer {
+		return fmt.Errorf("Telegram setup was closed")
 	}
 
 	query := tgbotapi.NewUpdate(0)
-	query.Timeout = 30
 	for {
 		updates, err := tg.GetUpdates(query)
 		if err != nil {
 			return fmt.Errorf("could not receive the Telegram pairing message")
 		}
+		if len(updates) == 0 {
+			return fmt.Errorf("pairing code was not received in the linked private chat")
+		}
 		for _, update := range updates {
 			query.Offset = update.UpdateID + 1
-			message := update.Message
-			if message == nil || message.Chat == nil || strings.TrimSpace(message.Text) != code {
+			msg := update.Message
+			if msg == nil || !privateChat(msg.Chat) || strings.TrimSpace(msg.Text) != code {
 				continue
 			}
-			id := strconv.FormatInt(message.Chat.ID, 10)
-			if cfg.Setup.TelegramChatID != nil && *cfg.Setup.TelegramChatID != id {
+			id := msg.Chat.ID
+			if saved > 0 && saved != id {
 				return fmt.Errorf("send the pairing code from the Telegram account already linked to this installation")
 			}
+			if saved == id {
+				return config.SaveTelegramToken(configPath, token)
+			}
+			var previous *string
 			if _, err := config.UpdateConfig(configPath, func(current *config.Config) error {
-				if saved := current.Setup.TelegramChatID; saved != nil && *saved != id {
+				if chatIDValue(current) != saved {
 					return fmt.Errorf("the linked Telegram chat changed during setup")
 				}
-				current.Setup.TelegramChatID = &id
+				previous = current.Setup.TelegramChatID
+				value := strconv.FormatInt(id, 10)
+				current.Setup.TelegramChatID = &value
 				return nil
 			}); err != nil {
 				return err
 			}
 			if err := config.SaveTelegramToken(configPath, token); err != nil {
-				return err
+				_, rollback := config.UpdateConfig(configPath, func(current *config.Config) error {
+					if chatIDValue(current) == id {
+						current.Setup.TelegramChatID = previous
+					}
+					return nil
+				})
+				return errors.Join(err, rollback)
 			}
-			send(tg, message.Chat.ID, "Poker Tracker is connected. Use /menu to get started.")
 			return nil
 		}
 	}
 }
 
-func waitForTelegramToken(configPath string, alerts <-chan string, stop <-chan struct{}, ready chan<- struct{}) (string, error) {
-	dir := filepath.Dir(config.TelegramTokenPath(configPath))
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("creating credentials directory: %w", err)
-	}
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return "", fmt.Errorf("watching Telegram setup: %w", err)
-	}
-	defer watcher.Close()
-	if err := watcher.Add(dir); err != nil {
-		return "", fmt.Errorf("watching credentials directory: %w", err)
-	}
-	token, err := config.LoadTelegramToken(configPath)
-	if err != nil {
-		return "", err
-	}
-	if ready != nil {
-		ready <- struct{}{}
-	}
-	if token != "" {
-		return token, nil
-	}
+type telegramCredentials struct {
+	token  string
+	chatID int64
+}
 
-	slog.Info("Telegram setup is pending; open this installation with --connect-telegram")
-	if err := uiprompt.ShowPendingTelegramSetup(); err != nil {
-		slog.Error("opening Telegram setup window", "err", err)
+type telegramConnection struct {
+	credentials telegramCredentials
+	bot         *tgbotapi.BotAPI
+	needsSetup  bool
+	failed      bool
+	err         error
+}
+
+func loadTelegramCredentials(path string) (telegramCredentials, error) {
+	token, err := config.LoadTelegramToken(path)
+	if err != nil || token == "" {
+		return telegramCredentials{}, err
 	}
-	for {
-		select {
-		case <-stop:
-			return "", nil
-		case _, ok := <-alerts:
-			if !ok {
-				return "", nil
-			}
-		case err := <-watcher.Errors:
-			return "", fmt.Errorf("watching Telegram setup: %w", err)
-		case event := <-watcher.Events:
-			if event.Name != config.TelegramTokenPath(configPath) {
-				continue
-			}
-			token, err := config.LoadTelegramToken(configPath)
-			if token != "" || err != nil {
-				return token, err
-			}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		return telegramCredentials{}, err
+	}
+	chatID := chatIDValue(cfg)
+	if chatID <= 0 {
+		return telegramCredentials{}, nil
+	}
+	return telegramCredentials{token, chatID}, nil
+}
+
+func probeTelegram(ctx context.Context, credentials telegramCredentials) telegramConnection {
+	tg, err := tgbotapi.NewBotAPIWithClient(credentials.token, apiEndpoint, pollingClient{ctx, telegramHTTPClient{}})
+	if err != nil {
+		var apiErr *tgbotapi.Error
+		return telegramConnection{
+			credentials: credentials,
+			needsSetup:  errors.As(err, &apiErr) && (apiErr.Code == 401 || apiErr.Code == 404),
+			err:         fmt.Errorf("Telegram did not accept the connection; check the bot token and network"),
 		}
 	}
+	tg.Client = telegramHTTPClient{}
+	return telegramConnection{credentials: credentials, bot: tg}
 }

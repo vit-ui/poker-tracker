@@ -2,7 +2,6 @@ package main
 
 import (
 	"reflect"
-	"runtime"
 	"testing"
 
 	"github.com/vit-ui/self-tracker/internal/config"
@@ -25,7 +24,7 @@ func deref(s *string) string {
 // re-install-preserve paths are covered (they never reach the interactive
 // chooseBackend); the terminal/dialog prompt stays manually verified.
 func TestApplyStorageChoice(t *testing.T) {
-	// Prompts are not needed for flag choices; Linux Sheets reports its bootstrap.
+	// Prompts are unnecessary when the installer supplied an explicit choice.
 	t.Setenv("DISPLAY", "")
 	t.Setenv("WAYLAND_DISPLAY", "")
 	p := uiprompt.New()
@@ -58,7 +57,7 @@ func TestApplyStorageChoice(t *testing.T) {
 			wantBackend: "sheets", wantName: "My Sheet", wantID: "ABC123",
 		},
 		{
-			name: "flag sheets with name only — id resolved later at serve time",
+			name: "flag sheets with name only — id resolved during setup",
 			cfg:  preset(""), backend: "sheets", sheetName: "My Sheet",
 			wantBackend: "sheets", wantName: "My Sheet", wantID: "<nil>",
 		},
@@ -79,9 +78,6 @@ func TestApplyStorageChoice(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		if runtime.GOOS == "linux" && c.backend == "sheets" {
-			c.wantBackend = "sqlite"
-		}
 		t.Run(c.name, func(t *testing.T) {
 			applyStorageChoice(c.cfg, p, c.backend, c.sheetName, c.sheetID)
 			if got := deref(c.cfg.Setup.StorageBackend); got != c.wantBackend {

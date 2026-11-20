@@ -33,6 +33,53 @@ type CashSession struct {
 	FirstHandID string
 }
 
+// CashHand is the contribution of a completed cash hand dealt to the player.
+type CashHand struct {
+	ID            string      `json:"id"`
+	At            time.Time   `json:"at"`
+	NetCents      money.Cents `json:"net_cents"`
+	RakeCents     money.Cents `json:"rake_cents"`
+	BigBlindCents money.Cents `json:"big_blind_cents"`
+	VPIP          bool        `json:"vpip,omitempty"`
+	PFR           bool        `json:"pfr,omitempty"`
+	LiveSource    string      `json:"live_source,omitempty"`
+}
+
+// CashHands reads completed hand contributions when a live session is persisted.
+func CashHands(path, screenName string) ([]CashHand, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening cash history: %w", err)
+	}
+	defer f.Close()
+	var hands []CashHand
+	_, _, _, err, _ = parseCash(f, path, screenName, cashAgg{}, 0, false, &hands)
+	return hands, err
+}
+
+// SessionFromCashHands derives totals for the hands owned by one session.
+func SessionFromCashHands(stake string, hands []CashHand) (CashSession, error) {
+	if len(hands) == 0 {
+		return CashSession{}, fmt.Errorf("cash session has no completed dealt hands")
+	}
+	agg := cashAgg{
+		stake: stake, bigBlindCents: hands[0].BigBlindCents, firstHandID: hands[0].ID,
+		firstTime: hands[0].At, lastTime: hands[0].At,
+	}
+	for _, hand := range hands {
+		if hand.At.Before(agg.firstTime) {
+			agg.firstTime = hand.At
+		}
+		if hand.At.After(agg.lastTime) {
+			agg.lastTime = hand.At
+		}
+		if err := agg.addCashHand(hand); err != nil {
+			return CashSession{}, err
+		}
+	}
+	return agg.session()
+}
+
 // TournamentHandStats holds stats extracted from a tournament hand history
 // file. Returned by ParseCashFile when the file is a tournament session.
 // Knockout-bounty winnings only ever appear here — the tournament summary
@@ -168,10 +215,10 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 		base = prior.agg
 	}
 
-	return parseCash(f, path, screenName, base, startOffset, prior != nil)
+	return parseCash(f, path, screenName, base, startOffset, prior != nil, nil)
 }
 
-func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset int64, resuming bool) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
+func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset int64, resuming bool, details *[]CashHand) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
 	r := bufio.NewReader(in)
 
 	// st is the working aggregate (includes every hand finalized so far);
@@ -183,6 +230,8 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 	newConsumedOffset := startOffset
 
 	var (
+		handID             string
+		handAt             time.Time
 		handActive         bool
 		handHasSummary     bool
 		sawUnfinishedCash  bool
@@ -228,23 +277,22 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 			sawUnfinishedCash = true
 		}
 		if playerDealt {
-			st.hands++
 			handNetCents, err := money.Add(handCollectedCents, handUncalledCents)
 			if err == nil {
 				handNetCents, err = money.Subtract(handNetCents, handInvestedCents)
 			}
+			hand := CashHand{ID: handID, At: handAt, NetCents: handNetCents, RakeCents: handRakeCents, BigBlindCents: st.bigBlindCents, VPIP: playerVPIP, PFR: playerPFR}
+			if err == nil {
+				err = st.addCashHand(hand)
+			}
 			if err != nil && amountErr == nil {
 				amountErr = err
 			}
-			add(&st.netCents, handNetCents)
-			add(&st.rakeCents, handRakeCents)
-			if playerVPIP {
-				st.vpipCount++
-			}
-			if playerPFR {
-				st.pfrCount++
+			if details != nil && !st.isTournament {
+				*details = append(*details, hand)
 			}
 		}
+
 		handActive = false
 		handHasSummary = false
 		inPreflop = false
@@ -290,6 +338,10 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 						st.tournamentID = handTournamentID(line)
 					}
 				} else {
+					if details != nil {
+						handID = extractHandID(line)
+						handAt = handTime(line)
+					}
 					if st.bigBlindCents == 0 {
 						st.firstHandID = extractHandID(line)
 
@@ -478,30 +530,49 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 		}, newState, nil, true
 	}
 
-	dur := int(st.lastTime.Sub(st.firstTime).Minutes())
-
-	var bb100 float64
-	if st.bigBlindCents > 0 {
-		bb100 = money.Ratio(st.netCents, st.bigBlindCents) / float64(st.hands) * 100
-	}
-
-	buyInCents, err := money.Multiply(st.bigBlindCents, 100)
+	session, err := st.session()
 	if err != nil {
 		return nil, nil, nil, err, true
 	}
-	return &CashSession{
+	return &session, nil, newState, nil, true
+}
+
+func (st *cashAgg) addCashHand(hand CashHand) error {
+	st.hands++
+	if hand.VPIP {
+		st.vpipCount++
+	}
+	if hand.PFR {
+		st.pfrCount++
+	}
+	var err error
+	st.netCents, err = money.Add(st.netCents, hand.NetCents)
+	if err != nil {
+		return err
+	}
+	st.rakeCents, err = money.Add(st.rakeCents, hand.RakeCents)
+	return err
+}
+
+func (st cashAgg) session() (CashSession, error) {
+	buyInCents, err := money.Multiply(st.bigBlindCents, 100)
+	if err != nil {
+		return CashSession{}, err
+	}
+	handCount := float64(st.hands)
+	return CashSession{
 		Date:        st.firstTime,
 		Stake:       st.stake,
 		BuyInCents:  buyInCents,
 		Hands:       st.hands,
-		DurationMin: dur,
+		DurationMin: int(st.lastTime.Sub(st.firstTime).Minutes()),
 		NetCents:    st.netCents,
 		RakeCents:   st.rakeCents,
-		BB100:       bb100,
-		VPIP:        float64(st.vpipCount) / float64(st.hands) * 100,
-		PFR:         float64(st.pfrCount) / float64(st.hands) * 100,
+		BB100:       money.Ratio(st.netCents, st.bigBlindCents) / handCount * 100,
+		VPIP:        float64(st.vpipCount) / handCount * 100,
+		PFR:         float64(st.pfrCount) / handCount * 100,
 		FirstHandID: st.firstHandID,
-	}, nil, newState, nil, true
+	}, nil
 }
 
 // isHandHeader reports whether line is a PokerStars hand header (cash or Zoom
