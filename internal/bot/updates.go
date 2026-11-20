@@ -16,6 +16,8 @@ import (
 type releaseCheckResult struct {
 	version, action, requestID string
 	chatID                     int64
+	messageID                  int
+	menuPath                   string
 	err                        error
 }
 
@@ -26,13 +28,17 @@ func (b *Bot) queueUpdates(request *config.UpdateRequest, complete func(storage.
 }
 
 func (b *Bot) handleUpdateCommand(chatID int64, arg string) {
+	b.handleUpdateAction(chatID, 0, "update", arg)
+}
+
+func (b *Bot) handleUpdateAction(chatID int64, messageID int, path, arg string) {
 	if b.updater == nil {
 		send(b.tg, chatID, "Install the current release before requesting Telegram updates. See /help update.")
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(arg))
 	if action == "" {
-		b.queueUpdates(nil, func(result storage.OperationResult) { b.renderUpdateMenu(chatID, result) })
+		b.openUpdateMenu(chatID, 0, "update")
 		return
 	}
 	if action != "pc" && action != "server" && action != "all" && action != "check" {
@@ -44,10 +50,20 @@ func (b *Bot) handleUpdateCommand(chatID int64, arg string) {
 		return
 	}
 	id := fmt.Sprintf("telegram-update:%d:%d:%s", b.tg.Self.ID, b.updateID, action)
-	b.checkRelease(chatID, action, id)
+	b.checkRelease(releaseCheckResult{chatID: chatID, action: action, requestID: id, messageID: messageID, menuPath: path})
 }
 
-func (b *Bot) renderUpdateMenu(chatID int64, result storage.OperationResult) {
+func (b *Bot) openUpdateMenu(chatID int64, messageID int, path string) {
+	if b.updater == nil {
+		send(b.tg, chatID, "Install the current release before requesting Telegram updates. See /help update.")
+		return
+	}
+	b.queueUpdates(nil, func(result storage.OperationResult) {
+		b.renderUpdateMenu(chatID, messageID, path, result)
+	})
+}
+
+func (b *Bot) renderUpdateMenu(chatID int64, messageID int, path string, result storage.OperationResult) {
 	if result.Err != nil {
 		send(b.tg, chatID, "Could not read update requests: "+result.Err.Error())
 		return
@@ -81,14 +97,14 @@ func (b *Bot) renderUpdateMenu(chatID int64, result storage.OperationResult) {
 		text += "\nLatest stable release: " + b.latestVersion
 	}
 	text += "\n\nRequests are saved before confirmation. The poker PC waits until PokerStars closes. Settings, history and lock expiry are preserved."
-	rows = append(rows, menuRow("Check for new version", "update:check"))
-	b.showMenu(chatID, 0, text, rows)
+	rows = append(rows, menuRow("Check for new version", "update:check:"+path), navButton(path))
+	b.showMenu(chatID, messageID, text, rows)
 }
 
-func (b *Bot) checkRelease(chatID int64, action, requestID string) {
+func (b *Bot) checkRelease(check releaseCheckResult) {
 	if b.checkingRelease {
-		if chatID != 0 {
-			send(b.tg, chatID, "A release check is already in progress. Please try /update again after it finishes.")
+		if check.chatID != 0 {
+			send(b.tg, check.chatID, "A release check is already in progress. Please try /update again after it finishes.")
 		}
 		return
 	}
@@ -98,11 +114,11 @@ func (b *Bot) checkRelease(chatID int64, action, requestID string) {
 	b.checkingRelease, b.lastReleaseCheck = true, time.Now()
 	results := b.releaseResults
 	go func() {
-		version, err := update.Check()
-		results <- releaseCheckResult{version: version, err: err, chatID: chatID, action: action, requestID: requestID}
+		check.version, check.err = update.Check()
+		results <- check
 	}()
-	if chatID != 0 {
-		send(b.tg, chatID, "Checking the latest stable release…")
+	if check.chatID != 0 && check.messageID == 0 {
+		send(b.tg, check.chatID, "Checking the latest stable release…")
 	}
 }
 
@@ -148,7 +164,7 @@ func (b *Bot) finishReleaseCheck(checked releaseCheckResult) {
 	b.queueUpdates(nil, func(result storage.OperationResult) {
 		b.observeUpdates(result)
 		if checked.chatID != 0 {
-			b.renderUpdateMenu(checked.chatID, result)
+			b.renderUpdateMenu(checked.chatID, checked.messageID, checked.menuPath, result)
 		}
 	})
 }

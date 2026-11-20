@@ -156,7 +156,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 		poller = startUpdatePoller(tgBot, nextUpdate)
 		updates = poller.updates
 		if updater != nil {
-			b.checkRelease(0, "", "")
+			b.checkRelease(releaseCheckResult{})
 		}
 	} else {
 		b.ownerPaused = true
@@ -238,7 +238,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			} else {
 				b.ownerPaused = false
 				if b.updater != nil && b.lastReleaseCheck.IsZero() {
-					b.checkRelease(0, "", "")
+					b.checkRelease(releaseCheckResult{})
 				}
 				if poller == nil {
 					poller = startUpdatePoller(tgBot, nextUpdate)
@@ -301,7 +301,7 @@ func Run(botToken string, alertChan <-chan string, store storage.Store, configPa
 			if b.updater != nil {
 				b.queueUpdates(nil, func(result storage.OperationResult) { b.observeUpdates(result) })
 				if time.Since(b.lastReleaseCheck) >= 24*time.Hour {
-					b.checkRelease(0, "", "")
+					b.checkRelease(releaseCheckResult{})
 				}
 			}
 
@@ -573,6 +573,8 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.handleScanChoice(chatID, messageID, strings.TrimPrefix(data, "scan:"))
 	case strings.HasPrefix(data, "transactions:"):
 		b.handleTransactionsCallback(chatID, messageID, strings.TrimPrefix(data, "transactions:"))
+	case strings.HasPrefix(data, "update:check:"):
+		b.handleUpdateAction(chatID, messageID, strings.TrimPrefix(data, "update:check:"), "check")
 	case strings.HasPrefix(data, "update:"):
 		b.handleUpdateCommand(chatID, strings.TrimPrefix(data, "update:"))
 	case strings.HasPrefix(data, "satellite_cash:"):

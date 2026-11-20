@@ -38,12 +38,12 @@ func (b *Bot) handleTransactionsCommand(chatID int64, args string) {
 		send(b.tg, chatID, "Usage: /transactions [today|week|month|all]\nHistory: /transactions history [period]")
 		return
 	}
-	b.showTransactions(chatID, 0, period, statsSince(period, b.now()), history, 0)
+	b.showTransactions(chatID, 0, "transactions", period, statsSince(period, b.now()), history, 0)
 }
 
 func (b *Bot) handleTransactionsCallback(chatID int64, messageID int, data string) {
-	fields := strings.Split(data, ":")
-	if len(fields) != 3 {
+	fields := strings.SplitN(data, ":", 4)
+	if len(fields) != 4 {
 		return
 	}
 	_, period, err := parseTransactionsArgs(fields[0])
@@ -58,10 +58,10 @@ func (b *Bot) handleTransactionsCallback(chatID int64, messageID int, data strin
 	if err != nil || page < 0 {
 		return
 	}
-	b.showTransactions(chatID, messageID, period, time.Unix(stamp, 0).UTC(), true, page)
+	b.showTransactions(chatID, messageID, fields[3], period, time.Unix(stamp, 0).UTC(), true, page)
 }
 
-func (b *Bot) showTransactions(chatID int64, messageID int, period string, since time.Time, history bool, page int) {
+func (b *Bot) showTransactions(chatID int64, messageID int, path, period string, since time.Time, history bool, page int) {
 	var text string
 	var rows [][]tgbotapi.InlineKeyboardButton
 	b.queueOperation(func(store storage.Store) storage.OperationResult {
@@ -78,7 +78,7 @@ func (b *Bot) showTransactions(chatID int64, messageID int, period string, since
 		}
 		text = pages[page]
 		if history {
-			callback := func(n int) string { return fmt.Sprintf("transactions:%s:%d:%d", period, since.Unix(), n) }
+			callback := func(n int) string { return fmt.Sprintf("transactions:%s:%d:%d:%s", period, since.Unix(), n, path) }
 			var buttons []tgbotapi.InlineKeyboardButton
 			if page > 0 {
 				buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("‹ Previous", callback(page-1)))
@@ -96,7 +96,11 @@ func (b *Bot) showTransactions(chatID int64, messageID int, period string, since
 			send(b.tg, chatID, "Could not load transactions. Please try again.")
 			return
 		}
-		b.showMenu(chatID, messageID, text, rows)
+		if history {
+			b.showMenu(chatID, messageID, text, append(rows, navButton(path)))
+		} else {
+			send(b.tg, chatID, text)
+		}
 	})
 }
 
