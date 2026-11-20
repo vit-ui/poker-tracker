@@ -124,9 +124,26 @@ func (c *conversation) reset() {
 // after a successful restart request). The owner then stops producers/worker and
 // closes alertChan. Run joins the update poller before returning.
 func Run(botToken string, alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}, updater *update.Agent) error {
-	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(botToken, apiEndpoint)
+	if botToken == "" {
+		var err error
+		botToken, err = waitForTelegramToken(configPath, alertChan, stop, ready)
+		if err != nil {
+			return err
+		}
+		if botToken == "" {
+			if drained != nil {
+				close(drained)
+			}
+			for range alertChan {
+			}
+			return nil
+		}
+		ready = nil
+	}
+
+	tgBot, err := newTelegramBot(botToken)
 	if err != nil {
-		return fmt.Errorf("starting telegram bot: %w", err)
+		return fmt.Errorf("starting Telegram bot failed; check its token and connection")
 	}
 
 	b := &Bot{

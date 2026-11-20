@@ -1721,6 +1721,8 @@ begin
       ExpandConstant('{app}') + ' and run: tracker-server.exe --setup', mbError, MB_OK);
     Exit;
   end;
+  if not WizardSilent() then
+    Exec(ExePath, '--connect-telegram', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if (not Exec(ExePath, '--install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     MsgBox('Could not register the server boot task. Run tracker-server.exe --install from an elevated prompt.', mbError, MB_OK)
   else
@@ -1878,6 +1880,9 @@ begin
           HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock,
           JSONFieldRaw(ExistingConfigJSON, 'connection_string')),
         False);
+      if not WizardSilent() then
+        Exec(ExpandConstant('{app}\tracker.exe'), '--connect-telegram', ExpandConstant('{app}'),
+          SW_HIDE, ewWaitUntilTerminated, ResultCode);
       RegisterScheduledTask();
     end
     else
@@ -1900,6 +1905,7 @@ begin
   if (CurUninstallStep = usUninstall) and not UninstallSilent() then
   begin
     DeletePlayerState('config.json');
+    DeleteFile(ExpandConstant('{app}\credentials\telegram.token'));
     DeletePlayerState('lockfile.json');
     DeletePlayerState('pending_tournaments.json');
     DeletePlayerState('sheets_fallback.json');
@@ -1924,6 +1930,7 @@ begin
     DeleteFile(ExpandConstant('{app}\tracker-transfer.exe'));
     DelTree(ExpandConstant('{app}\tracker-source-*.exe'), False, True, False);
     DeleteFile(ExpandConstant('{app}\tracker.db'));
+    DelTree(ExpandConstant('{app}\storage-backups'), True, True, False);
     // Server role's TLS material (absent on combined/client installs).
     DeleteFile(ExpandConstant('{app}\server_cert.pem'));
     DeleteFile(ExpandConstant('{app}\server_key.pem'));

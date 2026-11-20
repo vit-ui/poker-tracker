@@ -336,6 +336,41 @@ func TestDownswingEquityCurve(t *testing.T) {
 	}
 }
 
+func TestHistoricalLedgerOrderForLossProtection(t *testing.T) {
+	asOf := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	win := storage.LedgerEntry{Date: asOf.Add(-time.Hour), Type: "cash_session", AmountCents: 1000}
+	loss := storage.LedgerEntry{Date: asOf, Type: "tournament", AmountCents: -800}
+	tiedWin := win
+	tiedWin.Date = loss.Date
+	transfer := storage.LedgerEntry{Date: asOf.Add(time.Minute), Type: "withdrawal", AmountCents: -5000}
+
+	cases := []struct {
+		name        string
+		entries     []storage.LedgerEntry
+		wantPeak    money.Cents
+		wantTrigger bool
+	}{
+		{"older win inserted after loss", []storage.LedgerEntry{loss, win}, 1000, true},
+		{"withdrawal stays outside results", []storage.LedgerEntry{loss, transfer, win}, 1000, true},
+		{"equal timestamps retain ledger order", []storage.LedgerEntry{loss, tiedWin}, 200, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			first := tc.entries[0]
+			peakCents, currentCents := DownswingEquityCurve(tc.entries, asOf.Add(time.Hour))
+			if peakCents != tc.wantPeak || currentCents != 200 {
+				t.Fatalf("equity curve = (%d, %d), want (%d, 200)", peakCents, currentCents, tc.wantPeak)
+			}
+			if got := LosingStreakTriggered(tc.entries, 1); got != tc.wantTrigger {
+				t.Fatalf("streak triggered = %t, want %t", got, tc.wantTrigger)
+			}
+			if tc.entries[0] != first {
+				t.Fatal("calculation reordered the input ledger")
+			}
+		})
+	}
+}
+
 // TestPokerDaySessionEntries confirms the data-taking poker-day filter —
 // applied to a full-ledger fetch — matches the old windowed
 // GetLedgerEntriesSince fetch: the day-start boundary is inclusive, rows

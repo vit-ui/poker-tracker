@@ -33,11 +33,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/update"
 )
 
-// BotToken is injected at build time via -ldflags "-X main.BotToken=...", the
-// same as cmd/tracker. Only the server talks to Telegram, so only the server
-// (and combined) build carries the token.
-var BotToken string
-
 // InstallationID is injected into disposable builds; production leaves it empty.
 var InstallationID string
 
@@ -86,6 +81,7 @@ func main() {
 	backend := flag.String("backend", "", `storage backend to preseed on --setup: "sqlite" or "sheets"`)
 	sheetName := flag.String("sheet-name", "", "Google Sheet name to preseed on --setup (sheets backend)")
 	sheetID := flag.String("sheet-id", "", "Google Sheet ID to preseed on --setup (sheets backend)")
+	connectTelegram := flag.Bool("connect-telegram", false, "link this installation to your Telegram bot")
 	flag.Parse()
 	if handled, err := updater.Handle(flag.CommandLine, "server", Version, InstallationID); handled {
 		if err != nil {
@@ -96,6 +92,12 @@ func main() {
 	}
 
 	switch {
+	case *connectTelegram || runtime.GOOS == "windows" && flag.NFlag() == 0 && flag.NArg() == 0:
+		if err := bot.ConnectTelegram(configPath); err != nil {
+			_ = uiprompt.TelegramSetupMessage(err.Error())
+			os.Exit(1)
+		}
+
 	case *printRole:
 		if *roleFile != "" {
 			if err := os.WriteFile(*roleFile, []byte("server"), 0600); err != nil {
@@ -166,7 +168,12 @@ func runServe() (failure error) {
 	debug.SetGCPercent(50)
 	debug.SetMemoryLimit(128 << 20)
 
-	sc, backendName, err := backend.Open(BotToken, configPath, serviceAccountPath, dbPath, fallbackPath)
+	telegramToken, err := config.LoadTelegramToken(configPath)
+	if err != nil {
+		return err
+	}
+
+	sc, backendName, err := backend.Open(telegramToken, configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
 		slog.Error("opening storage backend", "err", err)
 		return err
@@ -240,7 +247,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
+		botDone <- bot.Run(telegramToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
 	}()
 	destinationStop, destinationDone := make(chan struct{}), make(chan struct{})
 	destinationOwner := &deployment.DestinationOwner{Path: configPath, Requests: link.Transfers, Worker: workerTransfers, Controls: ownerControls, Stop: destinationStop, Standby: deployment.DestinationStandby(transferState)}

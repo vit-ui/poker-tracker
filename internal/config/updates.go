@@ -25,6 +25,7 @@ type UpdateRequest struct {
 type UpdateJob struct {
 	Request UpdateRequest `json:"request"`
 	State   string        `json:"state"`
+	Stage   string        `json:"stage,omitempty"`
 	Version string        `json:"installed_version"`
 	Error   string        `json:"error,omitempty"`
 }

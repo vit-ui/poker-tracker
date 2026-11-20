@@ -16,30 +16,29 @@ interfaces are avoided by default.
 
 ## Building
 
-Three binaries share the `internal/` packages: `cmd/tracker` (all-local, both roles in one process), `cmd/server` (split brain — storage + bot), `cmd/client` (split collector — watcher + enforcement). The bot token is injected only into the Telegram-talking builds (`tracker` and `server`); the client never carries it.
+Three binaries share the `internal/` packages: `cmd/tracker` (all-local, both roles in one process), `cmd/server` (split brain — storage + bot), `cmd/client` (split collector — watcher + enforcement). Setup provisions the locally protected Telegram credential for `tracker` and `server`. The collector needs no Telegram credential.
 
 ```bash
 # Local build for the host platform (all three binaries).
 go build ./...
 
 # Release builds, as the packaging workflow does them.
-# Supply an optional token only in a disposable local test build.
 
-# All-local (combined) — Windows GUI, with the bot token.
+# All-local (combined) — Windows GUI.
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -H=windowsgui -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
+  -ldflags "-s -w -H=windowsgui" \
   -o tracker-amd64.exe ./cmd/tracker
 
-# Split client — Windows console app, NO bot token.
+# Split client — Windows console app.
 GOOS=windows GOARCH=amd64 go build -trimpath \
   -ldflags "-s -w" -o tracker-client-amd64.exe ./cmd/client
 
-# Split server — Windows and Linux, amd64 and arm64, with the bot token.
+# Split server — Windows and Linux, amd64 and arm64.
 GOOS=windows GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
+  -ldflags "-s -w" \
   -o tracker-server-windows-amd64.exe ./cmd/server
 GOOS=linux GOARCH=arm64 go build -trimpath \
-  -ldflags "-s -w -X main.BotToken=${TELEGRAM_BOT_TOKEN}" \
+  -ldflags "-s -w" \
   -o tracker-server-linux-arm64 ./cmd/server
 ```
 
@@ -61,7 +60,7 @@ it empty and retain `Poker Tracker` and `PokerTrackerServer`.
 
 Stage all six Windows payloads beside the moved installer script in a disposable source copy and compile there.
 Use a separate test bot and empty spreadsheet for integration tests. Do not
-inject the working bot token into a disposable combined/server build. Native
+Provision a disposable credential for local setup checks. Native
 installer and process-isolation checks require an elevated Windows session;
 Wine compilation does not verify Task Scheduler or Windows process isolation.
 The installer invokes the collector's `--stop-installation <directory>` helper,
@@ -374,7 +373,9 @@ pull requests** under Actions settings. The workflow uses its built-in token.
    on `master` once the reconstructed baseline is published. Review the
    release PR's body and changelog together, using the curated notes for the
    whole final era, before merging. The follow-up with the audit fixes uses
-   its own release PR.
+   its own release PR. The historical release creation step may require
+   maintainer authentication when an old commit carries different workflows.
+   Verify the existing tags and attach the tested artifacts to draft releases.
 4. Confirm the rebuilt release is latest and its two assets have matching
    digests. Inventory the legacy release and tag names and SHAs before removing
    the legacy releases, assets, and corresponding tags. The original branches

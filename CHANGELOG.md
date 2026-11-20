@@ -5,6 +5,20 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Keep the destination intact when a storage migration is refused or interrupted.
+- Evaluate loss streaks and drawdowns by play date so historical imports
+  leave recent losses visible to protection.
+- Evaluate live cash losses only after the hand reaches its summary.
+- Connect your own Telegram bot through one setup step shared by new
+  installations and updates. Store the credential on the machine running the
+  bot and keep automatic protection active while Telegram setup is pending.
+- Show a Windows progress window with the actual update stage.
+- Let live hand and lock processing continue between file-scan writes.
+- Keep complete single-table scans aligned with live session identity and
+  preserve previously recorded tournament bounties on partial imports.
+- Remove saved storage reset snapshots on normal Windows uninstall and
+  preserve them during silent uninstall.
+
 ## [4.0.0](https://github.com/vit-ui/poker-tracker/compare/v3.0.0...v4.0.0) (2026-11-20)
 
 - Rebuild the release history around the installation and updater compatibility

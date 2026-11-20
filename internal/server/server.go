@@ -476,6 +476,7 @@ func (s *Server) Run() error {
 		var command transport.Command
 		restoringLock := false
 		var disconnected, scanDisconnected <-chan struct{}
+		var scanResults <-chan scanResult
 		if heldOperation == nil {
 			uploads = s.link.Uploads
 			endings = sessionEndChan
@@ -508,6 +509,7 @@ func (s *Server) Run() error {
 		}
 		if scanningFile != nil {
 			scanDisconnected = scanningFile.disconnected
+			scanResults = scanningFile.results
 			if commands == nil && !scanningFile.sent {
 				commands, command = s.link.Commands, scanningFile.command
 			}
@@ -641,6 +643,14 @@ func (s *Server) Run() error {
 				pendingCollection.sent = true
 			}
 			continue
+		case parsed := <-scanResults:
+			scanningFile.record(s.store, parsed)
+			if parsed.done {
+				scanningFile.request.Reply <- scanningFile.result
+				scanningFile.close()
+				scanningFile = nil
+			}
+			continue
 		case <-scanDisconnected:
 			scanningFile.request.Reply <- storage.OperationResult{Err: fmt.Errorf("the poker PC disconnected before the file finished transferring")}
 			scanningFile.close()
@@ -675,7 +685,8 @@ func (s *Server) Run() error {
 					if settings := settingsQueue.state.Confirmed; settings != nil && settings.ScreenName != nil {
 						screenName = *settings.ScreenName
 					}
-					operation.Reply <- scanHandFile(s.store, operation.ScanAttachment, screenName)
+					scanningFile = &fileScan{request: operation}
+					scanningFile.start(operation.ScanAttachment, screenName, false)
 					continue
 				}
 				done := s.link.CollectorDone()
@@ -809,8 +820,8 @@ func (s *Server) Run() error {
 		connection, current := s.link.UploadConnection(up)
 		if chunk := up.Scan; chunk != nil {
 			if current && scanningFile != nil && connection == scanningFile.disconnected && scanningFile.command.RequestID == chunk.RequestID {
-				if result, complete := scanningFile.accept(s.store, *chunk); complete {
-					scanningFile.request.Reply <- result
+				if err := scanningFile.accept(*chunk); err != nil {
+					scanningFile.request.Reply <- storage.OperationResult{Err: err}
 					scanningFile.close()
 					scanningFile = nil
 				}
@@ -1032,7 +1043,7 @@ func (s *Server) Run() error {
 		if up.Import {
 			switch up.Type {
 			case "cash":
-				recordDrainFailure(importCounts.HandHistory(s.store, path, screenName, false))
+				recordDrainFailure(importCounts.HandHistory(s.store, path, screenName))
 			case "tournament":
 				recordDrainFailure(importCounts.TournamentSummary(s.store, path, screenName))
 			}
@@ -1085,9 +1096,11 @@ func (s *Server) Run() error {
 				prior = e.state
 			}
 			session, tourneyStats, newState, err := parsers.ParseCashFileFrom(path, screenName, prior)
-			if err != nil {
-				recordDrainFailure(err)
-				slog.Error("parsing cash file", "file", up.FileID, "err", err)
+			if err != nil || session == nil && tourneyStats == nil {
+				if err != nil {
+					recordDrainFailure(err)
+					slog.Error("parsing cash file", "file", up.FileID, "err", err)
+				}
 				if _, exists := pendingSessions[up.FileID]; exists {
 					activity[up.FileID] = lastActivity
 					clocks[up.FileID] = up.ClientClock

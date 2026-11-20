@@ -535,18 +535,29 @@ func (s *Store) appendTournament(tx *sql.Tx, t parsers.Tournament) (money.Cents,
 // Won are reconciled and the tournament's bankroll_ledger row is corrected
 // to match. Mirrors sheets.Client.UpdateTournamentHandStats.
 func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error {
+	return s.writeTournamentHandStats(tournamentID, vpip, pfr, hands, bountyCents, isKnockout, false)
+}
+
+func (s *Store) ScanTournamentHandStats(stats parsers.TournamentHandStats) error {
+	return s.writeTournamentHandStats(stats.TournamentID, stats.VPIP, stats.PFR, stats.Hands, stats.BountyCents, stats.IsKnockout, true)
+}
+
+func (s *Store) writeTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout, preserveBounty bool) error {
 	if err := storage.ValidateNumbers(vpip, pfr); err != nil {
 		return err
 	}
 	return s.write(func(tx *sql.Tx) error {
-		return s.updateTournamentHandStats(tx, tournamentID, vpip, pfr, hands, bountyCents, isKnockout)
+		return s.updateTournamentHandStats(tx, tournamentID, vpip, pfr, hands, bountyCents, isKnockout, preserveBounty)
 	})
 }
 
-func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error {
+func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout, preserveBounty bool) error {
 	snap, found, err := s.readTournamentSnapshot(tx, tournamentID)
 	if err != nil {
 		return err
+	}
+	if preserveBounty {
+		bountyCents = max(bountyCents, snap.bountyCents)
 	}
 
 	if !found {
@@ -997,6 +1008,17 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 		return err
 	}
 	defer tx.Rollback()
+	var hasRows bool
+	if err := tx.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM cash_sessions)
+			OR EXISTS(SELECT 1 FROM tournaments)
+			OR EXISTS(SELECT 1 FROM bankroll_ledger)
+	`).Scan(&hasRows); err != nil {
+		return fmt.Errorf("checking destination inside import transaction: %w", err)
+	}
+	if hasRows {
+		return fmt.Errorf("destination database is not empty")
+	}
 
 	// A blank session ID (sheets rows from before v1.4, when the column was
 	// added — never backfilled) is stored as NULL, the same blank↔NULL mapping

@@ -697,7 +697,7 @@ func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, 
 // far (column N, added alongside VPIP/PFR) — the weight /stats uses to
 // combine a tournament's VPIP/PFR into a hands-weighted average, the same
 // role Hands plays for cash sessions.
-func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error {
+func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout, preserveBounty bool) error {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil {
 		return err
@@ -730,6 +730,10 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 	snap, err := c.readTournamentRow(rowIndex)
 	if err != nil {
 		return err
+	}
+
+	if preserveBounty {
+		bountyCents = max(bountyCents, snap.bountyCents)
 	}
 
 	// Every affected cell goes out in one batched call — previously this was
@@ -818,12 +822,13 @@ type fallbackEntry struct {
 // handStatsArgs mirrors rawUpdateTournamentHandStats's parameter list so a
 // failed hand-stats write can be replayed verbatim.
 type handStatsArgs struct {
-	TournamentID string      `json:"tournament_id"`
-	VPIP         float64     `json:"vpip"`
-	PFR          float64     `json:"pfr"`
-	Hands        int         `json:"hands"`
-	BountyCents  money.Cents `json:"bounty_cents"`
-	IsKnockout   bool        `json:"is_knockout"`
+	TournamentID   string      `json:"tournament_id"`
+	VPIP           float64     `json:"vpip"`
+	PFR            float64     `json:"pfr"`
+	Hands          int         `json:"hands"`
+	BountyCents    money.Cents `json:"bounty_cents"`
+	IsKnockout     bool        `json:"is_knockout"`
+	PreserveBounty bool        `json:"preserve_bounty,omitempty"`
 }
 
 // ledgerArgs holds a failed deposit/withdrawal for replay. The Running Total is
@@ -886,17 +891,34 @@ func (c *Client) AppendTournament(t parsers.Tournament) (money.Cents, error) {
 }
 
 func (c *Client) UpdateTournamentHandStats(id string, vpip, pfr float64, hands int, bountyCents money.Cents, knockout bool) error {
+	return c.writeTournamentHandStats(id, vpip, pfr, hands, bountyCents, knockout, false)
+}
+
+func (c *Client) ScanTournamentHandStats(stats parsers.TournamentHandStats) error {
+	return c.writeTournamentHandStats(stats.TournamentID, stats.VPIP, stats.PFR, stats.Hands, stats.BountyCents, stats.IsKnockout, true)
+}
+
+func (c *Client) writeTournamentHandStats(id string, vpip, pfr float64, hands int, bountyCents money.Cents, knockout, preserveBounty bool) error {
 	if err := storage.ValidateNumbers(vpip, pfr); err != nil {
 		return err
 	}
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	key := fallbackKindStats + ":" + id
-	entry := fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{TournamentID: id, VPIP: vpip, PFR: pfr, Hands: hands, BountyCents: bountyCents, IsKnockout: knockout}}
+	if preserveBounty {
+		c.fallbackMu.Lock()
+		pending := c.fallback[key].HandStats
+		c.fallbackMu.Unlock()
+		if pending != nil && !pending.PreserveBounty {
+			// A partial export cannot replace queued cumulative live data.
+			return nil
+		}
+	}
+	entry := fallbackEntry{Kind: fallbackKindStats, HandStats: &handStatsArgs{TournamentID: id, VPIP: vpip, PFR: pfr, Hands: hands, BountyCents: bountyCents, IsKnockout: knockout, PreserveBounty: preserveBounty}}
 	if err := c.prepareQueuedReplacement(key, entry); err != nil {
 		return err
 	}
-	if err := c.rawUpdateTournamentHandStats(id, vpip, pfr, hands, bountyCents, knockout); err != nil {
+	if err := c.rawUpdateTournamentHandStats(id, vpip, pfr, hands, bountyCents, knockout, preserveBounty); err != nil {
 		return c.queueWriteFailure(key, entry, err)
 	}
 	if err := c.retireFallback(key); err != nil {
@@ -1078,7 +1100,7 @@ func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 		}
 		return c.rawUpdateTournamentHandStats(
 			entry.HandStats.TournamentID, entry.HandStats.VPIP, entry.HandStats.PFR,
-			entry.HandStats.Hands, entry.HandStats.BountyCents, entry.HandStats.IsKnockout,
+			entry.HandStats.Hands, entry.HandStats.BountyCents, entry.HandStats.IsKnockout, entry.HandStats.PreserveBounty,
 		) == nil
 	case fallbackKindSummary:
 		_, err := c.rawAppendTournament(*entry.Summary)
