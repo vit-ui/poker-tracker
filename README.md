@@ -28,8 +28,10 @@ Windows or Linux server keeps your bot and history available while that PC is of
    [Releases](https://github.com/vit-ui/poker-tracker/releases/latest) and run it.
    One installer supports Intel/AMD and ARM PCs. Choose the all-local role to
    keep everything on this PC, or [connect to a server](#running-on-two-machines).
-3. Choose **Telegram** setup (recommended) and finish in your bot's chat, or
-   **Manual** to enter the settings in the installer. Pick your storage:
+3. Choose **Telegram** setup (recommended) or **Manual**. In either case,
+   connect your own bot when the setup window opens. Open [BotFather](https://t.me/BotFather),
+   send `/newbot`, and paste the token into Tracker. Setup shows the name of
+   your bot and the message to send to link your chat. Pick your storage:
 
    | Storage | What you need |
    | --- | --- |
@@ -41,10 +43,9 @@ Windows or Linux server keeps your bot and history available while that PC is of
 5. In Telegram, use `/status` to check the tracker, `/scan` to import existing
    history, and `/hardstop` to set your limits and lock duration.
 
-The official release includes its bot token. Only source builds need a token
-from [BotFather](https://t.me/BotFather). The tracker starts automatically at
-boot. Reinstalling in the same folder preserves settings and data, and Telegram
-setup accepts contact only from your saved chat.
+Tracker saves the token in the installation’s protected credentials folder.
+The tracker starts automatically at boot. Reinstalling in the same folder
+preserves Telegram access, settings, and data.
 
 ## Everyday Telegram commands
 
@@ -86,10 +87,16 @@ real knockout bounties are retained.
 
 ## Updating
 
-The reconstructed releases through `v4.0.0` are historical packages. They
-ship without a Telegram credential. If you already use the former `v5.0`,
-keep that installation and use `/update` when the follow-up `v5.0.1` release
-is available.
+**Moving from the former `v5.0` release:** Start the update from your existing
+Telegram bot using `/update`. After Tracker restarts, use the **Connect Telegram**
+button in the Windows update window to link your own bot. If you close the
+window or miss it, open Tracker from its installation folder. For a Linux server,
+run `~/.local/share/poker-tracker/tracker-server --connect-telegram` locally.
+Tracking and automatic protection continue while Telegram setup is pending.
+
+On later Windows updates, the window shows the current stage from the start.
+Closing it leaves the update running. Reconstructed releases through `v4.0.0`
+are historical packages without Telegram credentials.
 
 
 ### From Telegram
@@ -328,7 +335,8 @@ PC is off. Keep collector and server on **matching versions**.
      `~/.local/share/poker-tracker` as your user. It asks for elevated approval
      only to enable startup without login; you may skip that step.
 
-2. Copy the connection string shown by setup:
+2. Connect your Telegram bot on the server using the same BotFather steps as
+   a one-PC install. Copy the connection string shown by server setup:
    `tracker://192.168.1.40:8443/<token>#fp=<fingerprint>`.
 3. On the poker PC, run the Windows installer, choose **Connect to a server**,
    and paste the string. You can also run `tracker-client --setup` for a fresh
@@ -405,8 +413,9 @@ update finishes. Do not run setup/uninstall while a background update is active.
 Back up the **installation folder**, including settings, local database,
 credentials, pairing and saved protection/recovery state. Keep the original
 PokerStars histories too: they recover file bytes the tracker had not received.
-A normal Windows uninstall removes local player data; silent uninstall preserves
-it for upgrades. Prefer the updater or rerun the installer to upgrade.
+A normal Windows uninstall removes local player data and storage reset backups.
+Silent uninstall preserves them for upgrades. Prefer the updater or rerun the
+installer to upgrade.
 
 <details>
 <summary>Recovery files and background operation</summary>

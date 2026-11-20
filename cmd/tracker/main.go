@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -22,11 +23,9 @@ import (
 	"github.com/vit-ui/self-tracker/internal/server"
 	"github.com/vit-ui/self-tracker/internal/sqlitestore"
 	"github.com/vit-ui/self-tracker/internal/transport"
+	"github.com/vit-ui/self-tracker/internal/uiprompt"
 	"github.com/vit-ui/self-tracker/internal/update"
 )
-
-// BotToken is injected at build time via -ldflags "-X main.BotToken=...".
-var BotToken string
 
 // InstallationID is injected into disposable builds; production leaves it empty.
 var InstallationID string
@@ -80,6 +79,7 @@ func main() {
 	transferActivate := flag.Bool("transfer-activate", false, "activate verified deployment transfer")
 	transferComplete := flag.Bool("transfer-complete", false, "record completed collector cutover")
 	transferRollback := flag.Bool("transfer-rollback", false, "roll back a transfer-owned destination and restore source")
+	connectTelegram := flag.Bool("connect-telegram", false, "link this installation to your Telegram bot")
 	flag.Parse()
 	if handled, err := updater.Handle(flag.CommandLine, "combined", Version, InstallationID); handled {
 		if err != nil {
@@ -90,6 +90,12 @@ func main() {
 	}
 
 	switch {
+	case *connectTelegram || runtime.GOOS == "windows" && flag.NFlag() == 0 && flag.NArg() == 0:
+		if err := bot.ConnectTelegram(configPath); err != nil {
+			_ = uiprompt.TelegramSetupMessage(err.Error())
+			os.Exit(1)
+		}
+
 	case *transferStage != "":
 		runTransfer(func() error { return deployment.Stage(configPath, *transferStage) })
 	case *transferComplete:
@@ -150,7 +156,15 @@ func runSetup(installerOwnsTask bool) {
 		panic("stopping this installation before setup: " + err.Error())
 	}
 
-	bot.RunSetup(BotToken, configPath, serviceAccountPath)
+	if err := bot.ConnectTelegram(configPath); err != nil {
+		_ = uiprompt.TelegramSetupMessage(err.Error())
+		os.Exit(1)
+	}
+	token, err := config.LoadTelegramToken(configPath)
+	if err != nil || token == "" {
+		os.Exit(1)
+	}
+	bot.RunSetup(token, configPath, serviceAccountPath)
 	if installerOwnsTask {
 		return
 	}
@@ -233,7 +247,12 @@ func runServe() (failure error) {
 	// internal/backend). On the sheets path this blocks in EnsureSheetID until a
 	// sheet is configured; the watcher/server/bot goroutines can't run without a
 	// store, so it resolves first.
-	sc, backendName, err := backend.Open(BotToken, configPath, serviceAccountPath, dbPath, fallbackPath)
+	telegramToken, err := config.LoadTelegramToken(configPath)
+	if err != nil {
+		return err
+	}
+
+	sc, backendName, err := backend.Open(telegramToken, configPath, serviceAccountPath, dbPath, fallbackPath)
 	if err != nil {
 		slog.Error("opening storage backend", "err", err)
 		return err
@@ -306,7 +325,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(BotToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
+		botDone <- bot.Run(telegramToken, alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
 	}()
 	startupStop := make(chan struct{})
 	defer close(startupStop)

@@ -289,6 +289,13 @@ func run(target, role, version, id string, parent int, out io.Writer, job *confi
 		fmt.Fprintf(out, "Already up to date (%s).\n", version)
 		return nil
 	}
+	jobPath := filepath.Join(filepath.Dir(target), "requested_update.json")
+	if job != nil {
+		job.State, job.Stage = config.UpdateRunning, "download"
+		if err := config.SaveUpdateJob(jobPath, *job); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintf(out, "Downloading the %s installer...\n", value.Tag)
 	staged, err := stage(http.DefaultClient, value, name, filepath.Dir(target))
 	if err != nil {
@@ -313,12 +320,11 @@ func run(target, role, version, id string, parent int, out io.Writer, job *confi
 			return fmt.Errorf("staged executable %s mismatch", probe.flag)
 		}
 	}
-	jobPath := filepath.Join(filepath.Dir(target), "requested_update.json")
 	if err := waitForPokerStars(jobPath, role, job); err != nil {
 		return err
 	}
 	if job != nil {
-		job.State = config.UpdateRunning
+		job.State, job.Stage = config.UpdateRunning, "restart"
 		if err := config.SaveUpdateJob(jobPath, *job); err != nil {
 			return err
 		}

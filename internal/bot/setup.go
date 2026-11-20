@@ -53,7 +53,7 @@ func RunSetup(token, configPath, serviceAccountPath string) {
 			return
 		}
 	}
-	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(token, apiEndpoint)
+	tgBot, err := newTelegramBot(token)
 	if err != nil {
 		slog.Error("starting telegram bot", "err", err)
 		return
@@ -301,7 +301,7 @@ func EnsureSheetID(token, configPath, serviceAccountPath string) (string, error)
 		}
 	}
 
-	tgBot, err := tgbotapi.NewBotAPIWithAPIEndpoint(token, apiEndpoint)
+	tgBot, err := newTelegramBot(token)
 	if err != nil {
 		return "", fmt.Errorf("starting telegram bot: %w", err)
 	}

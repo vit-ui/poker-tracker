@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/config"
+	"github.com/vit-ui/self-tracker/internal/uiprompt"
 )
 
 func launchRequested(target, role, installationID, requestID string) error {
@@ -29,6 +31,9 @@ func launchRequested(target, role, installationID, requestID string) error {
 	if err := startRequestedHelper(helper, args, role, installationID, requestID); err != nil {
 		os.RemoveAll(dir)
 		return err
+	}
+	if err := uiprompt.ShowUpdateProgress(target, requestID, role != "client"); err != nil {
+		slog.Error("opening update window", "err", err)
 	}
 	return nil
 }
