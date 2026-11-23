@@ -42,21 +42,9 @@ func TestSuccessfulReentryRetiresOlderQueuedSummary(t *testing.T) {
 			if client.PendingWrites() != 0 {
 				t.Fatal("superseded summary still queued")
 			}
-			rows := 0
-			for _, request := range fake.calls()[start:] {
-				if request.method == "POST" && strings.Contains(request.path, "Tournaments!") {
-					var body valueRange
-					if err := json.Unmarshal([]byte(request.body), &body); err != nil {
-						t.Fatal(err)
-					}
-					if body.Values[0][3] != 2.2 {
-						t.Fatalf("stale buy-in replayed: %s", request.body)
-					}
-					rows++
-				}
-			}
-			if rows != 1 {
-				t.Fatalf("wrote %d summaries; want only newest", rows)
+			writes := historyGridWrites(t, fake.calls()[start:])
+			if writes[0].Rows[0].Values[3].Value.Number != 2.2 {
+				t.Fatalf("stale buy-in replayed: %+v", writes)
 			}
 		})
 	}
@@ -105,21 +93,9 @@ func TestSameHandCountCashCorrectionRetiresQueuedSnapshot(t *testing.T) {
 	if client.PendingWrites() != 0 {
 		t.Fatal("corrected cash still queued")
 	}
-	rows := 0
-	for _, request := range fake.calls()[start:] {
-		if request.method == "POST" && strings.Contains(request.path, "Cash Sessions!") {
-			var body valueRange
-			if err := json.Unmarshal([]byte(request.body), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Values[0][4] != float64(2) {
-				t.Fatalf("stale cash replayed: %s", request.body)
-			}
-			rows++
-		}
-	}
-	if rows != 1 {
-		t.Fatalf("wrote %d cash snapshots, want newest once", rows)
+	writes := historyGridWrites(t, fake.calls()[start:])
+	if writes[0].Rows[0].Values[4].Value.Number != 2 {
+		t.Fatalf("stale cash replayed: %+v", writes)
 	}
 }
 

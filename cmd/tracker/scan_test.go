@@ -141,10 +141,7 @@ func TestPartialTournamentExportKeepsRecordedBounty(t *testing.T) {
 	if err := os.WriteFile(path, []byte("PokerStars Hand #281000000016"+lines), 0600); err != nil {
 		t.Fatal(err)
 	}
-	var tally storage.ScanTally
-	if err := tally.HandHistory(db, path, "AnonExportHero"); err != nil {
-		t.Fatal(err)
-	}
+	tally := scanHistoryAttachment(t, db, path, "AnonExportHero")
 	snap, err := db.ExportSnapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -190,10 +187,7 @@ func TestFileScanDoesNotDuplicateFullLiveCashFile(t *testing.T) {
 	if _, err := db.RecordCashHands(*session, hands, "live"); err != nil {
 		t.Fatal(err)
 	}
-	var tally storage.ScanTally
-	if err := tally.HandHistory(db, path, "AnonExportHero"); err != nil {
-		t.Fatal(err)
-	}
+	scanHistoryAttachment(t, db, path, "AnonExportHero")
 	if _, err := db.RecordCashHands(*session, hands, "live"); err != nil {
 		t.Fatal(err)
 	}
@@ -259,18 +253,12 @@ func TestMixedCashExportAndLiveFileUseFirstOwnership(t *testing.T) {
 			if tc.liveFirst {
 				recordLive()
 			}
-			var tally storage.ScanTally
-			if err := tally.HandHistory(db, fixture, hero); err != nil {
-				t.Fatal(err)
-			}
+			tally := scanHistoryAttachment(t, db, fixture, hero)
 			if tally.NewCashHands != tc.wantNew || tally.RecordedCashHands != 4-tc.wantNew {
 				t.Fatalf("initial import = %+v", tally)
 			}
 			recordLive()
-			tally = storage.ScanTally{}
-			if err := tally.HandHistory(db, fixture, hero); err != nil {
-				t.Fatal(err)
-			}
+			tally = scanHistoryAttachment(t, db, fixture, hero)
 			if tally.NewCashHands != 0 || tally.RecordedCashHands != 4 {
 				t.Fatalf("replayed import = %+v", tally)
 			}
@@ -287,5 +275,39 @@ func TestMixedCashExportAndLiveFileUseFirstOwnership(t *testing.T) {
 				t.Fatalf("unexpected cash or ledger: %+v", snap)
 			}
 		})
+	}
+}
+
+func scanHistoryAttachment(t *testing.T, db *sqlitestore.Store, path, screenName string) storage.ScanTally {
+	t.Helper()
+	root := t.TempDir()
+	settings := config.CollectorSettingsState{Confirmed: &config.CollectorSettings{ScreenName: &screenName}}
+	if err := config.SaveCollectorSettings(filepath.Join(root, "collector_settings.json"), settings); err != nil {
+		t.Fatal(err)
+	}
+	link := transport.NewLink()
+	worker, err := server.NewServer(db, filepath.Join(root, "config.json"), link, make(chan string, 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- worker.Run() }()
+	defer func() {
+		close(link.Uploads)
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	reply := make(chan storage.OperationResult, 1)
+	worker.Operations <- storage.Operation{ScanAttachment: path, Reply: reply}
+	select {
+	case result := <-reply:
+		if result.Err != nil {
+			t.Fatal(result.Err)
+		}
+		return result.Scan
+	case <-time.After(5 * time.Second):
+		t.Fatal("file scan did not complete")
+		return storage.ScanTally{}
 	}
 }

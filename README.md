@@ -252,7 +252,7 @@ after reconnection and keep the original closure time.
 | Task | Command |
 | --- | --- |
 | Scan files already in your PokerStars folders | `/scan` |
-| Scan one PokerStars hand-history file | `/scan file` |
+| Scan one PokerStars history or tournament summary file | `/scan file` |
 | Export cash sessions, tournaments and ledger | `/export` |
 | Show the current storage backend | `/storage` |
 | Clear history in the current database or Sheet | `/storage reset` |
@@ -268,8 +268,8 @@ after reconnection and keep the original closure time.
 **Scan:** `/scan` scans the configured folders. `/scan file` accepts a single
 PokerStars `.txt` export, either as a path on the connected poker PC or as a
 Telegram attachment up to 20 MB. An export can contain multiple cash sessions
-and tournaments. Tournament summaries still supply final results. Scans
-produce one result report without hard stops or session summaries. The report
+and tournaments, and may include official tournament summaries. Scans produce
+one result report without hard stops or session summaries. The report
 counts new and already-recorded cash hands. Live file corrections update the
 original contributions and ledger totals. Older aggregate sessions keep their
 recorded totals, and a matching live file can add their hand IDs.
@@ -291,6 +291,19 @@ Telegram. The tracker verifies the copy before switching and restarting. If
 needed, `/storage sheets ...` asks you to upload the service-account key first.
 Exports have the same three-file format on both backends, including headers for
 empty datasets.
+
+**Missing tournament results**
+
+The tracker waits 150 seconds after a completed
+hand shows your finish. If PokerStars has supplied enough information, it records
+the result automatically. Otherwise it asks for the missing cash payout or total
+cash entry cost. The price shown in a hand header is for one entry. Include any
+re-entries in the amount you confirm and enter zero if you paid no cash.
+
+Older histories are evaluated during folder and file scans. Use **Review missing
+results** in the scan report to confirm them. If the official summary arrives
+later, it updates the same
+tournament and bankroll entry, including any newly known field size.
 
 **Folder edits:** use the base folder without your screen name. Relative Windows
 paths resolve against the active desktop user's home; otherwise provide a full
@@ -462,7 +475,7 @@ message but before its receipt is saved may produce a duplicate.
 - VPIP/PFR use Hold'em and Omaha preflop actions. Stud/draw hands contribute to
   hand counts, so mixed-game percentages are diluted and all-stud/draw shows zero.
 - Satellite detection needs structural clues in the summary; tournaments without
-  those clues may not be identified. `/scan` skips tournaments needing answers.
+  those clues may not be identified. `/scan` reports official summaries skipped for entry-cost confirmation and links to missing-result questions.
 - A hard-stop lock has no cancel or bypass command.
 
 ## Development and license

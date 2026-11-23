@@ -162,15 +162,17 @@ block storage/deployment handover; do not run setup/uninstall concurrently.
 
 The parser intentionally limits VPIP/PFR to Hold'em/Omaha preflop actions;
 mixed-game hand counts include stud/draw hands. Satellite classification requires
-structural summary clues, and `/scan` skips/counts tournaments needing an answer.
-Preserve these limitations in documentation until their behavior is explicitly
-changed and verified.
+structural summary clues. Scans count official summaries that need an entry-cost
+answer and link to confirmations for missing results recovered from hand history.
 
 ## Hand-history scans
 
 Keep export grouping on the server. The collector streams a requested file
-without parsing it. Test with the anonymized mixed export fixture and use
-disposable storage for larger private exports.
+without parsing it. Give official summaries priority over recovery candidates
+from the same scan. Evaluate older histories immediately and include
+**Review missing results** in the final report when the player needs to confirm
+a payout or total cash entry cost. Test with anonymized fixtures and disposable
+storage for larger private exports.
 
 ## Storage reset
 
@@ -194,8 +196,8 @@ headers and use one atomic write for the three history datasets.
   identical — same semantics, same date formats, same `/export` output.
 - Keep SQLite mutation reads, result writes and ledger cascades inside the
   same transaction. In Sheets, hold the mutation lock through the complete
-  operation and fallback replay; HTTP quota pacing alone does not serialize
-  a read followed by a write.
+  operation and fallback replay. Use one grid batch for each result and its
+  ledger changes, including bounty corrections. Match ledger rows by type and ID.
 - Serialize entire transport frames per connection, including reconnect lock
   replay. Closing a connection must interrupt blocked writes and upload delivery;
   never hold the listener state lock during a frame write. Keep authentication,
@@ -267,11 +269,15 @@ headers and use one atomic write for the three history datasets.
 - Cash upserts recognize both historical backend identity formats and preserve
   existing IDs. Keep canonical and legacy key calculations in shared storage
   code; correcting a migrated session must update its original ledger row.
-- Cash quiet timers default to 150 seconds and carry a per-arm generation.
-  Callbacks only signal the worker and cancel when it exits. Config owns atomic
-  `pending_cash.json` replacement; restore per-table activity and resynchronize
-  recovered files without postponing unchanged snapshots. Retire recovery state
-  only after persistence or durable Sheets fallback acceptance.
+- Cash and tournament quiet timers default to 150 seconds. Callbacks signal
+  the worker and cancel when it exits. The worker rejects stale generations.
+  Restore per-file activity from `pending_cash.json` and resynchronize recovered
+  cash files without postponing unchanged snapshots. Retire cash recovery state
+  after persistence or durable Sheets fallback acceptance.
+- Tournament deadlines and confirmations stay keyed by tournament ID in
+  `pending_tournaments.json`. Resumed play invalidates a pending finish.
+  Preserve result provenance in raw transfers and calculate finish percentages
+  from results with known field sizes.
 - Use `money.Cents` (`int64`) for USD amounts and explicit `Cents` suffixes on
   monetary fields and variables. Parse decimal input directly; fractional cents
   round away from zero. Persist cent integers in JSON and SQLite `_cents` columns;

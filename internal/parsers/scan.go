@@ -51,9 +51,13 @@ func handTournamentID(header string) string {
 	return id
 }
 
-// ScanHandHistory indexes hand locations on disk, then passes each group
-// through the regular parser. The contents of the export stay on disk.
-func ScanHandHistory(path, screenName string, visit func(*CashSession, []CashHand, *TournamentHandStats, error) bool) error {
+type scanSection struct {
+	offset, bytes int64
+}
+
+// ScanHistoryFile indexes a PokerStars text file and parses each history group
+// and official summary. The export stays on disk during indexing.
+func ScanHistoryFile(path, screenName string, visitHand func(*CashSession, []CashHand, *TournamentHandStats, error) bool, visitSummary func(Tournament, error) bool) error {
 	if screenName == "" {
 		return fmt.Errorf("set the PokerStars screen name before scanning")
 	}
@@ -62,17 +66,17 @@ func ScanHandHistory(path, screenName string, visit func(*CashSession, []CashHan
 		return fmt.Errorf("opening hand history: %w", err)
 	}
 	defer f.Close()
-	groups, skipped, err := indexScanHands(f)
+	groups, summaries, skipped, err := indexScanFile(f)
 	if err != nil {
 		return err
 	}
 	if skipped > 0 {
-		if !visit(nil, nil, nil, fmt.Errorf("%d incomplete, unidentified or repeated hands skipped", skipped)) {
+		if !visitHand(nil, nil, nil, fmt.Errorf("%d incomplete, unidentified or repeated hands skipped", skipped)) {
 			return nil
 		}
 	}
-	if len(groups) == 0 {
-		return fmt.Errorf("no complete PokerStars hands found")
+	if len(groups) == 0 && len(summaries) == 0 {
+		return fmt.Errorf("no complete PokerStars hands or summaries found")
 	}
 	// A complete single-table file uses the same hand order and identity as
 	// live collection. Mixed exports can contain several table visits.
@@ -101,8 +105,18 @@ func ScanHandHistory(path, screenName string, visit func(*CashSession, []CashHan
 		}
 		var details []CashHand
 		session, tournament, _, err, _ := parseCash(io.MultiReader(readers...), "scanned hand group", screenName, cashAgg{}, 0, false, &details)
-		if !visit(session, details, tournament, err) {
+		if !visitHand(session, details, tournament, err) {
 			return nil
+		}
+	}
+	for _, section := range summaries {
+		data, err := io.ReadAll(io.NewSectionReader(f, section.offset, section.bytes))
+		var summary Tournament
+		if err == nil {
+			summary, err = parseTournamentSummary(data, screenName)
+		}
+		if !visitSummary(summary, err) {
+			break
 		}
 	}
 	return nil
@@ -119,18 +133,25 @@ func compareScannedHands(a, b scannedHand) int {
 	return cmp.Compare(a.id, b.id)
 }
 
-func indexScanHands(r io.Reader) (map[string][]scannedHand, int, error) {
+func indexScanFile(r io.Reader) (map[string][]scannedHand, []scanSection, int, error) {
 	lines := bufio.NewReader(r)
 	groups := make(map[string][]scannedHand)
 	seen := make(map[string]bool)
 	var hand scannedHand
 	var active bool
+	var summaries []scanSection
+	var summaryOffset int64 = -1
 	var offset int64
 	var skipped int
 	finish := func(end int64) {
+		if summaryOffset >= 0 {
+			summaries = append(summaries, scanSection{offset: summaryOffset, bytes: end - summaryOffset})
+			summaryOffset = -1
+		}
 		if !active {
 			return
 		}
+		active = false
 		if hand.id == "" || hand.group == "" || hand.at.IsZero() || !hand.complete || seen[hand.id] {
 			skipped++
 			return
@@ -143,6 +164,9 @@ func indexScanHands(r io.Reader) (map[string][]scannedHand, int, error) {
 		raw, err := lines.ReadString('\n')
 		line := strings.TrimPrefix(trimLineEnding(raw), "\ufeff")
 		switch {
+		case strings.HasPrefix(line, "PokerStars Tournament #"):
+			finish(offset)
+			summaryOffset = offset
 		case isHandHeader(line):
 			finish(offset)
 			hand = scannedHand{id: extractHandID(line), at: handTime(line), offset: offset, tournament: strings.Contains(line, "Tournament #")}
@@ -167,10 +191,10 @@ func indexScanHands(r io.Reader) (map[string][]scannedHand, int, error) {
 		offset += int64(len(raw))
 		if err == io.EOF {
 			finish(offset)
-			return groups, skipped, nil
+			return groups, summaries, skipped, nil
 		}
 		if err != nil {
-			return nil, 0, fmt.Errorf("reading hand history: %w", err)
+			return nil, nil, 0, fmt.Errorf("reading hand history: %w", err)
 		}
 	}
 }

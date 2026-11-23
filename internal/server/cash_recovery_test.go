@@ -203,8 +203,13 @@ func TestSitOutUpdateRearmsPendingCash(t *testing.T) {
 
 func runRecoveredWorker(t *testing.T, store *sqlitestore.Store, path string, quiet time.Duration) (*Server, *transport.Link, func()) {
 	t.Helper()
+	return runRecoveredWorkerWithAlerts(t, store, path, quiet, make(chan string, 100))
+}
+
+func runRecoveredWorkerWithAlerts(t *testing.T, store *sqlitestore.Store, path string, quiet time.Duration, alerts chan string) (*Server, *transport.Link, func()) {
+	t.Helper()
 	link := transport.NewLink()
-	worker, err := NewServer(store, path, link, make(chan string, 100))
+	worker, err := NewServer(store, path, link, alerts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,21 +357,21 @@ func TestExpiredCashRecoveryUpsertsAfterInterruptedJournalRetirement(t *testing.
 }
 
 func TestCashQuietDefaultAndSupersededGeneration(t *testing.T) {
-	if cashSessionSummaryQuietPeriod != 150*time.Second {
-		t.Fatalf("quiet default %v", cashSessionSummaryQuietPeriod)
+	if resultQuietPeriod != 150*time.Second {
+		t.Fatalf("quiet default %v", resultQuietPeriod)
 	}
-	timers := make(map[string]*cashTimer)
-	signals := make(chan cashEndSignal)
+	timers := make(map[string]*quietTimer)
+	signals := make(chan quietSignal)
 	done := make(chan struct{})
 	defer close(done)
-	armCashSessionEnd(timers, "table", time.Millisecond, signals, done)
+	armQuietTimer(timers, "table", time.Millisecond, signals, done)
 	previous := timers["table"]
 	time.Sleep(10 * time.Millisecond)
-	armCashSessionEnd(timers, "table", time.Hour, signals, done)
+	armQuietTimer(timers, "table", time.Hour, signals, done)
 	defer timers["table"].Stop()
 	select {
 	case signal := <-signals:
-		if signal.Generation != previous || signal.Generation == timers[signal.FileID] {
+		if signal.Generation != previous || signal.Generation == timers[signal.Key] {
 			t.Fatal("stale callback carries the current generation")
 		}
 	case <-time.After(time.Second):

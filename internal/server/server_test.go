@@ -227,7 +227,8 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	}
 	handled := func(tt parsers.Tournament) bool {
 		t.Helper()
-		got, err := tournamentAlreadyHandled(tt, configPath, store)
+		results := tournamentResults{server: &Server{store: store}, path: filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")}
+		_, _, got, err := results.inspectOfficial(tt, false)
 		if err != nil {
 			t.Fatalf("tournamentAlreadyHandled(%s): %v", tt.TournamentID, err)
 		}
@@ -959,10 +960,10 @@ func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 // TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
 // signals the table's FileID once the quiet period elapses.
 func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
-	timers := make(map[string]*cashTimer)
-	sessionEnd := make(chan cashEndSignal, 10)
+	timers := make(map[string]*quietTimer)
+	sessionEnd := make(chan quietSignal, 10)
 
-	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd, nil)
+	armQuietTimer(timers, "table-a.txt", 50*time.Millisecond, sessionEnd, nil)
 
 	got, ok := waitForCashSignal(t, sessionEnd, 500*time.Millisecond)
 	if !ok {
@@ -977,12 +978,12 @@ func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
 // period elapses (a new hand at the same table) cancels the pending signal and
 // collapses to exactly one session-end.
 func TestArmCashSessionEnd_ResetOnNewHand(t *testing.T) {
-	timers := make(map[string]*cashTimer)
-	sessionEnd := make(chan cashEndSignal, 10)
+	timers := make(map[string]*quietTimer)
+	sessionEnd := make(chan quietSignal, 10)
 
-	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd, nil)
+	armQuietTimer(timers, "table-a.txt", 100*time.Millisecond, sessionEnd, nil)
 	time.Sleep(30 * time.Millisecond)
-	armCashSessionEnd(timers, "table-a.txt", 100*time.Millisecond, sessionEnd, nil)
+	armQuietTimer(timers, "table-a.txt", 100*time.Millisecond, sessionEnd, nil)
 
 	got, ok := waitForCashSignal(t, sessionEnd, 500*time.Millisecond)
 	if !ok {
@@ -999,11 +1000,11 @@ func TestArmCashSessionEnd_ResetOnNewHand(t *testing.T) {
 // TestArmCashSessionEnd_IndependentPerTable confirms two different tables each
 // get their own independent timer — re-arming one must never cancel another.
 func TestArmCashSessionEnd_IndependentPerTable(t *testing.T) {
-	timers := make(map[string]*cashTimer)
-	sessionEnd := make(chan cashEndSignal, 10)
+	timers := make(map[string]*quietTimer)
+	sessionEnd := make(chan quietSignal, 10)
 
-	armCashSessionEnd(timers, "table-a.txt", 50*time.Millisecond, sessionEnd, nil)
-	armCashSessionEnd(timers, "table-b.txt", 50*time.Millisecond, sessionEnd, nil)
+	armQuietTimer(timers, "table-a.txt", 50*time.Millisecond, sessionEnd, nil)
+	armQuietTimer(timers, "table-b.txt", 50*time.Millisecond, sessionEnd, nil)
 
 	seen := map[string]bool{}
 	for i := 0; i < 2; i++ {
@@ -1041,11 +1042,11 @@ func TestEndCashSession_PrunesTimer(t *testing.T) {
 	}
 
 	const fileID = `C:\hh\table.txt`
-	summaryTimers := make(map[string]*cashTimer)
-	sessionEnd := make(chan cashEndSignal, 1)
+	summaryTimers := make(map[string]*quietTimer)
+	sessionEnd := make(chan quietSignal, 1)
 	// Long quiet period: the timer stays active (won't fire during the test), so
 	// endCashSession's Stop() is what deactivates it — provable below.
-	armCashSessionEnd(summaryTimers, fileID, time.Hour, sessionEnd, nil)
+	armQuietTimer(summaryTimers, fileID, time.Hour, sessionEnd, nil)
 	timer := summaryTimers[fileID]
 
 	pendingSessions := map[string]parsers.CashSession{
@@ -1356,11 +1357,11 @@ func TestBlipMessage(t *testing.T) {
 	}
 }
 
-func waitForCashSignal(t *testing.T, ch <-chan cashEndSignal, wait time.Duration) (string, bool) {
+func waitForCashSignal(t *testing.T, ch <-chan quietSignal, wait time.Duration) (string, bool) {
 	t.Helper()
 	select {
 	case signal := <-ch:
-		return signal.FileID, true
+		return signal.Key, true
 	case <-time.After(wait):
 		return "", false
 	}

@@ -156,7 +156,7 @@ type tabDef struct {
 func historyTabs() [3]tabDef {
 	return [3]tabDef{
 		{"Cash Sessions", []interface{}{"Date", "Stake", "Hands", "Duration (min)", "Net (USD)", "Rake (USD)", "BB/100", "VPIP", "PFR", "Session ID", "Hand Details"}},
-		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands"}},
+		{"Tournaments", []interface{}{"Date", "Type", "Tournament ID", "Buy-In (USD)", "Prize Pool (USD)", "Multiplier", "Finish Position", "Total Players", "Net (USD)", "VPIP", "PFR", "Bounty Won (USD)", "Prize Won (USD)", "Hands", "Result Source", "Result Hand ID"}},
 		{"Bankroll Ledger", []interface{}{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}},
 	}
 }
@@ -284,7 +284,7 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 			return i + 1, true, nil
 		}
 	}
-	return 0, false, nil
+	return max(2, len(resp.Values)+1), false, nil
 }
 
 // AppendCashSession upserts one row in Cash Sessions and one row in Bankroll
@@ -313,162 +313,14 @@ func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
 			id = value
 		}
 	}
-	if err := c.upsertCashSessionsRow(id, session, rowIndex); err != nil {
-		return err
-	}
-	return c.upsertLedgerCashSessionRow(id, session.Date, session.NetCents)
-}
-
-func (c *Client) upsertCashSessionsRow(id string, session parsers.CashSession, rowIndex int) error {
-	values := []interface{}{
-		session.Date.Format(dateFormat),
-		session.Stake,
-		session.Hands,
-		session.DurationMin,
-		session.NetCents,
-		session.RakeCents,
-		session.BB100,
-		session.VPIP,
-		session.PFR,
-		id,
-	}
 	if rowIndex == 0 {
-		return c.appendRow("Cash Sessions", values)
+		rowIndex = max(2, len(response.Values)+1)
 	}
-	rangeStr := fmt.Sprintf("Cash Sessions!A%d:J%d", rowIndex, rowIndex)
-	if err := c.svc.valuesUpdate(c.spreadsheetID, rangeStr, [][]interface{}{values}); err != nil {
-		return fmt.Errorf("updating cash session row: %w", err)
-	}
-	return nil
+	values := buildCashRows([]storage.CashSessionRecord{{CashSession: session, SessionID: id}})
+	writes := []gridWrite{{cashHistoryTab, rowIndex - 1, 0, values}}
+	return c.writeResults(writes, []storage.LedgerEntry{{Date: session.Date, Type: "cash_session", AmountCents: session.NetCents, SessionID: id}})
 }
 
-// upsertLedgerCashSessionRow writes (or corrects, if it already exists) the
-// cash session's own Bankroll Ledger row, keyed by the session ID. Deposits,
-// withdrawals, and tournament entries stay pure appends, never touched again;
-// this is the session's single ledger entry, the same upsert as its Cash
-// Sessions row.
-func (c *Client) upsertLedgerCashSessionRow(id string, date time.Time, netCents money.Cents) error {
-	rowIndex, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", id)
-	if err != nil {
-		return err
-	}
-	if !found {
-		prevCents, err := c.getLastRunningTotal()
-		if err != nil {
-			return err
-		}
-		totalCents, err := money.Add(prevCents, netCents)
-		if err != nil {
-			return err
-		}
-		return c.appendRow("Bankroll Ledger", []interface{}{
-			date.Format(dateFormat),
-			"cash_session",
-			netCents,
-			totalCents,
-			id,
-		})
-	}
-
-	return c.updateLedgerAmountCascading(rowIndex, netCents)
-}
-
-// updateLedgerAmountCascading sets rowIndex's Amount to newAmountCents and
-// recomputes Running Total for rowIndex and every row after it through the
-// end of the ledger. A plain update of rowIndex alone is only correct when
-// it's the sheet's last data row — with multiple tables open at once, a
-// second table's session row (or a mid-session /deposit) can land after the
-// first table's row while that row is still being corrected hand-to-hand;
-// those later rows' stored Running Total was computed from this row's old
-// Amount and goes stale the moment this row's Amount changes.
-func (c *Client) updateLedgerAmountCascading(rowIndex int, newAmountCents money.Cents) error {
-	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!C:D")
-	if err != nil {
-		return fmt.Errorf("reading bankroll ledger for cascade update: %w", err)
-	}
-
-	baseCents, err := runningTotalAbove(resp.Values, rowIndex)
-	if err != nil {
-		return err
-	}
-
-	amountsCents := make([]money.Cents, len(resp.Values))
-	for i, row := range resp.Values {
-		if i == 0 {
-			continue
-		}
-		if len(row) > 0 {
-			amountsCents[i], err = parseMoney(row[0])
-			if err != nil {
-				return fmt.Errorf("reading ledger amount: %w", err)
-			}
-		}
-	}
-
-	updates, err := cascadeLedgerAmounts(amountsCents, rowIndex-1, newAmountCents, baseCents)
-	if err != nil {
-		return err
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-
-	rangeStr := fmt.Sprintf("Bankroll Ledger!C%d:D%d", rowIndex, rowIndex+len(updates)-1)
-	if err := c.svc.valuesUpdate(c.spreadsheetID, rangeStr, updates); err != nil {
-		return fmt.Errorf("cascading bankroll ledger update: %w", err)
-	}
-	return nil
-}
-
-// runningTotalAbove returns the Bankroll Ledger running total of the row
-// immediately above rowIndex (1-based sheet row, header at row 1) — 0 if
-// rowIndex is the first data row — read from the C:D values the cascade
-// update already fetched, so no separate single-cell API read is needed.
-// Starting the cascade from the row above (rather than getLastRunningTotal,
-// the sheet's last row) matters because that last row could be this very
-// row, whose own stale amount would then be double-counted. values holds the
-// header at index 0, so sheet row r sits at values[r-1] and its Running
-// Total (column D) at [1].
-func runningTotalAbove(values [][]interface{}, rowIndex int) (money.Cents, error) {
-	if rowIndex <= 2 || rowIndex-2 >= len(values) {
-		return 0, nil
-	}
-	row := values[rowIndex-2]
-	if len(row) < 2 {
-		return 0, nil
-	}
-	return parseMoney(row[1])
-}
-
-// cascadeLedgerAmounts computes updated (Amount, Running Total) pairs for
-// the ledger's Amount column from changedIdx (0-based, data rows only, no
-// header) through the last row — the running-total math itself is
-// storage.CascadeRunningTotals, shared with the sqlite backend; this only
-// bounds-checks changedIdx and zips the results into the two-column cell
-// shape the Sheets update range wants. Pure — the Sheets I/O wrapper is
-// updateLedgerAmountCascading.
-func cascadeLedgerAmounts(amountsCents []money.Cents, changedIdx int, newAmountCents, baseCents money.Cents) ([][]interface{}, error) {
-	if changedIdx < 0 || changedIdx >= len(amountsCents) {
-		return nil, nil
-	}
-	tailCents := amountsCents[changedIdx:]
-	totalsCents, err := storage.CascadeRunningTotals(tailCents, newAmountCents, baseCents)
-	if err != nil {
-		return nil, err
-	}
-	updates := make([][]interface{}, len(tailCents))
-	for i := range tailCents {
-		amountCents := tailCents[i]
-		if i == 0 {
-			amountCents = newAmountCents
-		}
-		updates[i] = []interface{}{amountCents, totalsCents[i]}
-	}
-	return updates, nil
-}
-
-// findTournamentRow searches column C (Tournament ID) for the given ID.
-// Returns the 1-based sheet row index, or found=false if not present.
 func (c *Client) findTournamentRow(tournamentID string) (rowIndex int, found bool, err error) {
 	return c.findRowByColumnValue("Tournaments", "C", tournamentID)
 }
@@ -531,174 +383,38 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 	return snap, nil
 }
 
-// AppendTournament upserts one row in Tournaments (keyed by TournamentID) and
-// upserts its Bankroll Ledger row (see upsertLedgerTournamentRow). If the
-// Tournaments row already exists (created by UpdateTournamentHandStats),
-// updates columns A–I, folding in whatever bounty winnings that row already
-// has recorded (column L, Bounty Won) — the summary file this data comes
-// from has no concept of bounties at all, only the hand history file's
-// elimination lines do (why two files: plan §Why Tournaments Need Two
-// Files) — and carries forward the storage.KnockoutPlaceholder into a real
-// "<base>-ko" Type if the row was flagged knockout. Writes Prize Won
-// (column M, = NetCents + BuyInCents) alongside. Leaves VPIP/PFR/Bounty Won
-// (J:L) untouched. Returns the final NetCents (baseline net plus any bounty)
-// so callers can report or evaluate against the real total rather than the
-// pre-bounty figure.
+// rawAppendTournament writes the completed result and its ledger correction
+// in one Sheets batch, preserving the existing hand-stat cells.
 func (c *Client) rawAppendTournament(t parsers.Tournament) (money.Cents, error) {
-	var multiplier interface{}
-	if t.Multiplier != nil {
-		multiplier = *t.Multiplier
-	} else {
-		multiplier = ""
-	}
-
-	// A ticket-denominated prize pool (e.g. "$1.00 Power Path Step 2
-	// Ticket") is never a real dollar amount — writing the raw description
-	// text here instead of PrizePoolCents (always 0 in that case) keeps the
-	// cell from reading as a misleading cash figure.
-	var prizePool interface{} = t.PrizePoolCents
-	if t.PrizePoolDescription != "" {
-		prizePool = t.PrizePoolDescription
-	}
-
-	rowIndex, found, err := c.findTournamentRow(t.TournamentID)
+	row, found, err := c.findTournamentRow(t.TournamentID)
 	if err != nil {
 		return 0, err
 	}
-
-	var bountyCents money.Cents
-	typeOut := t.Type
+	var snap tournamentRowSnapshot
 	if found {
-		snap, err := c.readTournamentRow(rowIndex)
+		snap, err = c.readTournamentRow(row)
 		if err != nil {
 			return 0, err
 		}
-		bountyCents = snap.bountyCents
-		typeOut = storage.ReconcileKnockoutType(t.Type, snap.typeVal)
 	}
-	netCents, prizeWonCents, err := storage.FoldBountyIntoNet(t.NetCents, bountyCents, t.BuyInCents)
+	t.Type = storage.ReconcileKnockoutType(t.Type, snap.typeVal)
+	netCents, prizeWonCents, err := storage.FoldBountyIntoNet(t.NetCents, snap.bountyCents, t.BuyInCents)
 	if err != nil {
 		return 0, err
 	}
-
-	if found {
-		// Row was pre-created by UpdateTournamentHandStats — update the main
-		// columns (A:I) and Prize Won (M) in one batched call, leaving
-		// VPIP/PFR/Bounty Won (J:L) and Hands (N) untouched. One call
-		// instead of two also means no window where Net is written but
-		// Prize Won isn't yet.
-		if err := c.svc.valuesBatchUpdate(c.spreadsheetID, []valueRange{
-			{
-				Range: fmt.Sprintf("Tournaments!A%d:I%d", rowIndex, rowIndex),
-				Values: [][]interface{}{{
-					t.Date.Format(dateFormat),
-					typeOut,
-					t.TournamentID,
-					t.BuyInCents,
-					prizePool,
-					multiplier,
-					t.FinishPos,
-					t.TotalPlayers,
-					netCents,
-				}},
-			},
-			{
-				Range:  fmt.Sprintf("Tournaments!M%d", rowIndex),
-				Values: [][]interface{}{{prizeWonCents}},
-			},
-		}); err != nil {
-			return 0, fmt.Errorf("updating tournament %s: %w", t.TournamentID, err)
-		}
-	} else {
-		if err := c.appendRow("Tournaments", []interface{}{
-			t.Date.Format(dateFormat),
-			typeOut,
-			t.TournamentID,
-			t.BuyInCents,
-			prizePool,
-			multiplier,
-			t.FinishPos,
-			t.TotalPlayers,
-			netCents,
-			"", // VPIP — filled later by UpdateTournamentHandStats
-			"", // PFR  — filled later by UpdateTournamentHandStats
-			"", // Bounty Won (USD) — filled later by UpdateTournamentHandStats
-			prizeWonCents,
-			"", // Hands — filled later by UpdateTournamentHandStats
-		}); err != nil {
-			return 0, err
-		}
+	t.NetCents = netCents
+	values := tournamentResultCells(t)
+	writes := []gridWrite{
+		{"Tournaments", row - 1, 0, [][]interface{}{values}},
+		{"Tournaments", row - 1, 12, [][]interface{}{{prizeWonCents}}},
+		{"Tournaments", row - 1, 14, [][]interface{}{{t.ResultSource, t.ResultHandID}}},
 	}
-
-	if err := c.upsertLedgerTournamentRow(t.TournamentID, t.Date, netCents); err != nil {
-		return 0, err
-	}
-	return netCents, nil
+	err = c.writeResults(writes, []storage.LedgerEntry{{Date: t.Date, Type: "tournament", AmountCents: netCents, SessionID: t.TournamentID}})
+	return netCents, err
 }
 
-// upsertLedgerTournamentRow corrects the tournament's own Bankroll Ledger row
-// in place, keyed by TournamentID in the Session ID column, rather than
-// appending a new one on every call. AppendTournament can legitimately run
-// more than once for the same TournamentID — the satellite/ticket flow calls
-// it once a queued tournament's cash-vs-ticket answer arrives, and a stray
-// duplicate file event is otherwise indistinguishable from a real one to the
-// watcher — and without this, the Tournaments tab stays deduplicated (see
-// findTournamentRow) while the ledger silently double-counts the same
-// tournament's net result. Mirrors upsertLedgerCashSessionRow.
-func (c *Client) upsertLedgerTournamentRow(tournamentID string, date time.Time, netCents money.Cents) error {
-	rowIndex, found, err := c.findRowByColumnValue("Bankroll Ledger", "E", tournamentID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		prevCents, err := c.getLastRunningTotal()
-		if err != nil {
-			return err
-		}
-		totalCents, err := money.Add(prevCents, netCents)
-		if err != nil {
-			return err
-		}
-		return c.appendRow("Bankroll Ledger", []interface{}{
-			date.Format(dateFormat),
-			"tournament",
-			netCents,
-			totalCents,
-			tournamentID,
-		})
-	}
-
-	return c.updateLedgerAmountCascading(rowIndex, netCents)
-}
-
-// UpdateTournamentHandStats writes VPIP, PFR, and knockout-bounty winnings
-// for a tournament identified by tournamentID, extracted from its hand
-// history file (see parsers.TournamentHandStats) — the summary file the rest
-// of the row's fields come from has no concept of bounties at all, only the
-// hand history file's per-elimination lines and per-seat bounty markers do
-// (why two files: plan §Why Tournaments Need Two Files).
-//
-// If no row exists yet, creates a partial one exactly as before, extended
-// with Bounty Won and (if isKnockout) storage.KnockoutPlaceholder in place of Type,
-// and stops there — AppendTournament will complete it once the summary file
-// arrives, combining the placeholder into a real "<base>-ko" Type and
-// folding in this bounty (see its doc comment). If a row exists but summary
-// data (NetCents, column I) hasn't arrived yet either, only J:L, N (and
-// possibly B, for the same storage.KnockoutPlaceholder reason) are written and
-// NetCents/Prize Won/the ledger are left alone. If a row exists and already
-// has summary data — the common case, since the hand history file grows and
-// is reparsed (recomputing this tournament's cumulative bounty from scratch)
-// throughout the tournament while the summary only ever arrives once at the
-// end — NetCents is reconciled as (storedNetCents - storedBounty) + bounty,
-// undoing this row's previous bounty contribution and applying the freshly
-// reparsed total; Prize Won (column M) and the tournament's Bankroll Ledger
-// row are corrected to match via upsertLedgerTournamentRow. If isKnockout
-// and the row's Type doesn't carry KnockoutSuffix yet, it's appended.
-//
-// hands is the number of hands dealt to screenName in this tournament so
-// far (column N, added alongside VPIP/PFR) — the weight /stats uses to
-// combine a tournament's VPIP/PFR into a hands-weighted average, the same
-// role Hands plays for cash sessions.
+// rawUpdateTournamentHandStats creates or updates hand-history data. For
+// completed results a bounty correction and its ledger cascade commit together.
 func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout, preserveBounty bool) error {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil {
@@ -738,64 +454,33 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 		bountyCents = max(bountyCents, snap.bountyCents)
 	}
 
-	// Every affected cell goes out in one batched call — previously this was
-	// up to five sequential Values.Update calls (B, J:L, N, I, M), each gap
-	// a window where a failure left the row internally inconsistent (e.g. a
-	// new bounty recorded but Net not yet reconciled to include it).
 	typeOut := snap.typeVal
 	if isKnockout {
 		typeOut = storage.AppendKnockoutSuffix(snap.typeVal)
 	}
-	var data []valueRange
+	writes := []gridWrite{{"Tournaments", rowIndex - 1, 11, [][]interface{}{{bountyCents}}}}
 	if storage.UseTournamentSample(preserveBounty, hands, snap.hands) {
-		data = append(data, valueRange{
-			Range:  fmt.Sprintf("Tournaments!J%d:L%d", rowIndex, rowIndex),
-			Values: [][]interface{}{{vpip, pfr, bountyCents}},
-		}, valueRange{
-			Range:  fmt.Sprintf("Tournaments!N%d", rowIndex),
-			Values: [][]interface{}{{hands}},
-		})
-	} else {
-		data = append(data, valueRange{
-			Range:  fmt.Sprintf("Tournaments!L%d", rowIndex),
-			Values: [][]interface{}{{bountyCents}},
-		})
+		writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, 9, [][]interface{}{{vpip, pfr}}}, gridWrite{"Tournaments", rowIndex - 1, 13, [][]interface{}{{hands}}})
 	}
 	if typeOut != snap.typeVal {
-		data = append(data, valueRange{
-			Range:  fmt.Sprintf("Tournaments!B%d", rowIndex),
-			Values: [][]interface{}{{typeOut}},
-		})
+		writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, 1, [][]interface{}{{typeOut}}})
 	}
-
-	var netCents money.Cents
-	if snap.hasNetUSD {
-		var prizeWonCents money.Cents
-		netCents, prizeWonCents, err = storage.ReconcileTournamentBounty(snap.netCents, snap.bountyCents, bountyCents, snap.buyInCents)
-		if err != nil {
-			return err
-		}
-		data = append(data,
-			valueRange{
-				Range:  fmt.Sprintf("Tournaments!I%d", rowIndex),
-				Values: [][]interface{}{{netCents}},
-			},
-			valueRange{
-				Range:  fmt.Sprintf("Tournaments!M%d", rowIndex),
-				Values: [][]interface{}{{prizeWonCents}},
-			},
-		)
-	}
-
-	if err := c.svc.valuesBatchUpdate(c.spreadsheetID, data); err != nil {
-		return fmt.Errorf("updating hand stats for tournament %s: %w", tournamentID, err)
-	}
-
 	if !snap.hasNetUSD {
-		// Summary still hasn't arrived — nothing to reconcile yet.
-		return nil
+		data := make([]valueRange, 0, len(writes))
+		for _, write := range writes {
+			data = append(data, valueRange{
+				Range:  fmt.Sprintf("Tournaments!%s%d:%s%d", columnLetter(write.column), rowIndex, columnLetter(write.column+len(write.values[0])-1), rowIndex),
+				Values: write.values,
+			})
+		}
+		return c.svc.valuesBatchUpdate(c.spreadsheetID, data)
 	}
-	return c.upsertLedgerTournamentRow(tournamentID, snap.date, netCents)
+	netCents, prizeWonCents, err := storage.ReconcileTournamentBounty(snap.netCents, snap.bountyCents, bountyCents, snap.buyInCents)
+	if err != nil {
+		return err
+	}
+	writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, 8, [][]interface{}{{netCents}}}, gridWrite{"Tournaments", rowIndex - 1, 12, [][]interface{}{{prizeWonCents}}})
+	return c.writeResults(writes, []storage.LedgerEntry{{Date: snap.date, Type: "tournament", AmountCents: netCents, SessionID: tournamentID}})
 }
 
 // ── Write-ahead fallback ────────────────────────────────────────────────
@@ -876,6 +561,21 @@ func (c *Client) AppendCashSession(session parsers.CashSession) error {
 	return nil
 }
 
+// DiscardTournamentRecovery drops a queued hand-history result superseded
+// by resumed play or an official summary. An official result keeps its queue.
+func (c *Client) DiscardTournamentRecovery(tournamentID string) error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	key := fallbackKindSummary + ":" + tournamentID
+	c.fallbackMu.Lock()
+	entry := c.fallback[key]
+	c.fallbackMu.Unlock()
+	if entry.Summary != nil && entry.Summary.Recovered() {
+		return c.retireFallback(key)
+	}
+	return nil
+}
+
 func (c *Client) AppendTournament(t parsers.Tournament) (money.Cents, error) {
 	if err := storage.ValidateTournament(t); err != nil {
 		return 0, err
@@ -883,6 +583,14 @@ func (c *Client) AppendTournament(t parsers.Tournament) (money.Cents, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	key := fallbackKindSummary + ":" + t.TournamentID
+	if t.Recovered() {
+		c.fallbackMu.Lock()
+		pending := c.fallback[key].Summary
+		c.fallbackMu.Unlock()
+		if pending != nil && !pending.Recovered() {
+			return 0, fmt.Errorf("official tournament result %s is queued", t.TournamentID)
+		}
+	}
 	entry := fallbackEntry{Kind: fallbackKindSummary, Summary: &t}
 	if err := c.prepareQueuedReplacement(key, entry); err != nil {
 		return 0, err
@@ -1398,7 +1106,7 @@ func (c *Client) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
 // over this single read, differing only in the date cutoff and whether the
 // caller wants those extra columns kept or discarded.
 func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
-	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:N")
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:P")
 	if err != nil {
 		return nil, fmt.Errorf("reading tournaments: %w", err)
 	}
@@ -1425,7 +1133,7 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 	return result, nil
 }
 
-// parseTournamentRow parses one Tournaments row (columns A:N) into a record.
+// parseTournamentRow parses one Tournaments row (columns A:P) into a record.
 // hasDate is false for a partial row — a hand file parsed before its summary
 // arrived, whose Date cell (column A) is blank — which callers reading only
 // completed tournaments skip, but the migration snapshot keeps (with a zero
@@ -1434,6 +1142,8 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDate bool, err error) {
 	rec.Type = fmt.Sprint(cell(row, 1))
 	rec.TournamentID = fmt.Sprint(cell(row, 2))
+	rec.ResultSource = fmt.Sprint(cell(row, 14))
+	rec.ResultHandID = fmt.Sprint(cell(row, 15))
 	if date, err := parseSheetDate(cell(row, 0)); err == nil {
 		rec.Date = date
 		hasDate = true
@@ -1492,7 +1202,7 @@ func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDat
 // drops partials, which a migration must carry so an in-progress tournament
 // keeps its hand-file stats across a backend switch.
 func (c *Client) allTournamentRows() ([]storage.TournamentRecord, error) {
-	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:N")
+	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:P")
 	if err != nil {
 		return nil, fmt.Errorf("reading tournaments: %w", err)
 	}
@@ -1524,7 +1234,7 @@ func (c *Client) GetTournamentByID(tournamentID string) (parsers.Tournament, boo
 	if err != nil || !found {
 		return parsers.Tournament{}, false, err
 	}
-	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:N%d", rowIndex, rowIndex))
+	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:P%d", rowIndex, rowIndex))
 	if err != nil {
 		return parsers.Tournament{}, false, fmt.Errorf("reading tournament row %d: %w", rowIndex, err)
 	}
@@ -1646,21 +1356,22 @@ func buildTournamentRows(tournaments []storage.TournamentRecord) [][]interface{}
 			}
 			continue
 		}
-		var prizePool interface{} = t.PrizePoolCents
-		if t.PrizePoolDescription != "" {
-			prizePool = t.PrizePoolDescription
-		}
-		var multiplier interface{} = ""
-		if t.Multiplier != nil {
-			multiplier = *t.Multiplier
-		}
-		rows[i] = []interface{}{
-			t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInCents, prizePool, multiplier,
-			t.FinishPos, t.TotalPlayers, t.NetCents, floatCell(t.VPIP), floatCell(t.PFR),
-			t.BountyWonCents, t.PrizeWonCents, intCell(t.Hands),
-		}
+		rows[i] = append(tournamentResultCells(t.Tournament),
+			floatCell(t.VPIP), floatCell(t.PFR), t.BountyWonCents, t.PrizeWonCents, intCell(t.Hands), t.ResultSource, t.ResultHandID,
+		)
 	}
 	return rows
+}
+
+func tournamentResultCells(t parsers.Tournament) []interface{} {
+	var prizePool interface{} = t.PrizePoolCents
+	if t.PrizePoolDescription != "" {
+		prizePool = t.PrizePoolDescription
+	}
+	return []interface{}{
+		t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInCents, prizePool, floatCell(t.Multiplier),
+		t.FinishPos, t.TotalPlayers, t.NetCents,
+	}
 }
 
 func buildLedgerRows(entries []storage.LedgerEntry) [][]interface{} {

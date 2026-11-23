@@ -367,6 +367,9 @@ func SpinGoPrizePoolText(t parsers.Tournament) string {
 	if t.PrizePoolDescription != "" {
 		return t.PrizePoolDescription
 	}
+	if t.Recovered() && t.PrizePoolCents == 0 {
+		return "Unknown"
+	}
 	mult := 0.0
 	if t.Multiplier != nil {
 		mult = *t.Multiplier
@@ -425,7 +428,7 @@ func (b *Bot) handleLastSession(chatID int64) {
 			formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankrollCents))
 		return
 	}
-	send(b.tg, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%s\nFinish: %s / %d\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%s", lastTourn.BuyInCents, Ordinal(lastTourn.FinishPos), lastTourn.TotalPlayers, FormatSignedUSD(lastTourn.NetCents),
+	send(b.tg, chatID, fmt.Sprintf("🏆 MTT\nBuy-in: $%s\nFinish: %s\nNet: %s\nVPIP: %s\nPFR: %s\nBankroll: $%s", lastTourn.BuyInCents, TournamentFinishText(*lastTourn), FormatSignedUSD(lastTourn.NetCents),
 		formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankrollCents))
 }
 
@@ -542,11 +545,11 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 			cnt++
 		}
 	}
-	var avgFinish float64
+	message := fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d", emoji, label, periodLabel, FormatSignedUSD(netCents), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered))
 	if cnt > 0 {
-		avgFinish = avgFinishSum / float64(cnt)
+		message += fmt.Sprintf("\nAvg finish: %.0f%%", avgFinishSum/float64(cnt))
 	}
-	return fmt.Sprintf("%s %s Stats (%s)\nNet: %s\nROI: %s\nVPIP: %s\nPFR: %s\nGames: %d\nAvg finish: %.0f%%", emoji, label, periodLabel, FormatSignedUSD(netCents), formatSignedPercent(r), formatPercent(vpip), formatPercent(pfr), len(filtered), avgFinish), nil
+	return message, nil
 }
 
 // lockStatus is shared by the status command and hard-stop menu.

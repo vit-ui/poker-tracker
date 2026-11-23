@@ -25,7 +25,7 @@ func (b *Bot) checkPendingTournaments(now time.Time) {
 	var due []config.PendingTournament
 	err := config.UpdatePendingTournaments(pendingPath, func(pending []config.PendingTournament) ([]config.PendingTournament, bool) {
 		for i := range pending {
-			if now.Sub(pending[i].LastRemindedAt) <= 30*time.Minute {
+			if pending[i].QuietUntil != nil || pending[i].Historical || now.Sub(pending[i].LastRemindedAt) <= 30*time.Minute {
 				continue
 			}
 			due = append(due, pending[i])
@@ -38,9 +38,12 @@ func (b *Bot) checkPendingTournaments(now time.Time) {
 		return
 	}
 	for _, entry := range due {
-		if entry.Reason == config.PendingFreerollBuyin {
+		switch entry.Reason {
+		case config.PendingFreerollBuyin:
 			b.sendFreerollBuyInMenu(entry.Tournament)
-		} else {
+		case config.PendingMissingResult:
+			b.sendMissingResult(entry)
+		default:
 			b.sendSatelliteMenu(entry.Tournament)
 		}
 	}
@@ -60,7 +63,7 @@ func (b *Bot) sendSatelliteMenu(t parsers.Tournament) {
 	if t.BaseType() == "spingo" {
 		gameType = "Spin & Go"
 	}
-	text := fmt.Sprintf("🎫 Satellite/qualifier detected\n%s #%s\nDate: %s\nBuy-in: $%s\nFinish: %s / %d\nPrize: %s\nDid you pay cash for your entry, or use a ticket?", gameType, t.TournamentID, t.Date.Format("2006-01-02 15:04"), t.BuyInCents, Ordinal(t.FinishPos), t.TotalPlayers, t.WinnerPrizeDescription)
+	text := fmt.Sprintf("🎫 Satellite/qualifier detected\n%s #%s\nDate: %s\nBuy-in: $%s\nFinish: %s\nPrize: %s\nDid you pay cash for your entry, or use a ticket?", gameType, t.TournamentID, t.Date.Format("2006-01-02 15:04"), t.BuyInCents, TournamentFinishText(t), t.WinnerPrizeDescription)
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("💵 Paid cash", "satellite_cash:"+t.TournamentID),
@@ -80,13 +83,8 @@ func RecoverTicketPayout(buyInCents, netCents money.Cents) (newBuyInCents, newNe
 
 // resolveSatellite handles a tap on the satellite/ticket confirmation menu.
 func (b *Bot) resolveSatellite(chatID int64, messageID int, tournamentID string, paidCash bool) {
-	b.queueOperation(func(store storage.Store) storage.OperationResult {
-		return recordPendingTournament(store, b.configPath, tournamentID, func(t parsers.Tournament) parsers.Tournament {
-			if !paidCash {
-				t.BuyInCents, t.NetCents = RecoverTicketPayout(t.BuyInCents, t.NetCents)
-			}
-			return t
-		})
+	b.queueTournamentAnswer(storage.TournamentAnswer{
+		TournamentID: tournamentID, Reason: config.PendingSatellite, Ticket: !paidCash,
 	}, func(result storage.OperationResult) {
 		if result.Err != nil {
 			slog.Error("recording resolved satellite", "err", result.Err)

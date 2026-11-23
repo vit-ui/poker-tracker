@@ -28,19 +28,8 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// cashSessionSummaryQuietPeriod is the default Server.QuietPeriod: how long a
-// cash table must go without a new hand before its session is treated as over.
-// A hand history file gets a fresh event on every hand played at that table;
-// rather than write and evaluate on every hand (a growing, still-incomplete
-// snapshot each time), the tracker waits for the table to go quiet, then writes
-// the session once and runs the ledger-based hard stops, alerts, and summary —
-// the same time-gap technique poker trackers use to detect a session boundary.
-// (The session-loss hard stop and alert still run per hand, from the in-memory
-// session, so a bleeding session is stopped mid-play.) 150 seconds trades a
-// faster session record after quitting against a higher chance of a mid-session
-// break tripping it early (a resumed table then re-writes on the next quiet
-// period — an idempotent upsert).
-const cashSessionSummaryQuietPeriod = parsers.CashQuietPeriod
+// Cash tables and tournament recovery use the same inactivity threshold.
+const resultQuietPeriod = parsers.CashQuietPeriod
 
 // parseEntry is one file's carried incremental-parse state plus when it was
 // last touched, so idle entries can be evicted (see parseStateCap/TTL).
@@ -83,11 +72,8 @@ type Server struct {
 	alertChan  chan<- string
 	workDir    string
 
-	// QuietPeriod is how long a cash table must go without a new hand before
-	// its session is treated as over — the point the session is written to
-	// storage and the ledger-based hard stops/alerts/summary run (see the cash
-	// branch in Run). Defaults to cashSessionSummaryQuietPeriod; the end-to-end
-	// pipeline test overrides it to a few hundred ms so session-end fires fast.
+	// QuietPeriod is the time without activity before the worker finalizes a
+	// cash session or considers recovering a tournament from a finished hand.
 	QuietPeriod time.Duration
 
 	// clockOffset is the difference between the collector's clock and this
@@ -133,7 +119,7 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{Ready: make(chan struct{}), clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, ReleaseChecks: make(chan struct{}, 1), TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
+	return &Server{Ready: make(chan struct{}), clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, ReleaseChecks: make(chan struct{}, 1), TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: resultQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -286,7 +272,7 @@ func (s *Server) Run() error {
 	// ledger-based evaluation (endCashSession). Both the map and pendingSessions
 	// are touched only on this goroutine — the timer callback merely sends on the
 	// channel — so no mutex is needed.
-	summaryTimers := make(map[string]*cashTimer)
+	summaryTimers := make(map[string]*quietTimer)
 	defer func() {
 		for _, timer := range summaryTimers {
 			timer.Stop()
@@ -294,7 +280,7 @@ func (s *Server) Run() error {
 	}()
 	pendingSessions := make(map[string]parsers.CashSession)
 	pendingScreenNames := make(map[string]string)
-	sessionEndChan := make(chan cashEndSignal)
+	sessionEndChan := make(chan quietSignal)
 	workerDone := make(chan struct{})
 	defer close(workerDone)
 	journalPath := filepath.Join(filepath.Dir(s.configPath), "pending_cash.json")
@@ -320,7 +306,7 @@ func (s *Server) Run() error {
 		resyncPending[entry.FileID] = true
 		recoveredSnapshots[entry.FileID] = entry
 		remaining := remainingCashQuiet(s.QuietPeriod, entry.LastActivity, time.Now())
-		armCashSessionEnd(summaryTimers, entry.FileID, remaining, sessionEndChan, workerDone)
+		armQuietTimer(summaryTimers, entry.FileID, remaining, sessionEndChan, workerDone)
 	}
 	s.pruneCashHistory(pendingScreenNames)
 	defer s.pruneCashHistory(pendingScreenNames)
@@ -353,7 +339,9 @@ func (s *Server) Run() error {
 	// the ImportStart marker and reported by ImportDone. Touched only on this
 	// goroutine.
 	var importCounts storage.ScanTally
+	var importTournaments tournamentScan
 	var folderScan bool
+	var folderScanDisconnected <-chan struct{}
 	var scanningFile *fileScan
 	defer func() {
 		if scanningFile != nil {
@@ -425,6 +413,22 @@ func (s *Server) Run() error {
 			deliveriesDirty = false
 		}
 	}
+
+	tournaments := tournamentResults{
+		server: s, path: filepath.Join(filepath.Dir(s.configPath), "pending_tournaments.json"),
+		timers: make(map[string]*quietTimer), signals: make(chan quietSignal), done: workerDone,
+		enforce: enforce, fired: firedAlerts,
+	}
+	if !receiver.reserved() {
+		if err := tournaments.restoreTimers(); err != nil {
+			return err
+		}
+	}
+	defer func() {
+		for _, timer := range tournaments.timers {
+			timer.Stop()
+		}
+	}()
 
 	finalizeCash := func(fileID string) error {
 		snapshot, present := pendingSessions[fileID]
@@ -520,16 +524,23 @@ func (s *Server) Run() error {
 		}
 		var operations <-chan storage.Operation
 		var uploads <-chan transport.Upload
-		var endings <-chan cashEndSignal
+		var endings, tournamentEndings <-chan quietSignal
 		var release <-chan struct{}
 		var commands chan<- transport.Command
 		var command transport.Command
 		restoringLock := false
-		var disconnected, scanDisconnected <-chan struct{}
+		var disconnected, scanDisconnected, folderDisconnected <-chan struct{}
+		if len(s.link.Uploads) == 0 {
+			folderDisconnected = folderScanDisconnected
+		}
 		var scanResults <-chan scanResult
 		if heldOperation == nil {
 			uploads = s.link.Uploads
 			endings = sessionEndChan
+			// Apply buffered play and summaries before deciding a recovery.
+			if !folderScan && scanningFile == nil && len(s.link.Uploads) == 0 {
+				tournamentEndings = tournaments.signals
+			}
 			if pendingCollection == nil && offlinePreparation == nil {
 				operations = s.Operations
 			}
@@ -624,7 +635,7 @@ func (s *Server) Run() error {
 		var up transport.Upload
 
 		if receiver.reserved() {
-			endings = nil
+			endings, tournamentEndings = nil, nil
 			commands = nil
 			resync = nil
 		}
@@ -647,7 +658,14 @@ func (s *Server) Run() error {
 			if (call.Request.Kind == transport.TransferReserve || call.Request.Kind == transport.TransferBegin) && (scanningFile != nil || folderScan || len(s.link.Uploads) > 0) {
 				call.Reply <- receiver.reply(call.Request.ID, fmt.Errorf("accepted collector uploads have not drained"))
 			} else {
-				call.Reply <- receiver.handle(call.Request)
+				wasReserved := receiver.reserved()
+				reply := receiver.handle(call.Request)
+				if wasReserved && !receiver.reserved() {
+					if err := tournaments.restoreTimers(); err != nil {
+						slog.Error("restoring tournament recovery after transfer", "err", err)
+					}
+				}
+				call.Reply <- reply
 			}
 			continue
 		case <-drain:
@@ -694,12 +712,16 @@ func (s *Server) Run() error {
 			}
 			continue
 		case parsed := <-scanResults:
-			scanningFile.record(s.store, parsed)
+			scanningFile.record(&tournaments, parsed)
 			if parsed.done {
 				scanningFile.request.Reply <- scanningFile.result
 				scanningFile.close()
 				scanningFile = nil
 			}
+			continue
+		case <-folderDisconnected:
+			folderScan, folderScanDisconnected = false, nil
+			importCounts, importTournaments = storage.ScanTally{}, tournamentScan{}
 			continue
 		case <-scanDisconnected:
 			scanningFile.request.Reply <- storage.OperationResult{Err: fmt.Errorf("the poker PC disconnected before the file finished transferring")}
@@ -723,6 +745,10 @@ func (s *Server) Run() error {
 		case operation := <-operations:
 			if receiver.reserved() {
 				operation.Reply <- storage.OperationResult{Err: fmt.Errorf("destination is reserved for deployment transfer")}
+				continue
+			}
+			if answer := operation.TournamentAnswer; answer != nil {
+				operation.Reply <- tournaments.confirm(*answer)
 				continue
 			}
 			if operation.ScanPath != "" || operation.ScanAttachment != "" {
@@ -818,6 +844,9 @@ func (s *Server) Run() error {
 				}
 				result := operation.Apply(s.store)
 				if operation.FinalizeCash {
+					if err := tournaments.restoreExpired(); err != nil {
+						slog.Error("restoring expired tournament recovery", "err", err)
+					}
 					for file := range pendingSessions {
 						if time.Since(activity[file]) >= s.QuietPeriod {
 							if err := finalizeCash(file); err != nil {
@@ -845,11 +874,20 @@ func (s *Server) Run() error {
 				pendingCollection.command.Kind = transport.CommandDrainCollection
 			}
 			continue
+		case signal := <-tournamentEndings:
+			if tournaments.timers[signal.Key] == signal.Generation {
+				stopQuietTimer(tournaments.timers, signal.Key)
+				if err := tournaments.expire(signal.Key); err != nil {
+					recordDrainFailure(err)
+					slog.Error("finalizing pending tournament", "err", err)
+				}
+			}
+			continue
 		case signal := <-endings:
-			if summaryTimers[signal.FileID] != signal.Generation {
+			if summaryTimers[signal.Key] != signal.Generation {
 				continue
 			}
-			fileID := signal.FileID
+			fileID := signal.Key
 			// A cash table went quiet: write the now-complete session and run
 			// the ledger-based hard stops, alerts, and summary — all on this
 			// goroutine. The per-hand session-loss guard already ran below.
@@ -1054,13 +1092,18 @@ func (s *Server) Run() error {
 		// reports it.
 		switch up.Type {
 		case transport.ImportStart:
-			folderScan = true
+			folderScan, folderScanDisconnected = true, connection
 			importCounts = storage.ScanTally{}
+			importTournaments = tournamentScan{}
 			continue
 		case transport.ImportDone:
-			folderScan = false
+			folderScan, folderScanDisconnected = false, nil
+			if err := importTournaments.finish(&tournaments, &importCounts); err != nil {
+				slog.Error("recovering tournament results from folder scan", "err", err)
+			}
 			bot.PostAlert(s.alertChan, importCounts.String())
 			importCounts = storage.ScanTally{}
+			importTournaments = tournamentScan{}
 			continue
 		}
 
@@ -1102,11 +1145,32 @@ func (s *Server) Run() error {
 		// alerts, no summary, no quiet-period deferral — and never touches the
 		// live evaluation path below.
 		if up.Import {
+			s.updateClock(up.ClientClock)
 			switch up.Type {
 			case "cash":
-				recordDrainFailure(importCounts.HandHistory(s.store, path, screenName))
+				err := parsers.ScanHistoryFile(path, screenName, func(session *parsers.CashSession, hands []parsers.CashHand, stats *parsers.TournamentHandStats, err error) bool {
+					recordDrainFailure(importTournaments.record(s.store, &importCounts, scanResult{cash: session, hands: hands, tournament: stats, err: err}))
+					return true
+				}, func(summary parsers.Tournament, err error) bool {
+					if err != nil {
+						recordDrainFailure(importTournaments.record(s.store, &importCounts, scanResult{err: err}))
+					} else {
+						recordDrainFailure(importTournaments.summary(&tournaments, &importCounts, summary))
+					}
+					return true
+				})
+				if err != nil {
+					recordDrainFailure(importTournaments.record(s.store, &importCounts, scanResult{err: err}))
+				}
 			case "tournament":
-				recordDrainFailure(importCounts.TournamentSummary(s.store, path, screenName))
+				t, err := parsers.ParseTournamentFile(path, screenName)
+				if err != nil {
+					importCounts.Failed++
+					slog.Error("parsing tournament summary during scan", "err", err)
+				} else {
+					err = importTournaments.summary(&tournaments, &importCounts, t)
+				}
+				recordDrainFailure(err)
 			}
 			continue
 		}
@@ -1168,7 +1232,7 @@ func (s *Server) Run() error {
 					if err := persistPending(); err != nil {
 						return err
 					}
-					armCashSessionEnd(summaryTimers, up.FileID, remainingCashQuiet(s.QuietPeriod, lastActivity, time.Now()), sessionEndChan, workerDone)
+					armQuietTimer(summaryTimers, up.FileID, remainingCashQuiet(s.QuietPeriod, lastActivity, time.Now()), sessionEndChan, workerDone)
 				}
 
 				continue
@@ -1215,10 +1279,14 @@ func (s *Server) Run() error {
 				}
 				delete(resyncPending, up.FileID)
 				delete(recoveredSnapshots, up.FileID)
-				armCashSessionEnd(summaryTimers, up.FileID, remainingCashQuiet(s.QuietPeriod, lastActivity, time.Now()), sessionEndChan, workerDone)
+				armQuietTimer(summaryTimers, up.FileID, remainingCashQuiet(s.QuietPeriod, lastActivity, time.Now()), sessionEndChan, workerDone)
 			} else if tourneyStats != nil {
+				if err := tournaments.invalidateFinish(*tourneyStats); err != nil {
+					return fmt.Errorf("invalidating tournament finish: %w", err)
+				}
 				before := sheetsPending(s.store)
-				if err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyCents, tourneyStats.IsKnockout); err != nil {
+				err := s.store.UpdateTournamentHandStats(tourneyStats.TournamentID, tourneyStats.VPIP, tourneyStats.PFR, tourneyStats.Hands, tourneyStats.BountyCents, tourneyStats.IsKnockout)
+				if err != nil {
 					recordDrainFailure(err)
 					slog.Error("updating tournament hand stats", "err", err, "tournament_id", tourneyStats.TournamentID)
 					if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
@@ -1226,6 +1294,15 @@ func (s *Server) Run() error {
 					}
 				} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
 					bot.PostAlert(s.alertChan, msg)
+				}
+				if err == nil && tourneyStats.Finish != nil {
+					if lastActivity.IsZero() {
+						lastActivity = now
+					}
+					_, _, err := tournaments.history(*tourneyStats, lastActivity, false)
+					if err != nil {
+						return fmt.Errorf("journaling tournament activity: %w", err)
+					}
 				}
 			} else {
 				slog.Error("ParseCashFile returned no session and no tournament stats", "file", up.FileID)
@@ -1239,76 +1316,9 @@ func (s *Server) Run() error {
 				continue
 			}
 
-			// Checked once, here, before either the satellite queue or the
-			// direct-append path below runs — a duplicate file event for a
-			// tournament already handled must never send a second Telegram
-			// alert, ask the satellite/ticket question twice, or queue a second
-			// pending entry. A re-entry rewrite is deliberately *not* treated as
-			// a duplicate: PokerStars overwrites the summary each time
-			// screenName busts an entry, and each rewrite carries a larger
-			// buy-in / different finish that must update the row, ledger, and
-			// bankroll. See tournamentAlreadyHandled's doc comment.
-			duplicate, err := tournamentAlreadyHandled(t, s.configPath, s.store)
-			if err != nil {
+			if _, _, err := tournaments.official(t, false); err != nil {
 				recordDrainFailure(err)
-				slog.Error("checking for duplicate tournament processing", "err", err)
-				continue
-			} else if duplicate {
-				continue
-			}
-
-			// Two kinds of tournament can't be recorded straight away because
-			// the summary file doesn't carry enough to know the real money
-			// movement: a LikelySatellite (ticket vs cash entry unknown) and a
-			// zero-buy-in freeroll/Kick-Off (entry cost unknown). Both queue
-			// here and the bot asks the player; only the answer records the row.
-			// Satellite is checked first so a satellite that also has no buy-in
-			// keeps the ticket-vs-cash question.
-			var reason string
-			switch {
-			case t.LikelySatellite:
-				reason = config.PendingSatellite
-			case t.BuyInCents == 0:
-				reason = config.PendingFreerollBuyin
-			}
-			if reason != "" {
-				pendingPath := filepath.Join(filepath.Dir(s.configPath), "pending_tournaments.json")
-				err := config.UpdatePendingTournaments(pendingPath, func(pending []config.PendingTournament) ([]config.PendingTournament, bool) {
-					return append(pending, config.PendingTournament{Tournament: t, Reason: reason, FirstQueuedAt: time.Now()}), true
-				})
-				if err != nil {
-					recordDrainFailure(err)
-					slog.Error("queueing pending tournament", "err", err)
-				}
-				continue
-			}
-
-			before := sheetsPending(s.store)
-			netCents, err := s.store.AppendTournament(t)
-			if err != nil {
-				recordDrainFailure(err)
-				slog.Error("appending tournament to sheets", "err", err,
-					"date", t.Date.Format("2006-01-02 15:04"), "tournament_id", t.TournamentID)
-				if msg := writeFailureMessage(before, sheetsPending(s.store), err); msg != "" {
-					bot.PostAlert(s.alertChan, msg)
-				}
-			} else if msg := syncedMessage(before, sheetsPending(s.store)); msg != "" {
-				bot.PostAlert(s.alertChan, msg)
-			}
-			// Fetched after the write, like the cash branch — and always
-			// including the ledger here, since the post-tournament alert below
-			// needs the bankroll (its last running total) regardless of what's
-			// configured.
-			ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
-			bankrollCents := ledgerBankroll(ledger)
-			if err := hardstop.EvaluateTournament(t, &evalCfg, ledger, dayTournaments, evalNow, automaticEnforcement(&evalCfg, evalNow, nil, &t, ledger, dayTournaments, enforce)); err != nil {
-				recordDrainFailure(err)
-				slog.Error("evaluating hard stop", "err", err)
-			}
-			bot.EvaluateDownswingAlert(t.BuyInCents, &evalCfg, ledger, bankrollCents, evalNow, s.alertChan)
-			evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankrollCents, evalNow, s.alertChan, firedAlerts, "tournament:"+t.TournamentID)
-			if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.TournamentSummary), netCents) {
-				bot.PostAlert(s.alertChan, tournamentAlertText(t, netCents, bankrollCents))
+				slog.Error("processing tournament summary", "err", err)
 			}
 		}
 	}
@@ -1423,56 +1433,8 @@ func ledgerBankroll(ledger []storage.LedgerEntry) money.Cents {
 	return ledger[len(ledger)-1].RunningTotalCents
 }
 
-// tournamentAlreadyHandled reports whether tournament t has already been queued
-// for a satellite/ticket answer, or already fully recorded with the same
-// money-relevant data. The single place guarding against a duplicate tournament
-// summary file event causing a second Telegram alert, a second satellite/ticket
-// question, or a second pending-queue entry for the same TournamentID.
-//
-// A re-entry rewrite is intentionally *not* a duplicate: PokerStars overwrites
-// the same summary each time screenName busts an entry, and each rewrite carries
-// a larger total buy-in and a different finish, which must flow through to the
-// row/ledger/bankroll (AppendTournament upserts by TournamentID).
-func tournamentAlreadyHandled(t parsers.Tournament, configPath string, sc storage.Store) (bool, error) {
-	pendingPath := filepath.Join(filepath.Dir(configPath), "pending_tournaments.json")
-	pending, err := config.LoadPendingTournaments(pendingPath)
-	if err != nil {
-		return false, err
-	}
-	// Point lookup, not a full-history read — this runs on every tournament
-	// file event (and once per re-entry bust). found is false for a partial row
-	// (hand file arrived before the summary), so a tournament whose hand stats
-	// landed first is correctly reported as not yet handled.
-	recorded, found, err := sc.GetTournamentByID(t.TournamentID)
-	if err != nil {
-		return false, err
-	}
-	duplicate, refreshIdx := isDuplicateTournament(t, pending, recorded, found)
-	if refreshIdx >= 0 {
-		// Re-entry rewrite while the satellite/ticket question is still
-		// unanswered: no second question, but the queued snapshot is stale —
-		// refresh it so the eventual answer records the current buy-in and
-		// finish instead of the first bust's. Reminder timestamps are kept.
-		err := config.UpdatePendingTournaments(pendingPath, func(current []config.PendingTournament) ([]config.PendingTournament, bool) {
-			for i := range current {
-				if current[i].Tournament.TournamentID == t.TournamentID {
-					current[i].Tournament = t
-					return current, true
-				}
-			}
-			return current, false
-		})
-		if err != nil {
-			return false, fmt.Errorf("refreshing pending tournament after re-entry rewrite: %w", err)
-		}
-	}
-	return duplicate, nil
-}
-
-// isDuplicateTournament is the pure decision tournamentAlreadyHandled wraps
-// around its I/O: t is a duplicate if it's already awaiting an answer in the
-// pending queue, or already recorded with the same content (see
-// sameTournamentContent).
+// isDuplicateTournament checks whether an official summary is already
+// awaiting an answer or recorded with the same result content.
 //
 // refreshPendingIdx >= 0 means t matched a pending entry by ID but its content
 // changed — a re-entry rewrite arriving while the satellite/ticket question is
@@ -1491,7 +1453,7 @@ func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournam
 			return true, i
 		}
 	}
-	if recordedFound {
+	if recordedFound && !recorded.Recovered() {
 		// The buy-in can't always be compared, because either side may hold a
 		// value that came from a player answer the summary file doesn't
 		// reproduce (a satellite answered "used a ticket", or a freeroll whose
@@ -1516,30 +1478,28 @@ func sameTournamentContent(a, b parsers.Tournament) bool {
 		a.TotalPlayers == b.TotalPlayers
 }
 
-// armCashSessionEnd (re)starts a quietPeriod timer for a cash table (keyed by
-// FileID). A new hand for the same table stops the pending timer and starts a
-// fresh one, so an actively-played table never fires early; once quietPeriod
-// passes with no new hand the timer signals sessionEndChan and the worker
-// writes the session (endCashSession). The map is touched only by the worker
-// goroutine (this function and endCashSession); the timer callback merely sends
-// on the channel, so no mutex is needed.
-// A cashTimer object is a unique generation token, including across deletion
-// and later reuse of the same file ID. Callbacks never mutate worker state.
-type cashTimer struct{ *time.Timer }
-type cashEndSignal struct {
-	FileID     string
-	Generation *cashTimer
+// The timer object is a generation token. Only the worker changes the
+// timer map, and an old callback can never match a reused key.
+type quietTimer struct{ *time.Timer }
+type quietSignal struct {
+	Key        string
+	Generation *quietTimer
 }
 
-func armCashSessionEnd(timers map[string]*cashTimer, fileID string, quietPeriod time.Duration, sessionEndChan chan<- cashEndSignal, done <-chan struct{}) {
-	if previous := timers[fileID]; previous != nil {
-		previous.Stop()
+func stopQuietTimer(timers map[string]*quietTimer, key string) {
+	if timer := timers[key]; timer != nil {
+		timer.Stop()
+		delete(timers, key)
 	}
-	generation := &cashTimer{}
-	timers[fileID] = generation
+}
+
+func armQuietTimer(timers map[string]*quietTimer, key string, quietPeriod time.Duration, signals chan<- quietSignal, done <-chan struct{}) {
+	stopQuietTimer(timers, key)
+	generation := &quietTimer{}
+	timers[key] = generation
 	generation.Timer = time.AfterFunc(quietPeriod, func() {
 		select {
-		case sessionEndChan <- cashEndSignal{FileID: fileID, Generation: generation}:
+		case signals <- quietSignal{Key: key, Generation: generation}:
 		case <-done:
 		}
 	})
@@ -1554,7 +1514,7 @@ func armCashSessionEnd(timers map[string]*cashTimer, fileID string, quietPeriod 
 // this table's quiet-period timer alongside its pending session. Runs on the
 // worker goroutine, so pendingSessions/summaryTimers/firedAlerts stay
 // single-threaded.
-func (s *Server) endCashSession(fileID, screenName string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*cashTimer, firedAlerts map[string]bool, enforce func(reason string, durationHours int, triggerID string)) error {
+func (s *Server) endCashSession(fileID, screenName string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*quietTimer, firedAlerts map[string]bool, enforce func(reason string, durationHours int, triggerID string)) error {
 	session, ok := pendingSessions[fileID]
 	if !ok {
 		return nil
@@ -1568,11 +1528,6 @@ func (s *Server) endCashSession(fileID, screenName string, pendingSessions map[s
 		slog.Error("loading config for cash session end", "err", err)
 		return err
 	}
-	evalCfg := *cfg
-	evalCfg.Alerts = config.EffectiveAlerts(cfg.Alerts)
-	evalCfg.Hardstop = config.EffectiveHardstop(cfg.Hardstop)
-	evalNow := s.ClientNow()
-
 	before := sheetsPending(s.store)
 	var writeErr error
 	if screenName == "" {
@@ -1600,43 +1555,53 @@ func (s *Server) endCashSession(fileID, screenName string, pendingSessions map[s
 	}
 
 	delete(pendingSessions, fileID)
-	// Drop this table's timer with its pending session — its job is done.
-	// Without this, summaryTimers would grow one entry per distinct cash-table
-	// file path for the life of the process (a new hand-history file per table
-	// per day), unlike the bounded parseStates. Stop before dropping the handle
-	// so a superseding timer can't later fire a stale send.
-	if timer, ok := summaryTimers[fileID]; ok {
-		timer.Stop()
-		delete(summaryTimers, fileID)
-	}
+	stopQuietTimer(summaryTimers, fileID)
+	s.evaluateResult(cfg, &session, nil, session.NetCents, true, firedAlerts, enforce)
+	return nil
+}
 
-	// Always fetch the ledger (forceLedger) — the summary below needs the
-	// bankroll regardless of what alerts/hard stops are configured. The fetch is
-	// after the write, so the ledger includes the session just recorded.
-	ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, evalNow, true)
+func (s *Server) evaluateResult(cfg *config.Config, cash *parsers.CashSession, tournament *parsers.Tournament, netCents money.Cents, notify bool, firedAlerts map[string]bool, enforce func(string, int, string)) money.Cents {
+	evalCfg := *cfg
+	evalCfg.Alerts = config.EffectiveAlerts(cfg.Alerts)
+	evalCfg.Hardstop = config.EffectiveHardstop(cfg.Hardstop)
+	now := s.ClientNow()
+	ledger, dayTournaments := fetchEvalData(s.store, &evalCfg, now, true)
 	bankrollCents := ledgerBankroll(ledger)
-	if err := hardstop.Evaluate(session, &evalCfg, ledger, dayTournaments, evalNow, automaticEnforcement(&evalCfg, evalNow, &session, nil, ledger, dayTournaments, enforce)); err != nil {
+	trigger := automaticEnforcement(&evalCfg, now, cash, tournament, ledger, dayTournaments, enforce)
+	var err error
+	var buyInCents money.Cents
+	var key string
+	var mode *string
+	if cash != nil {
+		err = hardstop.Evaluate(*cash, &evalCfg, ledger, dayTournaments, now, trigger)
+		buyInCents, key, mode = cash.BuyInCents, "cash:"+cash.FirstHandID, cfg.Notifications.CashSessionSummary
+	} else {
+		err = hardstop.EvaluateTournament(*tournament, &evalCfg, ledger, dayTournaments, now, trigger)
+		buyInCents, key, mode = tournament.BuyInCents, "tournament:"+tournament.TournamentID, cfg.Notifications.TournamentSummary
+	}
+	if err != nil {
 		slog.Error("evaluating hard stop", "err", err)
 	}
-	bot.EvaluateDownswingAlert(session.BuyInCents, &evalCfg, ledger, bankrollCents, evalNow, s.alertChan)
-	sessionKey := "cash:" + session.FirstHandID
-	if config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+sessionKey] {
-		if err := bot.EvaluateStakeChangeAlert(session, s.store, s.alertChan); err != nil {
-			slog.Error("evaluating stake change alert", "err", err,
-				"date", session.Date.Format("2006-01-02 15:04"), "stake", session.Stake,
-				"session_id", sheets.CashSessionID(session.Date, session.FirstHandID))
+	if !notify {
+		return bankrollCents
+	}
+	bot.EvaluateDownswingAlert(buyInCents, &evalCfg, ledger, bankrollCents, now, s.alertChan)
+	if cash != nil && config.NotificationEnabled(cfg.Notifications.StakeChange) && !firedAlerts["stake:"+key] {
+		if err := bot.EvaluateStakeChangeAlert(*cash, s.store, s.alertChan); err != nil {
+			slog.Error("evaluating stake change alert", "err", err, "session_id", cash.FirstHandID)
 		} else {
-			firedAlerts["stake:"+sessionKey] = true
+			firedAlerts["stake:"+key] = true
 		}
 	}
-	evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankrollCents, evalNow, s.alertChan, firedAlerts, sessionKey)
-
-	// Post-session summary, gated by its notification mode against the final
-	// net (raw cfg — the effective copy blanks thresholds, not notifications).
-	if config.ShouldSendSummary(config.SummaryMode(cfg.Notifications.CashSessionSummary), session.NetCents) {
-		bot.PostAlert(s.alertChan, cashSessionSummaryText(session, bankrollCents))
+	evaluateOncePerKeyAlerts(&evalCfg, ledger, dayTournaments, bankrollCents, now, s.alertChan, firedAlerts, key)
+	if config.ShouldSendSummary(config.SummaryMode(mode), netCents) {
+		if cash != nil {
+			bot.PostAlert(s.alertChan, cashSessionSummaryText(*cash, bankrollCents))
+		} else {
+			bot.PostAlert(s.alertChan, tournamentAlertText(*tournament, netCents, bankrollCents))
+		}
 	}
-	return nil
+	return bankrollCents
 }
 
 // tournamentAlertText formats the post-tournament summary alert. When the
@@ -1647,7 +1612,7 @@ func tournamentAlertText(t parsers.Tournament, netCents, bankrollCents money.Cen
 	if t.BaseType() == "spingo" {
 		msg = fmt.Sprintf("🎰 Spin & Go\nBuy-in: $%s\nPrize pool: %s\nFinish: %s\nNet: %s\nBankroll: $%s", t.BuyInCents, bot.SpinGoPrizePoolText(t), bot.Ordinal(t.FinishPos), bot.FormatSignedUSD(netCents), bankrollCents)
 	} else {
-		msg = fmt.Sprintf("🏆 MTT\nBuy-in: $%s\nFinish: %s / %d\nNet: %s\nBankroll: $%s", t.BuyInCents, bot.Ordinal(t.FinishPos), t.TotalPlayers, bot.FormatSignedUSD(netCents), bankrollCents)
+		msg = fmt.Sprintf("🏆 MTT\nBuy-in: $%s\nFinish: %s\nNet: %s\nBankroll: $%s", t.BuyInCents, bot.TournamentFinishText(t), bot.FormatSignedUSD(netCents), bankrollCents)
 	}
 	if t.ReEntries > 0 {
 		msg += fmt.Sprintf("\n🔁 Re-entered %d× — %d entries total for this tournament; buy-in and net cover all of them, updating the earlier alert.", t.ReEntries, t.ReEntries+1)

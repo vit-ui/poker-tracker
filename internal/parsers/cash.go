@@ -88,9 +88,14 @@ func SessionFromCashHands(stake string, hands []CashHand) (CashSession, error) {
 // Files) — so BountyCents and IsKnockout, like VPIP/PFR, are always populated
 // from this struct, never from ParseTournamentFile.
 type TournamentHandStats struct {
-	TournamentID string
-	VPIP         float64
-	PFR          float64
+	TournamentID     string
+	LastPlayedHandID string
+	LastActivity     time.Time
+	Date             time.Time
+	Finish           *TournamentFinish
+	SpinAndGo        bool
+	VPIP             float64
+	PFR              float64
 
 	// Hands is the number of hands dealt to screenName in this tournament so
 	// far — the same weight CashSession.Hands provides for cash sessions,
@@ -116,6 +121,14 @@ type TournamentHandStats struct {
 	IsKnockout bool
 }
 
+// LastObservedHandID identifies the latest tracked play or finish in the file.
+func (s TournamentHandStats) LastObservedHandID() string {
+	if s.Finish != nil {
+		return s.Finish.HandID
+	}
+	return s.LastPlayedHandID
+}
+
 // cashAgg holds the file-level accumulators a hand-history parse builds up as
 // it scans forward. Every field is monotonic across the strictly append-only
 // file (PokerStars only ever adds complete hands at the end), so a later parse
@@ -130,10 +143,15 @@ type cashAgg struct {
 	netCents, rakeCents money.Cents
 	vpipCount, pfrCount int
 
-	isTournament bool
-	tournamentID string
-	bountyCents  money.Cents
-	isKnockout   bool
+	isTournament     bool
+	tournamentID     string
+	bountyCents      money.Cents
+	isKnockout       bool
+	tournamentDate   time.Time
+	lastPlayedHandID string
+	lastActivity     time.Time
+	finish           TournamentFinish
+	spinAndGo        bool
 }
 
 // ParseState is the carry-forward state that lets ParseCashFileFrom resume a
@@ -234,6 +252,7 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 		handAt             time.Time
 		handActive         bool
 		handHasSummary     bool
+		finish             TournamentFinish
 		sawUnfinishedCash  bool
 		inPreflop          bool
 		playerDealt        bool
@@ -276,6 +295,15 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 			playerDealt = false
 			sawUnfinishedCash = true
 		}
+		if st.isTournament {
+			if playerDealt {
+				st.lastPlayedHandID = finish.HandID
+				st.finish = TournamentFinish{}
+			}
+			if handHasSummary && finish.Position > 0 {
+				st.finish = finish
+			}
+		}
 		if playerDealt {
 			handNetCents, err := money.Add(handCollectedCents, handUncalledCents)
 			if err == nil {
@@ -295,6 +323,7 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 
 		handActive = false
 		handHasSummary = false
+		finish = TournamentFinish{}
 		inPreflop = false
 		playerDealt = false
 		playerVPIP = false
@@ -336,7 +365,15 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 					if !st.isTournament {
 						st.isTournament = true
 						st.tournamentID = handTournamentID(line)
+						st.tournamentDate = handTime(line)
+						st.spinAndGo = strings.Contains(strings.ToLower(line), "spin & go")
 					}
+					finish.HandID = extractHandID(line)
+					finish.At = handTime(line)
+					if finish.At.After(st.lastActivity) {
+						st.lastActivity = finish.At
+					}
+					finish.EntryCents = tournamentEntry(line)
 				} else {
 					if details != nil {
 						handID = extractHandID(line)
@@ -474,6 +511,10 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 					}
 				}
 
+			case st.isTournament && handActive && strings.HasPrefix(line, screenName+" ") && !strings.HasPrefix(line, collectedPfx):
+				// Payout and finish lines can precede the summary marker.
+				finish.readLine(strings.TrimPrefix(line, screenName+" "))
+
 			case strings.HasPrefix(line, uncalledPfx) && strings.HasSuffix(line, uncalledSfx):
 				closeIdx := strings.Index(line, ")")
 				if closeIdx > len(uncalledPfx) {
@@ -512,7 +553,7 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 	if st.hands == 0 && sawUnfinishedCash {
 		return nil, nil, newState, nil, true
 	}
-	if st.hands == 0 {
+	if st.hands == 0 && st.finish.Position == 0 {
 		return nil, nil, nil, fmt.Errorf("no dealt hands found in %s", path), true
 	}
 
@@ -520,14 +561,19 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 		if st.tournamentID == "" {
 			return nil, nil, nil, fmt.Errorf("could not extract tournament ID from %s", path), true
 		}
-		return nil, &TournamentHandStats{
-			TournamentID: st.tournamentID,
-			VPIP:         float64(st.vpipCount) / float64(st.hands) * 100,
-			PFR:          float64(st.pfrCount) / float64(st.hands) * 100,
-			Hands:        st.hands,
-			BountyCents:  st.bountyCents,
-			IsKnockout:   st.isKnockout,
-		}, newState, nil, true
+		var result *TournamentFinish
+		if st.finish.Position > 0 && !st.finish.At.IsZero() {
+			result = &st.finish
+		}
+		stats := &TournamentHandStats{
+			TournamentID: st.tournamentID, LastPlayedHandID: st.lastPlayedHandID, LastActivity: st.lastActivity, Date: st.tournamentDate,
+			Finish: result, SpinAndGo: st.spinAndGo, Hands: st.hands, BountyCents: st.bountyCents, IsKnockout: st.isKnockout,
+		}
+		if st.hands > 0 {
+			stats.VPIP = float64(st.vpipCount) / float64(st.hands) * 100
+			stats.PFR = float64(st.pfrCount) / float64(st.hands) * 100
+		}
+		return nil, stats, newState, nil, true
 	}
 
 	session, err := st.session()

@@ -209,6 +209,7 @@ const (
 	// free-vs-paid entry-cost question — PokerStars records no buy-in and no
 	// entry method, so the player supplies the cost.
 	PendingFreerollBuyin = "freeroll_buyin"
+	PendingMissingResult = "missing_result"
 )
 
 // PendingTournament is one tournament awaiting a player answer before it's
@@ -216,10 +217,13 @@ const (
 // constants) selects which question the bot asks; empty means the original
 // satellite question.
 type PendingTournament struct {
-	Tournament     parsers.Tournament `json:"tournament"`
-	Reason         string             `json:"reason,omitempty"`
-	FirstQueuedAt  time.Time          `json:"first_queued_at"`
-	LastRemindedAt time.Time          `json:"last_reminded_at"`
+	Tournament     parsers.Tournament        `json:"tournament"`
+	Reason         string                    `json:"reason,omitempty"`
+	FirstQueuedAt  time.Time                 `json:"first_queued_at"`
+	LastRemindedAt time.Time                 `json:"last_reminded_at"`
+	Recovery       *parsers.TournamentFinish `json:"recovery,omitempty"`
+	QuietUntil     *time.Time                `json:"quiet_until,omitempty"`
+	Historical     bool                      `json:"historical,omitempty"`
 }
 
 // PendingTournaments is the in-memory representation of pending_tournaments.json.

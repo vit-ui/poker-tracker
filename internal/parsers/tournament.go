@@ -20,11 +20,23 @@ import (
 // its base type.
 const KnockoutSuffix = "-ko"
 
+const (
+	TournamentSourceSummary   = "summary"
+	TournamentSourceHistory   = "hand_history"
+	TournamentSourceConfirmed = "confirmed_hand_history"
+)
+
+func (t Tournament) Recovered() bool {
+	return t.ResultSource == TournamentSourceHistory || t.ResultSource == TournamentSourceConfirmed
+}
+
 // Tournament holds results for a single tournament (Spin & Go or MTT).
 type Tournament struct {
 	Date         time.Time
 	Type         string // "spingo" or "mtt", plus KnockoutSuffix if it's a knockout tournament
 	TournamentID string
+	ResultSource string `json:",omitempty"`
+	ResultHandID string `json:",omitempty"`
 	// BuyInCents is 0 for a freeroll/Kick-Off — a summary with no "Buy-In: $"
 	// line. PokerStars never records how such an entry was obtained (a free
 	// level-up win, a ticket, or cash), so the worker queues these to ask the
@@ -87,6 +99,11 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 		return Tournament{}, fmt.Errorf("reading %s: %w", path, err)
 	}
 
+	return parseTournamentSummary(data, screenName)
+}
+
+func parseTournamentSummary(data []byte, screenName string) (Tournament, error) {
+	var err error
 	lines := strings.Split(string(data), "\n")
 	if len(lines) > 0 {
 		l := lines[0]
@@ -111,6 +128,7 @@ func ParseTournamentFile(path, screenName string) (Tournament, error) {
 	playerParen := ": " + screenName + " ("
 	playerBracket := ": " + screenName + " ["
 
+	t.ResultSource = TournamentSourceSummary
 	var amountErr error
 	parseAmount := func(text string) (money.Cents, bool) {
 		valueCents, ok := parseLeadingAmount(text)

@@ -372,7 +372,7 @@ type gridWrite struct {
 	values      [][]interface{}
 }
 
-// writeHistoryGrid applies cash ownership, row totals and the whole ledger
+// writeHistoryGrid applies result rows and the whole ledger
 // cascade in the same atomic batch, expanding the grid where necessary.
 func (s *restService) writeHistoryGrid(spreadsheetID string, writes []gridWrite) error {
 	type gridSize struct {

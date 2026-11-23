@@ -16,7 +16,17 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 )
 
+type TournamentAnswer struct {
+	TournamentID   string
+	HandID         string
+	Reason         string
+	Ticket         bool
+	TotalCostCents money.Cents
+	PayoutCents    *money.Cents
+}
+
 type Operation struct {
+	TournamentAnswer           *TournamentAnswer
 	ScanPath                   string // requested path on the poker PC
 	ScanAttachment             string // staged Telegram file on the storage machine
 	Updates                    bool

@@ -1,8 +1,6 @@
 package sheets
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,10 +14,10 @@ func TestCashCorrectionRetainsBothHistoricalIdentityFormats(t *testing.T) {
 		t.Run(id, func(t *testing.T) {
 			fake := &fakeSheets{getBody: func(rng string) valueRange {
 				switch rng {
-				case "Cash Sessions!J:J", "Bankroll Ledger!E:E":
+				case "Cash Sessions!J:J":
 					return valueRange{Values: [][]interface{}{{"ID"}, {id}}}
-				case "Bankroll Ledger!C:D":
-					return valueRange{Values: [][]interface{}{{"Amount", "Running Total"}, {-1, -1}}}
+				case "Bankroll Ledger!A:E":
+					return valueRange{Values: [][]interface{}{{"Date", "Type", "Amount", "Running Total", "ID"}, {"2026-01-02 12:00", "cash_session", -1, -1, id}}}
 				}
 				return valueRange{}
 			}}
@@ -27,24 +25,10 @@ func TestCashCorrectionRetainsBothHistoricalIdentityFormats(t *testing.T) {
 			if err := client.AppendCashSession(parsers.CashSession{Date: date, FirstHandID: "owned-hand", NetCents: -50, BuyInCents: 200, Hands: 2}); err != nil {
 				t.Fatal(err)
 			}
-			cashUpdated := false
-			for _, request := range fake.calls() {
-				if request.method == "POST" {
-					t.Fatalf("existing session appended instead of corrected: %+v", request)
-				}
-				if request.method == "PUT" && strings.Contains(request.path, "Cash Sessions!") {
-					var body valueRange
-					if err := json.Unmarshal([]byte(request.body), &body); err != nil {
-						t.Fatal(err)
-					}
-					if body.Values[0][9] != id {
-						t.Fatalf("stored identity was rewritten: %s", request.body)
-					}
-					cashUpdated = true
-				}
-			}
-			if !cashUpdated {
-				t.Fatal("no cash correction")
+			writes := historyGridWrites(t, fake.calls())
+			if len(writes) != 2 || writes[0].Start.Row != 1 || writes[0].Rows[0].Values[9].Value.Text != id ||
+				writes[1].Start.Row != 1 || writes[1].Rows[0].Values[0].Value.Number != -0.5 {
+				t.Fatalf("incorrect legacy cash correction: %+v", writes)
 			}
 		})
 	}

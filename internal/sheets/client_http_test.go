@@ -67,6 +67,10 @@ func (f *fakeSheets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 
 	if r.Method == http.MethodGet {
+		if r.URL.Path == "/SHEET" {
+			io.WriteString(w, `{"sheets":[{"properties":{"sheetId":1,"title":"Cash Sessions","gridProperties":{"rowCount":100,"columnCount":20}}},{"properties":{"sheetId":2,"title":"Tournaments","gridProperties":{"rowCount":100,"columnCount":20}}},{"properties":{"sheetId":3,"title":"Bankroll Ledger","gridProperties":{"rowCount":100,"columnCount":20}}}]}`)
+			return
+		}
 		var out valueRange
 		if getBody != nil {
 			// The range is the path segment after "/values/", e.g.
@@ -74,6 +78,9 @@ func (f *fakeSheets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if idx := strings.Index(r.URL.Path, "/values/"); idx >= 0 {
 				out = getBody(r.URL.Path[idx+len("/values/"):])
 			}
+		}
+		if len(out.Values) == 0 && strings.HasSuffix(r.URL.Path, "Bankroll Ledger!A:E") {
+			out.Values = [][]interface{}{{"Date", "Type", "Amount", "Running Total", "Session ID"}}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
@@ -261,63 +268,85 @@ func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 	}
 }
 
-// TestAppendTournamentFindOrAppend covers the sheets-only branch selection in
-// the tournament upsert: an existing row (found in the Tournament ID column)
-// is corrected via batchUpdate, while a new tournament is appended. Each
-// backend implements this separately, so the sqlite tests don't exercise it.
+// TestAppendTournamentFindOrAppend checks the row selected in the atomic grid batch.
 func TestAppendTournamentFindOrAppend(t *testing.T) {
 	tourn := parsers.Tournament{
 		Type: "spingo", TournamentID: "T1", BuyInCents: 100, FinishPos: 1, TotalPlayers: 3, NetCents: 200,
 	}
-
-	t.Run("existing row is updated, not appended", func(t *testing.T) {
-		fake := &fakeSheets{
-			getBody: func(rng string) valueRange {
-				switch {
-				case strings.HasPrefix(rng, "Tournaments!C"):
-					// ID column: header, a filler row, then T1 at sheet row 3.
-					return valueRange{Values: [][]interface{}{{"Tournament ID"}, {"T0"}, {"T1"}}}
-				case strings.HasPrefix(rng, "Tournaments!A3"):
-					// The existing row readTournamentRow reads back.
-					return valueRange{Values: [][]interface{}{{"2026-07-20 21:00", "spingo", "T1", 1.0, 3.0, 3.0, 1.0, 3.0, 2.0}}}
+	for _, test := range []struct {
+		name     string
+		ids      [][]interface{}
+		rowIndex int
+	}{
+		{"existing row", [][]interface{}{{"Tournament ID"}, {"T0"}, {"T1"}, {"T2"}}, 2},
+		{"new row", [][]interface{}{{"Tournament ID"}, {"T0"}}, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeSheets{getBody: func(rng string) valueRange {
+				if strings.HasPrefix(rng, "Tournaments!C") {
+					return valueRange{Values: test.ids}
 				}
 				return valueRange{}
-			},
-		}
-		c := newTestClient(t, fake)
-		if _, err := c.AppendTournament(tourn); err != nil {
-			t.Fatalf("AppendTournament: %v", err)
-		}
-		var sawBatchUpdate bool
-		for _, r := range fake.calls() {
-			if strings.HasSuffix(r.path, "/values:batchUpdate") {
-				sawBatchUpdate = true
+			}}
+			c := newTestClient(t, fake)
+			if _, err := c.AppendTournament(tourn); err != nil {
+				t.Fatal(err)
 			}
-			if strings.Contains(r.path, "Tournaments") && strings.HasSuffix(r.path, ":append") {
-				t.Errorf("existing tournament was appended, not updated: %s", r.path)
+			writes := historyGridWrites(t, fake.calls())
+			if len(writes) != 4 || writes[0].Start.SheetID != 2 || writes[0].Start.Row != test.rowIndex ||
+				writes[3].Start.SheetID != 3 || writes[3].Rows[0].Values[2].Value.Number != 2 {
+				t.Fatalf("unexpected writes %+v", writes)
 			}
-		}
-		if !sawBatchUpdate {
-			t.Error("no batchUpdate issued for an existing tournament row")
-		}
-	})
+		})
+	}
+}
 
-	t.Run("absent row is appended", func(t *testing.T) {
-		fake := &fakeSheets{} // all GETs empty → row not found
-		c := newTestClient(t, fake)
-		if _, err := c.AppendTournament(tourn); err != nil {
-			t.Fatalf("AppendTournament: %v", err)
+type testGridWrite struct {
+	Start struct {
+		SheetID int `json:"sheetId"`
+		Row     int `json:"rowIndex"`
+		Column  int `json:"columnIndex"`
+	} `json:"start"`
+	Rows []struct {
+		Values []struct {
+			Value struct {
+				Number float64 `json:"numberValue"`
+				Text   string  `json:"stringValue"`
+			} `json:"userEnteredValue"`
+		} `json:"values"`
+	} `json:"rows"`
+}
+
+func historyGridWrites(t *testing.T, calls []fakeRequest) []testGridWrite {
+	t.Helper()
+	var writes []testGridWrite
+	batches := 0
+	for _, request := range calls {
+		if request.method == "GET" {
+			continue
 		}
-		var sawTournamentAppend bool
-		for _, r := range fake.calls() {
-			if strings.Contains(r.path, "Tournaments") && strings.HasSuffix(r.path, ":append") {
-				sawTournamentAppend = true
+		if request.method != "POST" || request.path != "/SHEET:batchUpdate" {
+			t.Fatalf("unexpected separate history write: %+v", request)
+		}
+		batches++
+		var body struct {
+			Requests []struct {
+				Update *testGridWrite `json:"updateCells"`
+			} `json:"requests"`
+		}
+		if err := json.Unmarshal([]byte(request.body), &body); err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range body.Requests {
+			if entry.Update != nil {
+				writes = append(writes, *entry.Update)
 			}
 		}
-		if !sawTournamentAppend {
-			t.Error("no append issued for a brand-new tournament")
-		}
-	})
+	}
+	if batches != 1 {
+		t.Fatalf("wrote %d batches, want one", batches)
+	}
+	return writes
 }
 
 // TestValuesGetEscapesTabName confirms a tab name with a space is

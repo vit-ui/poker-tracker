@@ -13,6 +13,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/parsers"
 	"github.com/vit-ui/self-tracker/internal/storage"
@@ -27,7 +28,7 @@ func (b *Bot) sendFreerollBuyInMenu(t parsers.Tournament) {
 	if t.BaseType() == "spingo" {
 		gameType = "Spin & Go"
 	}
-	text := fmt.Sprintf("🎟️ Freeroll / Kick-Off detected — no buy-in recorded\n%s #%s\nDate: %s\nFinish: %s / %d\nDid you enter for free (won your way in), or pay for it?", gameType, t.TournamentID, t.Date.Format("2006-01-02 15:04"), Ordinal(t.FinishPos), t.TotalPlayers)
+	text := fmt.Sprintf("🎟️ Freeroll / Kick-Off detected — no buy-in recorded\n%s #%s\nDate: %s\nFinish: %s\nDid you enter for free (won your way in), or pay for it?", gameType, t.TournamentID, t.Date.Format("2006-01-02 15:04"), TournamentFinishText(t))
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🆓 Free (won my way in)", "freeroll_free:"+t.TournamentID),
@@ -70,16 +71,8 @@ func (b *Bot) handleFreerollBuyInReply(chatID int64, text string) {
 // messageID is edited to the confirmation (a callback message for the free
 // tap, the remembered menu message for the paid text reply).
 func (b *Bot) recordFreerollEntry(chatID int64, messageID int, tournamentID string, buyInCents money.Cents) {
-	b.queueOperation(func(store storage.Store) storage.OperationResult {
-		result := recordPendingTournament(store, b.configPath, tournamentID, func(t parsers.Tournament) parsers.Tournament {
-			t.NetCents -= buyInCents
-			t.BuyInCents = buyInCents
-			return t
-		})
-		if result.Err == nil && result.Found {
-			result.BankrollCents, result.BankrollErr = store.GetCurrentBankroll()
-		}
-		return result
+	b.queueTournamentAnswer(storage.TournamentAnswer{
+		TournamentID: tournamentID, Reason: config.PendingFreerollBuyin, TotalCostCents: buyInCents,
 	}, func(result storage.OperationResult) {
 		if result.Err != nil {
 			slog.Error("recording resolved freeroll", "err", result.Err)
@@ -96,11 +89,7 @@ func (b *Bot) recordFreerollEntry(chatID int64, messageID int, tournamentID stri
 		} else {
 			text = fmt.Sprintf("✅ Logged — buy-in $%s.\nNet: %s", buyInCents, FormatSignedUSD(result.NetCents))
 		}
-		if result.BankrollErr != nil {
-			slog.Error("getting bankroll", "err", result.BankrollErr)
-		} else {
-			text += fmt.Sprintf("\nBankroll: $%s", result.BankrollCents)
-		}
+		text += fmt.Sprintf("\nBankroll: $%s", result.BankrollCents)
 		edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, emptyKeyboard)
 		if _, err := b.tg.Send(edit); err != nil {
 			slog.Error("editing telegram message", "err", err)

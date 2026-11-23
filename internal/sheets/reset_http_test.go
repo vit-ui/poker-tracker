@@ -70,7 +70,7 @@ func TestClearHistoryUsesSingleAtomicBatch(t *testing.T) {
 			if len(requests) != 3 {
 				t.Fatalf("got %d requests, want 3", len(requests))
 			}
-			widths := map[int]int{0: 11, 2: 14, 3: 5}
+			widths := map[int]int{0: 11, 2: 16, 3: 5}
 			for _, req := range requests {
 				grid := req.UpdateCells.Range
 				id, hasID := grid["sheetId"]

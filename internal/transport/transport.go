@@ -90,9 +90,8 @@ type Upload struct {
 	ClientClock     time.Time // the client's wall-clock time when the change was seen
 
 	// Import marks an upload produced by a /scan backfill (Collector.rescan)
-	// rather than a live file change. The server records these silently — no
-	// hard stop, no alerts, no summary, no quiet-period deferral — and skips
-	// tournaments that need a player answer. See Server.importUpload.
+	// rather than a live file change. The server records historical results
+	// silently and includes missing-result confirmations in the scan report.
 	Import bool
 
 	// PokerStarsRunning accompanies status and update reports on observed changes.

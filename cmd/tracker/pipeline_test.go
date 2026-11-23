@@ -219,8 +219,15 @@ func TestPipeline_WonFreeroll(t *testing.T) {
 		bCents, ok := p.bountyStub("9000000001")
 		return ok && closeEnough(bCents, 88)
 	})
+	p.waitFor("hand-history result queued", func() bool {
+		pending := p.pending()
+		return len(pending) == 1 && pending[0].Reason == config.PendingMissingResult
+	})
 	p.drop("tournament_summary", "freeroll_won_T9000000001.txt")
-	p.waitFor("freeroll queued", func() bool { return len(p.pending()) == 1 })
+	p.waitFor("official freeroll question replaces recovery", func() bool {
+		pending := p.pending()
+		return len(pending) == 1 && pending[0].Reason == config.PendingFreerollBuyin
+	})
 
 	pend := p.pending()
 	if pend[0].Reason != config.PendingFreerollBuyin {

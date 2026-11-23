@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS tournaments (
 	pfr REAL,
 	bounty_cents INTEGER,
 	prize_won_cents INTEGER,
-	hands INTEGER
+	hands INTEGER,
+	result_source TEXT,
+	result_hand_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bankroll_ledger (
@@ -103,7 +105,7 @@ var expectedColumns = []tableDef{
 		{"buy_in_cents", "INTEGER"}, {"prize_pool_cents", "INTEGER"}, {"prize_pool_description", "TEXT"},
 		{"multiplier", "REAL"}, {"finish_pos", "INTEGER"}, {"total_players", "INTEGER"},
 		{"net_cents", "INTEGER"}, {"vpip", "REAL"}, {"pfr", "REAL"}, {"bounty_cents", "INTEGER"},
-		{"prize_won_cents", "INTEGER"}, {"hands", "INTEGER"},
+		{"prize_won_cents", "INTEGER"}, {"hands", "INTEGER"}, {"result_source", "TEXT"}, {"result_hand_id", "TEXT"},
 	}},
 	{"bankroll_ledger", []columnDef{
 		{"date", "TEXT"}, {"type", "TEXT"}, {"amount_cents", "INTEGER"},
@@ -349,7 +351,7 @@ func (s *Store) upsertLedgerTournamentRow(tx *sql.Tx, tournamentID string, date 
 // appends a fresh one built off the ledger's current last running total.
 func (s *Store) upsertLedgerRow(tx *sql.Tx, sessionID string, date time.Time, entryType string, amountCents money.Cents) error {
 	var rowID int64
-	err := tx.QueryRow(`SELECT id FROM bankroll_ledger WHERE session_id = ?`, sessionID).Scan(&rowID)
+	err := tx.QueryRow(`SELECT id FROM bankroll_ledger WHERE session_id = ? AND type = ?`, sessionID, entryType).Scan(&rowID)
 	if err == sql.ErrNoRows {
 		prevCents, err := lastRunningTotal(tx.QueryRow(lastRunningTotalQuery))
 		if err != nil {
@@ -370,6 +372,11 @@ func (s *Store) upsertLedgerRow(tx *sql.Tx, sessionID string, date time.Time, en
 	}
 	if err != nil {
 		return fmt.Errorf("looking up ledger row for %s: %w", sessionID, err)
+	}
+	if entryType == "tournament" {
+		if _, err := tx.Exec(`UPDATE bankroll_ledger SET date = ? WHERE id = ?`, date.UTC().Format(dateFormat), rowID); err != nil {
+			return fmt.Errorf("updating tournament ledger date: %w", err)
+		}
 	}
 	return s.cascadeLedgerUpdate(tx, rowID, amountCents)
 }
@@ -545,20 +552,20 @@ func (s *Store) appendTournament(tx *sql.Tx, t parsers.Tournament) (money.Cents,
 		_, err := tx.Exec(`
 			UPDATE tournaments SET
 				date = ?, type = ?, buy_in_cents = ?, prize_pool_cents = ?, prize_pool_description = ?,
-				multiplier = ?, finish_pos = ?, total_players = ?, net_cents = ?, prize_won_cents = ?
+				multiplier = ?, finish_pos = ?, total_players = ?, net_cents = ?, prize_won_cents = ?, result_source = ?, result_hand_id = ?
 			WHERE tournament_id = ?
 		`, t.Date.UTC().Format(dateFormat), typeOut, t.BuyInCents, prizePoolCents, prizePoolDesc,
-			multiplier, t.FinishPos, t.TotalPlayers, netCents, prizeWonCents, t.TournamentID)
+			multiplier, t.FinishPos, t.TotalPlayers, netCents, prizeWonCents, nullString(t.ResultSource), nullString(t.ResultHandID), t.TournamentID)
 		if err != nil {
 			return 0, fmt.Errorf("updating tournament row: %w", err)
 		}
 	} else {
 		_, err := tx.Exec(`
 			INSERT INTO tournaments (date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
-				multiplier, finish_pos, total_players, net_cents, prize_won_cents)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				multiplier, finish_pos, total_players, net_cents, prize_won_cents, result_source, result_hand_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, t.Date.UTC().Format(dateFormat), typeOut, t.TournamentID, t.BuyInCents, prizePoolCents, prizePoolDesc,
-			multiplier, t.FinishPos, t.TotalPlayers, netCents, prizeWonCents)
+			multiplier, t.FinishPos, t.TotalPlayers, netCents, prizeWonCents, nullString(t.ResultSource), nullString(t.ResultHandID))
 		if err != nil {
 			return 0, fmt.Errorf("inserting tournament row: %w", err)
 		}
@@ -849,7 +856,7 @@ func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, e
 func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
-			multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands
+			multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands, result_source, result_hand_id
 		FROM tournaments
 		WHERE date IS NOT NULL AND `+
 		where+`
@@ -866,12 +873,12 @@ func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.Tourna
 		var buyInCents, netCents money.Cents
 		var prizePoolCents, bountyCents, prizeWonCents sql.NullInt64
 		var vpip, pfr sql.NullFloat64
-		var prizePoolDesc sql.NullString
+		var prizePoolDesc, source, resultHandID sql.NullString
 		var multiplier sql.NullFloat64
 		var hands sql.NullInt64
 		var finishPos, totalPlayers int
 		if err := rows.Scan(&dateStr, &typeVal, &tournamentID, &buyInCents, &prizePoolCents, &prizePoolDesc,
-			&multiplier, &finishPos, &totalPlayers, &netCents, &vpip, &pfr, &bountyCents, &prizeWonCents, &hands); err != nil {
+			&multiplier, &finishPos, &totalPlayers, &netCents, &vpip, &pfr, &bountyCents, &prizeWonCents, &hands, &source, &resultHandID); err != nil {
 			return nil, fmt.Errorf("scanning tournament row: %w", err)
 		}
 		date, err := time.Parse(dateFormat, dateStr)
@@ -883,6 +890,8 @@ func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.Tourna
 				Date:         date,
 				Type:         typeVal,
 				TournamentID: tournamentID,
+				ResultSource: source.String,
+				ResultHandID: resultHandID.String,
 				BuyInCents:   buyInCents,
 				FinishPos:    finishPos,
 				TotalPlayers: totalPlayers,
@@ -985,7 +994,7 @@ func (s *Store) ExportSnapshot() (storage.Snapshot, error) {
 func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
-			multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands
+			multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands, result_source, result_hand_id
 		FROM tournaments ORDER BY id ASC
 	`)
 	if err != nil {
@@ -995,17 +1004,17 @@ func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 
 	var result []storage.TournamentRecord
 	for rows.Next() {
-		var date, prizePoolDesc sql.NullString
+		var date, prizePoolDesc, source, resultHandID sql.NullString
 		var typeVal, tournamentID string
 		var buyInCents, prizePoolCents, netCents, bountyCents, prizeWonCents sql.NullInt64
 		var multiplier, vpip, pfr sql.NullFloat64
 		var finishPos, totalPlayers, hands sql.NullInt64
 		if err := rows.Scan(&date, &typeVal, &tournamentID, &buyInCents, &prizePoolCents, &prizePoolDesc,
-			&multiplier, &finishPos, &totalPlayers, &netCents, &vpip, &pfr, &bountyCents, &prizeWonCents, &hands); err != nil {
+			&multiplier, &finishPos, &totalPlayers, &netCents, &vpip, &pfr, &bountyCents, &prizeWonCents, &hands, &source, &resultHandID); err != nil {
 			return nil, fmt.Errorf("scanning tournament row: %w", err)
 		}
 		rec := storage.TournamentRecord{
-			Tournament: parsers.Tournament{Type: typeVal, TournamentID: tournamentID},
+			Tournament: parsers.Tournament{Type: typeVal, TournamentID: tournamentID, ResultSource: source.String, ResultHandID: resultHandID.String},
 		}
 		if date.Valid {
 			d, err := time.Parse(dateFormat, date.String)
@@ -1129,11 +1138,11 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 		}
 		if _, err := tx.Exec(`
 			INSERT INTO tournaments (date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
-				multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				multiplier, finish_pos, total_players, net_cents, vpip, pfr, bounty_cents, prize_won_cents, hands, result_source, result_hand_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, t.Date.UTC().Format(dateFormat), t.Type, t.TournamentID, t.BuyInCents, prizePoolCents, prizePoolDesc,
 			nullFloat(t.Multiplier), t.FinishPos, t.TotalPlayers, t.NetCents, nullFloat(t.VPIP), nullFloat(t.PFR),
-			t.BountyWonCents, t.PrizeWonCents, nullInt(t.Hands)); err != nil {
+			t.BountyWonCents, t.PrizeWonCents, nullInt(t.Hands), nullString(t.ResultSource), nullString(t.ResultHandID)); err != nil {
 			return fmt.Errorf("importing tournament %s: %w", t.TournamentID, err)
 		}
 	}

@@ -89,15 +89,7 @@ func (c *Client) rawRecordCashHands(input cashHandWrite) (storage.CashWrite, err
 		return counts, err
 	}
 
-	ledger, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!A:E")
-	if err != nil {
-		return counts, err
-	}
-	if len(ledger.Values) == 0 {
-		return counts, fmt.Errorf("Bankroll Ledger header is missing")
-	}
 	var writes []gridWrite
-	amounts := make(map[string]money.Cents)
 	newLedger := make([]storage.LedgerEntry, 0, len(changed))
 	nextCashRow := len(cash)
 	for _, row := range changed {
@@ -113,24 +105,40 @@ func (c *Client) rawRecordCashHands(input cashHandWrite) (storage.CashWrite, err
 			}
 		}
 		writes = append(writes, gridWrite{cashHistoryTab, index, 0, [][]interface{}{values}})
-		amounts[row.SessionID] = row.NetCents
 		newLedger = append(newLedger, storage.LedgerEntry{Date: row.Date, Type: "cash_session", SessionID: row.SessionID, AmountCents: row.NetCents})
 	}
-	ledgerWrites, err := cashLedgerWrites(ledger.Values, amounts, newLedger)
-	if err != nil {
-		return counts, err
-	}
-	return counts, c.svc.writeHistoryGrid(c.spreadsheetID, append(writes, ledgerWrites...))
+	return counts, c.writeResults(writes, newLedger)
 }
 
-func cashLedgerWrites(ledger [][]interface{}, amounts map[string]money.Cents, changes []storage.LedgerEntry) ([]gridWrite, error) {
+func (c *Client) writeResults(writes []gridWrite, changes []storage.LedgerEntry) error {
+	ledger, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!A:E")
+	if err != nil {
+		return err
+	}
+	if len(ledger.Values) == 0 {
+		return fmt.Errorf("Bankroll Ledger header is missing")
+	}
+	ledgerWrites, err := resultLedgerWrites(ledger.Values, changes)
+	if err != nil {
+		return err
+	}
+	return c.svc.writeHistoryGrid(c.spreadsheetID, append(writes, ledgerWrites...))
+}
+
+func resultLedgerWrites(ledger [][]interface{}, changes []storage.LedgerEntry) ([]gridWrite, error) {
+	type resultKey struct{ kind, id string }
+	updates := make(map[resultKey]storage.LedgerEntry, len(changes))
+	for _, entry := range changes {
+		updates[resultKey{entry.Type, entry.SessionID}] = entry
+	}
+	keyFor := func(row []interface{}) resultKey {
+		return resultKey{fmt.Sprint(cell(row, 1)), fmt.Sprint(cell(row, 4))}
+	}
 	first := len(ledger)
-	seen := make(map[string]bool)
 	for i, row := range ledger[1:] {
-		id := fmt.Sprint(cell(row, 4))
-		if _, changed := amounts[id]; changed && fmt.Sprint(cell(row, 1)) == "cash_session" {
-			seen[id] = true
-			first = min(first, i+1)
+		if _, changed := updates[keyFor(row)]; changed {
+			first = i + 1
+			break
 		}
 	}
 
@@ -144,13 +152,17 @@ func cashLedgerWrites(ledger [][]interface{}, amounts map[string]money.Cents, ch
 	}
 	var writes []gridWrite
 	var tail []money.Cents
-	for _, row := range ledger[first:] {
+	for i, row := range ledger[first:] {
 		amountCents, err := parseMoney(cell(row, 2))
 		if err != nil {
 			return nil, err
 		}
-		if updated, ok := amounts[fmt.Sprint(cell(row, 4))]; ok && fmt.Sprint(cell(row, 1)) == "cash_session" {
-			amountCents = updated
+		if changed, ok := updates[keyFor(row)]; ok {
+			amountCents = changed.AmountCents
+			if changed.Type == "tournament" {
+				writes = append(writes, gridWrite{"Bankroll Ledger", first + i, 0, [][]interface{}{{changed.Date.Format(dateFormat)}}})
+			}
+			delete(updates, keyFor(row))
 		}
 		tail = append(tail, amountCents)
 	}
@@ -168,7 +180,7 @@ func cashLedgerWrites(ledger [][]interface{}, amounts map[string]money.Cents, ch
 	}
 	var appended []storage.LedgerEntry
 	for _, entry := range changes {
-		if seen[entry.SessionID] {
+		if _, appendRow := updates[resultKey{entry.Type, entry.SessionID}]; !appendRow {
 			continue
 		}
 		totalCents, err = money.Add(totalCents, entry.AmountCents)

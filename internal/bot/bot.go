@@ -104,13 +104,17 @@ type conversation struct {
 	// captured when a value prompt is issued (beginValueEntry) so the typed
 	// reply can edit that same message back to the relevant screen instead of
 	// sending a new one.
-	menuMessageID int
+	menuMessageID       int
+	recovery            *config.PendingTournament
+	recoveryPayoutCents *money.Cents
 }
 
 func (c *conversation) reset() {
 	c.flow = ""
 	c.field = ""
 	c.menuMessageID = 0
+	c.recovery = nil
+	c.recoveryPayoutCents = nil
 }
 
 // Run starts the bot in serve mode. Forwards alerts from alertChan to
@@ -381,7 +385,11 @@ func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccoun
 			if !ok {
 				return nil
 			}
-			b.sendMessage(msg)
+			if strings.HasPrefix(msg, storage.ScanReportPrefix) {
+				b.sendScanReport(msg)
+			} else {
+				b.sendMessage(msg)
+			}
 		case <-ticker.C:
 			if b.migrating || b.ownerPaused || b.deploymentPaused() {
 				continue
@@ -635,6 +643,8 @@ func (b *Bot) handleFlowReply(msg *tgbotapi.Message) {
 		b.handleScanReply(msg.Chat.ID, msg.Text)
 	case "freeroll_buyin":
 		b.handleFreerollBuyInReply(msg.Chat.ID, msg.Text)
+	case "missing_result":
+		b.handleRecoveryReply(msg.Chat.ID, msg.Text)
 	}
 }
 
@@ -660,6 +670,10 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	}
 
 	switch {
+	case data == "missing_results":
+		b.reviewMissingResults(chatID, "")
+	case strings.HasPrefix(data, "missing_result:"):
+		b.reviewMissingResults(chatID, strings.TrimPrefix(data, "missing_result:"))
 	case strings.HasPrefix(data, "scan:"):
 		b.handleScanChoice(chatID, messageID, strings.TrimPrefix(data, "scan:"))
 	case strings.HasPrefix(data, "transactions:"):

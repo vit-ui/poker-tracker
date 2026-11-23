@@ -6,6 +6,10 @@ entries below use the version labels in effect when those changes shipped.
 ## Unreleased
 
 - Check for stable releases when PokerStars opens or closes.
+- Recover missing tournament results from completed hand histories. Scan reports
+  link to confirmations for missing payouts or total entry costs. Official
+  summaries can correct a recovered result and its existing ledger entry.
+- Save tournament results and bankroll corrections together in Google Sheets.
 - Keep configured tracking, storage and automatic hard stops running while
   Telegram is unconfigured or unreachable. Use Connect Telegram to replace a
   token live and pair only with a private chat.

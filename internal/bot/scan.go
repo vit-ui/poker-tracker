@@ -86,7 +86,7 @@ func (b *Bot) queueFileScan(chatID int64, collectorPath, attachment string) {
 			send(b.tg, chatID, "Could not scan the file: "+result.Err.Error())
 			return
 		}
-		send(b.tg, chatID, result.Scan.String())
+		b.sendScanReport(result.Scan.String())
 	})
 	request := &b.pendingOperations[len(b.pendingOperations)-1].request
 	request.ScanPath, request.ScanAttachment = collectorPath, attachment
