@@ -23,6 +23,19 @@ entries below use the version labels in effect when those changes shipped.
 - Support custom Linux service paths with spaces and systemd special characters.
   Preserve the Google service-account key during silent Windows uninstall.
 
+## [5.1.0](https://github.com/vit-ui/poker-tracker/compare/v5.0.1...v5.1.0) (2026-11-23)
+
+
+### Features
+
+* recover missing tournament results from hand history ([810931e](https://github.com/vit-ui/poker-tracker/commit/810931e11d21923d3fa7bb0890b81447537d7f17))
+
+
+### Bug Fixes
+
+* address the v5.0.1 reliability audit ([b5e8af4](https://github.com/vit-ui/poker-tracker/commit/b5e8af44084440530ea843ef4f174a3cc7088735))
+* check for updates when PokerStars opens or closes ([bc4fc1b](https://github.com/vit-ui/poker-tracker/commit/bc4fc1b9087a935ed94461e6dbdbfec71aad8543))
+
 ## [5.0.1](https://github.com/vit-ui/poker-tracker/compare/v4.0.0...v5.0.1) (2026-11-20)
 
 ### Update from the former v5.0 release
