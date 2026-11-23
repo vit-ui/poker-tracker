@@ -125,7 +125,7 @@ func (c *conversation) reset() {
 // stop ends command intake; drained closes after accepted operations finish (also
 // after a successful restart request). The owner then stops producers/worker and
 // closes alertChan. Run joins the update poller before returning.
-func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}, updater *update.Agent) error {
+func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}, updater *update.Agent, releaseChecks <-chan struct{}) error {
 
 	b := &Bot{
 		updater:            updater,
@@ -253,8 +253,12 @@ func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccoun
 		}
 		var closureResults chan ClosureResult
 		var releaseResults <-chan releaseCheckResult
+		var pokerStarsChecks <-chan struct{}
 		if !stopping {
 			releaseResults = b.releaseResults
+			if b.updater != nil && !b.ownerPaused && !b.migrating && !b.checkingRelease {
+				pokerStarsChecks = releaseChecks
+			}
 		}
 		var closureReply ClosureResult
 		closures := notifications.Deliveries
@@ -316,6 +320,8 @@ func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccoun
 			b.expireMenus(time.Now())
 		case result := <-releaseResults:
 			b.finishReleaseCheck(result)
+		case <-pokerStarsChecks:
+			b.checkRelease(releaseCheckResult{})
 		case event := <-closures:
 			result := b.sendClosure(event)
 			closureResult = &result

@@ -152,9 +152,10 @@ filenames aligned with `packaging/windows/setup.iss`: combined and collector use
 while Windows server uses `tracker-server.exe`. `/update` accepts local or durable
 collector requests through the worker and authenticates the configured chat.
 `/help update` focuses on Telegram requests and links to `/help update terminal`
-for terminal alternatives and older-install guidance. Keep release checks
-asynchronous on startup/daily, and send/deduplicate notices only on the bot
-goroutine after reading actual local/collector observations. Never
+for terminal alternatives and older-install guidance. Run release checks
+asynchronously at startup, daily, and on PokerStars process transitions reported
+by the connected Windows collector. Only the bot goroutine sends and deduplicates
+release notices after reading actual local and collector observations. Never
 mark a queued send as completed; offline requests retain their identity until
 confirmed. New operational failures require a fresh request. Pending updates
 block storage/deployment handover; do not run setup/uninstall concurrently.

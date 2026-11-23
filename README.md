@@ -118,9 +118,10 @@ permission failure and can use the terminal alternative. Requests survive restar
 reports progress, confirmed completion or failure; a real failure needs a new
 `/update` request.
 
-The bot checks for new stable releases **at startup and daily**, with one notice
-per version. It never installs merely because a new version exists. Menu → Info
-→ Updates shows installed/last reported versions and pending requests.
+The bot checks for new stable releases at startup, daily, and when PokerStars
+opens or closes on the connected poker PC. It sends one notice per version.
+Updates install on request. Menu → Info → Updates shows installed versions,
+the latest known stable release, and pending requests.
 
 If the bot's own server is off, Telegram retains unreceived commands for at most
 [24 hours](https://core.telegram.org/bots/api#getting-updates). A request becomes

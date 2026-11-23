@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -102,7 +103,23 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 			status.CollectionError = c.collection.err.Error()
 		}
 	}
-	if !c.send(transport.Upload{Status: status, ClientClock: time.Now()}, dead) {
+	checkPokerStars := func() *bool {
+		running, err := pokerStarsRunning()
+		if err != nil {
+			slog.Error("checking PokerStars for release updates", "err", err)
+			return nil
+		}
+		return &running
+	}
+	var pokerStarsCheck <-chan time.Time
+	var pokerStarsState *bool
+	if runtime.GOOS == "windows" && c.Updater != nil {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		pokerStarsCheck = ticker.C
+		pokerStarsState = checkPokerStars()
+	}
+	if !c.send(transport.Upload{Status: status, PokerStarsRunning: pokerStarsState, ClientClock: time.Now()}, dead) {
 		return nil
 	}
 	close(c.Ready)
@@ -168,6 +185,22 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 			return nil
 		case <-scanDone:
 			scanDone = nil
+		case <-pokerStarsCheck:
+			running := checkPokerStars()
+			if running == nil || pokerStarsState != nil && *running == *pokerStarsState {
+				continue
+			}
+			report, err := c.Updater.Report()
+			if err != nil {
+				slog.Error("reading local update status", "err", err)
+				continue
+			}
+			pokerStarsState = running
+			// Older servers can still handle the update report during a
+			// split upgrade and ignore the new process-state field.
+			if !c.send(transport.Upload{Update: &report, PokerStarsRunning: running, ClientClock: time.Now()}, dead) {
+				return nil
+			}
 		case cmd := <-requests:
 			var err error
 			switch cmd.Kind {

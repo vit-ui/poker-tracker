@@ -67,7 +67,7 @@ What happens next
 • The bot reports success or failure after restart.
 • Settings, credentials, history, pairing and lock expiry are kept.
 
-Checks run at startup and daily; you get one notice per new version. Updates install only when requested.
+Checks run at startup, daily, and when PokerStars opens or closes on the connected poker PC. You get one notice per new version. Updates install only when requested.
 
 If the bot is offline, wait for its saved-request confirmation. Telegram keeps unreceived commands for up to 24 hours.
 

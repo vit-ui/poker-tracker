@@ -5,6 +5,7 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Check for stable releases when PokerStars opens or closes.
 - Keep configured tracking, storage and automatic hard stops running while
   Telegram is unconfigured or unreachable. Use Connect Telegram to replace a
   token live and pair only with a private chat.

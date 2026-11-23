@@ -94,6 +94,9 @@ type Upload struct {
 	// hard stop, no alerts, no summary, no quiet-period deferral — and skips
 	// tournaments that need a player answer. See Server.importUpload.
 	Import bool
+
+	// PokerStarsRunning accompanies status and update reports on observed changes.
+	PokerStarsRunning *bool `json:",omitempty"`
 }
 
 // UploadConnection identifies control state buffered from a replaced connection.

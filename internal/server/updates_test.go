@@ -20,6 +20,74 @@ func updateOperation(t *testing.T, worker *Server, request *config.UpdateRequest
 	return migrationReply(t, reply)
 }
 
+func TestPokerStarsTransitionsRequestReleaseChecks(t *testing.T) {
+	closed, open := false, true
+	for _, test := range []struct {
+		name   string
+		states []*bool
+		checks []bool
+	}{
+		{"open and close", []*bool{nil, &closed, &open, &open, nil, &closed, &closed}, []bool{false, false, true, false, false, true, false}},
+		{"connect while playing", []*bool{&open, &closed}, []bool{true, true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "config.json")
+			if err := config.SaveConfig(path, &config.Config{}); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sqlitestore.NewStore(filepath.Join(root, "tracker.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			link := transport.NewLink()
+			link.Uploads = make(chan transport.Upload)
+			worker, err := NewServer(db, path, link, make(chan string, 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- worker.Run() }()
+			defer func() {
+				close(link.Uploads)
+				if err := <-done; err != nil {
+					t.Error(err)
+				}
+			}()
+			send := func(upload transport.Upload) {
+				t.Helper()
+				select {
+				case link.Uploads <- upload:
+				case <-time.After(time.Second):
+					t.Fatal("worker did not receive observation")
+				}
+			}
+			for i, running := range test.states {
+				upload := transport.Upload{PokerStarsRunning: running}
+				if i == 0 || running == nil {
+					upload.Status = &transport.CollectorStatus{}
+				} else {
+					upload.Update = &config.UpdateReport{Version: "v5.0.1"}
+				}
+				send(upload)
+				// The next unbuffered upload waits until the worker finishes
+				// handling the observation before we inspect its signal.
+				send(transport.Upload{Status: &transport.CollectorStatus{}})
+				got := false
+				select {
+				case <-worker.ReleaseChecks:
+					got = true
+				default:
+				}
+				if got != test.checks[i] {
+					t.Fatalf("observation %d sent a check = %t, want %t", i+1, got, test.checks[i])
+				}
+			}
+		})
+	}
+}
+
 func TestUpdateRequestSurvivesRestartWithoutInventingCompletion(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.json")

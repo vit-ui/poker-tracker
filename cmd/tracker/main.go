@@ -328,7 +328,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
+		botDone <- bot.Run(alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, time.Now, installation.TaskName(InstallationID, false), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, false, srv.ClosureNotifications, srv.LockStatusText, botReady, updater, srv.ReleaseChecks)
 	}()
 	startupStop := make(chan struct{})
 	defer close(startupStop)

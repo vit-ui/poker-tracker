@@ -71,6 +71,8 @@ type Server struct {
 	hardstopRequests     chan config.LockFile
 	stopped              chan struct{}
 	ClosureNotifications bot.ClosureNotifications
+	// ReleaseChecks signals a change in whether PokerStars is running.
+	ReleaseChecks chan struct{}
 	// TransferCalls defaults to the link; split owners may broker polling handoff first.
 	TransferCalls <-chan transport.TransferCall
 	// Drain releases a prepared restart hold before upload producers are joined.
@@ -131,7 +133,7 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	if err != nil {
 		return nil, fmt.Errorf("creating server work dir: %w", err)
 	}
-	return &Server{Ready: make(chan struct{}), clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
+	return &Server{Ready: make(chan struct{}), clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, ReleaseChecks: make(chan struct{}, 1), TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: cashSessionSummaryQuietPeriod}, nil
 }
 
 // updateClock records the collector's timezone (from an upload's ClientClock)
@@ -273,6 +275,7 @@ func (s *Server) Run() error {
 		return settingsErr
 	}
 	updateQueue := collectorUpdateQueue{path: filepath.Join(filepath.Dir(s.configPath), "collector_updates.json")}
+	var pokerStarsState *bool
 	updateQueue.state, settingsErr = config.LoadCollectorUpdates(updateQueue.path)
 	if settingsErr != nil {
 		return settingsErr
@@ -877,6 +880,17 @@ func (s *Server) Run() error {
 		}
 		if (up.LockReply != nil || up.CollectionReply != nil || up.Status != nil || up.ConfigReply != nil || up.Update != nil || up.UpdateReply != nil) && !current {
 			continue
+		}
+		if running := up.PokerStarsRunning; running != nil && current {
+			alreadyPlaying := pokerStarsState == nil && *running
+			changed := pokerStarsState != nil && *pokerStarsState != *running
+			if alreadyPlaying || changed {
+				select {
+				case s.ReleaseChecks <- struct{}{}:
+				default:
+				}
+			}
+			pokerStarsState = running
 		}
 		if event := up.Closure; event != nil {
 			if current {

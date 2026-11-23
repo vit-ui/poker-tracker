@@ -242,7 +242,7 @@ func runServe() (failure error) {
 	botReady := make(chan struct{}, 1)
 	botStop, botDrained, botDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		botDone <- bot.Run(alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady, updater)
+		botDone <- bot.Run(alertChan, sc, configPath, serviceAccountPath, dbPath, sendLock, requestRescan, srv.ClientNow, installation.ServerServiceName(InstallationID), srv.Operations, srv.CollectorLock, botStop, botDrained, ownerControls, deployment.DestinationStandby(transferState), srv.ClosureNotifications, srv.LockStatusText, botReady, updater, srv.ReleaseChecks)
 	}()
 	destinationStop, destinationDone := make(chan struct{}), make(chan struct{})
 	destinationOwner := &deployment.DestinationOwner{Path: configPath, Requests: link.Transfers, Worker: workerTransfers, Controls: ownerControls, Stop: destinationStop, Standby: deployment.DestinationStandby(transferState)}
