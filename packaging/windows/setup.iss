@@ -1674,11 +1674,12 @@ end;
 // --pair's connection string (printed to stdout, captured via a cmd redirect) is
 // shown so the player can pair their poker PC. Alerts and rules are set later
 // from Telegram.
-procedure RunServerSetup();
+function RunServerSetup(): Boolean;
 var
   ExePath, ConnPath, Conn, SetupArgs, SheetInput, SheetName, SheetID: String;
   ResultCode: Integer;
 begin
+  Result := False;
   ExePath := ExpandConstant('{app}\tracker-server.exe');
 
   // Pass the storage choice the wizard collected to --setup, which owns
@@ -1720,9 +1721,16 @@ begin
     Exit;
   end;
   if (not Exec(ExePath, '--install', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    MsgBox('Could not register the server boot task. Run tracker-server.exe --install from an elevated prompt.', mbError, MB_OK)
-  else
-    Exec('schtasks.exe', '/Run /TN "{#ServerTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  begin
+    MsgBox('Could not register the server boot task. Run tracker-server.exe --install from an elevated prompt.', mbError, MB_OK);
+    Exit;
+  end;
+  if not Exec('schtasks.exe', '/Run /TN "{#ServerTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+  begin
+    MsgBox('Could not start the server boot task. Check Task Scheduler and tracker.log.', mbError, MB_OK);
+    Exit;
+  end;
+  Result := True;
 
   ConnPath := ExpandConstant('{tmp}\server-conn.txt');
   if Exec(ExpandConstant('{cmd}'), '/C ""' + ExePath + '" --pair > "' + ConnPath + '""',
@@ -1738,6 +1746,25 @@ begin
   else
     SuppressibleMsgBox('Your Poker Tracker server is installed and running. To get the pairing line, run ' +
       'tracker-server.exe --pair in ' + ExpandConstant('{app}') + '.', mbInformation, MB_OK, IDOK);
+end;
+
+procedure FinishTelegramSetup(const ExeName: String);
+var
+  ExePath, PendingMessage: String;
+  ResultCode: Integer;
+begin
+  ExePath := ExpandConstant('{app}\') + ExeName;
+  PendingMessage := 'Tracker is installed. Telegram setup is pending or could not be checked.' + #13#10 +
+    'Open ' + ExePath + ' to finish Connect Telegram.';
+  if WizardSilent then
+  begin
+    if not Exec(ExePath, '--telegram-status', ExpandConstant('{app}'), SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+      Log(PendingMessage);
+  end
+  else if not Exec(ExePath, '--connect-telegram-if-needed', ExpandConstant('{app}'), SW_SHOW,
+    ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    SuppressibleMsgBox(PendingMessage, mbInformation, MB_OK, IDOK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -1764,6 +1791,10 @@ begin
           RaiseException('Could not start the upgraded server task.');
       end
       else RegisterScheduledTask();
+      if IsServerMode() then
+        FinishTelegramSetup('tracker-server.exe')
+      else if not IsClientMode() then
+        FinishTelegramSetup('tracker.exe');
       Exit;
     end;
     ExistingConfigJSON := ReadFileAsString(ExpandConstant('{app}\config.json'));
@@ -1803,7 +1834,8 @@ begin
     // Telegram wizard, no credentials.
     if IsServerMode() then
     begin
-      RunServerSetup();
+      if RunServerSetup() then
+        FinishTelegramSetup('tracker-server.exe');
       Exit;
     end;
     // Idempotent for the Telegram path (already done once in
@@ -1891,6 +1923,7 @@ begin
     end
     else
       RegisterScheduledTask();
+    FinishTelegramSetup('tracker.exe');
   end;
 end;
 

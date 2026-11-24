@@ -160,6 +160,14 @@ mark a queued send as completed; offline requests retain their identity until
 confirmed. New operational failures require a fresh request. Pending updates
 block storage/deployment handover; do not run setup/uninstall concurrently.
 
+Before queuing a bot-host or combined request, check that the active private
+Telegram pairing is saved on that host. `--telegram-status` checks saved
+pairing without contacting Telegram. `--connect-telegram-if-needed` reuses
+it or opens local pairing in an interactive session. Keep Tracker startup
+confirmation independent of Telegram and keep extraction-only updater paths
+free of setup prompts. Exercise interactive and silent installer paths
+separately, including cancellation and an upgrade with a saved pairing.
+
 The parser intentionally limits VPIP/PFR to Hold'em/Omaha preflop actions;
 mixed-game hand counts include stud/draw hands. Satellite classification requires
 structural summary clues. Scans count official summaries that need an entry-cost

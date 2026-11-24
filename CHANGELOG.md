@@ -5,6 +5,9 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Check the saved Telegram pairing before a bot-host update and show a local
+  setup prompt or recovery command when pairing is pending. Report Windows
+  collector updates separately from server and Telegram status.
 - Check for stable releases when PokerStars opens or closes.
 - Recover missing tournament results from completed hand histories. Scan reports
   link to confirmations for missing payouts or total entry costs. Official

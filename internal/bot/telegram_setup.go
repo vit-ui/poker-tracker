@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -30,6 +34,90 @@ func (telegramHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 func newTelegramBot(token string) (*tgbotapi.BotAPI, error) {
 	return tgbotapi.NewBotAPIWithClient(token, apiEndpoint, telegramHTTPClient{})
+}
+
+// TelegramSetupOptions exposes local pairing and a read-only pairing check.
+type TelegramSetupOptions struct {
+	connect, ifNeeded, status bool
+}
+
+// RegisterTelegramSetup adds setup commands to an executable that hosts the bot.
+func RegisterTelegramSetup(flags *flag.FlagSet) *TelegramSetupOptions {
+	options := new(TelegramSetupOptions)
+	flags.BoolVar(&options.connect, "connect-telegram", false, "link this installation to your Telegram bot")
+	flags.BoolVar(&options.ifNeeded, "connect-telegram-if-needed", false, "link Telegram interactively if setup is pending")
+	flags.BoolVar(&options.status, "telegram-status", false, "check whether a local Telegram pairing is saved")
+	return options
+}
+
+// Handle runs a local setup command. Status returns 1 for pending and 2 for a read error.
+func (o *TelegramSetupOptions) Handle(flags *flag.FlagSet, path string) (handled bool, exitCode int) {
+	if (o.status || o.ifNeeded || o.connect) && (flags.NFlag() != 1 || flags.NArg() != 0) {
+		fmt.Fprintln(os.Stderr, "Use a Telegram setup command by itself.")
+		return true, 2
+	}
+	switch {
+	case o.status:
+		credentials, err := loadTelegramCredentials(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return true, 2
+		}
+		if credentials.token == "" {
+			fmt.Println(telegramSetupPending())
+			return true, 1
+		}
+		fmt.Println("Telegram pairing saved.")
+	case o.ifNeeded:
+		if err := FinishTelegramSetup(path); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return true, 1
+		}
+	case o.connect || runtime.GOOS == "windows" && flags.NFlag() == 0 && flags.NArg() == 0:
+		if err := ConnectTelegram(path); err != nil {
+			_ = uiprompt.TelegramSetupMessage(err.Error())
+			return true, 1
+		}
+	default:
+		return false, 0
+	}
+	return true, 0
+}
+
+// FinishTelegramSetup offers local pairing when missing and reports any pending setup.
+func FinishTelegramSetup(path string) error {
+	credentials, err := loadTelegramCredentials(path)
+	if err != nil {
+		return err
+	}
+	if credentials.token != "" {
+		return nil
+	}
+	if !uiprompt.CanPromptTelegram() {
+		return errors.New(telegramSetupPending())
+	}
+	if err := ConnectTelegram(path); err != nil {
+		return fmt.Errorf("%s\n%w", telegramSetupPending(), err)
+	}
+	credentials, err = loadTelegramCredentials(path)
+	if err != nil {
+		return err
+	}
+	if credentials.token == "" {
+		return errors.New(telegramSetupPending())
+	}
+	return nil
+}
+
+func telegramSetupPending() string {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = filepath.Base(os.Args[0])
+	}
+	if runtime.GOOS == "windows" {
+		return "Telegram setup pending. On the bot host, run in PowerShell: & '" + strings.ReplaceAll(exe, "'", "''") + "' --connect-telegram"
+	}
+	return "Telegram setup pending. On the bot host, run: '" + strings.ReplaceAll(exe, "'", "'\"'\"'") + "' --connect-telegram"
 }
 
 // ConnectTelegram provisions a first or replacement bot from local setup.
@@ -185,7 +273,10 @@ func loadTelegramCredentials(path string) (telegramCredentials, error) {
 	if err != nil || token == "" {
 		return telegramCredentials{}, err
 	}
-	cfg, err := config.LoadConfig(path)
+	cfg, err := config.ReadConfig(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return telegramCredentials{}, nil
+	}
 	if err != nil {
 		return telegramCredentials{}, err
 	}

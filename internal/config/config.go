@@ -247,10 +247,15 @@ func LoadConfig(path string) (*Config, error) {
 // ValidateExistingConfig checks an installer's input without creating or changing
 // configuration. Setup must not interpret an unreadable file as a fresh install.
 func ValidateExistingConfig(path string) error {
+	_, err := ReadConfig(path)
+	return err
+}
+
+// ReadConfig loads an existing config without creating a missing file.
+func ReadConfig(path string) (*Config, error) {
 	mu.RLock()
 	defer mu.RUnlock()
-	_, err := loadConfig(path)
-	return err
+	return loadConfig(path)
 }
 
 func loadConfig(path string) (*Config, error) {

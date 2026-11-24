@@ -44,9 +44,8 @@ echo
 "$DEST/tracker-server" --setup
 # Start configured tracking before asking for the optional Telegram pairing.
 "$DEST/tracker-server" --install
-if [ ! -f "$DEST/credentials/telegram.token" ] && ! "$DEST/tracker-server" --connect-telegram; then
-    echo "Telegram setup can be resumed with $DEST/tracker-server --connect-telegram"
-fi
-
 echo
-echo "Done. Use your linked Telegram bot to configure storage, alerts, and thresholds."
+echo "Tracker is installed and running."
+if "$DEST/tracker-server" --connect-telegram-if-needed; then
+    echo "Telegram pairing saved."
+fi

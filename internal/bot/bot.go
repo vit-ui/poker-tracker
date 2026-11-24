@@ -23,7 +23,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 	"github.com/vit-ui/self-tracker/internal/sheets"
 	"github.com/vit-ui/self-tracker/internal/storage"
-	"github.com/vit-ui/self-tracker/internal/uiprompt"
 	"github.com/vit-ui/self-tracker/internal/update"
 )
 
@@ -225,7 +224,7 @@ func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccoun
 	}
 	var active *pendingOperation
 	var results <-chan storage.OperationResult
-	stopping, notified, prompted := false, false, false
+	stopping, notified, setupPending := false, false, false
 	var pausedReply chan error
 	var closureResult *ClosureResult
 	for {
@@ -285,11 +284,13 @@ func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccoun
 			if stopping {
 				continue
 			}
-			if !prompted && !standby && next.needsSetup {
-				prompted = true
-				if err := uiprompt.ShowPendingTelegramSetup(); err != nil {
-					slog.Error("opening Connect Telegram", "err", err)
+			if next.needsSetup && !standby {
+				if !setupPending {
+					slog.Warn(telegramSetupPending())
 				}
+				setupPending = true
+			} else if next.err == nil {
+				setupPending = false
 			}
 			if next.err != nil {
 				if !connection.failed {

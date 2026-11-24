@@ -41,6 +41,9 @@ func Register(flags *flag.FlagSet) *Options {
 	return options
 }
 
+// LocalUpdate reports whether the caller invoked the interactive update command.
+func (options *Options) LocalUpdate() bool { return options.update }
+
 // Handle runs before setup/serve so updating never loads another installation's config.
 func (options *Options) Handle(flags *flag.FlagSet, role, version, installationID string) (bool, error) {
 	if options.recoverTarget != "" {

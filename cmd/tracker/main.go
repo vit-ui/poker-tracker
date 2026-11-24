@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -80,23 +79,25 @@ func main() {
 	transferComplete := flag.Bool("transfer-complete", false, "record completed collector cutover")
 	transferRollback := flag.Bool("transfer-rollback", false, "roll back a transfer-owned destination and restore source")
 	resolveStorage := flag.Bool("resolve-storage", false, "validate and save the selected storage settings")
-	connectTelegram := flag.Bool("connect-telegram", false, "link this installation to your Telegram bot")
+	telegramSetup := bot.RegisterTelegramSetup(flag.CommandLine)
 	flag.Parse()
 	if handled, err := updater.Handle(flag.CommandLine, "combined", Version, InstallationID); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		if updater.LocalUpdate() {
+			if err := bot.FinishTelegramSetup(configPath); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}
 		return
+	}
+	if handled, exitCode := telegramSetup.Handle(flag.CommandLine, configPath); handled {
+		os.Exit(exitCode)
 	}
 
 	switch {
-	case *connectTelegram || runtime.GOOS == "windows" && flag.NFlag() == 0 && flag.NArg() == 0:
-		if err := bot.ConnectTelegram(configPath); err != nil {
-			_ = uiprompt.TelegramSetupMessage(err.Error())
-			os.Exit(1)
-		}
-
 	case *resolveStorage:
 		cfg, err := config.LoadConfig(configPath)
 		if err == nil {

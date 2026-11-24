@@ -17,7 +17,6 @@ func ShowUpdateProgress(executable, requestID string, telegram bool) error {
 	}
 	script := "$executable = " + literal(executable) + "\n" +
 		"$statePath = " + literal(filepath.Join(dir, "requested_update.json")) + "\n" +
-		"$credentialPath = " + literal(filepath.Join(dir, "credentials", "telegram.token")) + "\n" +
 		"$requestID = " + literal(requestID) + "\n" +
 		"$allowSetup = " + allowSetup + "\n" + updateDialog
 	powerShell := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
@@ -46,7 +45,14 @@ $connect = New-Object Windows.Forms.Button
 $connect.Text = 'Connect Telegram'
 $connect.SetBounds(238,133,126,28)
 $connect.Visible = $false
-$connect.Add_Click({ Start-Process -FilePath $executable -ArgumentList '--connect-telegram' })
+$connect.Add_Click({
+    try {
+        Start-Process -FilePath $executable -ArgumentList '--connect-telegram' -Verb RunAs -Wait -ErrorAction Stop
+    } catch {
+        [void][Windows.Forms.MessageBox]::Show('Open Tracker to try Connect Telegram again.')
+    }
+    $script:setupStatus = $null
+})
 $close = New-Object Windows.Forms.Button
 $close.Text = 'Close'
 $close.SetBounds(372,133,82,28)
@@ -54,8 +60,7 @@ $close.Add_Click({ $form.Close() })
 $form.CancelButton = $close
 $form.Controls.AddRange(@($title,$text,$progress,$connect,$close))
 
-$initialCredential = Get-Item -LiteralPath $credentialPath -ErrorAction SilentlyContinue
-$initialWrite = $initialCredential.LastWriteTimeUtc
+$script:setupStatus = $null
 $refresh = {
     $job = $null
     try {
@@ -68,10 +73,13 @@ $refresh = {
         $text.Text = 'Preparing the update.'
         return
     }
-    $credential = Get-Item -LiteralPath $credentialPath -ErrorAction SilentlyContinue
-    $setupWindow = !$requestID
-    $pendingSetup = $allowSetup -and (!$credential -or ($setupWindow -and $credential.LastWriteTimeUtc -eq $initialWrite))
-    $connect.Visible = $pendingSetup -and ($setupWindow -and (!$job -or $job.state -eq 'failed') -or $job.state -eq 'succeeded')
+    if ($allowSetup -and $job.state -eq 'succeeded' -and $null -eq $script:setupStatus) {
+        try {
+            $check = Start-Process -FilePath $executable -ArgumentList '--telegram-status' -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
+            $script:setupStatus = $check.ExitCode
+        } catch { $script:setupStatus = 2 }
+    }
+    $connect.Visible = $job.state -eq 'succeeded' -and $script:setupStatus -eq 1
     $progress.Visible = $job -and $job.state -ne 'succeeded' -and $job.state -ne 'failed'
     $title.Text = if ($job) { 'Poker Tracker ' + $job.request.version } else { 'Telegram setup' }
     $text.Text = switch ($job.state) {
@@ -82,14 +90,13 @@ $refresh = {
             else { 'Installing the update and checking that Tracker restarts.' }
         }
         'succeeded' {
-            if ($pendingSetup) { 'Tracker is updated. Connect your Telegram bot to finish.' }
-            else { 'Tracker is updated and ready.' }
+            if (!$allowSetup) { 'Poker PC updated.' }
+            elseif ($script:setupStatus -eq 1) { 'Tracker updated. Telegram setup pending.' }
+            elseif ($script:setupStatus -ne 0) { 'Tracker updated. Could not check Telegram setup. See the Tracker log.' }
+            else { 'Tracker updated. Telegram pairing saved.' }
         }
         'failed' { 'The update failed. Check the Tracker log for details.' }
-        default {
-            if ($pendingSetup) { 'Connect your own Telegram bot to control Tracker from Telegram.' }
-            else { 'Telegram is connected.' }
-        }
+        default { 'Preparing the update.' }
     }
 }
 $timer = New-Object Windows.Forms.Timer

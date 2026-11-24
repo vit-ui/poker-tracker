@@ -21,9 +21,7 @@ func AskTelegramToken() (string, error) {
 		return strings.TrimSpace(string(out)), err
 	default:
 		fmt.Println(message)
-		state := exec.Command("stty", "-g")
-		state.Stdin = os.Stdin
-		original, err := state.Output()
+		original, err := terminalState()
 		if err != nil {
 			return "", fmt.Errorf("open a terminal to enter the bot token privately")
 		}
@@ -42,14 +40,23 @@ func AskTelegramToken() (string, error) {
 	}
 }
 
-func TelegramSetupMessage(text string) error {
-	return New().Info("Connect Telegram", text)
+func terminalState() ([]byte, error) {
+	cmd := exec.Command("stty", "-g")
+	cmd.Stdin = os.Stdin
+	return cmd.Output()
 }
 
-func ShowPendingTelegramSetup() error {
-	// Background systemd services cannot own an interactive terminal. A
-	// terminal or desktop launch uses the same setup command explicitly.
-	return nil
+// CanPromptTelegram reports whether this process can collect a token privately.
+func CanPromptTelegram() bool {
+	if New().Graphical() {
+		return true
+	}
+	_, err := terminalState()
+	return err == nil
+}
+
+func TelegramSetupMessage(text string) error {
+	return New().Info("Connect Telegram", text)
 }
 
 func EnsureTelegramSetupPrivileges() (bool, error) {

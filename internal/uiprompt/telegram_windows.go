@@ -85,17 +85,21 @@ func EnsureTelegramSetupPrivileges() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	err = windows.ShellExecute(0, windows.StringToUTF16Ptr("runas"), windows.StringToUTF16Ptr(exe),
-		windows.StringToUTF16Ptr("--connect-telegram"), nil, windows.SW_SHOWNORMAL)
-	return false, err
+	script := "$ErrorActionPreference='Stop'; $child=Start-Process -FilePath '" +
+		strings.ReplaceAll(exe, "'", "''") +
+		"' -ArgumentList '--connect-telegram' -Verb RunAs -PassThru; $child.WaitForExit(); exit $child.ExitCode"
+	cmd := exec.Command("powershell.exe", powerShellDialogArgs(script)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("elevated Telegram setup did not finish: %w", err)
+	}
+	return false, nil
 }
 
-func ShowPendingTelegramSetup() error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	return ShowUpdateProgress(exe, "", true)
+// CanPromptTelegram reports whether this process has an interactive session.
+func CanPromptTelegram() bool {
+	var session uint32
+	return windows.ProcessIdToSessionId(uint32(os.Getpid()), &session) == nil && session != 0
 }
 
 func launchInDesktop(exe string, args ...string) error {

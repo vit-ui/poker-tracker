@@ -142,6 +142,16 @@ func (b *Bot) finishReleaseCheck(checked releaseCheckResult) {
 		}
 		return
 	}
+	if checked.action == "all" || checked.action == "server" || (checked.action == "pc" && b.updater.Role == "combined") {
+		credentials, err := loadTelegramCredentials(b.configPath)
+		if err != nil {
+			slog.Error("checking the saved Telegram pairing before update", "err", err)
+		}
+		if err != nil || b.tg == nil || credentials.token == "" || credentials.token != b.tg.Token || credentials.chatID != checked.chatID {
+			send(b.tg, checked.chatID, "No update request was saved. "+telegramSetupPending()+" Then retry /update.")
+			return
+		}
+	}
 	request := config.UpdateRequest{ID: checked.requestID, Version: checked.version}
 	if checked.action == "pc" || checked.action == "all" {
 		if b.updater.Role == "server" {

@@ -99,10 +99,21 @@ window or miss it, open Tracker from its installation folder. For a Linux server
 run `~/.local/share/poker-tracker/tracker-server --connect-telegram` locally.
 Tracking and automatic protection continue while Telegram setup is pending.
 
-On later Windows updates, the window shows the current stage from the start.
-Closing it leaves the update running. Reconstructed releases through `v4.0.0`
-are historical packages without Telegram credentials.
+If Telegram stopped responding after a split upgrade, open an interactive SSH
+session as the Linux user who installed Tracker and run
+`~/.local/share/poker-tracker/tracker-server --connect-telegram`. Use the
+installation's actual path if you installed somewhere else. If you also need
+to update the server, use its local `--update` command or install the newer
+package in the same folder. Removing a release from GitHub leaves the already
+installed version in place.
 
+On Windows, closing the progress window leaves the update running. If setup is
+pending on a combined installation or Windows server, open its installed
+executable again to connect Telegram. On an interactive Linux server install or
+local update, Tracker offers setup if the pairing is missing. Unattended installs
+leave setup pending and report how to resume it. Existing saved private pairings
+carry over. The Windows collector reports its own update status and the server
+handles Telegram pairing.
 
 ### From Telegram
 
@@ -114,7 +125,9 @@ Wait for the bot to confirm that the request was **saved**. An offline poker PC
 receives it when it connects; if PokerStars is open, the tracker waits for you to
 close it and continues automatically. The server updates independently. Telegram updates on Windows use the installed
 elevated background task; a manually launched unelevated copy reports a
-permission failure and can use the terminal alternative. Requests survive restarts, and **both** pins the same release for both machines. The bot
+permission failure and can use the terminal alternative. Requests survive restarts, and **both** pins the same release for both machines. Before updating
+the bot host, Tracker checks its saved pairing and gives setup instructions if
+it cannot continue. The bot
 reports progress, confirmed completion or failure; a real failure needs a new
 `/update` request.
 

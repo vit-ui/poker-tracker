@@ -81,23 +81,25 @@ func main() {
 	backend := flag.String("backend", "", `storage backend to preseed on --setup: "sqlite" or "sheets"`)
 	sheetName := flag.String("sheet-name", "", "Google Sheet name to preseed on --setup (sheets backend)")
 	sheetID := flag.String("sheet-id", "", "Google Sheet ID to preseed on --setup (sheets backend)")
-	connectTelegram := flag.Bool("connect-telegram", false, "link this installation to your Telegram bot")
+	telegramSetup := bot.RegisterTelegramSetup(flag.CommandLine)
 	flag.Parse()
 	if handled, err := updater.Handle(flag.CommandLine, "server", Version, InstallationID); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		if updater.LocalUpdate() {
+			if err := bot.FinishTelegramSetup(configPath); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}
 		return
+	}
+	if handled, exitCode := telegramSetup.Handle(flag.CommandLine, configPath); handled {
+		os.Exit(exitCode)
 	}
 
 	switch {
-	case *connectTelegram || runtime.GOOS == "windows" && flag.NFlag() == 0 && flag.NArg() == 0:
-		if err := bot.ConnectTelegram(configPath); err != nil {
-			_ = uiprompt.TelegramSetupMessage(err.Error())
-			os.Exit(1)
-		}
-
 	case *printRole:
 		if *roleFile != "" {
 			if err := os.WriteFile(*roleFile, []byte("server"), 0600); err != nil {
