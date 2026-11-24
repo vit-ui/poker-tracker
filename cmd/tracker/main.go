@@ -38,11 +38,7 @@ var (
 )
 
 func init() {
-	exePath, err := os.Executable()
-	if err != nil {
-		panic("getting executable path: " + err.Error())
-	}
-	dir := filepath.Dir(exePath)
+	dir := installation.ExecutableDir()
 	serviceAccountPath = filepath.Join(dir, "credentials", "google_service_account.json")
 	configPath = filepath.Join(dir, "config.json")
 	lockfilePath = filepath.Join(dir, "lockfile.json")
@@ -107,12 +103,8 @@ func main() {
 	case *transferRollback:
 		runTransfer(func() error { return deployment.Rollback(configPath) })
 	case *printRole:
-		if *roleFile != "" {
-			if err := os.WriteFile(*roleFile, []byte("combined"), 0600); err != nil {
-				os.Exit(1)
-			}
-		} else {
-			fmt.Println("combined")
+		if err := installation.ReportRole("combined", *roleFile); err != nil {
+			os.Exit(1)
 		}
 	case *stopInstallation != "":
 		if err := installation.Stop(*stopInstallation); err != nil {
@@ -120,7 +112,7 @@ func main() {
 			os.Exit(1)
 		}
 	case *checkLock:
-		runCheckLock()
+		os.Exit(client.CheckLock(lockfilePath, os.Stdout, os.Stderr))
 	case *setup:
 		runSetup(*installerOwnsTask)
 	case *serve:
@@ -131,26 +123,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: tracker [--serve | --check-lock | --setup]")
 		os.Exit(1)
 	}
-}
-
-func runCheckLock() {
-	lock, err := config.LoadLock(lockfilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reading lockfile: %v\n", err)
-		os.Exit(1)
-	}
-	if lock == nil {
-		os.Exit(0)
-	}
-	if config.IsLockExpired(lock) {
-		if err := config.DeleteLock(lockfilePath); err != nil {
-			fmt.Fprintf(os.Stderr, "deleting lockfile: %v\n", err)
-		}
-		os.Exit(0)
-	}
-	fmt.Printf("PokerStars is locked until %s. Check Telegram for details.\n",
-		lock.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
-	os.Exit(1)
 }
 
 func runSetup(installerOwnsTask bool) {

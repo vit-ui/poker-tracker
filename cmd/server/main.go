@@ -42,11 +42,7 @@ var (
 )
 
 func init() {
-	exe, err := os.Executable()
-	if err != nil {
-		panic("getting executable path: " + err.Error())
-	}
-	dir := filepath.Dir(exe)
+	dir := installation.ExecutableDir()
 	serviceAccountPath = filepath.Join(dir, "credentials", "google_service_account.json")
 	configPath = filepath.Join(dir, "config.json")
 	dbPath = filepath.Join(dir, "tracker.db")
@@ -89,12 +85,8 @@ func main() {
 
 	switch {
 	case *printRole:
-		if *roleFile != "" {
-			if err := os.WriteFile(*roleFile, []byte("server"), 0600); err != nil {
-				os.Exit(1)
-			}
-		} else {
-			fmt.Println("server")
+		if err := installation.ReportRole("server", *roleFile); err != nil {
+			os.Exit(1)
 		}
 	case *stopInstallation != "":
 		if err := installation.Stop(*stopInstallation); err != nil {

@@ -24,11 +24,7 @@ var (
 )
 
 func init() {
-	exe, err := os.Executable()
-	if err != nil {
-		panic("getting executable path: " + err.Error())
-	}
-	dir := filepath.Dir(exe)
+	dir := installation.ExecutableDir()
 	configPath = filepath.Join(dir, "config.json")
 	lockfilePath = filepath.Join(dir, "lockfile.json")
 }
@@ -62,12 +58,8 @@ func main() {
 			os.Exit(1)
 		}
 	case *printRole:
-		if *roleFile != "" {
-			if err := os.WriteFile(*roleFile, []byte("client"), 0600); err != nil {
-				os.Exit(1)
-			}
-		} else {
-			fmt.Println("client")
+		if err := installation.ReportRole("client", *roleFile); err != nil {
+			os.Exit(1)
 		}
 	case *stopInstallation != "":
 		if err := installation.Stop(*stopInstallation); err != nil {
@@ -81,7 +73,7 @@ func main() {
 	case *setup:
 		runSetup()
 	case *checkLock:
-		runCheckLock()
+		os.Exit(client.CheckLock(lockfilePath, os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintln(os.Stderr, "usage: tracker-client --serve | --setup | --check-lock")
 		os.Exit(2)
@@ -162,24 +154,4 @@ func runSetup() {
 		os.Exit(1)
 	}
 	fmt.Println("Configured. Start the collector with: tracker-client --serve")
-}
-
-func runCheckLock() {
-	lock, err := config.LoadLock(lockfilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reading lockfile: %v\n", err)
-		os.Exit(1)
-	}
-	if lock == nil {
-		os.Exit(0)
-	}
-	if config.IsLockExpired(lock) {
-		if err := config.DeleteLock(lockfilePath); err != nil {
-			fmt.Fprintf(os.Stderr, "deleting lockfile: %v\n", err)
-		}
-		os.Exit(0)
-	}
-	fmt.Printf("PokerStars is locked until %s. Check Telegram for details.\n",
-		lock.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
-	os.Exit(1)
 }

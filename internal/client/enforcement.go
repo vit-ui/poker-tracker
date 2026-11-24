@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -172,4 +173,24 @@ func (e *Enforcer) checkClosureTransferReady() error {
 		return fmt.Errorf("PokerStars closure events have not been saved")
 	}
 	return config.CheckClosureTransferReady(filepath.Dir(e.path))
+}
+
+func CheckLock(lockfilePath string, stdout, stderr io.Writer) int {
+	lock, err := config.LoadLock(lockfilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "reading lockfile: %v\n", err)
+		return 1
+	}
+	if lock == nil {
+		return 0
+	}
+	if config.IsLockExpired(lock) {
+		if err := config.DeleteLock(lockfilePath); err != nil {
+			fmt.Fprintf(stderr, "deleting lockfile: %v\n", err)
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "PokerStars is locked until %s. Check Telegram for details.\n",
+		lock.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
+	return 1
 }

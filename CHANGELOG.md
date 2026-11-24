@@ -5,6 +5,9 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Share role reporting and installation directory lookup across all three commands.
+  Both collector commands now use the same lock check.
+
 - Adopt self-documenting code and remove explanatory comments across the project.
 
 - Show current versions in the Telegram update menu without repeating old
