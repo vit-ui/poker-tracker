@@ -81,7 +81,10 @@ func (b *Bot) renderUpdateMenu(chatID int64, messageID int, path string, result 
 	if b.updater.Role == "combined" {
 		label = "This PC"
 	}
-	text := label + ": " + report.Version + "\n" + updateJobText(label, report.Job)
+	text := label + ": " + report.Version
+	if status := updateMenuJobText(label, report); status != "" {
+		text += "\n" + status
+	}
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	if b.updater.Role == "server" {
 		pcVersion := result.Updates.Report.Version
@@ -92,7 +95,10 @@ func (b *Bot) renderUpdateMenu(chatID int64, messageID int, path string, result 
 		if !result.CollectorOnline {
 			online = "offline"
 		}
-		text += "\nPoker PC: " + pcVersion + " (" + online + ")\n" + collectorUpdateText(result.Updates)
+		text += "\nPoker PC: " + pcVersion + " (" + online + ")"
+		if status := collectorUpdateText(result.Updates); status != "" {
+			text += "\n" + status
+		}
 		rows = append(rows, menuRow("Update poker PC", "update:pc"), menuRow("Update server", "update:server"), menuRow("Update both", "update:all"))
 	} else {
 		rows = append(rows, menuRow("Update this PC", "update:pc"))
@@ -162,7 +168,11 @@ func (b *Bot) finishReleaseCheck(checked releaseCheckResult) {
 				}
 				state := result.Updates
 				if state.Request != nil {
-					send(b.tg, checked.chatID, "Poker-PC update request saved for "+state.Request.Version+". It will run when the PC connects and PokerStars is closed.\n"+collectorUpdateText(state))
+					text := "Poker-PC update request saved for " + state.Request.Version + ". It will run when the PC connects and PokerStars is closed."
+					if status := collectorUpdateText(state); status != "" {
+						text += "\n" + status
+					}
+					send(b.tg, checked.chatID, text)
 				}
 				if checked.action == "all" {
 					b.requestLocalUpdate(checked.chatID, request)
@@ -217,6 +227,23 @@ func updateJobText(label string, job *config.UpdateJob) string {
 	}
 }
 
+func updateMenuJobText(label string, report config.UpdateReport) string {
+	job := report.Job
+	if job == nil || (job.State == config.UpdateSucceeded && job.Version != "" && job.Version == report.Version) ||
+		completedUpdateSuperseded(report) {
+		return ""
+	}
+	return updateJobText(label, job)
+}
+
+func completedUpdateSuperseded(report config.UpdateReport) bool {
+	if report.Job == nil || report.Job.State != config.UpdateSucceeded {
+		return false
+	}
+	newer, err := update.Newer(report.Version, report.Job.Version)
+	return err == nil && newer
+}
+
 func collectorUpdateText(state config.CollectorUpdates) string {
 	if state.Error != "" {
 		return "Poker-PC update could not be accepted: " + state.Error
@@ -224,7 +251,7 @@ func collectorUpdateText(state config.CollectorUpdates) string {
 	if state.Request != nil && (state.Report.Job == nil || state.Report.Job.Request != *state.Request) {
 		return "Poker PC → " + state.Request.Version + ": saved; awaiting PC confirmation."
 	}
-	return updateJobText("Poker PC", state.Report.Job)
+	return updateMenuJobText("Poker PC", state.Report)
 }
 
 func (b *Bot) observeUpdates(result storage.OperationResult) {
@@ -253,22 +280,23 @@ func (b *Bot) observeUpdates(result storage.OperationResult) {
 	}
 	for _, item := range []struct {
 		label   string
-		job     *config.UpdateJob
+		report  config.UpdateReport
 		receipt *string
 	}{
-		{label, report.Job, &notices.Local}, {"Poker PC", result.Updates.Report.Job, &notices.Collector},
+		{label, report, &notices.Local}, {"Poker PC", result.Updates.Report, &notices.Collector},
 	} {
 		if b.updater.Role == "combined" && item.label == "Poker PC" {
 			continue
 		}
-		if item.job == nil {
+		job := item.report.Job
+		if job == nil || completedUpdateSuperseded(item.report) {
 			continue
 		}
-		key := item.job.Request.ID + ":" + item.job.State + ":" + item.job.Error
+		key := job.Request.ID + ":" + job.State + ":" + job.Error
 		if *item.receipt == key {
 			continue
 		}
-		if _, err := b.tg.Send(tgbotapi.NewMessage(chatID, updateJobText(item.label, item.job))); err != nil {
+		if _, err := b.tg.Send(tgbotapi.NewMessage(chatID, updateJobText(item.label, job))); err != nil {
 			slog.Error("sending update result", "err", err)
 			continue
 		}

@@ -5,6 +5,8 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Show current versions in the Telegram update menu without repeating old
+  completion receipts after a terminal update.
 - Check the saved Telegram pairing before a bot-host update and show a local
   setup prompt or recovery command when pairing is pending. Report Windows
   collector updates separately from server and Telegram status.

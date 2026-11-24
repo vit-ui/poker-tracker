@@ -53,3 +53,59 @@ func TestUpdateStatusDoesNotClaimSuccessBeforeAcknowledgement(t *testing.T) {
 		t.Fatalf("unacknowledged request: %s", text)
 	}
 }
+
+func TestUpdateMenuShowsOnlyRelevantJobStatus(t *testing.T) {
+	old := config.UpdateRequest{ID: "earlier", Version: "v5.1.0"}
+	next := config.UpdateRequest{ID: "next", Version: "v5.1.2"}
+	completed := config.UpdateJob{Request: old, State: config.UpdateSucceeded, Version: "v5.1.0"}
+	for _, tc := range []struct {
+		name       string
+		report     config.UpdateReport
+		menu       string
+		superseded bool
+	}{
+		{name: "no receipt", report: config.UpdateReport{Version: "v5.1.1"}},
+		{name: "terminal update", report: config.UpdateReport{Version: "v5.1.1", Job: &completed}, superseded: true},
+		{name: "numeric version ordering", report: config.UpdateReport{Version: "v5.10.0", Job: &completed}, superseded: true},
+		{name: "current version already listed", report: config.UpdateReport{Version: "v5.1.0", Job: &completed}},
+		{name: "collector did not report its version", report: config.UpdateReport{Job: &completed}, menu: "completed (v5.1.0)"},
+		{name: "running version is older than receipt", report: config.UpdateReport{Version: "v5.0.1", Job: &completed}, menu: "completed (v5.1.0)"},
+		{
+			name: "current request still waiting",
+			report: config.UpdateReport{Version: "v5.1.1", Job: &config.UpdateJob{
+				Request: next, State: config.UpdateWaiting, Version: "v5.1.1",
+			}},
+			menu: "waiting for PokerStars",
+		},
+		{
+			name: "failed update remains visible",
+			report: config.UpdateReport{Version: "v5.1.1", Job: &config.UpdateJob{
+				Request: next, State: config.UpdateFailed, Version: "v5.1.0", Error: "permission denied",
+			}},
+			menu: "failed: permission denied",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statuses := []string{
+				updateMenuJobText("Server", tc.report),
+				collectorUpdateText(config.CollectorUpdates{Report: tc.report}),
+			}
+			for _, got := range statuses {
+				if tc.menu == "" && got != "" || !strings.Contains(got, tc.menu) {
+					t.Errorf("menu status = %q, want %q", got, tc.menu)
+				}
+			}
+			if got := completedUpdateSuperseded(tc.report); got != tc.superseded {
+				t.Errorf("suppress completion notice = %v, want %v", got, tc.superseded)
+			}
+		})
+	}
+
+	state := config.CollectorUpdates{
+		Request: &next,
+		Report:  config.UpdateReport{Version: "v5.1.1", Job: &completed},
+	}
+	if got := collectorUpdateText(state); got != "Poker PC → v5.1.2: saved; awaiting PC confirmation." {
+		t.Errorf("pending request with superseded receipt: %q", got)
+	}
+}
