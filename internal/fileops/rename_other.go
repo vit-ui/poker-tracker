@@ -1,6 +1,6 @@
 //go:build !windows
 
-package config
+package fileops
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-func commitUpdateRecovery(from, to string) error {
+func RenameDurably(from, to string) error {
 	if err := os.Rename(from, to); err != nil {
 		return err
 	}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/vit-ui/self-tracker/internal/fileops"
 )
 
 const (
@@ -80,7 +82,7 @@ func saveUpdateState(path string, state any) error {
 	if err := errors.Join(writeErr, file.Close()); err != nil {
 		return fmt.Errorf("flushing update state: %w", err)
 	}
-	if err := commitUpdateRecovery(path+".tmp", path); err != nil {
+	if err := fileops.RenameDurably(path+".tmp", path); err != nil {
 		return fmt.Errorf("saving update state: %w", err)
 	}
 	return nil

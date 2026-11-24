@@ -5,6 +5,9 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Reuse the durable file replacement code for Windows updates and configuration,
+  and save update recovery journals through the shared update-state writer.
+
 - Share role reporting and installation directory lookup across all three commands.
   Both collector commands now use the same lock check.
 

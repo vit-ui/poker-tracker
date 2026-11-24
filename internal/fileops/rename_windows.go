@@ -1,8 +1,8 @@
-package config
+package fileops
 
 import "golang.org/x/sys/windows"
 
-func commitUpdateRecovery(from, to string) error {
+func RenameDurably(from, to string) error {
 	source, err := windows.UTF16PtrFromString(from)
 	if err != nil {
 		return err

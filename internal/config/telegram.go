@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/vit-ui/self-tracker/internal/fileops"
 )
 
 func TelegramTokenPath(configPath string) string {
@@ -49,7 +51,7 @@ func SaveTelegramToken(configPath, token string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing Telegram credential: %w", err)
 	}
-	if err := commitUpdateRecovery(f.Name(), path); err != nil {
+	if err := fileops.RenameDurably(f.Name(), path); err != nil {
 		return fmt.Errorf("installing Telegram credential: %w", err)
 	}
 	return nil

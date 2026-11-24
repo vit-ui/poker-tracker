@@ -72,15 +72,7 @@ func (s *serviceState) prepareUpdate(staged, oldVersion, newVersion string) erro
 	if err := errors.Join(file.Sync(), file.Close()); err != nil {
 		return err
 	}
-	from, err := windows.UTF16PtrFromString(partial)
-	if err != nil {
-		return err
-	}
-	to, err := windows.UTF16PtrFromString(helper)
-	if err != nil {
-		return err
-	}
-	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
+	if err := moveExecutable(partial, helper); err != nil {
 		return fmt.Errorf("committing recovery helper: %w", err)
 	}
 	if err := config.SaveUpdateRecovery(s.recoveryPath(), state); err != nil {

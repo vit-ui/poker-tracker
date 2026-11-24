@@ -43,23 +43,8 @@ func LoadUpdateRecovery(path string) (*UpdateRecovery, error) {
 func SaveUpdateRecovery(path string, state UpdateRecovery) error {
 	mu.Lock()
 	defer mu.Unlock()
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding update recovery: %w", err)
-	}
-	file, err := os.OpenFile(path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("opening update recovery: %w", err)
-	}
-	_, writeErr := file.Write(data)
-	if writeErr == nil {
-		writeErr = file.Sync()
-	}
-	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return fmt.Errorf("flushing update recovery: %w", err)
-	}
-	if err := commitUpdateRecovery(path+".tmp", path); err != nil {
-		return fmt.Errorf("committing update recovery: %w", err)
+	if err := saveUpdateState(path, state); err != nil {
+		return fmt.Errorf("saving update recovery: %w", err)
 	}
 	return nil
 }
