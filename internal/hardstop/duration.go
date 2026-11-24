@@ -10,7 +10,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/config"
 )
 
-// Duration validates hours before converting or multiplying into a Go duration.
 func Duration(hours int) (time.Duration, error) {
 	if hours <= 0 || uint64(hours) > uint64(math.MaxInt64/int64(time.Hour)) {
 		return 0, fmt.Errorf("duration must be positive and at most %d hours", math.MaxInt64/int64(time.Hour))
@@ -18,7 +17,6 @@ func Duration(hours int) (time.Duration, error) {
 	return time.Duration(hours) * time.Hour, nil
 }
 
-// ParseDurationHours accepts whole hours, days or weeks. Bare amounts are hours.
 func ParseDurationHours(text string) (int, error) {
 	text = strings.ToLower(strings.TrimSpace(text))
 	multiplier := uint64(1)
@@ -51,7 +49,6 @@ func ParseDurationHours(text string) (int, error) {
 	return hours, nil
 }
 
-// Remaining rounds positive partial minutes upward, using absolute expiry.
 func Remaining(expiry, now time.Time) string {
 	if !expiry.After(now) {
 		return "ended"
@@ -64,7 +61,6 @@ func Remaining(expiry, now time.Time) string {
 	return fmt.Sprintf("%dd %dh %dm", minutes/(24*60), minutes/60%24, minutes%60)
 }
 
-// LockDetails is shared by status, menus, triggers and delayed closure delivery.
 func LockDetails(lock config.LockFile, now time.Time) string {
 	expiry := lock.ExpiresAt.In(now.Location()).Format("2006-01-02 15:04")
 	if !lock.ExpiresAt.After(now) {

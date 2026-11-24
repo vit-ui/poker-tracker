@@ -1,5 +1,3 @@
-// Package config owns all reads and writes to config.json and lockfile.json.
-// No other package touches these files directly.
 package config
 
 import (
@@ -17,34 +15,22 @@ import (
 
 var mu sync.RWMutex
 
-// Setup holds values written once during --setup mode.
 type Setup struct {
 	TelegramChatID       *string `json:"telegram_chat_id"`
-	StorageBackend       *string `json:"storage_backend"` // "sheets" or "sqlite"
+	StorageBackend       *string `json:"storage_backend"`
 	GoogleSheetID        *string `json:"google_sheet_id"`
 	GoogleSheetName      *string `json:"google_sheet_name"`
 	PokerStarsScreenName *string `json:"pokerstars_screen_name"`
 
-	// ConnectionString and PairToken exist only for the split build (v3.7+) and
-	// stay null in an all-local install. ConnectionString is set on the client
-	// (the tracker://host:port/token#fp=... its server printed); PairToken is
-	// the shared secret generated on the server at setup. Both null = all-local,
-	// so an existing combined config is unaffected.
 	ConnectionString *string `json:"connection_string"`
 	PairToken        *string `json:"pair_token"`
 }
 
-// Paths holds the PokerStars folder locations configured via /paths.
 type Paths struct {
 	HandHistory       *string `json:"hand_history"`
 	TournamentSummary *string `json:"tournament_summary"`
 }
 
-// Alerts holds thresholds for automatic outgoing alerts. Each threshold has a
-// sibling *_enabled flag: a set value with the flag false is "off but
-// remembered" — kept in config so it can be switched back on without retyping,
-// but blanked out for evaluation by EffectiveAlerts. A null flag defaults to
-// on, so a value that predates this field (or was just set) is active.
 type Alerts struct {
 	DownswingBuyins        *float64     `json:"downswing_buyins"`
 	DownswingEnabled       *bool        `json:"downswing_buyins_enabled"`
@@ -58,9 +44,6 @@ type Alerts struct {
 	SessionLossEnabled     *bool        `json:"session_loss_buyins_enabled"`
 }
 
-// Hardstop holds the hard stop trigger rules and lock duration. The threshold
-// rules carry the same *_enabled flags as Alerts (see EffectiveHardstop);
-// DurationHours has none — it's not a rule that fires, and has no turn-off.
 type Hardstop struct {
 	SessionLossBuyins        *float64     `json:"session_loss_buyins"`
 	SessionLossEnabled       *bool        `json:"session_loss_buyins_enabled"`
@@ -75,18 +58,10 @@ type Hardstop struct {
 	DownswingEnabled         *bool        `json:"downswing_buyins_enabled"`
 }
 
-// Schedule holds player-specific timing settings.
 type Schedule struct {
-	// DayStartHour is the local hour (0-23) the player's poker day starts,
-	// used as the daily reset boundary for daily loss tracking. Nil means
-	// default to 6 (6am local time).
 	DayStartHour *int `json:"day_start_hour"`
 }
 
-// Notifications controls the always-on summary messages. The four result
-// summaries carry a *string mode — "every" | "wins" | "losses" | "off" — that
-// also filters them by win/loss; nil means "every" (the original always-on
-// behavior). StakeChange has no P&L, so it's a plain on/off; nil means On.
 type Notifications struct {
 	CashSessionSummary *string `json:"cash_session_summary"`
 	TournamentSummary  *string `json:"tournament_summary"`
@@ -95,8 +70,6 @@ type Notifications struct {
 	StakeChange        *bool   `json:"stake_change"`
 }
 
-// SummaryMode returns a result summary's configured mode, defaulting to
-// "every" (send every result) when unset.
 func SummaryMode(mode *string) string {
 	if mode == nil {
 		return "every"
@@ -104,11 +77,6 @@ func SummaryMode(mode *string) string {
 	return *mode
 }
 
-// ShouldSendSummary reports whether a result summary with the given net should
-// be sent under mode. "off" never sends; "wins" only a net above zero;
-// "losses" only a net below zero; "every" (and any unrecognized value) always.
-// A breakeven net of exactly zero is neither a win nor a loss, so it sends
-// under neither "wins" nor "losses".
 func ShouldSendSummary(mode string, netCents money.Cents) bool {
 	switch mode {
 	case "off":
@@ -122,22 +90,14 @@ func ShouldSendSummary(mode string, netCents money.Cents) bool {
 	}
 }
 
-// FlagEnabled reports whether an on/off flag is enabled, defaulting to enabled
-// when unset (nil). Shared by NotificationEnabled and the threshold flags.
 func FlagEnabled(b *bool) bool {
 	return b == nil || *b
 }
 
-// NotificationEnabled reports whether an on/off notification is enabled,
-// defaulting to enabled when unset.
 func NotificationEnabled(enabled *bool) bool {
 	return FlagEnabled(enabled)
 }
 
-// EffectiveAlerts returns a copy of a with every turned-off threshold's value
-// blanked to nil — "off" is a set value whose *_enabled flag is false. The
-// alert evaluators read this so an off threshold looks exactly like an unset
-// one, without their firing logic having to know about the flags.
 func EffectiveAlerts(a Alerts) Alerts {
 	if !FlagEnabled(a.DownswingEnabled) {
 		a.DownswingBuyins = nil
@@ -157,8 +117,6 @@ func EffectiveAlerts(a Alerts) Alerts {
 	return a
 }
 
-// EffectiveHardstop is EffectiveAlerts' counterpart for the hard-stop rules.
-// DurationHours has no flag and is left untouched.
 func EffectiveHardstop(h Hardstop) Hardstop {
 	if !FlagEnabled(h.SessionLossEnabled) {
 		h.SessionLossBuyins = nil
@@ -178,8 +136,6 @@ func EffectiveHardstop(h Hardstop) Hardstop {
 	return h
 }
 
-// Config is the in-memory representation of config.json.
-// All leaf fields are pointers so that null and zero are distinguishable.
 type Config struct {
 	Setup         Setup         `json:"setup"`
 	Paths         Paths         `json:"paths"`
@@ -189,7 +145,6 @@ type Config struct {
 	Notifications Notifications `json:"notifications"`
 }
 
-// LockFile is the in-memory representation of lockfile.json.
 type LockFile struct {
 	TriggerID     string    `json:"trigger_id,omitempty"`
 	TriggeredAt   time.Time `json:"triggered_at"`
@@ -198,24 +153,12 @@ type LockFile struct {
 	DurationHours int       `json:"duration_hours"`
 }
 
-// Pending-tournament queue reasons — why a tournament is held awaiting a
-// player answer before it's recorded. An empty Reason on an existing queue
-// file means the original satellite question, so no migration is needed.
 const (
-	// PendingSatellite: a LikelySatellite tournament awaiting the
-	// ticket-vs-cash entry question.
-	PendingSatellite = "satellite"
-	// PendingFreerollBuyin: a zero-buy-in freeroll/Kick-Off awaiting the
-	// free-vs-paid entry-cost question — PokerStars records no buy-in and no
-	// entry method, so the player supplies the cost.
+	PendingSatellite     = "satellite"
 	PendingFreerollBuyin = "freeroll_buyin"
 	PendingMissingResult = "missing_result"
 )
 
-// PendingTournament is one tournament awaiting a player answer before it's
-// recorded, held in pending_tournaments.json. Reason (see the Pending*
-// constants) selects which question the bot asks; empty means the original
-// satellite question.
 type PendingTournament struct {
 	Tournament     parsers.Tournament        `json:"tournament"`
 	Reason         string                    `json:"reason,omitempty"`
@@ -226,13 +169,10 @@ type PendingTournament struct {
 	Historical     bool                      `json:"historical,omitempty"`
 }
 
-// PendingTournaments is the in-memory representation of pending_tournaments.json.
 type PendingTournaments struct {
 	Pending []PendingTournament `json:"pending"`
 }
 
-// LoadConfig reads config.json at path. If the file does not exist it is
-// created with all null values and the empty Config is returned.
 func LoadConfig(path string) (*Config, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -244,14 +184,11 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, err
 }
 
-// ValidateExistingConfig checks an installer's input without creating or changing
-// configuration. Setup must not interpret an unreadable file as a fresh install.
 func ValidateExistingConfig(path string) error {
 	_, err := ReadConfig(path)
 	return err
 }
 
-// ReadConfig loads an existing config without creating a missing file.
 func ReadConfig(path string) (*Config, error) {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -270,8 +207,6 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// UpdateConfig atomically changes selected fields without overwriting concurrent
-// collector or bot changes. update must not call other config operations.
 func UpdateConfig(path string, update func(*Config) error) (*Config, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -288,7 +223,6 @@ func UpdateConfig(path string, update func(*Config) error) (*Config, error) {
 	return cfg, saveConfig(path, cfg)
 }
 
-// SaveConfig writes cfg to path atomically (temp file then rename).
 func SaveConfig(path string, cfg *Config) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -313,8 +247,6 @@ func saveConfigUnchecked(path string, cfg *Config) error {
 	return nil
 }
 
-// LoadLock reads lockfile.json at path. Returns nil, nil if the file does not
-// exist — that is the normal state when no hard stop is active.
 func LoadLock(path string) (*LockFile, error) {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -329,8 +261,6 @@ func LoadLock(path string) (*LockFile, error) {
 	return &lock, nil
 }
 
-// SaveLock retains trigger receipts while replacing a legacy lock directly.
-// Production enforcement uses ApplyHardstop for atomic replay decisions.
 func SaveLock(path string, lock *LockFile) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -342,8 +272,6 @@ func SaveLock(path string, lock *LockFile) error {
 	return saveLockState(path, state)
 }
 
-// DeleteLock clears the active lock without discarding replay receipts. Old
-// installations with no receipts retain their original file-removal behavior.
 func DeleteLock(path string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -361,14 +289,10 @@ func DeleteLock(path string) error {
 	return saveLockState(path, state)
 }
 
-// IsLockExpired reports whether the lock's expiry time is in the past.
 func IsLockExpired(lock *LockFile) bool {
 	return lock.ExpiresAt.Before(time.Now().UTC())
 }
 
-// LoadPendingTournaments reads pending_tournaments.json at path. Returns an
-// empty slice and nil error if the file does not exist — that is the normal
-// state when nothing is awaiting a satellite/ticket answer.
 func LoadPendingTournaments(path string) ([]PendingTournament, error) {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -390,15 +314,12 @@ func loadPendingTournaments(path string) ([]PendingTournament, error) {
 	return pt.Pending, nil
 }
 
-// SavePendingTournaments writes pending to path.
 func SavePendingTournaments(path string, pending []PendingTournament) error {
 	mu.Lock()
 	defer mu.Unlock()
 	return savePendingTournaments(path, pending)
 }
 
-// UpdatePendingTournaments atomically reads, changes and replaces the pending
-// queue. update must only change the supplied data, without I/O or config calls.
 func UpdatePendingTournaments(path string, update func([]PendingTournament) ([]PendingTournament, bool)) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -431,7 +352,6 @@ func savePendingTournamentsUnchecked(path string, pending []PendingTournament) e
 	return nil
 }
 
-// replaceStateFile is called with mu held by the owning config operation.
 func replaceStateFile(path string, data []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
@@ -443,15 +363,12 @@ func replaceStateFile(path string, data []byte) error {
 	return nil
 }
 
-// ClosureEvent captures one successful termination, independently of its delivery.
-// Lock is the effective lock at closure, so delayed messages never reset expiry.
 type ClosureEvent struct {
 	ID       string    `json:"id"`
 	ClosedAt time.Time `json:"closed_at"`
 	Lock     LockFile  `json:"lock"`
 }
 
-// ClosureNotification remains as a receipt after delivery to deduplicate replay.
 type ClosureNotification struct {
 	Event     ClosureEvent `json:"event"`
 	Delivered bool         `json:"delivered"`
@@ -512,8 +429,6 @@ func saveClosureNotifications(path string, entries map[string]ClosureNotificatio
 	return nil
 }
 
-// QueueClosures merges newly observed collector events with pending ones.
-// The enforcer serializes queueing with acknowledgements through its mutex.
 func QueueClosures(path string, events []ClosureEvent) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -543,7 +458,6 @@ func AcknowledgeClosure(path, id string) error {
 	return saveClosureNotifications(path, entries)
 }
 
-// CheckClosureTransferReady protects both collector events and unsent bot messages.
 func CheckClosureTransferReady(root string) error {
 	for _, name := range []string{"collector_closures.json", "closure_notifications.json"} {
 		entries, err := LoadClosureNotifications(filepath.Join(root, name))

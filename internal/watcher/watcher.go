@@ -1,5 +1,3 @@
-// Package watcher monitors PokerStars hand history and tournament summary
-// directories for new or modified session files.
 package watcher
 
 import (
@@ -12,10 +10,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// FileEvent represents a new or modified session file detected by the watcher.
 type FileEvent struct {
 	Path string
-	Type string // "cash" (hand history folder) or "tournament" (tournament summary folder)
+	Type string
 }
 
 type pendingFile struct {
@@ -30,14 +27,10 @@ type expiredFile struct {
 	generation uint64
 }
 
-// Watch monitors Write/Create events on .txt files, debouncing each file for
-// two seconds. Closing done stops the watcher and its pending timer callbacks.
 func Watch(done <-chan struct{}, handHistoryPath, tournamentPath string, sessionChan chan<- FileEvent) error {
 	return WatchControlled(done, handHistoryPath, tournamentPath, sessionChan, nil)
 }
 
-// WatchControlled adds a collector-owned pause/drain transition to Watch.
-// Every map mutation and event delivery happens on this watcher goroutine.
 func WatchControlled(done <-chan struct{}, handHistoryPath, tournamentPath string, sessionChan chan<- FileEvent, control *Control) error {
 	finished := make(chan struct{})
 	pending := make(map[string]*pendingFile)
@@ -135,8 +128,6 @@ func WatchControlled(done <-chan struct{}, handHistoryPath, tournamentPath strin
 		case request := <-requests:
 			var drained []FileEvent
 			if request.stop || request.paused && !paused {
-				// Include fsnotify events already accepted into its delivery channel.
-				// Unreceived source bytes remain recoverable from the source histories.
 			drain:
 				for {
 					select {

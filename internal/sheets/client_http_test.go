@@ -1,16 +1,5 @@
 package sheets
 
-// These tests exercise the sheets-only code paths that have no mirror in the
-// sqlite backend and can't be reached without HTTP: the write-ahead fallback
-// (cache-on-failure / replay-on-recovery) and the raw upserts' find-or-append
-// branch selection. They run the Client's real request-building, JSON
-// decoding, and control flow against an httptest server standing in for the
-// Google Sheets API — no real credentials, no reimplementation of spreadsheet
-// semantics. The fake returns programmable GET bodies and can be flipped to
-// fail every mutating call, which is all these two behaviors need; row
-// encode/decode alignment and the money math are covered elsewhere (the
-// migration round-trip, the pure cascade/parse tests, and the sqlite backend).
-
 import (
 	"encoding/json"
 	"io"
@@ -26,19 +15,12 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
-// fakeRequest is one recorded call to the fake Sheets API.
 type fakeRequest struct {
 	method string
-	path   string // decoded URL path, e.g. "/SHEET/values/Cash Sessions!J:J"
+	path   string
 	body   string
 }
 
-// fakeSheets is a scripted stand-in for the Google Sheets REST API. GETs
-// return getBody(range) (empty valueRange when getBody is nil or returns the
-// zero value), so findRowByColumnValue/getLastRunningTotal see "no such row"
-// by default; mutating calls succeed with 200 unless failWrites is set, in
-// which case they return 500 to drive the write-ahead fallback. Every request
-// is recorded for assertions.
 type fakeSheets struct {
 	mu         sync.Mutex
 	requests   []fakeRequest
@@ -73,8 +55,6 @@ func (f *fakeSheets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var out valueRange
 		if getBody != nil {
-			// The range is the path segment after "/values/", e.g.
-			// "Cash Sessions!J:J" — already decoded in r.URL.Path.
 			if idx := strings.Index(r.URL.Path, "/values/"); idx >= 0 {
 				out = getBody(r.URL.Path[idx+len("/values/"):])
 			}
@@ -87,7 +67,6 @@ func (f *fakeSheets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Any mutating call (POST :append/:clear/batchUpdate, PUT update).
 	if fail {
 		http.Error(w, `{"error":{"code":500,"message":"backend error"}}`, http.StatusInternalServerError)
 		return
@@ -96,9 +75,6 @@ func (f *fakeSheets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("{}"))
 }
 
-// newTestClient stands up the fake server and a Client wired to it with a real
-// on-disk fallback file. Constructing Client directly (white-box) skips
-// ensureTabs, so the fake needn't serve tab metadata just to build the client.
 func newTestClient(t *testing.T, fake *fakeSheets) *Client {
 	t.Helper()
 	srv := httptest.NewServer(fake)
@@ -111,10 +87,6 @@ func newTestClient(t *testing.T, fake *fakeSheets) *Client {
 	}
 }
 
-// TestFallbackCacheAndReplay covers the write-ahead fallback end to end: a
-// write that fails against the API is cached to disk (PendingWrites 0→1), and
-// the next successful write flushes it back (PendingWrites 1→0). This is the
-// path that keeps a transient Sheets 500 from silently losing a session.
 func TestFallbackCacheAndReplay(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
@@ -128,12 +100,10 @@ func TestFallbackCacheAndReplay(t *testing.T) {
 	if got := c.PendingWrites(); got != 1 {
 		t.Fatalf("PendingWrites after a failed write = %d, want 1 (cached for replay)", got)
 	}
-	// cacheFailed persists immediately so a crash never loses the write.
 	if _, err := readFallbackFile(t, c.fallbackPath); err != nil {
 		t.Fatalf("fallback file not written to disk: %v", err)
 	}
 
-	// The API recovers; the next successful write flushes the queued one.
 	fake.setFailWrites(false)
 	if err := c.AppendCashSession(parsers.CashSession{Stake: "NL10", Hands: 41, NetCents: -400, FirstHandID: "h2"}); err != nil {
 		t.Fatalf("AppendCashSession after recovery = %v, want success", err)
@@ -143,13 +113,6 @@ func TestFallbackCacheAndReplay(t *testing.T) {
 	}
 }
 
-// TestLedgerFallbackCacheAndReplay covers the write-ahead fallback for a
-// deposit/withdrawal: a failed AppendLedgerEntry is cached to disk (as a ledger
-// kind), and the next successful write replays it — the path that stops a
-// transient Sheets outage from silently losing a money movement (the /deposit
-// that vanished after the scan blew the quota). Two failed deposits must queue
-// as two distinct entries (ledger rows have no upsert key, so the timestamp
-// keys them).
 func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
@@ -174,7 +137,6 @@ func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 		}
 	}
 
-	// The API recovers; the next successful write flushes both queued deposits.
 	fake.setFailWrites(false)
 	if err := c.AppendLedgerEntry("deposit", 1000, time.Unix(3000, 0), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry after recovery = %v, want success", err)
@@ -184,11 +146,6 @@ func TestLedgerFallbackCacheAndReplay(t *testing.T) {
 	}
 }
 
-// TestHealth covers restService.doJSON's health tracking (surfaced through
-// Client.Health, the heartbeat's sheets-only data source): a successful call
-// reports healthy, a failing call reports down with the error and a since
-// timestamp no earlier than the call, and recovery reports healthy again with
-// since reset to zero.
 func TestHealth(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
@@ -219,16 +176,11 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-// TestFallbackSupersededByNewerHandCount covers flushDecision's supersede
-// guard: a queued cash write is discarded rather than replayed when the sheet
-// already holds a strictly higher hand count for the same session (a later
-// direct write got there first). Replaying it would regress the row backward.
 func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
 	session := parsers.CashSession{Stake: "NL10", Hands: 40, NetCents: -300, FirstHandID: "h1"}
 
-	// Queue a 40-hand snapshot by failing its write.
 	fake.setFailWrites(true)
 	if err := c.AppendCashSession(session); err == nil {
 		t.Fatal("AppendCashSession = nil error while failing, want an error")
@@ -237,9 +189,6 @@ func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 		t.Fatalf("PendingWrites = %d, want 1", got)
 	}
 
-	// The sheet now reports a 50-hand row for this session (a later direct
-	// write superseded the queued snapshot). Column J holds the session ID at
-	// row 2; column C holds its hand count.
 	id := CashSessionID(session.Date, session.FirstHandID)
 	fake.mu.Lock()
 	fake.getBody = func(rng string) valueRange {
@@ -254,13 +203,11 @@ func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 	fake.failWrites = false
 	fake.mu.Unlock()
 
-	before := len(fake.calls()) // ignore the failed initial write's recorded attempts
+	before := len(fake.calls())
 	c.flush()
 	if got := c.PendingWrites(); got != 0 {
 		t.Errorf("PendingWrites after flush = %d, want 0 (stale snapshot discarded, not replayed)", got)
 	}
-	// Discarded, not replayed: during the flush, the guard should read the
-	// sheet's hand count and then write nothing to the Cash Sessions row.
 	for _, r := range fake.calls()[before:] {
 		if r.method != http.MethodGet && strings.Contains(r.path, "Cash Sessions") {
 			t.Errorf("superseded entry was written to the sheet during flush: %s %s", r.method, r.path)
@@ -268,7 +215,6 @@ func TestFallbackSupersededByNewerHandCount(t *testing.T) {
 	}
 }
 
-// TestAppendTournamentFindOrAppend checks the row selected in the atomic grid batch.
 func TestAppendTournamentFindOrAppend(t *testing.T) {
 	tourn := parsers.Tournament{
 		Type: "spingo", TournamentID: "T1", BuyInCents: 100, FinishPos: 1, TotalPlayers: 3, NetCents: 200,
@@ -349,9 +295,6 @@ func historyGridWrites(t *testing.T, calls []fakeRequest) []testGridWrite {
 	return writes
 }
 
-// TestValuesGetEscapesTabName confirms a tab name with a space is
-// percent-escaped in the request path — the URL construction that would
-// otherwise send a malformed range for "Cash Sessions".
 func TestValuesGetEscapesTabName(t *testing.T) {
 	fake := &fakeSheets{}
 	c := newTestClient(t, fake)
@@ -362,9 +305,6 @@ func TestValuesGetEscapesTabName(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("got %d requests, want 1", len(calls))
 	}
-	// The server decodes the path, so a correctly-escaped "Cash%20Sessions"
-	// arrives as "Bankroll Ledger!D:D" with the space intact and no raw
-	// unescaped characters mangled.
 	if !strings.Contains(calls[0].path, "Bankroll Ledger!D:D") {
 		t.Errorf("request path = %q, want it to carry the decoded range Bankroll Ledger!D:D", calls[0].path)
 	}

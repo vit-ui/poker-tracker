@@ -1,4 +1,3 @@
-// Package deployment coordinates the combined-to-split installation transaction.
 package deployment
 
 import (
@@ -17,8 +16,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// SourceOwner prepares transfers on the existing combined process's worker.
-// Only this goroutine writes source_transfer.json; the helper writes requests.
 type SourceOwner struct {
 	Path          string
 	Controls      chan<- bot.OwnerControl
@@ -34,7 +31,6 @@ type SourceOwner struct {
 	done          chan struct{}
 }
 
-// OpenSourceOwner registers events before exposing the owner's durable PID.
 func OpenSourceOwner(path string) (*SourceOwner, error) {
 	owner := &SourceOwner{Path: path, Shutdown: make(chan struct{}), Errors: make(chan error, 1), done: make(chan struct{})}
 	if runtime.GOOS != "windows" {
@@ -65,12 +61,10 @@ func (o *SourceOwner) statePath() string {
 	return filepath.Join(filepath.Dir(o.Path), "source_transfer.json")
 }
 
-// StartPaused prevents collection from resuming an interrupted frozen transfer.
 func (o *SourceOwner) StartPaused() bool {
 	return o.state != nil && o.state.Phase != "idle" && o.state.Phase != "aborted" && o.state.Phase != "complete"
 }
 
-// Run serializes source requests while the main owner continues failure handling.
 func (o *SourceOwner) Run() {
 	if o.mailbox == nil {
 		return
@@ -271,7 +265,6 @@ func (o *SourceOwner) abort() error {
 	return nil
 }
 
-// Close joins source request handling after the main owner cancels Stop.
 func (o *SourceOwner) Close() {
 	if o.mailbox != nil {
 		<-o.done

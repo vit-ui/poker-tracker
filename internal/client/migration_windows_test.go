@@ -15,8 +15,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
-// This test only reads process names. Lock commands and enforcement are never
-// invoked, and all files/databases/listeners belong to the test directory.
 func TestCollectorMigrationPauseDrainAndResume(t *testing.T) {
 	running, err := pokerStarsRunning()
 	if err != nil {
@@ -72,7 +70,6 @@ func TestCollectorMigrationPauseDrainAndResume(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// An ordinary upload establishes authentication before worker preparation.
 				collectorLink.Uploads <- transport.Upload{Type: transport.ImportStart}
 				select {
 				case <-serverLink.Uploads:
@@ -125,7 +122,7 @@ func TestCollectorMigrationPauseDrainAndResume(t *testing.T) {
 			if err := os.WriteFile(file, data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			time.Sleep(100 * time.Millisecond) // inside the normal two-second debounce
+			time.Sleep(100 * time.Millisecond)
 			release := make(chan struct{})
 			released := false
 			defer func() {
@@ -166,8 +163,6 @@ func TestCollectorMigrationPauseDrainAndResume(t *testing.T) {
 			if err := os.WriteFile(file, append(data, '\n'), 0600); err != nil {
 				t.Fatal(err)
 			}
-			// Acknowledged resume is also reflected in the real watcher, rather than
-			// changing only server state. Pausing it yields the accepted new update.
 			time.Sleep(100 * time.Millisecond)
 			pending, err := control.SetPaused(true)
 			if err != nil || len(pending) != 1 || pending[0].Path != file {

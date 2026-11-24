@@ -44,9 +44,6 @@ func TestParseCashFileFromWaitsForHandSummary(t *testing.T) {
 	}
 }
 
-// handHeaderOffsets returns the byte offset of every hand-header line in data,
-// so a test can truncate the file at hand boundaries (right before a header)
-// and get a prefix that holds only complete hands.
 func handHeaderOffsets(data []byte) []int64 {
 	var offs []int64
 	var off int64
@@ -72,8 +69,6 @@ func handHeaderOffsets(data []byte) []int64 {
 	return offs
 }
 
-// assertSameResult fails if the incremental and whole-file parses disagree on
-// the session, the tournament stats, or whether an error occurred.
 func assertSameResult(t *testing.T, label string, gotS *CashSession, gotT *TournamentHandStats, gotErr error, wantS *CashSession, wantT *TournamentHandStats, wantErr error) {
 	t.Helper()
 	if (gotErr == nil) != (wantErr == nil) {
@@ -87,12 +82,6 @@ func assertSameResult(t *testing.T, label string, gotS *CashSession, gotT *Tourn
 	}
 }
 
-// TestParseCashFileFrom_Equivalence is the load-bearing test for the
-// incremental fast path: for every committed hand-history fixture, growing the
-// file one hand-boundary at a time and carrying ParseState forward must yield,
-// at every step, exactly what a from-scratch whole-file parse of that same
-// prefix produces. Both the intermediate steps and the final full file are
-// checked, so a mid-stream divergence can't hide behind a correct end state.
 func TestParseCashFileFrom_Equivalence(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "hand_history", "*.txt"))
 	if err != nil {
@@ -114,9 +103,6 @@ func TestParseCashFileFrom_Equivalence(t *testing.T) {
 				t.Fatalf("no hand headers found in %s", filepath.Base(f))
 			}
 
-			// Prefix ends: right before each header after the first (i.e. 1
-			// hand, 2 hands, …), then the whole file. This exercises the
-			// resume path only when there is more than one hand.
 			var ends []int64
 			ends = append(ends, offs[1:]...)
 			ends = append(ends, int64(len(data)))
@@ -136,7 +122,6 @@ func TestParseCashFileFrom_Equivalence(t *testing.T) {
 
 				gotS, gotT, st, gotErr := ParseCashFileFrom(growing, testScreenName, prior)
 
-				// Whole-file parse of the identical prefix, from a fresh file.
 				whole := filepath.Join(dir, "whole.txt")
 				if err := os.WriteFile(whole, data[:end], 0o644); err != nil {
 					t.Fatal(err)
@@ -154,10 +139,6 @@ func TestParseCashFileFrom_Equivalence(t *testing.T) {
 	}
 }
 
-// TestParseCashFileFrom_FallbackShorterFile confirms that when the file shrinks
-// below a carried consumedOffset (rewritten to fewer hands), the parser
-// discards the stale state and re-parses from zero, matching a whole-file parse
-// of the new, shorter content.
 func TestParseCashFileFrom_FallbackShorterFile(t *testing.T) {
 	full := readFixtureWithMultipleHands(t)
 	offs := handHeaderOffsets(full)
@@ -168,7 +149,6 @@ func TestParseCashFileFrom_FallbackShorterFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hh.txt")
 
-	// Parse the full file to get a state whose consumedOffset points deep in.
 	if err := os.WriteFile(path, full, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +160,6 @@ func TestParseCashFileFrom_FallbackShorterFile(t *testing.T) {
 		t.Fatal("expected a non-zero consumedOffset for a multi-hand file")
 	}
 
-	// Now shrink the file to a single hand and re-parse carrying the stale
-	// (too-large) state. It must fall back and match a fresh whole-file parse.
 	shorter := full[:offs[1]]
 	if err := os.WriteFile(path, shorter, 0o644); err != nil {
 		t.Fatal(err)
@@ -196,9 +174,6 @@ func TestParseCashFileFrom_FallbackShorterFile(t *testing.T) {
 	assertSameResult(t, "shorter-file fallback", gotS, gotT, gotErr, wantS, wantT, wantErr)
 }
 
-// TestParseCashFileFrom_FallbackRewrittenContent confirms that when the byte at
-// a carried consumedOffset is no longer a hand header (the file was rewritten in
-// place, not appended to), the parser falls back to a full parse.
 func TestParseCashFileFrom_FallbackRewrittenContent(t *testing.T) {
 	full := readFixtureWithMultipleHands(t)
 	offs := handHeaderOffsets(full)
@@ -209,7 +184,6 @@ func TestParseCashFileFrom_FallbackRewrittenContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hh.txt")
 
-	// A state pointing at the second hand's header.
 	if err := os.WriteFile(path, full[:offs[1]], 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -218,9 +192,6 @@ func TestParseCashFileFrom_FallbackRewrittenContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Replace the file with different, still-valid content whose bytes at the
-	// old consumedOffset are not a header. Carrying the stale state must fall
-	// back and match a fresh parse of the new content.
 	rewritten := append([]byte("PokerStars Hand #999: extra padding line to shift offsets\n"), full...)
 	if err := os.WriteFile(path, rewritten, 0o644); err != nil {
 		t.Fatal(err)
@@ -235,15 +206,6 @@ func TestParseCashFileFrom_FallbackRewrittenContent(t *testing.T) {
 	assertSameResult(t, "rewritten-content fallback", gotS, gotT, gotErr, wantS, wantT, wantErr)
 }
 
-// TestParseCashFileFrom_EquivalenceDataFiles is the dev-machine-only counterpart
-// of TestParseCashFileFrom_Equivalence: it runs the same growing-prefix
-// equivalence over the real, larger hand histories in the gitignored data/ dir
-// (HORSE, PLO, high-volume cash — the formats and sizes the small committed
-// fixtures don't reach). Skips when data/ is absent (CI, fresh checkout). Each
-// file is parsed for its own auto-detected hero, so no real nick enters source.
-// Boundaries are sampled (the whole-file comparison is O(hands) per step) while
-// always including the full file, so resume is exercised repeatedly and the
-// final state is checked exactly.
 func TestParseCashFileFrom_EquivalenceDataFiles(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "data", "*.txt"))
 	if err != nil {
@@ -258,7 +220,7 @@ func TestParseCashFileFrom_EquivalenceDataFiles(t *testing.T) {
 		base := filepath.Base(f)
 		line := firstLine(t, f)
 		if !strings.HasPrefix(line, "PokerStars Hand #") && !strings.HasPrefix(line, "PokerStars Zoom Hand #") {
-			continue // tournament summaries aren't parsed incrementally
+			continue
 		}
 		hero := detectHero(t, f)
 		if hero == "" {
@@ -300,10 +262,6 @@ func TestParseCashFileFrom_EquivalenceDataFiles(t *testing.T) {
 	t.Logf("incremental equivalence verified on %d real hand-history file(s)", checked)
 }
 
-// sampledEnds returns up to max prefix ends (byte offsets just before a hand
-// header, plus the full length), evenly sampled across the file's hand
-// boundaries. It always includes the final full-file length so the end state is
-// checked exactly.
 func sampledEnds(offs []int64, total int64, max int) []int64 {
 	var boundaries []int64
 	boundaries = append(boundaries, offs[1:]...)
@@ -319,11 +277,9 @@ func sampledEnds(offs []int64, total int64, max int) []int64 {
 	for i := 0; i < len(boundaries)-1; i += step {
 		out = append(out, boundaries[i])
 	}
-	return append(out, total) // always end on the full file
+	return append(out, total)
 }
 
-// readFixtureWithMultipleHands returns the bytes of a committed cash fixture
-// known to contain more than one hand, for the fallback tests.
 func readFixtureWithMultipleHands(t *testing.T) []byte {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "hand_history", "*.txt"))

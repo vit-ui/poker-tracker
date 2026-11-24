@@ -28,14 +28,13 @@ func TestPauseDrainsDebounceAndResumeRetainsChanges(t *testing.T) {
 	}()
 	if _, err := control.SetPaused(false); err != nil {
 		t.Fatal(err)
-	} // watcher has added both folders
+	}
 	cash, summary := filepath.Join(hh, "cash.txt"), filepath.Join(ts, "summary.txt")
 	for _, path := range []string{cash, summary} {
 		if err := os.WriteFile(path, []byte("initial"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Allow fsnotify delivery, while remaining well inside the debounce period.
 	time.Sleep(100 * time.Millisecond)
 	drained, err := control.SetPaused(true)
 	if err != nil {
@@ -121,7 +120,6 @@ func TestPausedReplacementStopsAndDrainsWithoutEmitting(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	// Stopping an already paused watcher must still drain its accepted events.
 	drained, err := control.Stop()
 	if err != nil {
 		t.Fatal(err)

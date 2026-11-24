@@ -166,7 +166,6 @@ func TestSaveConfig_LoadConfig_RoundTrip(t *testing.T) {
 	if loaded.Hardstop.DurationHours == nil || *loaded.Hardstop.DurationHours != duration {
 		t.Errorf("DurationHours: got %v, want %v", loaded.Hardstop.DurationHours, duration)
 	}
-	// Unset fields must survive as nil.
 	if loaded.Setup.TelegramChatID != nil {
 		t.Error("TelegramChatID should remain nil")
 	}
@@ -266,11 +265,11 @@ func TestShouldSendSummary(t *testing.T) {
 		{"every", 0, true},
 		{"wins", 1000, true},
 		{"wins", -1000, false},
-		{"wins", 0, false}, // breakeven is not a win
+		{"wins", 0, false},
 		{"losses", -1000, true},
 		{"losses", 1000, false},
-		{"losses", 0, false}, // breakeven is not a loss
-		{"", 500, true},      // unrecognized/empty falls back to "every"
+		{"losses", 0, false},
+		{"", 500, true},
 	}
 	for _, c := range cases {
 		if got := config.ShouldSendSummary(c.mode, c.netCents); got != c.want {
@@ -326,11 +325,10 @@ func bp(x bool) *bool       { return &x }
 
 func TestEffectiveAlerts(t *testing.T) {
 	a := config.Alerts{
-		DownswingBuyins: fp(5), DownswingEnabled: bp(false), // off → blanked
-		SessionLossBuyins: fp(3), SessionLossEnabled: bp(true), // on → kept
-		LosingStreakCount: ip(4),                                       // nil flag → on → kept
-		DailyLossCents:    centsPtr(2000), DailyLossEnabled: bp(false), // off → blanked
-		// SpingoDailyLossCents unset → stays nil
+		DownswingBuyins: fp(5), DownswingEnabled: bp(false),
+		SessionLossBuyins: fp(3), SessionLossEnabled: bp(true),
+		LosingStreakCount: ip(4),
+		DailyLossCents:    centsPtr(2000), DailyLossEnabled: bp(false),
 	}
 	eff := config.EffectiveAlerts(a)
 	if eff.DownswingBuyins != nil {
@@ -348,8 +346,6 @@ func TestEffectiveAlerts(t *testing.T) {
 	if eff.SpingoDailyLossCents != nil {
 		t.Error("unset spingo daily loss should stay nil")
 	}
-	// The input must not be mutated (value receiver → the caller's config keeps
-	// the remembered numbers).
 	if a.DownswingBuyins == nil || *a.DownswingBuyins != 5 {
 		t.Error("EffectiveAlerts must not mutate its argument")
 	}
@@ -358,9 +354,9 @@ func TestEffectiveAlerts(t *testing.T) {
 func TestEffectiveHardstop(t *testing.T) {
 	dur := ip(12)
 	h := config.Hardstop{
-		SessionLossBuyins: fp(8), SessionLossEnabled: bp(false), // off → blanked
-		DownswingBuyins: fp(10), // nil flag → on → kept
-		DurationHours:   dur,    // no flag → always kept
+		SessionLossBuyins: fp(8), SessionLossEnabled: bp(false),
+		DownswingBuyins: fp(10),
+		DurationHours:   dur,
 	}
 	eff := config.EffectiveHardstop(h)
 	if eff.SessionLossBuyins != nil {

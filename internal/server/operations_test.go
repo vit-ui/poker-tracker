@@ -68,7 +68,6 @@ func TestWorkerOperationsSerializeWithUploadsAndBufferedReplies(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 	unblock.Do(func() { close(release) })
-	// Do not consume the first reply yet: it must not block subsequent work.
 	select {
 	case <-accepted:
 	case <-time.After(2 * time.Second):
@@ -99,7 +98,6 @@ func TestWorkerOperationsSerializeWithUploadsAndBufferedReplies(t *testing.T) {
 			t.Fatalf("running total = %v, sum = %v", row.RunningTotalCents, sumCents)
 		}
 	}
-	// Two deposits ($1 + $2) and the committed fixture's -$0.03 session.
 	if !closeEnoughServer(sumCents, 297) {
 		t.Fatalf("bankroll = %v, want 2.97", sumCents)
 	}

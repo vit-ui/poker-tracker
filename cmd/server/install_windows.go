@@ -9,7 +9,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/installation"
 )
 
-// installService shares the combined/collector recovery and power policy.
 func installService() error {
 	exe, err := os.Executable()
 	if err != nil {

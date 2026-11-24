@@ -8,7 +8,6 @@ import (
 	"testing"
 )
 
-// testScreenName matches the anonymized player in the testdata/ files.
 const testScreenName = "AnonHero01"
 
 func isCashGameFile(path string) bool {
@@ -28,11 +27,6 @@ func isCashGameFile(path string) bool {
 	return strings.HasPrefix(line, "PokerStars Hand #") && !strings.Contains(line, "Tournament #")
 }
 
-// TestParseCashFile parses every committed hand-history fixture in
-// testdata/hand_history/ (anonymized, derived from real files) and asserts each
-// yields exactly one of a cash session or tournament-hand stats — and that both
-// kinds are present, since the folder holds cash hands and tournament hands
-// alike (which is why "cash" was the wrong old name for it).
 func TestParseCashFile(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "hand_history", "*.txt"))
 	if err != nil {

@@ -7,7 +7,6 @@ import (
 	"sync"
 )
 
-// Transfer request kinds share the authenticated framing with collector traffic.
 const (
 	TransferReserve  = "reserve"
 	TransferBegin    = "begin"
@@ -18,7 +17,6 @@ const (
 	TransferRollback = "rollback"
 )
 
-// Transfer phases describe durable worker state, never socket state.
 const (
 	TransferPhaseReserved         = "reserved"
 	TransferPhaseReceiving        = "receiving"
@@ -30,11 +28,8 @@ const (
 	TransferPhaseRolledBack       = "rolled-back"
 )
 
-// TransferChunkBytes leaves ample room for JSON/base64 below maxFrameBytes.
 const TransferChunkBytes = 1 << 20
 
-// TransferRequest carries one manifest, chunk or durable-state operation.
-// The destination worker interprets Data; transport never parses its contents.
 type TransferRequest struct {
 	Kind           string  `json:"kind"`
 	TelegramChatID *string `json:"telegram_chat_id,omitempty"`
@@ -45,7 +40,6 @@ type TransferRequest struct {
 	Data           []byte  `json:"data,omitempty"`
 }
 
-// TransferReply acknowledges durable progress or a worker refusal.
 type TransferReply struct {
 	ID         string `json:"id"`
 	Phase      string `json:"phase"`
@@ -54,24 +48,17 @@ type TransferReply struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// TransferCall is serialized with destination worker operations. Reply must have
-// capacity one, so a disconnected caller cannot block worker completion.
 type TransferCall struct {
 	Request TransferRequest
 	Reply   chan TransferReply
 }
 
-// TransferConnection owns a pinned TLS transfer session and cancellation loop.
-// Exchanges are serialized; Close interrupts and joins an in-flight exchange.
 type TransferConnection struct {
 	socket    *frameConn
 	exchanges sync.Mutex
 	routines  sync.WaitGroup
 }
 
-// ConnectTransfer authenticates as a transfer peer without replacing a collector.
-// first may begin a transfer or query a previous durable receipt. Worker refusals
-// are returned in reply.Error; network/authentication errors are returned as err.
 func ConnectTransfer(info ConnInfo, first TransferRequest, stop <-chan struct{}) (*TransferConnection, TransferReply, error) {
 	if err := validateTransferRequest(first); err != nil {
 		return nil, TransferReply{}, err
@@ -97,7 +84,6 @@ func ConnectTransfer(info ConnInfo, first TransferRequest, stop <-chan struct{})
 	return session, reply, nil
 }
 
-// Exchange sends one request and waits for its corresponding durable reply.
 func (c *TransferConnection) Exchange(request TransferRequest) (TransferReply, error) {
 	if err := validateTransferRequest(request); err != nil {
 		return TransferReply{}, err
@@ -122,7 +108,6 @@ func (c *TransferConnection) exchange(out frame, id string) (TransferReply, erro
 	return *incoming.TransferReply, nil
 }
 
-// Close cancels the socket and joins owned work without acquiring its write lock.
 func (c *TransferConnection) Close() {
 	c.socket.close()
 	c.exchanges.Lock()
@@ -220,8 +205,6 @@ func (s *serveState) dispatchTransfer(request TransferRequest, link *Link, disco
 	case <-s.done:
 		return reply
 	}
-	// Once accepted, consume the durable result even if the peer disconnects.
-	// Admission must observe this result before any later status/reservation.
 	select {
 	case reply = <-call.Reply:
 	case <-s.done:

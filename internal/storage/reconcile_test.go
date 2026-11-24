@@ -22,12 +22,6 @@ func TestCascadeRunningTotals(t *testing.T) {
 	})
 
 	t.Run("interleaved tables — later row's running total must shift too", func(t *testing.T) {
-		// Two tables open at once, start bankroll 100:
-		//   deposit          +100 -> RT 100 (base, not part of amounts)
-		//   table A hand 1     -5 -> RT  95
-		//   table B hand 1     -3 -> RT  92
-		// Table A's 2nd hand arrives: cumulative net now -8, correcting row0.
-		// row1 (table B) must be recomputed too.
 		gotCents, err := CascadeRunningTotals([]money.Cents{-500, -300}, -800, 10000)
 		if err != nil {
 			t.Fatal(err)
@@ -77,16 +71,7 @@ func TestCascadeRunningTotals(t *testing.T) {
 	})
 }
 
-// TestReEntryRewriteSequenceMath is the sheets-side twin of sqlitestore's
-// TestAppendTournament_ReEntryRewriteUpsertsInPlace: the sqlite test proves
-// the three-bust re-entry sequence end-to-end against a real .db, while the
-// sheets backend composes the same per-bust update from these shared pure
-// helpers (rawAppendTournament: FoldBountyIntoNet on the found row;
-// updateLedgerAmountCascading: CascadeRunningTotals). Asserting the sequence
-// here pins that both backends' re-entry arithmetic agrees — the "backends
-// never diverge" invariant for this path — without live-sheets I/O.
 func TestReEntryRewriteSequenceMath(t *testing.T) {
-	// A re-entry sequence (anonymized T9000000006): three busts, no cashes, no bounties.
 	busts := []struct{ buyInCents, summaryNetCents money.Cents }{
 		{110, -110},
 		{220, -220},
@@ -104,9 +89,6 @@ func TestReEntryRewriteSequenceMath(t *testing.T) {
 		t.Errorf("final fold = (net %v, prizeWon %v), want (-3.30, 0)", netCents, prizeWonCents)
 	}
 
-	// A knockout variant: a $0.25 bounty already on the row (hand file ran
-	// first) must be re-folded against each successively larger buy-in, not
-	// lost or double-counted across rewrites.
 	var koNetCents, koPrizeCents money.Cents
 	for _, b := range busts {
 		koNetCents, koPrizeCents, err = FoldBountyIntoNet(b.summaryNetCents, 25, b.buyInCents)
@@ -118,10 +100,7 @@ func TestReEntryRewriteSequenceMath(t *testing.T) {
 		t.Errorf("knockout fold = (net %v, prizeWon %v), want (-3.05, 0.25)", koNetCents, koPrizeCents)
 	}
 
-	// The ledger side: the tournament's single row is corrected in place on
-	// each bust, cascading over a later row (a cash session that landed
-	// after the first bust). Start bankroll 20.
-	amountsCents := []money.Cents{-110, 250} // tournament row, then a later cash win
+	amountsCents := []money.Cents{-110, 250}
 	var totalsCents []money.Cents
 	for _, b := range busts[1:] {
 		totalsCents, err = CascadeRunningTotals(amountsCents, b.summaryNetCents, 2000)
@@ -225,20 +204,12 @@ func TestReconcileTournamentBounty(t *testing.T) {
 	}
 }
 
-// TestAsStoredClock checks the defining behavior: the result is a UTC instant
-// whose wall-clock digits equal the input's *own* wall-clock reading, in
-// whatever zone the input already carries — never re-localized to the process
-// zone. The process zone is pinned to UTC (an always-on server) and the inputs
-// deliberately carry a different zone (UTC-3, the poker PC), so the test proves
-// the split-mode anchoring: AsStoredClock(ClientNow()) must read the poker PC's
-// wall clock, not the server's. An earlier t.Local() implementation failed
-// exactly these cases.
 func TestAsStoredClock(t *testing.T) {
 	orig := time.Local
 	t.Cleanup(func() { time.Local = orig })
-	time.Local = time.UTC // simulate a server running in UTC
+	time.Local = time.UTC
 
-	brt := time.FixedZone("BRT", -3*60*60) // the poker PC's zone, distinct from the server's
+	brt := time.FixedZone("BRT", -3*60*60)
 
 	cases := []struct {
 		name string
@@ -246,9 +217,6 @@ func TestAsStoredClock(t *testing.T) {
 		want time.Time
 	}{
 		{
-			// The anchoring guard: a poker-PC instant keeps its own digits and is
-			// NOT shifted to the server's 23:30. A regression here is the whole
-			// client-clock split silently reading the wrong day.
 			"collector-zone instant keeps its own wall clock, not the server's",
 			time.Date(2026, 7, 15, 20, 30, 45, 0, brt),
 			time.Date(2026, 7, 15, 20, 30, 45, 0, time.UTC),
@@ -260,7 +228,7 @@ func TestAsStoredClock(t *testing.T) {
 		},
 		{
 			"late collector-zone evening stays on its own day even as the server rolls past midnight",
-			time.Date(2026, 7, 15, 22, 15, 0, 0, brt), // 01:15 on the 16th at the UTC server
+			time.Date(2026, 7, 15, 22, 15, 0, 0, brt),
 			time.Date(2026, 7, 15, 22, 15, 0, 0, time.UTC),
 		},
 	}

@@ -12,12 +12,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// TestPreviousStake exercises the pure decision behind the stake-change
-// alert: which stored cash session counts as "the previous one" relative to
-// the session just recorded — most recent by start time, excluding the
-// current session's own stored row (whose date can read back a few seconds
-// earlier than the parsed one, since the sheets backend stores dates at
-// minute precision).
 func TestPreviousStake(t *testing.T) {
 	at := func(s string) time.Time {
 		tm, err := time.Parse("2006-01-02 15:04:05", s)
@@ -52,7 +46,7 @@ func TestPreviousStake(t *testing.T) {
 			"one earlier session at a different stake",
 			[]parsers.CashSession{
 				session("2026-07-14 19:00:00", "NL10"),
-				session("2026-07-15 20:30:00", "NL25"), // current's own row
+				session("2026-07-15 20:30:00", "NL25"),
 			},
 			"NL10", true,
 		},
@@ -93,7 +87,6 @@ func TestPreviousStake(t *testing.T) {
 	}
 }
 
-// drainAlerts empties a buffered alert channel into a slice.
 func drainAlerts(ch chan string) []string {
 	var msgs []string
 	for {
@@ -106,16 +99,12 @@ func drainAlerts(ch chan string) []string {
 	}
 }
 
-// TestEvaluateSpingoDailyLossAlert hand-checks the Spin & Go drain warning
-// against the worker-fetched poker-day tournaments: two -$0.60 spins breach
-// a $1.00 threshold ($1.20 net loss), an in-day MTT loss must not count, and
-// an unconfigured threshold stays silent.
 func TestEvaluateSpingoDailyLossAlert(t *testing.T) {
 	thresholdCents := money.Cents(100)
 	dayTournaments := []parsers.Tournament{
 		{Type: "spingo", NetCents: -60},
 		{Type: "spingo" + parsers.KnockoutSuffix, NetCents: -60},
-		{Type: "mtt", NetCents: -5000}, // not a spin — must not count toward the drain
+		{Type: "mtt", NetCents: -5000},
 	}
 
 	t.Run("breach fires with the spin-only net", func(t *testing.T) {
@@ -147,10 +136,6 @@ func TestEvaluateSpingoDailyLossAlert(t *testing.T) {
 	})
 }
 
-// TestEvaluateStakeChangeAlert drives the one evaluator that keeps its own
-// store fetch against a real sqlite store: a session at a new stake alerts,
-// a session at the unchanged stake stays silent, and the first session ever
-// stays silent.
 func TestEvaluateStakeChangeAlert(t *testing.T) {
 	store, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "tracker.db"))
 	if err != nil {

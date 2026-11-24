@@ -15,11 +15,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
 )
 
-// installService registers the server as a per-user systemd service — no root.
-// The unit lives under the user's ~/.config/systemd/user and runs as that user,
-// so nothing here is written system-wide. The only step that needs privilege,
-// enabling "linger" so the service starts at boot without an interactive login,
-// is attempted separately by enableLinger and is optional (see there).
 func installService() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -53,9 +48,6 @@ func installService() error {
 }
 
 func serverUnit(exe string) string {
-	// A fixed executable and positional arguments work even when the install
-	// path contains characters systemd refuses in the executable name. The
-	// colon prefix disables systemd environment substitution.
 	unitArg := func(path string) string {
 		return strconv.Quote(strings.ReplaceAll(path, "%", "%%"))
 	}
@@ -75,7 +67,6 @@ WantedBy=default.target
 `, unitArg(filepath.Dir(exe)), unitArg(exe))
 }
 
-// userUnitDir returns the user's systemd unit directory, honoring XDG_CONFIG_HOME.
 func userUnitDir() (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "systemd", "user"), nil
@@ -87,12 +78,6 @@ func userUnitDir() (string, error) {
 	return filepath.Join(home, ".config", "systemd", "user"), nil
 }
 
-// enableLinger turns on systemd "linger" for the current user so the service
-// starts at boot even when nobody logs in — the single step that needs elevated
-// privilege. On a desktop it runs the command through pkexec (a graphical
-// password dialog, like the software center); on a headless box it uses sudo (a
-// terminal password). If neither is available or the user declines, the install
-// still succeeds — we print the one command to run later. Nothing is stored.
 func enableLinger() {
 	who := currentUser()
 	loginctl, lerr := exec.LookPath("loginctl")
@@ -120,8 +105,6 @@ func enableLinger() {
 	fmt.Println("Start-on-boot enabled: the server will come up automatically after a reboot.")
 }
 
-// lingerRunner picks the privilege-elevation command: pkexec on a graphical
-// desktop (a window prompt), else sudo (a terminal prompt). Returns "" if none.
 func lingerRunner() string {
 	if uiprompt.HasGraphicalSession() {
 		if _, err := exec.LookPath("pkexec"); err == nil {
@@ -134,7 +117,6 @@ func lingerRunner() string {
 	return ""
 }
 
-// currentUser returns the login name for the linger command.
 func currentUser() string {
 	if u := os.Getenv("USER"); u != "" {
 		return u

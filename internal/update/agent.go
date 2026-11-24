@@ -21,8 +21,6 @@ type requestResult struct {
 	err    error
 }
 
-// Agent owns request acceptance in the service. The detached helper is the
-// sole journal writer from launch until completion; the service only observes.
 type Agent struct {
 	Role, Version          string
 	target, installationID string
@@ -68,8 +66,6 @@ func (a *Agent) Request(request config.UpdateRequest) (config.UpdateReport, erro
 	}
 }
 
-// Run observes atomic journal replacement through fsnotify. It never polls
-// PokerStars folders, stops collection, or waits for a downloaded executable.
 func (a *Agent) Run(stop, ready <-chan struct{}) {
 	defer close(a.done)
 	if ready != nil {
@@ -130,8 +126,6 @@ func (a *Agent) Run(stop, ready <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			// Resume an interrupted pending attempt only after the previous
-			// helper released its process-held lock. Recorded failures are terminal.
 			if report, err := a.Report(); err == nil && report.Job != nil && report.Job.Pending() && report.Job.Request.ID == launched {
 				if release, err := lockRequested(filepath.Join(filepath.Dir(a.target), ".tracker-request.lock")); err == nil {
 					release()

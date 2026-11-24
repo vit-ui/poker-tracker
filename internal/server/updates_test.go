@@ -71,8 +71,6 @@ func TestPokerStarsTransitionsRequestReleaseChecks(t *testing.T) {
 					upload.Update = &config.UpdateReport{Version: "v5.0.1"}
 				}
 				send(upload)
-				// The next unbuffered upload waits until the worker finishes
-				// handling the observation before we inspect its signal.
 				send(transport.Upload{Status: &transport.CollectorStatus{}})
 				got := false
 				select {
@@ -109,7 +107,6 @@ func TestUpdateRequestSurvivesRestartWithoutInventingCompletion(t *testing.T) {
 	if cmd.Update == nil || *cmd.Update != request {
 		t.Fatalf("wrong command: %+v", cmd)
 	}
-	// A queued send is not evidence that the PC has updated.
 	if result.Updates.Report.Job != nil {
 		t.Fatal("send invented completion")
 	}
@@ -123,7 +120,6 @@ func TestUpdateRequestSurvivesRestartWithoutInventingCompletion(t *testing.T) {
 	job := config.UpdateJob{Request: request, State: config.UpdateWaiting, Version: "v4.8"}
 	waiting := job
 	link.Uploads <- transport.Upload{UpdateReply: &transport.UpdateReply{RequestID: request.ID, Report: config.UpdateReport{Version: "v4.8", Job: &waiting}}}
-	// Synchronize with the real worker using an ordered observation upload.
 	job.State = config.UpdateSucceeded
 	job.Version = "v4.9"
 	link.Uploads <- transport.Upload{Update: &config.UpdateReport{Version: "v4.9", Job: &job}}

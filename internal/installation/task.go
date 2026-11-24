@@ -11,14 +11,10 @@ import (
 	"unicode/utf16"
 )
 
-// WindowsTaskXML keeps setup paths equivalent: boot as SYSTEM, no battery or
-// execution limit, one running instance, and manager-owned failure recovery.
-// The repeating trigger remains available after failure restart attempts run out.
 func WindowsTaskXML(executable, directory string, now time.Time) string {
 	return WindowsCommandTaskXML(executable, directory, "--serve", now)
 }
 
-// WindowsCommandTaskXML shares the service recovery policy with temporary update recovery.
 func WindowsCommandTaskXML(executable, directory, arguments string, now time.Time) string {
 	escape := func(value string) string {
 		var out bytes.Buffer
@@ -28,8 +24,6 @@ func WindowsCommandTaskXML(executable, directory, arguments string, now time.Tim
 	return fmt.Sprintf(taskSchedulerXML, now.Format("2006-01-02T15:04:05"), escape(executable), escape(arguments), escape(directory))
 }
 
-// RegisterWindowsTask registers only the supplied installation task. The owner
-// starts it after successful setup; no executable or other task is stopped here.
 func RegisterWindowsTask(name, executable string) error {
 	file, err := os.CreateTemp("", "poker-tracker-task-*.xml")
 	if err != nil {
@@ -51,8 +45,6 @@ func RegisterWindowsTask(name, executable string) error {
 	return nil
 }
 
-// utf16File encodes s as UTF-16LE with a leading byte-order mark — the
-// encoding schtasks /Create /XML requires; it rejects a plain UTF-8 file.
 func utf16File(s string) []byte {
 	points := utf16.Encode([]rune(s))
 	buf := make([]byte, 2+2*len(points))
@@ -64,8 +56,6 @@ func utf16File(s string) []byte {
 	return buf
 }
 
-// SYSTEM boot avoids dependence on an interactive logon. Power conditions and
-// execution limits cannot interrupt collection or an active hard-stop lock.
 const taskSchedulerXML = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>

@@ -21,8 +21,6 @@ func (s *serviceState) syncMetadata(version string) error {
 	return nil
 }
 
-// syncInstalledMetadata changes only an existing installer's display fields.
-// Explicit root/path arguments allow native tests to use disposable user keys.
 func syncInstalledMetadata(root registry.Key, path, target, version string) error {
 	if err := ValidateRequestVersion(version); err != nil {
 		return err
@@ -30,7 +28,7 @@ func syncInstalledMetadata(root registry.Key, path, target, version string) erro
 	key, err := registry.OpenKey(root, path, registry.QUERY_VALUE|registry.SET_VALUE|registry.WOW64_64KEY)
 	if errors.Is(err, registry.ErrNotExist) {
 		return nil
-	} // Portable installation.
+	}
 	if err != nil {
 		return fmt.Errorf("opening installer metadata: %w", err)
 	}

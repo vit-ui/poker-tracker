@@ -1,18 +1,5 @@
 package bot
 
-// The cascading inline-keyboard config menus (/paths, /alerts, /hardstop,
-// /schedule), /deposit and
-// /withdraw, and the input parsing/validation helpers.
-//
-// Menu model: every config screen is one message edited in place as the player
-// drills in and out (BotFather-style), dispatched by a single router
-// (handleMenuCallback) on a "menu:"-prefixed callback path. A screen opened at
-// the top (via its command) shows ✓ Done (close the menu); a screen drilled into shows
-// ‹ Back to its parent (parent = the path with its last ":" segment removed).
-// There is no Done button — a threshold field is turned off from its own
-// screen, paths restart the watcher on save, and the hard-stop duration guard
-// fires when leaving the hard-stop menu.
-
 import (
 	"crypto/rand"
 	"errors"
@@ -32,13 +19,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// commaAsDecimal lets every plain-text amount typed into the bot — /deposit,
-// /withdraw, and the /alerts and /hardstop threshold flows (downswing,
-// session loss, daily loss, Spin & Go daily loss) — accept a comma as the
-// decimal separator ("2,54") alongside a dot ("2.54"): the player is
-// Brazilian, where comma is the standard decimal separator, but
-// strconv.ParseFloat only accepts a dot. Only swaps when no dot is already
-// present, so it can't corrupt an already-dotted input.
 func commaAsDecimal(s string) string {
 	s = strings.TrimSpace(s)
 	if !strings.Contains(s, ".") {
@@ -69,10 +49,6 @@ func parsePositiveInt(s string) (int, error) {
 	return v, nil
 }
 
-// validateNotBelow rejects value if other is set and value is lower than
-// it. Used when saving a hard stop threshold, to ensure it isn't set below
-// an already-configured alert for the same metric — alerts are meant to
-// warn before hard stop intervenes, so hard stop must never trigger first.
 func validateNotBelow[T ~int | ~int64 | ~float64](value T, other *T, valueLabel, otherLabel string) error {
 	if other != nil && value < *other {
 		return fmt.Errorf("%s must be at least %v — %s is already set to that.", valueLabel, *other, otherLabel)
@@ -80,9 +56,6 @@ func validateNotBelow[T ~int | ~int64 | ~float64](value T, other *T, valueLabel,
 	return nil
 }
 
-// validateNotAbove is the mirror of validateNotBelow, used when saving an
-// alert threshold to ensure it isn't set above an already-configured hard
-// stop for the same metric.
 func validateNotAbove[T ~int | ~int64 | ~float64](value T, other *T, valueLabel, otherLabel string) error {
 	if other != nil && value > *other {
 		return fmt.Errorf("%s must be at most %v — %s is already set to that.", valueLabel, *other, otherLabel)
@@ -90,7 +63,6 @@ func validateNotAbove[T ~int | ~int64 | ~float64](value T, other *T, valueLabel,
 	return nil
 }
 
-// handleMoneyMovement shares recording, recovery and confirmation for all money movements.
 func (b *Bot) handleMoneyMovement(chatID int64, args, kind string) {
 	amountCents, err := parsePositiveMoney(args)
 	if err != nil {
@@ -155,11 +127,6 @@ func (b *Bot) handleMoneyMovement(chatID int64, args, kind string) {
 	})
 }
 
-// --- menu router ---
-
-// parentPath returns path with its last ":" segment removed, or "" if path is
-// a single top-level segment. Back navigation targets this; an empty parent
-// means the screen is a root and shows Done instead of Back.
 func parentPath(path string) string {
 	if i := strings.LastIndex(path, ":"); i >= 0 {
 		return path[:i]
@@ -171,8 +138,6 @@ func menuRow(label, data string) []tgbotapi.InlineKeyboardButton {
 	return tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, data))
 }
 
-// navButton returns a screen's footer: ‹ Back to its parent, or ✓ Done (close
-// the menu) when it's a root.
 func navButton(path string) []tgbotapi.InlineKeyboardButton {
 	if parent := parentPath(path); parent != "" {
 		return menuRow("‹ Back", "menu:"+parent)
@@ -180,9 +145,6 @@ func navButton(path string) []tgbotapi.InlineKeyboardButton {
 	return menuRow("✓ Done", "menu:cancel")
 }
 
-// handleMenuCallback routes a "menu:"-prefixed callback (path is everything
-// after that prefix). Actions (:set, :off, leave) run and re-render; anything
-// else is a screen path handed to renderScreen.
 func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 	if path == "cancel" {
 		b.closeMenu(chatID, messageID)
@@ -197,14 +159,11 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 	last := segs[len(segs)-1]
 	switch {
 	case last == "set":
-		// Starts a value entry — sets the conversation state itself.
 		b.beginValueEntry(chatID, messageID, strings.TrimSuffix(path, ":set"))
 	case last == "toggle":
 		b.resetMenuPrompt(messageID)
 		b.toggleStakeChange(chatID, messageID, strings.TrimSuffix(path, ":toggle"))
 	case isSummaryMode(last) && strings.Contains(path, "summaries"):
-		// A summary mode pick ("...:every|wins|losses|off"). Checked before the
-		// plain ":off" case below, which "off" would otherwise also match.
 		b.resetMenuPrompt(messageID)
 		b.setSummaryMode(chatID, messageID, path)
 	case last == "off":
@@ -219,20 +178,14 @@ func (b *Bot) handleMenuCallback(chatID int64, messageID int, path string) {
 	case last == "deposit" || last == "withdraw" || last == "reward":
 		b.beginMoneyEntry(chatID, messageID, path)
 	case isCommandAction(last):
-		// A hub shortcut to an existing command — runs it (which sends its own
-		// output or starts its flow); the menu message stays for more taps.
 		b.resetMenuPrompt(messageID)
 		b.runCommandAction(chatID, messageID, last)
 	default:
-		// Any navigation abandons a pending value entry so a later stray
-		// text message isn't applied to the field it was prompting for.
 		b.resetMenuPrompt(messageID)
 		b.renderScreen(chatID, messageID, path)
 	}
 }
 
-// isCommandAction reports whether a menu leaf token maps to an existing command
-// (as opposed to a cascade screen or a config field).
 func isCommandAction(token string) bool {
 	switch token {
 	case "screenname", "storage", "sheet", "credentials",
@@ -242,8 +195,6 @@ func isCommandAction(token string) bool {
 	return false
 }
 
-// runCommandAction invokes the command a hub button stands for. These send
-// their own messages (or start their own flow), leaving the menu in place.
 func (b *Bot) runCommandAction(chatID int64, messageID int, token string) {
 	switch token {
 	case "screenname":
@@ -268,11 +219,6 @@ func (b *Bot) runCommandAction(chatID int64, messageID int, token string) {
 	}
 }
 
-// renderScreen edits messageID to show the screen at path. The kind of screen
-// is decided by path's last segment — a known menu name renders that menu, a
-// field key renders its item (thresholds) or begins value entry (paths /
-// schedule) — so it works whether the screen sits at a root (via a command) or
-// nested under a hub.
 func (b *Bot) renderScreen(chatID int64, messageID int, path string) {
 	segs := strings.Split(path, ":")
 	switch segs[len(segs)-1] {
@@ -303,7 +249,6 @@ func (b *Bot) renderScreen(chatID int64, messageID int, path string) {
 	case "summaries":
 		b.renderSummariesMenu(chatID, messageID, path)
 	default:
-		// A field key: flow is the segment before it.
 		flow := segs[len(segs)-2]
 		switch flow {
 		case "alerts", "hardstop":
@@ -315,8 +260,6 @@ func (b *Bot) renderScreen(chatID int64, messageID int, path string) {
 		}
 	}
 }
-
-// --- threshold flows (/alerts, /hardstop) ---
 
 var alertKeys = []string{"downswing", "session_loss", "losing_streak", "daily_loss", "spingo_daily_loss"}
 var hardstopKeys = []string{"session_loss", "downswing", "consecutive_losses", "daily_loss", "spingo_daily_loss", "duration"}
@@ -403,8 +346,6 @@ func hardstopValueText(cfg *config.Config, key string) string {
 	return "not set"
 }
 
-// thresholdFlag returns a threshold's *_enabled flag, or nil (read as on) for
-// one that has none (hard-stop Duration).
 func thresholdFlag(cfg *config.Config, flow, key string) *bool {
 	if flow == "alerts" {
 		switch key {
@@ -436,7 +377,6 @@ func thresholdFlag(cfg *config.Config, flow, key string) *bool {
 	return nil
 }
 
-// setThresholdEnabled writes a threshold's *_enabled flag.
 func setThresholdEnabled(cfg *config.Config, flow, key string, on bool) {
 	v := on
 	if flow == "alerts" {
@@ -468,8 +408,6 @@ func setThresholdEnabled(cfg *config.Config, flow, key string, on bool) {
 	}
 }
 
-// thresholdState returns a threshold's display value, whether a value is set,
-// and whether it's on. A set-but-off threshold keeps its value but doesn't fire.
 func thresholdState(cfg *config.Config, flow, key string) (valueText string, isSet, on bool) {
 	if flow == "alerts" {
 		valueText = alertValueText(cfg, key)
@@ -479,8 +417,6 @@ func thresholdState(cfg *config.Config, flow, key string) (valueText string, isS
 	return valueText, valueText != "not set", config.FlagEnabled(thresholdFlag(cfg, flow, key))
 }
 
-// thresholdDisplay is the value shown on a list button: the number, plus an
-// "off" marker when it's set but turned off.
 func thresholdDisplay(cfg *config.Config, flow, key string) string {
 	valueText, isSet, on := thresholdState(cfg, flow, key)
 	if isSet && !on {
@@ -489,8 +425,6 @@ func thresholdDisplay(cfg *config.Config, flow, key string) string {
 	return valueText
 }
 
-// hardstopRuleExplain is the one-line "what this protects you from" shown on the
-// hard-stop turn-off confirmation.
 func hardstopRuleExplain(key string) string {
 	switch key {
 	case "session_loss":
@@ -522,9 +456,6 @@ func (b *Bot) renderAlertsMenu(chatID int64, messageID int, path string) {
 	b.showMenu(chatID, messageID, "Alert thresholds — saved on the server even while the poker PC is offline. Tap one to change:", rows)
 }
 
-// renderHardstopMenu shows the hard-stop rules. warning, when non-empty, is
-// prepended — used by handleHardstopLeave to keep the player on this screen
-// when a rule is set with no duration.
 func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -536,8 +467,6 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	for _, key := range hardstopKeys {
 		rows = append(rows, menuRow(hardstopLabel(key)+" ["+thresholdDisplay(cfg, "hardstop", key)+"]", "menu:"+path+":"+key))
 	}
-	// The footer routes through the leave guard rather than navigating
-	// directly, so backing out with a rule set but no duration warns and stays.
 	label := "✓ Done"
 	if parentPath(path) != "" {
 		label = "‹ Back"
@@ -552,9 +481,6 @@ func (b *Bot) renderHardstopMenu(chatID int64, messageID int, path, warning stri
 	b.showMenu(chatID, messageID, text, rows)
 }
 
-// renderThresholdItem shows one alert/hard-stop field's screen. Three states:
-// unset (Set value); set & on (Change value / Turn off); set & off (Turn on /
-// Change value — the number is kept). Duration can never be turned off.
 func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 	segs := strings.Split(path, ":")
 	key := segs[len(segs)-1]
@@ -583,7 +509,7 @@ func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 		if canTurnOff {
 			rows = append(rows, menuRow("Turn off", "menu:"+path+":off"))
 		}
-	default: // set but off
+	default:
 		text += " (off)"
 		rows = append(rows,
 			menuRow("Change value", "menu:"+path+":set"),
@@ -593,9 +519,6 @@ func (b *Bot) renderThresholdItem(chatID int64, messageID int, path string) {
 	b.showMenu(chatID, messageID, text, rows)
 }
 
-// handleHardstopLeave enforces the duration guard when leaving the hard-stop
-// menu: if any rule is set with no duration_hours, it re-renders with a warning
-// and stays; otherwise it navigates to the parent or closes the root.
 func (b *Bot) handleHardstopLeave(chatID int64, messageID int, menuPath string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -615,14 +538,11 @@ func (b *Bot) handleHardstopLeave(chatID int64, messageID int, menuPath string) 
 }
 
 func hardstopRuleSetWithoutDuration(cfg *config.Config) bool {
-	// Only an *active* rule needs a duration — a turned-off one won't fire.
 	h := config.EffectiveHardstop(cfg.Hardstop)
 	anyRule := h.SessionLossBuyins != nil || h.DownswingBuyins != nil || h.ConsecutiveLosses != nil ||
 		h.DailyLossCents != nil || h.SpingoDailyLossCents != nil
 	return anyRule && cfg.Hardstop.DurationHours == nil
 }
-
-// --- /paths flow ---
 
 func (b *Bot) renderPathsMenu(chatID int64, messageID int, path string) {
 	state, err := config.LoadCollectorSettings(filepath.Join(filepath.Dir(b.configPath), "collector_settings.json"))
@@ -671,8 +591,6 @@ func pathPromptText(field string) string {
 	return "Send the Hand History folder path, relative to your Windows user folder — not including your screen name at the end.\n" + `Example: AppData\Local\PokerStars\HandHistory` + "\n" + `(C:\Users\<you>\ and \YourScreenName are both added automatically — a full path with a drive letter, e.g. D:\..., also works if your data isn't under your user folder)`
 }
 
-// --- /schedule flow ---
-
 func (b *Bot) renderScheduleMenu(chatID int64, messageID int, path string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -686,8 +604,6 @@ func (b *Bot) renderScheduleMenu(chatID int64, messageID int, path string) {
 	}
 	b.showMenu(chatID, messageID, "Poker day schedule — saved on the server even while the poker PC is offline. Tap to change (default 6 = 6am):", rows)
 }
-
-// --- /notify flow ---
 
 var summaryKeys = []string{"cash", "tournament", "weekly", "monthly"}
 
@@ -705,7 +621,6 @@ func summaryLabel(key string) string {
 	return key
 }
 
-// summaryModeLabel is the human label for a stored mode value.
 func summaryModeLabel(mode string) string {
 	switch mode {
 	case "wins":
@@ -785,8 +700,6 @@ func (b *Bot) renderSummariesMenu(chatID int64, messageID int, path string) {
 	b.showMenu(chatID, messageID, "Summaries — tap a result summary to filter it (or toggle stake change):", rows)
 }
 
-// renderSummaryItem shows a result summary's mode screen (Every / Only wins /
-// Only losses / Off), the current one marked.
 func (b *Bot) renderSummaryItem(chatID int64, messageID int, path string) {
 	segs := strings.Split(path, ":")
 	key := segs[len(segs)-1]
@@ -811,8 +724,6 @@ func (b *Bot) renderSummaryItem(chatID int64, messageID int, path string) {
 	b.showMenu(chatID, messageID, summaryLabel(key)+" — when should I send it?", rows)
 }
 
-// setSummaryMode stores a result summary's chosen mode and re-renders its
-// screen. path is the mode action, e.g. "notify:summaries:cash:losses".
 func (b *Bot) setSummaryMode(chatID int64, messageID int, path string) {
 	segs := strings.Split(path, ":")
 	mode := segs[len(segs)-1]
@@ -827,8 +738,6 @@ func (b *Bot) setSummaryMode(chatID int64, messageID int, path string) {
 	b.renderSummaryItem(chatID, messageID, itemPath)
 }
 
-// toggleStakeChange flips the stake-change on/off and re-renders the summaries
-// list. path is the item path, e.g. "notify:summaries:stake".
 func (b *Bot) toggleStakeChange(chatID int64, messageID int, path string) {
 	_, err := config.UpdateConfig(b.configPath, func(cfg *config.Config) error {
 		enabled := !config.NotificationEnabled(cfg.Notifications.StakeChange)
@@ -841,8 +750,6 @@ func (b *Bot) toggleStakeChange(chatID int64, messageID int, path string) {
 	}
 	b.renderScreen(chatID, messageID, parentPath(path))
 }
-
-// --- /menu hub ---
 
 func (b *Bot) startMenuFlow(chatID int64) {
 	b.renderRootMenu(chatID, 0, "root")
@@ -869,7 +776,6 @@ func (b *Bot) renderSetupMenu(chatID int64, messageID int, path string) {
 		menuRow("Storage", "menu:"+path+":storage"),
 		menuRow("Scan", "menu:"+path+":scan"),
 	}
-	// Sheet and Credentials are only meaningful on the Google Sheets backend.
 	if b.currentBackend() == "sheets" {
 		rows = append(rows,
 			menuRow("Sheet", "menu:"+path+":sheet"),
@@ -902,9 +808,6 @@ func (b *Bot) renderMoneyMenu(chatID int64, messageID int, path string) {
 	b.showMenu(chatID, messageID, "Money — record a deposit, withdrawal or reward, or view transactions:", rows)
 }
 
-// beginMoneyEntry prompts for a money movement amount. Its menu path is
-// stored as the field so the
-// reply re-renders the money menu at its real depth under the hub.
 func (b *Bot) beginMoneyEntry(chatID int64, messageID int, path string) {
 	verb := path[strings.LastIndex(path, ":")+1:]
 	b.flow = "menu"
@@ -913,10 +816,6 @@ func (b *Bot) beginMoneyEntry(chatID int64, messageID int, path string) {
 	send(b.tg, chatID, fmt.Sprintf("Send the USD amount to %s (as shown on PokerStars, not BRL).", verb))
 }
 
-// --- value entry ---
-
-// beginValueEntry sends the prompt for a field and records the target and the
-// menu message to edit back once the reply is saved.
 func (b *Bot) beginValueEntry(chatID int64, messageID int, target string) {
 	b.flow = "menu"
 	b.field = target
@@ -974,8 +873,6 @@ func hardstopPromptText(field string) string {
 	return "Send the new value."
 }
 
-// requestTurnOff handles a Turn off tap. Alerts turn off immediately; hard-stop
-// rules open a confirmation first, since they're a safety lock.
 func (b *Bot) requestTurnOff(chatID int64, messageID int, target string) {
 	segs := strings.Split(target, ":")
 	if segs[len(segs)-2] == "hardstop" {
@@ -985,8 +882,6 @@ func (b *Bot) requestTurnOff(chatID int64, messageID int, target string) {
 	b.doTurnOff(chatID, messageID, target)
 }
 
-// renderHardstopOffConfirm asks the player to confirm switching off a hard-stop
-// rule, spelling out the protection being removed.
 func (b *Bot) renderHardstopOffConfirm(chatID int64, messageID int, target string) {
 	segs := strings.Split(target, ":")
 	key := segs[len(segs)-1]
@@ -1000,8 +895,6 @@ func (b *Bot) renderHardstopOffConfirm(chatID int64, messageID int, target strin
 	b.showMenu(chatID, messageID, text, rows)
 }
 
-// doTurnOff sets a threshold's flag to off (keeping its value) and re-renders
-// the item screen.
 func (b *Bot) doTurnOff(chatID int64, messageID int, target string) {
 	segs := strings.Split(target, ":")
 	key := segs[len(segs)-1]
@@ -1015,10 +908,6 @@ func (b *Bot) doTurnOff(chatID int64, messageID int, target string) {
 	b.renderThresholdItem(chatID, messageID, target)
 }
 
-// turnOn switches a remembered-off threshold back on, provided its saved value
-// still respects hard stop ≥ alert against the active counterpart (the
-// counterpart may have changed while this was off). If not, it stays off and
-// the player is told to set a new value.
 func (b *Bot) turnOn(chatID int64, messageID int, target string) {
 	segs := strings.Split(target, ":")
 	key := segs[len(segs)-1]
@@ -1038,9 +927,6 @@ func (b *Bot) turnOn(chatID int64, messageID int, target string) {
 	b.renderThresholdItem(chatID, messageID, target)
 }
 
-// validateActivate checks a threshold's stored value against its *active*
-// counterpart (hard stop ≥ alert) before it's switched on. An off counterpart
-// doesn't constrain, so it compares against the effective settings.
 func validateActivate(cfg *config.Config, flow, key string) error {
 	effA := config.EffectiveAlerts(cfg.Alerts)
 	effH := config.EffectiveHardstop(cfg.Hardstop)
@@ -1074,19 +960,12 @@ func validateActivate(cfg *config.Config, flow, key string) error {
 	return nil
 }
 
-// handleMenuReply saves a value typed in response to beginValueEntry's prompt
-// and edits the remembered menu message back to the relevant screen. On a
-// validation error it sends the message and keeps the flow state so the player
-// can retry.
 func (b *Bot) handleMenuReply(chatID int64, text string) {
 	target := b.field
 	segs := strings.Split(target, ":")
 	key := segs[len(segs)-1]
 	flow := segs[len(segs)-2]
 
-	// Money entry (Deposit / Withdraw / Reward) doesn't touch config — handleMoneyMovement
-	// sends its own confirmation or error. key is the menu token; map it to the
-	// ledger kind.
 	if flow == "money" {
 		kind := key
 		if key == "withdraw" {
@@ -1134,15 +1013,11 @@ func (b *Bot) handleMenuReply(chatID int64, text string) {
 	case "alerts", "hardstop":
 		b.renderThresholdItem(chatID, messageID, target)
 	default:
-		// Schedule: back to its list, at whatever depth it sits
-		// (root, or nested under the /menu hub).
 		b.renderScreen(chatID, messageID, parentPath(target))
 	}
 }
 
 func saveAlertValue(cfg *config.Config, key, text string) error {
-	// Cross-validate against the *active* hard stop — a turned-off counterpart
-	// doesn't constrain.
 	effH := config.EffectiveHardstop(cfg.Hardstop)
 	switch key {
 	case "downswing":
@@ -1191,14 +1066,11 @@ func saveAlertValue(cfg *config.Config, key, text string) error {
 		}
 		cfg.Alerts.SpingoDailyLossCents = &vCents
 	}
-	// A freshly set or changed value is on.
 	setThresholdEnabled(cfg, "alerts", key, true)
 	return nil
 }
 
 func saveHardstopValue(cfg *config.Config, key, text string) error {
-	// Cross-validate against the *active* alert — a turned-off counterpart
-	// doesn't constrain.
 	effA := config.EffectiveAlerts(cfg.Alerts)
 	switch key {
 	case "session_loss":
@@ -1253,7 +1125,6 @@ func saveHardstopValue(cfg *config.Config, key, text string) error {
 		}
 		cfg.Hardstop.DurationHours = &v
 	}
-	// A freshly set or changed value is on (a no-op for Duration, which has no flag).
 	setThresholdEnabled(cfg, "hardstop", key, true)
 	return nil
 }
@@ -1267,20 +1138,16 @@ func saveScheduleValue(cfg *config.Config, text string) error {
 	return nil
 }
 
-// --- flow entry points (commands) ---
-
 func (b *Bot) startPathsFlow(chatID int64)    { b.renderPathsMenu(chatID, 0, "paths") }
 func (b *Bot) startAlertsFlow(chatID int64)   { b.renderAlertsMenu(chatID, 0, "alerts") }
 func (b *Bot) startHardstopFlow(chatID int64) { b.renderHardstopMenu(chatID, 0, "hardstop", "") }
 func (b *Bot) startScheduleFlow(chatID int64) { b.renderScheduleMenu(chatID, 0, "schedule") }
 
-// manualHardstopRequested is shared by normal routing and the maintenance bypass.
 func manualHardstopRequested(args string) bool {
 	fields := strings.Fields(args)
 	return len(fields) > 0 && fields[0] == "now"
 }
 
-// handleHardstopCommand shares the durable manual-lock path for saved and one-time durations.
 func (b *Bot) handleHardstopCommand(chatID int64, args string) {
 	fields := strings.Fields(args)
 	if len(fields) > 0 && !manualHardstopRequested(args) {

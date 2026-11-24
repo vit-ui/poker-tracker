@@ -1,9 +1,5 @@
 package bot
 
-// The satellite/ticket confirmation flow: the reminder loop that re-asks
-// unanswered questions, the inline-keyboard question itself, and the answer
-// handling that finally writes the queued tournament.
-
 import (
 	"fmt"
 	"log/slog"
@@ -18,8 +14,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// checkPendingTournaments re-sends the satellite/ticket confirmation menu for
-// any pending entry more than 30 minutes past its last reminder.
 func (b *Bot) checkPendingTournaments(now time.Time) {
 	pendingPath := filepath.Join(filepath.Dir(b.configPath), "pending_tournaments.json")
 	var due []config.PendingTournament
@@ -49,15 +43,6 @@ func (b *Bot) checkPendingTournaments(now time.Time) {
 	}
 }
 
-// sendSatelliteMenu asks the cash-vs-ticket entry question. The prize shown
-// isn't always finish position 1's — WinnerPrizeDescription is set from
-// whichever row's payout first read as a ticket/pass, scanning every result
-// row rather than just position 1 (which can still read "still playing" if
-// the summary was captured while other players were still in) — so it's
-// labeled generically rather than claiming it's always what 1st place won.
-// Includes buy-in, date, and finish position/field size — enough for the
-// player to tell tournaments apart when more than one is pending at once,
-// since the identifying detail here is otherwise just a TournamentID.
 func (b *Bot) sendSatelliteMenu(t parsers.Tournament) {
 	gameType := "MTT"
 	if t.BaseType() == "spingo" {
@@ -73,15 +58,10 @@ func (b *Bot) sendSatelliteMenu(t parsers.Tournament) {
 	b.sendMessageWithKeyboard(text, markup)
 }
 
-// RecoverTicketPayout computes the corrected BuyInCents/NetCents for a
-// LikelySatellite tournament once the player confirms they paid with a
-// ticket rather than cash. NetCents was originally computed as payout minus
-// buy-in, so adding them back recovers the payout before zeroing the buy-in.
 func RecoverTicketPayout(buyInCents, netCents money.Cents) (newBuyInCents, newNetCents money.Cents) {
 	return 0, netCents + buyInCents
 }
 
-// resolveSatellite handles a tap on the satellite/ticket confirmation menu.
 func (b *Bot) resolveSatellite(chatID int64, messageID int, tournamentID string, paidCash bool) {
 	b.queueTournamentAnswer(storage.TournamentAnswer{
 		TournamentID: tournamentID, Reason: config.PendingSatellite, Ticket: !paidCash,

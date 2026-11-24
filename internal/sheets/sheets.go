@@ -1,5 +1,3 @@
-// Package sheets manages the Google Sheets integration: tab setup, row appends,
-// and reads used by the bot and hardstop evaluators.
 package sheets
 
 import (
@@ -21,24 +19,8 @@ import (
 
 const dateFormat = "2006-01-02 15:04"
 
-// sheetsEpoch is Google Sheets' serial-date origin: serial 0 is 1899-12-30,
-// and the fractional part is the fraction of a day elapsed. See parseSheetDate.
 var sheetsEpoch = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
 
-// parseSheetDate reads a Date column cell that may arrive in either of two
-// serializations. The tracker always writes dates as plain "2006-01-02 15:04"
-// text, but if the player (or a spreadsheet template) formats that column as a
-// Date/Time in Sheets, the API returns the cell as a serial-number float64
-// under UNFORMATTED_VALUE instead of the string — the same instant, a
-// different wire type. fmt.Sprint on that float then yields "46218.613..."
-// which time.Parse can't read, crashing every read path (/status, /stats,
-// migration). Handling both here, in the one helper every date read funnels
-// through, keeps a date-formatted column from breaking the tracker no matter
-// which column the player formats.
-//
-// Stored dates carry minute precision (the write format has no seconds), so
-// the serial is rounded to the nearest minute — reproducing the exact
-// wall-clock the string form would, with no float dust in the seconds place.
 func parseSheetDate(v interface{}) (time.Time, error) {
 	if number, ok := v.(json.Number); ok {
 		serial, err := number.Float64()
@@ -54,35 +36,18 @@ func parseSheetDate(v interface{}) (time.Time, error) {
 	return time.Parse(dateFormat, fmt.Sprint(v))
 }
 
-// Client holds the authenticated Sheets service and spreadsheet ID. It also
-// owns the write-ahead fallback (see fallback.go concepts inlined below): when
-// a mutating write fails against the Sheets API — the transient 500/503s
-// Google occasionally returns — the write's replayable state is cached to
-// fallbackPath keyed by session/tournament ID, then flushed back to the sheet
-// the moment the sheet is proven reachable again (on startup and after any
-// successful write). fallbackPath == "" disables it entirely, used for the
-// short-lived validation clients bot.go constructs during setup/sheet changes,
-// which never persist a session and so must never touch the fallback file.
 type Client struct {
-	// mutationMu covers complete read/write/replay sequences, not individual HTTP calls.
 	mutationMu    sync.Mutex
 	svc           *restService
 	spreadsheetID string
 
-	fallbackPath string // "" disables the write-ahead fallback
+	fallbackPath string
 	fallbackMu   sync.Mutex
 	fallback     map[string]fallbackEntry
 }
 
 var _ storage.Store = (*Client)(nil)
 
-// NewClient authenticates with the service account JSON and connects to the
-// spreadsheet identified by spreadsheetID. Calls ensureTabs on startup.
-// fallbackPath, if non-empty, is where the write-ahead fallback file lives;
-// its queued entries (left by a previous crashed or offline run) are loaded and
-// flushed once here, since ensureTabs succeeding just proved the sheet is
-// reachable. Pass "" for a throwaway validation client that must not own the
-// fallback.
 func NewClient(serviceAccountPath, spreadsheetID, fallbackPath string) (*Client, error) {
 	data, err := os.ReadFile(serviceAccountPath)
 	if err != nil {
@@ -106,10 +71,6 @@ func NewClient(serviceAccountPath, spreadsheetID, fallbackPath string) (*Client,
 	}
 
 	if fallbackPath != "" {
-		// A corrupt fallback file must not brick startup — the whole tracker
-		// (sheet writes, bot, hard stop) would be dead over one unreplayable
-		// recovery file. Log and continue empty; the next failed write
-		// overwrites it with valid JSON.
 		if err := c.loadFallback(); err != nil {
 			slog.Error("loading sheets fallback, starting empty", "err", err)
 			c.fallback = make(map[string]fallbackEntry)
@@ -120,9 +81,6 @@ func NewClient(serviceAccountPath, spreadsheetID, fallbackPath string) (*Client,
 	return c, nil
 }
 
-// ResolveSheetID searches Google Drive for a spreadsheet with the given name
-// and returns its ID. Returns an error if the spreadsheet is not found or if
-// more than one match is found.
 func ResolveSheetID(serviceAccountPath, sheetName string) (string, error) {
 	data, err := os.ReadFile(serviceAccountPath)
 	if err != nil {
@@ -184,13 +142,6 @@ func (c *Client) ensureTabs() error {
 			continue
 		}
 
-		// Tab already exists on this spreadsheet — an older release may
-		// have shipped fewer columns than tab.headers currently has (e.g.
-		// Tournaments' Bounty Won/Prize Won, added after installs already
-		// had the tab). Without backfilling, a newly added trailing column
-		// would silently collect real data under a blank header forever,
-		// since this loop only ever writes headers when creating a brand
-		// new tab.
 		if err := c.backfillTabHeaders(tab.name, tab.headers); err != nil {
 			return err
 		}
@@ -199,11 +150,6 @@ func (c *Client) ensureTabs() error {
 	return nil
 }
 
-// backfillTabHeaders writes whichever of want's header cells are missing
-// from tab's row 1 — the columns beyond however many the sheet's row 1
-// currently has — without touching any cell that already has a value, in
-// case the player has edited an existing header's text. A no-op if row 1
-// already has at least len(want) cells.
 func (c *Client) backfillTabHeaders(tab string, want []interface{}) error {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("%s!1:1", tab))
 	if err != nil {
@@ -224,8 +170,6 @@ func (c *Client) backfillTabHeaders(tab string, want []interface{}) error {
 	return nil
 }
 
-// columnLetter converts a 0-based column index to its spreadsheet column
-// letter: 0 -> "A", 25 -> "Z", 26 -> "AA", and so on.
 func columnLetter(idx int) string {
 	letters := ""
 	for idx >= 0 {
@@ -242,14 +186,11 @@ func (c *Client) appendRow(tab string, values []interface{}) error {
 	return nil
 }
 
-// getLastRunningTotal reads the last value from the Running Total column of
-// Bankroll Ledger. Returns 0 when the ledger has no data rows.
 func (c *Client) getLastRunningTotal() (money.Cents, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!D:D")
 	if err != nil {
 		return 0, fmt.Errorf("reading bankroll ledger: %w", err)
 	}
-	// resp.Values[0] is the header row; data starts at [1]
 	if len(resp.Values) <= 1 {
 		return 0, nil
 	}
@@ -260,17 +201,10 @@ func (c *Client) getLastRunningTotal() (money.Cents, error) {
 	return parseMoney(last[0])
 }
 
-// CashSessionID retains the historical Sheets fingerprint for fallback keys
-// and legacy callers. Stored rows recognize both historical identity formats.
 func CashSessionID(date time.Time, firstHandID string) string {
 	return storage.CashSessionIdentities(date, firstHandID)[1]
 }
 
-// findRowByColumnValue searches column columnLetter of tab for a row whose
-// value equals want, starting after the header row. Returns the 1-based
-// sheet row index, or found=false if not present. Shared by every tab that
-// upserts on a stored ID column (Cash Sessions, Bankroll Ledger's
-// cash_session rows, and — via findTournamentRow — Tournaments).
 func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex int, found bool, err error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("%s!%s:%s", tab, columnLetter, columnLetter))
 	if err != nil {
@@ -278,7 +212,7 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 	}
 	for i, row := range resp.Values {
 		if i == 0 {
-			continue // header row
+			continue
 		}
 		if len(row) > 0 && fmt.Sprint(row[0]) == want {
 			return i + 1, true, nil
@@ -287,11 +221,6 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 	return max(2, len(resp.Values)+1), false, nil
 }
 
-// AppendCashSession upserts one row in Cash Sessions and one row in Bankroll
-// Ledger — both keyed by the same CashSessionID, so a re-processed cash
-// session corrects its existing rows in place instead of appending a new set.
-// Mirrors AppendTournament's find-or-append pattern, applied to both tabs a
-// cash session touches rather than just one.
 func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
 	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
 	id := keys[0]
@@ -325,23 +254,16 @@ func (c *Client) findTournamentRow(tournamentID string) (rowIndex int, found boo
 	return c.findRowByColumnValue("Tournaments", "C", tournamentID)
 }
 
-// tournamentRowSnapshot holds the subset of an existing Tournaments row
-// needed to reconcile NetCents/Type against knockout-bounty data, which is
-// only ever known from the hand history file (UpdateTournamentHandStats) and
-// never from the summary file AppendTournament parses its other fields from.
 type tournamentRowSnapshot struct {
 	date        time.Time
 	typeVal     string
 	buyInCents  money.Cents
-	hasNetUSD   bool // false while the row is still a hand-file-only partial row
+	hasNetUSD   bool
 	netCents    money.Cents
 	bountyCents money.Cents
 	hands       int
 }
 
-// readTournamentRow reads the fields of an existing Tournaments row (by
-// 1-based sheet rowIndex) needed to compute a bounty-reconciled NetCents/Type
-// from either side of the two-file correlation.
 func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, fmt.Sprintf("Tournaments!A%d:N%d", rowIndex, rowIndex))
 	if err != nil {
@@ -383,8 +305,6 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 	return snap, nil
 }
 
-// rawAppendTournament writes the completed result and its ledger correction
-// in one Sheets batch, preserving the existing hand-stat cells.
 func (c *Client) rawAppendTournament(t parsers.Tournament) (money.Cents, error) {
 	row, found, err := c.findTournamentRow(t.TournamentID)
 	if err != nil {
@@ -413,34 +333,30 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (money.Cents, error) 
 	return netCents, err
 }
 
-// rawUpdateTournamentHandStats creates or updates hand-history data. For
-// completed results a bounty correction and its ledger cascade commit together.
 func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout, preserveBounty bool) error {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil {
 		return err
 	}
 	if !found {
-		// Summary not yet processed — create a partial row; AppendTournament
-		// will fill in the remaining columns when the summary file arrives.
 		typeCell := ""
 		if isKnockout {
 			typeCell = storage.KnockoutPlaceholder
 		}
 		return c.appendRow("Tournaments", []interface{}{
-			"", // Date
+			"",
 			typeCell,
 			tournamentID,
-			"", // Buy-In
-			"", // Prize Pool
-			"", // Multiplier
-			"", // Finish Position
-			"", // Total Players
-			"", // Net
+			"",
+			"",
+			"",
+			"",
+			"",
+			"",
 			vpip,
 			pfr,
 			bountyCents,
-			"", // Prize Won (USD) — filled in once AppendTournament knows BuyInCents
+			"",
 			hands,
 		})
 	}
@@ -483,14 +399,6 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 	return c.writeResults(writes, []storage.LedgerEntry{{Date: snap.date, Type: "tournament", AmountCents: netCents, SessionID: tournamentID}})
 }
 
-// ── Write-ahead fallback ────────────────────────────────────────────────
-//
-// Two protections that must stay conceptually distinct: the raw* upserts
-// already dedup by ID (find-or-append), so replaying a write that actually
-// landed re-upserts the same *row* in place — no duplicate rows. Separately,
-// the hand-count guard below stops a stale cached snapshot from *overwriting*
-// newer data a later direct write already put on the sheet.
-
 const (
 	fallbackKindCash    = "cash"
 	fallbackKindStats   = "tourney_stats"
@@ -498,10 +406,6 @@ const (
 	fallbackKindLedger  = "ledger"
 )
 
-// fallbackEntry is one queued write awaiting replay, holding exactly the
-// arguments its raw* method needs. Kind selects which of the three payloads is
-// populated; the map key is "<kind>:<id>" so a tournament's summary write and
-// its hand-stats write (both keyed by TournamentID) never collide.
 type fallbackEntry struct {
 	QueuedAt  time.Time            `json:"queued_at,omitempty"`
 	Kind      string               `json:"kind"`
@@ -512,8 +416,6 @@ type fallbackEntry struct {
 	Ledger    *ledgerArgs          `json:"ledger,omitempty"`
 }
 
-// handStatsArgs mirrors rawUpdateTournamentHandStats's parameter list so a
-// failed hand-stats write can be replayed verbatim.
 type handStatsArgs struct {
 	TournamentID   string      `json:"tournament_id"`
 	VPIP           float64     `json:"vpip"`
@@ -524,10 +426,6 @@ type handStatsArgs struct {
 	PreserveBounty bool        `json:"preserve_bounty,omitempty"`
 }
 
-// ledgerArgs holds a failed deposit/withdrawal for replay. The Running Total is
-// deliberately *not* stored — rawAppendLedgerEntry recomputes it from the
-// sheet's current last row at replay time, so a deposit that lands after other
-// rows queued ahead of it still gets a correct cumulative total.
 type ledgerArgs struct {
 	OperationID string      `json:"operation_id,omitempty"`
 	EntryType   string      `json:"entry_type"`
@@ -535,11 +433,6 @@ type ledgerArgs struct {
 	Now         time.Time   `json:"now"`
 }
 
-// AppendCashSession writes the session and, only if that fails, caches it for
-// later replay; a success proves the sheet is reachable and flushes anything
-// queued. The fallback wrappers below all follow this shape — the raw* method
-// does the Sheets I/O and knows nothing about the fallback, so flush (which
-// calls raw* directly) can never recurse back through here.
 func (c *Client) AppendCashSession(session parsers.CashSession) error {
 	if err := storage.ValidateCashSession(session); err != nil {
 		return err
@@ -561,8 +454,6 @@ func (c *Client) AppendCashSession(session parsers.CashSession) error {
 	return nil
 }
 
-// DiscardTournamentRecovery drops a queued hand-history result superseded
-// by resumed play or an official summary. An official result keeps its queue.
 func (c *Client) DiscardTournamentRecovery(tournamentID string) error {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
@@ -654,9 +545,6 @@ func (c *Client) applyHandStats(stats handStatsArgs) error {
 		stats.BountyCents, stats.IsKnockout, stats.PreserveBounty)
 }
 
-// If an older snapshot is queued, persist its replacement before attempting a
-// newer remote correction. The queue remains pending until success; if retiring
-// it later fails, restart can only replay the newer snapshot, never the old one.
 func (c *Client) prepareQueuedReplacement(key string, entry fallbackEntry) error {
 	c.fallbackMu.Lock()
 	_, exists := c.fallback[key]
@@ -693,8 +581,6 @@ func (c *Client) retireFallback(key string) error {
 	return nil
 }
 
-// loadFallback reads the queued entries from fallbackPath into memory. An
-// absent file is the normal empty state, not an error.
 func (c *Client) loadFallback() error {
 	data, err := os.ReadFile(c.fallbackPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -715,8 +601,6 @@ func (c *Client) loadFallback() error {
 	return nil
 }
 
-// persistFallbackLocked writes the map to disk atomically (tmp then rename,
-// mirroring config.SaveConfig). The caller must hold fallbackMu.
 func (c *Client) persistFallbackLocked() error {
 	data, err := json.MarshalIndent(c.fallback, "", "  ")
 	if err != nil {
@@ -732,8 +616,6 @@ func (c *Client) persistFallbackLocked() error {
 	return nil
 }
 
-// cacheFailed queues a failed write for later replay and persists immediately
-// so a crash never loses it. A no-op when the fallback is disabled.
 func (c *Client) cacheFailed(key string, entry fallbackEntry) error {
 	if c.fallbackPath == "" {
 		return fmt.Errorf("local fallback is disabled")
@@ -746,19 +628,12 @@ func (c *Client) cacheFailed(key string, entry fallbackEntry) error {
 	c.fallback[key] = entry
 	err := c.persistFallbackLocked()
 	c.fallbackMu.Unlock()
-	// Log only after releasing the queue mutex.
 	if err != nil {
 		slog.Error("persisting sheets fallback", "err", err)
 	}
 	return err
 }
 
-// flush replays every queued entry against the sheet, deleting each that
-// resolves (replayed successfully, or discarded as superseded). Holds
-// fallbackMu across the whole loop — for a single-user tool, serializing the
-// fallback accounting. Public mutations hold mutationMu across the original
-// operation and this replay; startup calls it before publishing the client.
-// A no-op when disabled or empty.
 func (c *Client) flush() {
 	if c.fallbackPath == "" {
 		return
@@ -806,15 +681,11 @@ func (c *Client) flush() {
 		}
 	}
 	c.fallbackMu.Unlock()
-	// Log after releasing the queue mutex.
 	if persistErr != nil {
 		slog.Error("persisting sheets fallback after flush", "err", persistErr)
 	}
 }
 
-// resolveFallbackEntry attempts one entry and reports whether it's resolved
-// (should be deleted). false means keep it queued — a sheet read failed, or the
-// replay itself failed transiently — to retry after the next successful write.
 func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 	switch entry.Kind {
 	case "cash_hands":
@@ -845,12 +716,9 @@ func (c *Client) resolveFallbackEntry(entry fallbackEntry) bool {
 		_, err := c.rawAppendTournament(*entry.Summary)
 		return err == nil
 	case fallbackKindLedger:
-		// No supersede guard: a deposit/withdrawal is a pure append whose
-		// running total rawAppendLedgerEntry recomputes fresh, so there's no
-		// stale snapshot to protect against — just replay it.
 		return c.rawAppendLedgerEntry(entry.Ledger.EntryType, entry.Ledger.AmountCents, entry.Ledger.Now, entry.Ledger.OperationID) == nil
 	}
-	return true // unknown kind — drop rather than retry forever
+	return true
 }
 
 type flushChoice int
@@ -860,11 +728,6 @@ const (
 	flushDiscard
 )
 
-// flushDecision is the pure hand-count guard: discard a queued entry only when
-// the sheet already holds a strictly higher hand count for the same key (a
-// later direct write superseded this snapshot — replaying it would regress the
-// sheet backward). Otherwise replay. A row that doesn't exist yet has nothing
-// to supersede, so it always replays.
 func flushDecision(cachedHands, sheetHands int, rowExists bool) flushChoice {
 	if rowExists && sheetHands > cachedHands {
 		return flushDiscard
@@ -872,9 +735,6 @@ func flushDecision(cachedHands, sheetHands int, rowExists bool) flushChoice {
 	return flushReplay
 }
 
-// cashSheetHandCount reads the Hands value (column C) of the Cash Sessions row
-// with the given session ID. exists is false when no such row is on the sheet
-// yet, in which case there's nothing to supersede.
 func (c *Client) cashSheetHandCount(sessionID string) (hands int, exists bool, err error) {
 	rowIndex, found, err := c.findRowByColumnValue("Cash Sessions", "J", sessionID)
 	if err != nil {
@@ -893,8 +753,6 @@ func (c *Client) cashSheetHandCount(sessionID string) (hands int, exists bool, e
 	return parseInt(resp.Values[0][0]), true, nil
 }
 
-// tournamentSheetHandCount reads the Hands value (column N) of the Tournaments
-// row with the given ID. exists is false when no such row is on the sheet yet.
 func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exists bool, err error) {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil {
@@ -913,16 +771,6 @@ func (c *Client) tournamentSheetHandCount(tournamentID string) (hands int, exist
 	return parseInt(resp.Values[0][0]), true, nil
 }
 
-// AppendLedgerEntry appends a deposit or withdrawal row to Bankroll Ledger.
-// For withdrawals, the caller passes a negative amountCents. The date is
-// written as the local wall clock, not UTC — session rows' dates come from
-// PokerStars' zone-less local timestamps, so writing a true-UTC time here
-// would put deposits in a date coordinate system shifted from every session
-// row's by the machine's UTC offset, and window queries would misplace them
-// near day boundaries.
-// Identified movements reconcile their existing ledger ID before replay, including
-// a remotely committed append whose acknowledgement was lost. Legacy blank IDs
-// retain append semantics and cannot provide exactly-once recovery.
 func (c *Client) AppendLedgerEntry(entryType string, amountCents money.Cents, now time.Time, operationID string) error {
 	if err := storage.ValidateMoneyOperationID(operationID); err != nil {
 		return err
@@ -974,18 +822,14 @@ func (c *Client) rawAppendLedgerEntry(entryType string, amountCents money.Cents,
 	})
 }
 
-// GetCurrentBankroll returns the running total from the last Bankroll Ledger row.
-// Returns 0 if the ledger is empty.
 func (c *Client) GetCurrentBankroll() (money.Cents, error) {
 	return c.getLastRunningTotal()
 }
 
-// GetSheetURL returns the Google Sheets URL for this spreadsheet.
 func (c *Client) GetSheetURL() string {
 	return "https://docs.google.com/spreadsheets/d/" + c.spreadsheetID
 }
 
-// GetLedgerEntriesSince returns all Bankroll Ledger rows where Date >= t.
 func (c *Client) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, "Bankroll Ledger!A:E")
 	if err != nil {
@@ -1007,12 +851,6 @@ func (c *Client) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, erro
 	return result, nil
 }
 
-// queryCashSessions reads every Cash Sessions row with Date >= since,
-// including Session ID — the one column GetCashSessionsSince's existing
-// callers (stats, summaries) don't need but /export does. GetCashSessionsSince
-// and GetAllCashSessions are both thin wrappers over this single read,
-// differing only in the date cutoff and whether the caller wants the
-// Session ID kept or discarded.
 func (c *Client) queryCashSessions(since time.Time) ([]storage.CashSessionRecord, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, "Cash Sessions!A:J")
 	if err != nil {
@@ -1039,11 +877,6 @@ func readCashValues(values [][]interface{}, since time.Time) ([]storage.CashSess
 	return result, nil
 }
 
-// parseCashRow parses one Cash Sessions row (columns A:J) into a record. ok is
-// false when the row is shorter than the 9 always-written columns (a
-// hand-edited or otherwise malformed row — the script never writes fewer) or
-// column A doesn't hold a valid date. Shared by queryCashSessions and the
-// migration round-trip so both decode a row identically.
 func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool, err error) {
 	if len(row) < 9 {
 		return storage.CashSessionRecord{}, false, nil
@@ -1078,8 +911,6 @@ func parseCashRow(row []interface{}) (rec storage.CashSessionRecord, ok bool, er
 	return rec, err == nil, err
 }
 
-// GetCashSessionsSince returns all Cash Sessions rows where Date >= t.
-// BuyInCents is not stored in the sheet and will be zero in returned structs.
 func (c *Client) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error) {
 	records, err := c.queryCashSessions(t)
 	if err != nil {
@@ -1092,19 +923,10 @@ func (c *Client) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error
 	return result, nil
 }
 
-// GetAllCashSessions returns every Cash Sessions row, including Session ID.
-// Used only by /export.
 func (c *Client) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
 	return c.queryCashSessions(time.Time{})
 }
 
-// queryTournaments reads every Tournaments row with Date >= since, including
-// VPIP, PFR, Bounty Won, and Prize Won — columns GetTournamentsSince's
-// existing callers don't need but /export does. Partial rows (no Date)
-// created by UpdateTournamentHandStats before the summary file arrives are
-// skipped. GetTournamentsSince and GetAllTournaments are both thin wrappers
-// over this single read, differing only in the date cutoff and whether the
-// caller wants those extra columns kept or discarded.
 func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:P")
 	if err != nil {
@@ -1115,9 +937,6 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 	}
 	var result []storage.TournamentRecord
 	for _, row := range resp.Values[1:] {
-		// Completed rows always have at least the 9 summary columns; shorter
-		// means hand-edited/malformed (partial rows are skipped below via
-		// hasDate regardless).
 		if len(row) < 9 {
 			continue
 		}
@@ -1133,12 +952,6 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 	return result, nil
 }
 
-// parseTournamentRow parses one Tournaments row (columns A:P) into a record.
-// hasDate is false for a partial row — a hand file parsed before its summary
-// arrived, whose Date cell (column A) is blank — which callers reading only
-// completed tournaments skip, but the migration snapshot keeps (with a zero
-// Date). Shared by queryTournaments, allTournamentRows, and the migration
-// round-trip so every path decodes a row identically.
 func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDate bool, err error) {
 	rec.Type = fmt.Sprint(cell(row, 1))
 	rec.TournamentID = fmt.Sprint(cell(row, 2))
@@ -1152,9 +965,6 @@ func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDat
 	if err != nil {
 		return rec, false, err
 	}
-	// Prize Pool (col E) holds a number for a real cash pool, or text for a
-	// ticket-denominated one (e.g. "$1.00 Power Path Step 2 Ticket") — see
-	// AppendTournament's prizePool write.
 	if desc, ok := cell(row, 4).(string); ok && desc != "" {
 		rec.PrizePoolDescription = desc
 	} else {
@@ -1163,7 +973,6 @@ func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDat
 			return rec, false, err
 		}
 	}
-	// Multiplier (col F) is empty for MTT rows.
 	if mult := fmt.Sprint(cell(row, 5)); mult != "" {
 		m := parseFloat(cell(row, 5))
 		rec.Multiplier = &m
@@ -1197,10 +1006,6 @@ func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDat
 	return rec, hasDate, nil
 }
 
-// allTournamentRows reads every Tournaments row including partial ones (blank
-// Date), for the migration snapshot. queryTournaments can't be reused: it
-// drops partials, which a migration must carry so an in-progress tournament
-// keeps its hand-file stats across a backend switch.
 func (c *Client) allTournamentRows() ([]storage.TournamentRecord, error) {
 	resp, err := c.svc.valuesGet(c.spreadsheetID, "Tournaments!A:P")
 	if err != nil {
@@ -1223,12 +1028,6 @@ func (c *Client) allTournamentRows() ([]storage.TournamentRecord, error) {
 	return result, nil
 }
 
-// GetTournamentByID returns the single completed tournament row with this
-// TournamentID — the point lookup the worker's duplicate check runs per file
-// event: an ID-column read plus one row read, instead of the whole tab.
-// found is false for an absent tournament and for a partial row (hand file
-// before summary — blank Date cell), matching GetTournamentsSince's
-// partial-row skip.
 func (c *Client) GetTournamentByID(tournamentID string) (parsers.Tournament, bool, error) {
 	rowIndex, found, err := c.findTournamentRow(tournamentID)
 	if err != nil || !found {
@@ -1251,8 +1050,6 @@ func (c *Client) GetTournamentByID(tournamentID string) (parsers.Tournament, boo
 	return rec.Tournament, true, nil
 }
 
-// GetTournamentsSince returns all Tournaments rows where Date >= since.
-// Partial rows (no Date) created by UpdateTournamentHandStats are skipped.
 func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
 	records, err := c.queryTournaments(since)
 	if err != nil {
@@ -1265,15 +1062,10 @@ func (c *Client) GetTournamentsSince(since time.Time) ([]parsers.Tournament, err
 	return result, nil
 }
 
-// GetAllTournaments returns every Tournaments row, including VPIP, PFR,
-// Bounty Won, and Prize Won. Used only by /export.
 func (c *Client) GetAllTournaments() ([]storage.TournamentRecord, error) {
 	return c.queryTournaments(time.Time{})
 }
 
-// ExportSnapshot returns every row of all three tabs as full records, for a
-// backend migration. Unlike GetAllTournaments its Tournaments slice keeps
-// partial rows (blank Date), read via allTournamentRows.
 func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
@@ -1300,8 +1092,6 @@ func (c *Client) ExportSnapshot() (storage.Snapshot, error) {
 	}, nil
 }
 
-// ImportSnapshot writes raw storage rows to the verified empty destination.
-// The cash metadata and ledger enter the destination in the same batch.
 func (c *Client) ImportSnapshot(snap storage.Snapshot) error {
 	if err := storage.ValidateSnapshot(snap); err != nil {
 		return err
@@ -1327,10 +1117,6 @@ func (c *Client) ImportSnapshot(snap storage.Snapshot) error {
 	return c.svc.writeHistoryGrid(c.spreadsheetID, writes)
 }
 
-// buildCashRows / buildTournamentRows / buildLedgerRows map records to the
-// cell layout each tab's parse* counterpart reads back. They're pure (no
-// Client, no I/O) so a migration's column alignment is unit-tested by
-// round-tripping build → parse without a live sheet.
 func buildCashRows(sessions []storage.CashSessionRecord) [][]interface{} {
 	rows := make([][]interface{}, len(sessions))
 	for i, s := range sessions {
@@ -1347,9 +1133,6 @@ func buildTournamentRows(tournaments []storage.TournamentRecord) [][]interface{}
 	rows := make([][]interface{}, len(tournaments))
 	for i, t := range tournaments {
 		if t.Date.IsZero() {
-			// Partial row: Date and every summary-only column blank, exactly
-			// as rawUpdateTournamentHandStats's partial append writes them, so
-			// Net (col I) stays empty and isn't read back as summary data.
 			rows[i] = []interface{}{
 				"", t.Type, t.TournamentID, "", "", "", "", "", "",
 				floatCell(t.VPIP), floatCell(t.PFR), t.BountyWonCents, "", intCell(t.Hands),
@@ -1384,9 +1167,6 @@ func buildLedgerRows(entries []storage.LedgerEntry) [][]interface{} {
 	return rows
 }
 
-// floatCell / intCell write an optional numeric field as its value, or an
-// empty cell when unset (nil) — VPIP/PFR/Hands on a tournament that has no hand
-// data yet, which must read back as a nil pointer, not 0.
 func floatCell(p *float64) interface{} {
 	if p == nil {
 		return ""
@@ -1401,27 +1181,16 @@ func intCell(p *int) interface{} {
 	return *p
 }
 
-// Health reports whether the Sheets API is currently reachable, based on the
-// most recent call through any endpoint (see restService.doJSON). down is
-// true if that call failed; since is when the outage began (zero if
-// healthy); err is nil if healthy. Sheets-only surface, reached by type
-// assertion — see PendingWrites.
 func (c *Client) Health() (down bool, since time.Time, err error) {
 	return c.svc.health()
 }
 
-// PendingWrites reports how many failed writes are queued in the write-ahead
-// fallback. A migration must refuse to run while any are pending — they're
-// invisible to the read methods, so the source data on the sheet is
-// incomplete until they flush. Always 0 for a fallback-disabled client.
 func (c *Client) PendingWrites() int {
 	c.fallbackMu.Lock()
 	defer c.fallbackMu.Unlock()
 	return len(c.fallback)
 }
 
-// ClearHistory clears the active store's history in place, preserving tab
-// headers, formatting and cells outside the tracker tables.
 func (c *Client) ClearHistory() error {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
@@ -1442,7 +1211,6 @@ func (c *Client) ClearHistory() error {
 	return c.svc.clearHistoryValues(c.spreadsheetID, columns, extra)
 }
 
-// ClearAllData rolls a transfer-owned sheet back to empty history.
 func (c *Client) ClearAllData() error {
 	return c.ClearHistory()
 }
@@ -1479,10 +1247,6 @@ func parseLedgerRows(rows [][]interface{}) ([]storage.LedgerEntry, error) {
 	return entries, nil
 }
 
-// cell returns row[i], or "" when the row is shorter than i+1 — the Sheets API
-// omits trailing empty cells, so a row read back is often shorter than its
-// full column count. Lets the row parsers index any column without a length
-// check at every access.
 func cell(row []interface{}, i int) interface{} {
 	if i < len(row) {
 		return row[i]
@@ -1518,15 +1282,12 @@ func parseFloat(v interface{}) float64 {
 	return 0
 }
 
-// DrainPendingWrites is called only by the server worker, including its bot-ticker
-// requests. It reuses normal replay and quota pacing without a connectivity probe.
 func (c *Client) DrainPendingWrites() {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	c.flush()
 }
 
-// parseMoney decodes a USD-denominated cell into integer cents.
 func parseMoney(value interface{}) (money.Cents, error) {
 	if value == nil || value == "" {
 		return 0, nil
@@ -1534,8 +1295,6 @@ func parseMoney(value interface{}) (money.Cents, error) {
 	return money.Parse(fmt.Sprint(value))
 }
 
-// PendingFallbackCount inspects durable writes without constructing a Google
-// client or replaying them. Transfer startup must refuse pending/corrupt state.
 func PendingFallbackCount(path string) (int, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1551,8 +1310,6 @@ func PendingFallbackCount(path string) (int, error) {
 	return len(pending), nil
 }
 
-// CheckTransferReady refuses both cached and durable queued writes without
-// replaying either. A corrupt queue cannot establish an empty source.
 func (c *Client) CheckTransferReady() error {
 	if c.PendingWrites() > 0 {
 		return fmt.Errorf("Sheets writes are pending")

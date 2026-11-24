@@ -142,7 +142,6 @@ func TestOfflineRequestDeliveredOnTLSReconnect(t *testing.T) {
 offline:
 	lock := config.LockFile{TriggerID: "offline-fixed-expiry", ExpiresAt: time.Now().Add(24 * time.Hour), Reason: "manual"}
 	worker.RequestHardstop(lock)
-	// Synchronize with the worker's durable write before asking the display reader.
 	for {
 		text, err := worker.LockStatusText()
 		if err == nil && strings.Contains(text, "Pending PC confirmation") && strings.Contains(text, "PC is offline") {

@@ -8,15 +8,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-// Migrate copies every row from src into dst — which must be empty — as a raw
-// snapshot (see Snapshot), then verifies the copy landed correctly. It does not
-// touch config.json and does not restart anything; the caller does that only
-// after Migrate returns without error. The returned Snapshot is what was
-// copied, for the caller to report row counts.
-//
-// dst must be constructed so a failed write errors rather than being buffered
-// (the sheets backend's write-ahead fallback must be disabled) — a migration
-// that silently queued half its rows would report success with data missing.
 func Migrate(src, dst Store) (Snapshot, error) {
 	snap, err := src.ExportSnapshot()
 	if err != nil {
@@ -41,8 +32,6 @@ func Migrate(src, dst Store) (Snapshot, error) {
 	return snap, nil
 }
 
-// verifyMigration compares the destination's independently read records and
-// amounts with the source snapshot, then checks both live bankroll readings.
 func verifyMigration(src, dst Store, snap Snapshot) error {
 	check, err := dst.ExportSnapshot()
 	if err != nil {
@@ -74,9 +63,6 @@ func verifyMigration(src, dst Store, snap Snapshot) error {
 	return nil
 }
 
-// VerifySnapshot verifies a raw import without recalculating or changing any
-// stored values. precision reflects the backend's stored date precision (one
-// minute for Sheets, one second for SQLite). Record order and blank IDs matter.
 func VerifySnapshot(expected, actual Snapshot, precision time.Duration) error {
 	for _, count := range []struct {
 		name      string

@@ -26,36 +26,10 @@ import (
 	"github.com/vit-ui/self-tracker/internal/config"
 )
 
-// The network transport carries the same Upload/Command messages the in-process
-// Link does, over one TLS connection the client dials out to the server. It is
-// the second way of feeding a *Link's channels (the first is the in-process
-// share): a per-connection pair of goroutines bridges the socket to the
-// channels, so the Collector and Server are identical in both builds — only the
-// construction differs. Auth is a pinned self-signed certificate (SSH-style
-// trust-on-first-use: the client verifies the server's cert fingerprint rather
-// than a CA chain) plus a shared token presented as the first frame.
+const maxFrameBytes = 16 << 20
 
-// maxFrameBytes caps a single frame's payload so a malformed length prefix
-// can't make the reader allocate unbounded memory. A hand-history delta or a
-// tournament summary is far smaller than this.
-const maxFrameBytes = 16 << 20 // 16 MiB
-
-// handshakeTimeout bounds how long the server waits for a newly accepted
-// connection to complete the TLS handshake and present its token. The token is
-// only checked after the connection is accepted, so without this a peer that
-// opens a socket and then stays silent — which needs no token and no LAN/VPS
-// trust — would park a serveConn goroutine forever (readFrame blocks with no
-// deadline), an unauthenticated resource-exhaustion vector. This is a
-// deliberate, approved exception to the "no custom timeouts" rule (it is a
-// security control, not an operation timeout); it applies only to the pre-auth
-// window and is cleared once the token checks out, so an authenticated
-// collector may stay idle between uploads. A var, not a const, only so the
-// transport's own test can shorten it — never reassigned in any real build.
 var handshakeTimeout = 10 * time.Second
 
-// frame is one length-prefixed JSON message on the wire. Exactly one field is
-// set: Token on the client's first (handshake) frame, then Upload frames going
-// up or Command frames coming down.
 type frame struct {
 	Token         string           `json:"token,omitempty"`
 	Upload        *Upload          `json:"upload,omitempty"`
@@ -64,11 +38,6 @@ type frame struct {
 	TransferReply *TransferReply   `json:"transfer_reply,omitempty"`
 }
 
-// GenerateServerCert creates a self-signed ECDSA P-256 certificate for the
-// server to present, returning the PEM cert, PEM private key, and the SHA-256
-// fingerprint (lowercase hex) of the certificate DER — the value the client
-// pins via the connection string. The cert is long-lived (10 years) and self-
-// signed; there is no CA, by design.
 func GenerateServerCert() (certPEM, keyPEM []byte, fingerprint string, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -101,7 +70,6 @@ func GenerateServerCert() (certPEM, keyPEM []byte, fingerprint string, err error
 	return certPEM, keyPEM, fmt.Sprintf("%x", sum), nil
 }
 
-// ConnInfo is the parsed content of a connection string.
 type ConnInfo struct {
 	Host        string
 	Port        int
@@ -109,18 +77,12 @@ type ConnInfo struct {
 	Fingerprint string
 }
 
-// Address is the host:port the client dials.
 func (c ConnInfo) Address() string { return net.JoinHostPort(c.Host, strconv.Itoa(c.Port)) }
 
-// ConnectionString formats the one-line pairing string a client pastes:
-// tracker://host:port/token#fp=<sha256hex>.
 func ConnectionString(host string, port int, token, fingerprint string) string {
 	return fmt.Sprintf("tracker://%s/%s#fp=%s", net.JoinHostPort(host, strconv.Itoa(port)), token, fingerprint)
 }
 
-// ParseConnectionString parses a tracker:// pairing string. Every field is
-// required; a missing scheme, port, token, or fingerprint is an error rather
-// than a silent default, since a wrong value can't reach the server.
 func ParseConnectionString(s string) (ConnInfo, error) {
 	u, err := url.Parse(strings.TrimSpace(s))
 	if err != nil {
@@ -151,8 +113,6 @@ func ParseConnectionString(s string) (ConnInfo, error) {
 	return ConnInfo{Host: host, Port: port, Token: token, Fingerprint: fp}, nil
 }
 
-// writeFrame writes one length-prefixed JSON frame. Only one goroutine may
-// write to a given conn; server connections serialize through frameConn.write.
 func writeFrame(w io.Writer, f frame) error {
 	payload, err := json.Marshal(f)
 	if err != nil {
@@ -170,7 +130,6 @@ func writeFrame(w io.Writer, f frame) error {
 	return err
 }
 
-// readFrame reads one length-prefixed JSON frame.
 func readFrame(r io.Reader) (frame, error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -191,8 +150,6 @@ func readFrame(r io.Reader) (frame, error) {
 	return f, nil
 }
 
-// FingerprintPEM returns the SHA-256 fingerprint (lowercase hex) of the first
-// certificate in a PEM block — the value pinned in a connection string.
 func FingerprintPEM(certPEM []byte) (string, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
@@ -202,8 +159,6 @@ func FingerprintPEM(certPEM []byte) (string, error) {
 	return fmt.Sprintf("%x", sum), nil
 }
 
-// CollectorConnection owns its socket and all transport goroutines. Close also
-// cancels a command delivery blocked behind a full collector channel.
 type CollectorConnection struct {
 	Link        *Link
 	Done        <-chan struct{}
@@ -212,8 +167,6 @@ type CollectorConnection struct {
 	uploadsDone chan struct{}
 }
 
-// Drain finishes accepted uploads before closing the session. Call only after
-// the collector and its command goroutine have stopped producing uploads.
 func (c *CollectorConnection) Drain() {
 	close(c.Link.Uploads)
 	<-c.uploadsDone
@@ -222,13 +175,6 @@ func (c *CollectorConnection) Drain() {
 
 func (c *CollectorConnection) Close() { c.socket.close(); c.routines.Wait() }
 
-// DialServer connects to a server described by info over TLS, pinning the
-// server's certificate to info.Fingerprint (no CA), presents the token, and
-// returns a *Link whose channels are bridged to the connection: Uploads written
-// to link.Uploads go up, Commands from the server arrive on link.Commands. The
-// returned dead channel is closed when the connection drops, so the caller can
-// close this connection and reconnect without stopping lock enforcement.
-// Its listener owns shutdown; use ConnectCollector for explicit session ownership.
 func DialServer(info ConnInfo) (*Link, <-chan struct{}, error) {
 	connection, err := ConnectCollector(info, nil)
 	if err != nil {
@@ -237,8 +183,6 @@ func DialServer(info ConnInfo) (*Link, <-chan struct{}, error) {
 	return connection.Link, connection.Done, nil
 }
 
-// ConnectCollector uses caller cancellation for dialing/handshake and active
-// socket ownership. It adds no network timeout or reconnect policy.
 func ConnectCollector(info ConnInfo, stop <-chan struct{}) (*CollectorConnection, error) {
 	conn, err := dialPinned(info, stop)
 	if err != nil {
@@ -295,8 +239,8 @@ func ConnectCollector(info ConnInfo, stop <-chan struct{}) (*CollectorConnection
 
 func dialPinned(info ConnInfo, stop <-chan struct{}) (net.Conn, error) {
 	cfg := &tls.Config{
-		MinVersion:         tls.VersionTLS13, // both ends are our own code — require the newest TLS, no downgrade
-		InsecureSkipVerify: true,             // we pin the exact cert below instead of a CA chain
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true,
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			if len(rawCerts) == 0 {
 				return fmt.Errorf("server presented no certificate")
@@ -328,8 +272,6 @@ func dialPinned(info ConnInfo, stop <-chan struct{}) (net.Conn, error) {
 	return conn, nil
 }
 
-// Listen starts a TLS listener on addr with the given PEM cert/key. addr is a
-// host:port (host empty = all interfaces).
 func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
@@ -337,7 +279,7 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 	}
 	ln, err := tls.Listen("tcp", addr, &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS13, // both ends are our own code — require the newest TLS, no downgrade
+		MinVersion:   tls.VersionTLS13,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listening on %s: %w", addr, err)
@@ -345,8 +287,6 @@ func Listen(addr string, certPEM, keyPEM []byte) (net.Listener, error) {
 	return ln, nil
 }
 
-// frameConn serializes complete frames, including reconnect lock replay. Closing
-// the socket does not take writeMu, so replacement can interrupt a blocked write.
 type frameConn struct {
 	net.Conn
 	writeMu   sync.Mutex
@@ -367,15 +307,9 @@ func (c *frameConn) write(f frame) error {
 	return writeFrame(c.Conn, f)
 }
 
-// serveState is Serve's shared per-listener state: the current collector
-// connection and the most recent hard-stop lock, both guarded by mu. Tracking
-// the active lock is what lets a lock survive a disconnected collector: it is
-// re-pushed when a collector (re)connects, so a lock decided while the poker PC
-// was offline — or lost to a socket that closed mid-write during a reconnect —
-// is still delivered.
 type serveState struct {
 	mu          sync.Mutex
-	transferMu  sync.Mutex // serialize worker replies with admission observations
+	transferMu  sync.Mutex
 	current     *frameConn
 	activeLock  *config.LockFile
 	connections map[net.Conn]struct{}
@@ -384,24 +318,6 @@ type serveState struct {
 	transferID  string
 }
 
-// Serve accepts client connections on ln and bridges each to link after the
-// client presents the matching token. Only one collector is served at a time
-// (v3.7 scope): a new connection replaces and closes the previous one, and a
-// single goroutine is the sole consumer of link.Commands, writing each command
-// to whichever collector is current. This is what keeps a hard-stop lock from
-// being split between a live and a stale connection — the bug otherwise is that
-// after an ungraceful drop and collector reconnect, two per-connection
-// writers would both drain link.Commands and one could write a lock into the
-// dead socket's buffer (no error), silently losing enforcement.
-//
-// A lock command is also remembered as the active lock and re-pushed to a
-// collector when it connects (see serveConn), so the two remaining gaps are
-// closed: (1) a lock decided while no collector is connected is no longer
-// dropped, and (2) a lock racing a reconnect can't be lost to the just-closed
-// old socket — storing the lock and reading current happen under the same mutex
-// as the connection swap and its re-push, so whichever orders first, the new
-// collector still receives it (a duplicate re-push is harmless: Enforce is
-// idempotent). Blocks until ln is closed.
 func Serve(ln net.Listener, token string, link *Link) {
 	link.useNetwork()
 	var routines sync.WaitGroup
@@ -420,11 +336,6 @@ func Serve(ln net.Listener, token string, link *Link) {
 		routines.Wait()
 	}()
 
-	// The sole command writer: one consumer of link.Commands, targeting the
-	// current collector. Storing the active lock and reading the current
-	// connection are one critical section, serialized against serveConn's
-	// connection swap + re-push (see the type doc), so a lock is never lost to a
-	// reconnect and is re-delivered to whoever connects next.
 	routines.Add(1)
 	go func() {
 		defer routines.Done()
@@ -481,27 +392,17 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 		delete(st.connections, conn)
 		st.mu.Unlock()
 	}()
-	// Bound the pre-auth window: the TLS handshake happens on this first read,
-	// and the token frame must arrive within it, or the connection is dropped
-	// instead of blocking this goroutine indefinitely (see handshakeTimeout).
 	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	first, err := readFrame(conn)
 	if err != nil || first.Token != token || first.Upload != nil || first.Command != nil || first.TransferReply != nil {
 		conn.Close()
 		return
 	}
-	// Authenticated: clear the deadline so an idle-but-live collector (long gaps
-	// between uploads) isn't dropped; a real drop is caught by TCP keepalive.
 	_ = conn.SetReadDeadline(time.Time{})
 	if first.Transfer != nil {
 		serveTransfer(conn, *first.Transfer, link, st)
 		return
 	}
-	// Become the active collector, closing any previous one so its reader exits
-	// and it stops being a target for commands. Under the same lock, snapshot
-	// any still-active lock so it can be re-pushed to this fresh connection —
-	// covering a lock decided while nothing was connected and a lock lost to a
-	// socket that closed mid-write during this very reconnect.
 	framed := &frameConn{Conn: conn, done: make(chan struct{})}
 	st.mu.Lock()
 	if st.closed || st.transferID != "" {
@@ -509,8 +410,6 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 		framed.close()
 		return
 	}
-	// Reserve the first write before publishing the connection. A newer lock
-	// must follow the replay, rather than be overwritten by an older lock.
 	framed.writeMu.Lock()
 	old := st.current
 	st.current = framed
@@ -560,10 +459,6 @@ func serveConn(conn net.Conn, token string, link *Link, st *serveState) {
 	}
 }
 
-// enableKeepAlive turns on TCP keepalive so a collector that drops ungracefully
-// (power loss, Wi-Fi cut, reboot — no FIN) is detected in seconds rather than
-// the OS default of minutes, so its reader errors out and it stops being the
-// current connection promptly.
 func enableKeepAlive(conn net.Conn) {
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {

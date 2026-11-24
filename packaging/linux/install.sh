@@ -1,12 +1,4 @@
 #!/bin/sh
-# Startup script for the PokerTracker-Server-linux self-extracting installer
-# (built with makeself in .github/workflows/package.yml). makeself unpacks the
-# archive to a temporary directory and runs this script from there, with both
-# server binaries (tracker-server-amd64, tracker-server-arm64) alongside it. We
-# pick the one for this CPU, install it into the user's home (no root), run
-# first-time setup, and register the per-user service. The systemd unit + the
-# one privileged "start on boot" step live in the Go binary's --install (a single
-# home for that logic), not duplicated here.
 set -e
 
 ARCH="$(uname -m)"
@@ -26,8 +18,6 @@ fi
 
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/poker-tracker"
 mkdir -p "$DEST"
-# Replacing a running executable in place fails with ETXTBSY. Stage on the same
-# filesystem, then rename so the old process keeps its inode until restart.
 STAGED_SERVER="$(mktemp "$DEST/.tracker-server.XXXXXX")"
 trap 'rm -f "$STAGED_SERVER"' 0
 trap 'exit 1' HUP INT TERM
@@ -38,11 +28,7 @@ mv -f "$STAGED_SERVER" "$DEST/tracker-server"
 echo "Installed the Poker Tracker server to $DEST/tracker-server"
 echo
 
-# First-time setup: generate the TLS certificate + pairing token and show the
-# connection string. Opens a window on a graphical desktop; prints to the
-# terminal on a headless box.
 "$DEST/tracker-server" --setup
-# Start configured tracking before asking for the optional Telegram pairing.
 "$DEST/tracker-server" --install
 echo
 echo "Tracker is installed and running."

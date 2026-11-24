@@ -1,8 +1,3 @@
-// Package client is the collector half of the tracker: it watches the
-// PokerStars folders, sends file changes up to the server, and enforces the
-// hard-stop locks the server sends back down. Enforcement lives here, not with
-// the hard-stop decision (internal/hardstop), because only the machine
-// PokerStars runs on can kill it and gate its launch.
 package client
 
 import (
@@ -17,8 +12,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/config"
 )
 
-// Enforcer shares durable lock state and a fail-closed in-memory lock between
-// command handling and the process-owned enforcement loop.
 type Enforcer struct {
 	path            string
 	mu              sync.Mutex
@@ -77,8 +70,6 @@ func (e *Enforcer) Enforce(proposed config.LockFile) (*config.LockFile, bool, er
 	return active, fresh, err
 }
 
-// Enforce retains the one-shot API for native probes. Production shares an
-// Enforcer with its collector's enforcement loop.
 func Enforce(path string, lock config.LockFile) { NewEnforcer(path).Enforce(lock) }
 
 func (e *Enforcer) EnforceActive() bool {
@@ -117,9 +108,6 @@ func lockCheckInterval(active bool) time.Duration {
 	return 30 * time.Second
 }
 
-// Run enforces immediately, checks active protection every second, and checks
-// idle state every 30 seconds. New commands wake an idle timer immediately.
-// Persistence errors retain the original expiry instead of resetting its clock.
 func (e *Enforcer) Run(done <-chan struct{}) {
 	timer := time.NewTimer(lockCheckInterval(e.EnforceActive()))
 	defer timer.Stop()
@@ -137,11 +125,6 @@ func (e *Enforcer) Run(done <-chan struct{}) {
 
 func RunEnforcementLoop(path string, done <-chan struct{}) { NewEnforcer(path).Run(done) }
 
-// lockfileActiveAt reports whether the lockfile at lockfilePath exists and
-// hasn't expired as of now. Goes through config.LoadLock rather than reading
-// the file directly — config.go documents that no other package touches
-// config.json/lockfile.json directly. Never deletes the file even when
-// expired; that stays --check-lock's responsibility.
 func lockfileActiveAt(lockfilePath string, now time.Time) bool {
 	lock, err := config.LoadLock(lockfilePath)
 	if err != nil || lock == nil {
@@ -154,8 +137,6 @@ func (e *Enforcer) closuresPath() string {
 	return filepath.Join(filepath.Dir(e.path), "collector_closures.json")
 }
 
-// Called under e.mu after the termination. Persistence failure cannot prevent
-// termination or erase the in-memory lock. Existing enforcement checks retry it.
 func (e *Enforcer) recordClosure(lock *config.LockFile, closed bool, err error, now time.Time) error {
 	if err != nil || !closed || lock == nil || !lock.ExpiresAt.After(now) {
 		return err

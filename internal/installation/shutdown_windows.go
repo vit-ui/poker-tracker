@@ -11,9 +11,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// ownerEventSecurity lets an elevated installer address a SYSTEM task's owner
-// events. Ordinary unrelated users receive no access. A medium label also
-// permits the creating desktop owner to use its own events outside a task.
 func ownerEventSecurity() (*windows.SecurityAttributes, error) {
 	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)")
 	if err != nil {
@@ -33,8 +30,6 @@ func shutdownEvent(dir string, pid uint32) (*uint16, error) {
 	return windows.UTF16PtrFromString(fmt.Sprintf(`Global\PokerTracker-Shutdown-%x-%d`, key, pid))
 }
 
-// ListenShutdown registers this process's installation-scoped shutdown event.
-// The owner must finish cleanup before releasing the registration.
 func ListenShutdown(dir string) (<-chan struct{}, func(), error) {
 	name, err := shutdownEvent(dir, uint32(os.Getpid()))
 	if err != nil {

@@ -7,8 +7,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// restartConfiguration drains accepted collection and worker operations before
-// changing startup settings. The worker remains held until restart or rollback.
 func (b *Bot) restartConfiguration(chatID int64, label string, finalizeCash bool, change func(storage.Store) (func() error, error), cleanup func()) {
 	b.migrating = true
 	release, resumed := make(chan struct{}), make(chan error, 1)

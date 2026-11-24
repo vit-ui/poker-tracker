@@ -8,9 +8,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// collectionOperation exists only on the worker. The pause acknowledgement is
-// ordered after drained uploads; a successful copy then holds the worker until
-// restart or rollback. Disconnect is failure, never evidence of completion.
 type collectionOperation struct {
 	operation    storage.Operation
 	command      transport.Command

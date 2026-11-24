@@ -60,7 +60,6 @@ func TestCollectorQueueSurvivesRestartAndRetiresOnlyAcknowledgedRevision(t *test
 	if cmd.RequestID != "first" || *cmd.Settings.HandHistory != first {
 		t.Fatalf("wrong queued command: %+v", cmd)
 	}
-	// Lost acknowledgement: restart without any reply, preserving local queue.
 	stop()
 	worker, link, stop = runRecoveredWorker(t, store, path, time.Hour)
 	defer stop()
@@ -69,7 +68,6 @@ func TestCollectorQueueSurvivesRestartAndRetiresOnlyAcknowledgedRevision(t *test
 		t.Fatal("restart changed operation identity")
 	}
 	settingsOperation(t, worker, &config.CollectorChange{ID: "second", Settings: config.CollectorSettings{HandHistory: &second}})
-	// The already transmitted first revision cannot retire the newer pending edit.
 	link.Uploads <- transport.Upload{ConfigReply: &transport.CollectorConfigReply{RequestID: "first", Settings: config.CollectorSettings{ScreenName: &name, HandHistory: &first}, Watching: true}}
 	cmd = migrationCommand(t, link, transport.CommandCollectorConfig)
 	if cmd.RequestID != "second" || *cmd.Settings.HandHistory != second || *cmd.Settings.ScreenName != name {
@@ -79,7 +77,6 @@ func TestCollectorQueueSurvivesRestartAndRetiresOnlyAcknowledgedRevision(t *test
 	if state.Pending == nil || state.Pending.ID != "second" {
 		t.Fatalf("older reply retired newer edit: %+v", state)
 	}
-	// Unrecognized replies cannot invent success.
 	link.Uploads <- transport.Upload{ConfigReply: &transport.CollectorConfigReply{RequestID: "unrecognized", Settings: config.CollectorSettings{HandHistory: &first}, Watching: true}}
 	link.Uploads <- transport.Upload{ConfigReply: &transport.CollectorConfigReply{RequestID: "second", Settings: config.CollectorSettings{ScreenName: &name, HandHistory: &second}, Watching: true}}
 	state = settingsState(t, worker, func(s config.CollectorSettingsState) bool { return s.Pending == nil })
@@ -116,7 +113,6 @@ func TestCollectorQueueFailurePersistsUntilCorrectedAndSourceSaveFailureIsNotQue
 	if *cmd.Settings.ScreenName != name || *cmd.Settings.HandHistory != valid {
 		t.Fatalf("correction failed to retain other pending fields: %+v", cmd)
 	}
-	// Fail the real journal write; the accepted revision must stay intact.
 	journal := filepath.Join(filepath.Dir(worker.configPath), "collector_settings.json")
 	if err := os.Mkdir(journal+".tmp", 0700); err != nil {
 		t.Fatal(err)
@@ -164,7 +160,6 @@ func TestOfflineCollectorQueueAcceptsAndCoalescesWithoutWritingServerSettings(t 
 		t.Fatalf("sent command without collector: %+v", cmd)
 	default:
 	}
-	// Server-owned changes remain independent, including no screen-name gate.
 	if _, err := config.UpdateConfig(worker.configPath, func(cfg *config.Config) error { hour := 8; cfg.Schedule.DayStartHour = &hour; return nil }); err != nil {
 		t.Fatal(err)
 	}

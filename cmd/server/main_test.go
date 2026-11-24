@@ -8,8 +8,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
 )
 
-// deref returns the pointed-at string, or "<nil>" for a nil pointer, so a test
-// can assert on a *string field without a nil-panic.
 func deref(s *string) string {
 	if s == nil {
 		return "<nil>"
@@ -17,14 +15,7 @@ func deref(s *string) string {
 	return *s
 }
 
-// TestApplyStorageChoice pins how the server records the storage backend the
-// installer collected. The Windows installer runs the hidden-console --setup and
-// passes the choice as --backend/--sheet-name/--sheet-id; a regression here would
-// silently misconfigure a user's storage. Only the flag-driven and
-// re-install-preserve paths are covered (they never reach the interactive
-// chooseBackend); the terminal/dialog prompt stays manually verified.
 func TestApplyStorageChoice(t *testing.T) {
-	// Prompts are unnecessary when the installer supplied an explicit choice.
 	t.Setenv("DISPLAY", "")
 	t.Setenv("WAYLAND_DISPLAY", "")
 	p := uiprompt.New()

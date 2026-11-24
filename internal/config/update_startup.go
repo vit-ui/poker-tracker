@@ -7,7 +7,6 @@ import (
 	"os"
 )
 
-// UpdateStartup is an installation-scoped, single-update startup acknowledgement.
 type UpdateStartup struct {
 	Token   string `json:"token"`
 	Version string `json:"version"`

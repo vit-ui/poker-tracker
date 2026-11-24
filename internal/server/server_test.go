@@ -17,15 +17,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// TestIsDuplicateTournament exercises the single choke point guarding
-// against a duplicate tournament summary file event (a stray re-trigger, or
-// literally the same file copied) — the exact bug that caused a repeated
-// Telegram alert and a repeated satellite/ticket question for the same
-// tournament before this check existed — while still letting a re-entry
-// rewrite (a larger buy-in / different finish for an already-recorded
-// TournamentID) through to update the row, ledger, and bankroll, refreshing
-// a stale pending-queue snapshot, and never re-asking a satellite question
-// already answered "used a ticket" (recorded buy-in zeroed).
 func TestIsDuplicateTournament(t *testing.T) {
 	pendingOf := func(tourneys ...parsers.Tournament) []config.PendingTournament {
 		pending := make([]config.PendingTournament, len(tourneys))
@@ -34,18 +25,11 @@ func TestIsDuplicateTournament(t *testing.T) {
 		}
 		return pending
 	}
-	// tourney builds a parsed/recorded tournament with the money-relevant
-	// fields isDuplicateTournament compares.
 	tourney := func(id string, buyInCents money.Cents, finishPos, players int) parsers.Tournament {
 		return parsers.Tournament{TournamentID: id, BuyInCents: buyInCents, FinishPos: finishPos, TotalPlayers: players}
 	}
 
-	// The first bust of a re-entry MTT, as already recorded (buy-in $1.10,
-	// busted 50th of 126).
 	firstBust := tourney("111", 110, 50, 126)
-	// A satellite the player answered "used a ticket" for: RecoverTicketPayout
-	// zeroed the recorded buy-in, but a re-parse of the unchanged file still
-	// reads the real $0.50.
 	ticketResolved := tourney("111", 0, 3, 3)
 	none := parsers.Tournament{}
 
@@ -68,19 +52,9 @@ func TestIsDuplicateTournament(t *testing.T) {
 		{"only finish position changed is not a duplicate", tourney("111", 110, 43, 126), nil, firstBust, true, false, -1},
 		{"only field size changed is not a duplicate", tourney("111", 110, 50, 162), nil, firstBust, true, false, -1},
 		{"a different tournament pending doesn't false-positive", tourney("111", 110, 50, 126), pendingOf(tourney("222", 110, 50, 126)), none, false, false, -1},
-		// The ticket-answer regression: recorded buy-in is 0 (satellite
-		// resolved as a ticket entry), the file re-parses as $0.50 — an
-		// unchanged file must still be a duplicate, or every ticket-resolved
-		// tournament gets re-queued and re-asked on any stray event.
 		{"ticket-resolved satellite, unchanged file re-parse is a duplicate", tourney("111", 50, 3, 3), nil, ticketResolved, true, true, -1},
 		{"ticket-resolved satellite, re-entry rewrite (new finish) is not a duplicate", tourney("111", 100, 2, 3), nil, ticketResolved, true, false, -1},
-		// Re-entry components and recorded buy-ins compare as exact cents.
 		{"summed buy-in cents still match", tourney("111", 110+220, 43, 162), nil, tourney("111", 330, 43, 162), true, true, -1},
-		// Freeroll/Kick-Off: the summary never carries a buy-in, so a parse is
-		// always $0. After the player answers "paid $X" the recorded buy-in is
-		// X > 0; a stray re-trigger re-parses $0 and must still be a duplicate
-		// on finish + field, or the entry-cost question gets re-asked and a
-		// wrong second answer overwrites the recorded row.
 		{"freeroll answered paid, unchanged file re-parse is a duplicate", tourney("111", 0, 3, 4), nil, tourney("111", 100, 3, 4), true, true, -1},
 		{"freeroll answered free, unchanged file re-parse is a duplicate", tourney("111", 0, 3, 4), nil, tourney("111", 0, 3, 4), true, true, -1},
 		{"freeroll re-entry with a new finish is not a duplicate", tourney("111", 0, 2, 4), nil, tourney("111", 100, 3, 4), true, false, -1},
@@ -96,20 +70,11 @@ func TestIsDuplicateTournament(t *testing.T) {
 	}
 }
 
-// TestServer_ScreenNameRecovery is the regression for the collector/server
-// offset desync: the collector advances its per-file sent offset on every
-// upload, so a file that arrives while the screen name is empty (config wiped
-// mid-session) must still be reconstructed on the server, or the next delta
-// lands past a never-written working file and corrupts it. When the screen name
-// returns, a full parse of the now-complete working file must record every
-// hand — matching the pre-split whole-file re-read.
 func TestServer_ScreenNameRecovery(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Split after the first two hands (offset of the 3rd header). The first
-	// header may sit just past a BOM, not a newline.
 	sep := "PokerStars Hand #"
 	text := string(data)
 	var offs []int
@@ -144,18 +109,15 @@ func TestServer_ScreenNameRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.QuietPeriod = 50 * time.Millisecond // fire the cash session-end fast
+	srv.QuietPeriod = 50 * time.Millisecond
 	go srv.Run()
-	go func() { // drain alerts so the screen-name warning never blocks
+	go func() {
 		for range alertChan {
 		}
 	}()
 
 	const fileID = `C:\hh\nlhe_cash.txt`
-	// Event 1: the first two hands, screen name not yet known — skipped for
-	// parsing but must still be reconstructed on the server.
 	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: 0, Bytes: data[:split], ScreenName: ""}
-	// Event 2: the appended remainder, screen name now recovered.
 	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: int64(split), Bytes: data[split:], ScreenName: "AnonHero01"}
 
 	deadline := time.Now().Add(10 * time.Second)
@@ -204,12 +166,6 @@ func TestCashSessionSummaryText(t *testing.T) {
 	}
 }
 
-// TestTournamentAlreadyHandledIntegration drives the real I/O wrapper — a
-// sqlitestore in a temp dir plus the real pending_tournaments.json round-trip
-// — through the duplicate/rewrite scenarios the pure isDuplicateTournament
-// test covers in isolation. The original frozen-at-first-bust bug lived in
-// this wiring (the pure decision was fine; the composition wasn't), so the
-// composition is what this test pins.
 func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
@@ -256,9 +212,6 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 		t.Error("re-parse after processing the rewrite not reported as duplicate")
 	}
 
-	// Ticket-resolved satellite: recorded with buy-in zeroed (as
-	// bot.RecoverTicketPayout stores it); the unchanged file still parses
-	// the real $0.50 — must be a duplicate, not a re-queue + second question.
 	satRecorded := parsers.Tournament{Date: date, Type: "spingo", TournamentID: "555", BuyInCents: 0, FinishPos: 3, TotalPlayers: 3, NetCents: 0}
 	if _, err := store.AppendTournament(satRecorded); err != nil {
 		t.Fatalf("AppendTournament(satellite): %v", err)
@@ -268,9 +221,6 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 		t.Error("ticket-resolved satellite's unchanged file re-parse not reported as duplicate — would re-ask the answered question")
 	}
 
-	// Pending-queue refresh: a rewrite arriving while the satellite question
-	// is unanswered is still handled (no second question) but must replace
-	// the queued stale snapshot with the current money.
 	pendingPath := filepath.Join(dir, "pending_tournaments.json")
 	stale := tourney("777", 110, 50, 126, -110)
 	if err := config.SavePendingTournaments(pendingPath, []config.PendingTournament{{Tournament: stale, FirstQueuedAt: date, LastRemindedAt: date}}); err != nil {
@@ -291,8 +241,6 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 		t.Errorf("pending refresh must keep the reminder timestamps: %+v", pending[0])
 	}
 
-	// Partial row (hand file arrived before the summary): not yet handled —
-	// the summary still needs processing.
 	if err := store.UpdateTournamentHandStats("888", 20, 10, 50, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
@@ -301,10 +249,6 @@ func TestTournamentAlreadyHandledIntegration(t *testing.T) {
 	}
 }
 
-// TestLedgerBankroll confirms the bankroll derived from an already-fetched
-// full ledger — its last row's running total — equals what a separate
-// GetCurrentBankroll store call returns, which is the read it replaced on
-// the worker's per-event path.
 func TestLedgerBankroll(t *testing.T) {
 	t.Run("empty ledger is 0", func(t *testing.T) {
 		if gotCents := ledgerBankroll(nil); gotCents != 0 {
@@ -341,17 +285,6 @@ func TestLedgerBankroll(t *testing.T) {
 	})
 }
 
-// TestWorkerAlertEvaluationEndToEnd drives the worker's post-write
-// evaluation path — one shared fetchEvalData per event feeding every
-// evaluator — against a real sqlite store, asserting the exact alert
-// messages the old per-evaluator-fetch code produced for the same rows.
-// Hand-checked sequence: deposit $100; session 1 loses $6 at a $5 buy-in
-// (session-loss alert at 1.2 buy-ins, daily-loss alert at -$6, bankroll
-// $94); session 2 loses $4 (under the session-loss threshold, completes the
-// 2-session losing streak, daily alert already fired for this poker day and
-// must not repeat, bankroll $90). Hard stop config left null so Evaluate
-// short-circuits — its trigger path (taskkill + lockfile) stays out of unit
-// tests per the working agreement.
 func TestWorkerAlertEvaluationEndToEnd(t *testing.T) {
 	store, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "tracker.db"))
 	if err != nil {
@@ -439,7 +372,7 @@ func TestTournamentAlertText(t *testing.T) {
 		t         parsers.Tournament
 		netCents  money.Cents
 		bankCents money.Cents
-		wantHas   string // substring the re-entry line must (not) contain
+		wantHas   string
 		reEntry   bool
 	}{
 		{
@@ -451,9 +384,6 @@ func TestTournamentAlertText(t *testing.T) {
 			wantHas: "🔁 Re-entered 2× — 3 entries total", reEntry: true,
 		},
 	}
-	// The Spin & Go branch renders the prize pool via bot.SpinGoPrizePoolText
-	// — the nil-*Multiplier ticket-pool path once caused a production panic
-	// when formatted directly, so both pool shapes are pinned in full here.
 	mult := 2.0
 	spingoCases := []struct {
 		name      string
@@ -509,7 +439,6 @@ func TestTournamentAlertText(t *testing.T) {
 	}
 }
 
-// waitForString blocks until a string arrives on ch or timeout elapses.
 func waitForString(t *testing.T, ch <-chan string, timeout time.Duration) (string, bool) {
 	t.Helper()
 	select {
@@ -522,8 +451,6 @@ func waitForString(t *testing.T, ch <-chan string, timeout time.Duration) (strin
 
 const importHero = "AnonHero01"
 
-// startCapturingServer is startTestServer's sibling that returns alertChan
-// undrained, so a test can assert exactly which messages the server emits.
 func startCapturingServer(t *testing.T) (*sqlitestore.Store, *transport.Link, chan string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -537,13 +464,6 @@ func startCapturingServer(t *testing.T) (*sqlitestore.Store, *transport.Link, ch
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	// The import silence check in feedImport is only meaningful if a live-path
-	// regression would surface a message *before* that check runs. The cash
-	// summary is the one live-path message deferred by the quiet-period timer, so
-	// the quiet period must stay well under feedImport's 200ms extra-alert window
-	// — otherwise a regressed cash summary lands after the check and the guard
-	// goes vacuous again. 50ms gives a 4x margin. (importUpload arms no timer, so
-	// the correct path stays silent regardless.)
 	srv.QuietPeriod = 50 * time.Millisecond
 	done := make(chan struct{})
 	go func() { srv.Run(); close(done) }()
@@ -555,7 +475,6 @@ func startCapturingServer(t *testing.T) (*sqlitestore.Store, *transport.Link, ch
 	return store, link, alertChan
 }
 
-// importUp builds one /scan Import upload from a committed fixture file.
 func importUp(t *testing.T, fileID, typ, sub, name string) transport.Upload {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", sub, name))
@@ -565,10 +484,6 @@ func importUp(t *testing.T, fileID, typ, sub, name string) transport.Upload {
 	return transport.Upload{FileID: fileID, Type: typ, Offset: 0, Bytes: b, ScreenName: importHero, ClientClock: time.Now(), Import: true}
 }
 
-// feedImport sends an ImportStart / uploads / ImportDone sequence and returns
-// the scan-complete report. It also asserts the import is silent: the report
-// (emitted on ImportDone, processed last) is the FIRST and ONLY message — any
-// live-path alert would have been emitted earlier and would fail this.
 func feedImport(t *testing.T, link *transport.Link, alertChan chan string, ups ...transport.Upload) string {
 	t.Helper()
 	link.Uploads <- transport.Upload{Type: transport.ImportStart}
@@ -605,10 +520,6 @@ func countTournamentRows(t *testing.T, store *sqlitestore.Store, tournamentID st
 	return n
 }
 
-// TestServer_ImportBackfill drives the /scan silent-import path through the real
-// Run loop: a cash file, a real MTT summary, and a satellite summary. The cash
-// session and the MTT are recorded, the satellite is skipped (it needs a player
-// answer), no live-path alert fires, and the completion report names the counts.
 func TestServer_ImportBackfill(t *testing.T) {
 	store, link, alertChan := startCapturingServer(t)
 	report := feedImport(t, link, alertChan,
@@ -631,12 +542,6 @@ func TestServer_ImportBackfill(t *testing.T) {
 		t.Error("satellite 9000000013 recorded, want skipped")
 	}
 
-	// Hand-checked money chain, so an import that stored the wrong amount (a
-	// sign flip, a dropped bounty fold, a double-count) can't pass on row counts
-	// alone. nlhe_cash nets -$0.03 (NL2, 4 hands); the horse MTT nets -$1.10;
-	// with no deposit the bankroll is their sum, -$1.13. Compared with a
-	// tolerance because -0.03 + -1.10 isn't exact in float64 and running_total_cents
-	// round-trips through sqlite REAL.
 	if gotCents := sessions[0].NetCents; !closeEnoughServer(gotCents, -3) {
 		t.Errorf("imported cash session net = %v, want -0.03", gotCents)
 	}
@@ -652,18 +557,12 @@ func TestServer_ImportBackfill(t *testing.T) {
 	}
 }
 
-// TestServer_ImportKnockoutTwoFile covers the most common real backfill shape: a
-// knockout tournament whose hand-history file AND summary are both in the
-// folders. The hand file (parsed as "cash" but carrying tournament stats)
-// enriches the row rather than counting as a cash session; the summary records
-// it. The two correlate into one -ko row, counted once as a tournament.
 func TestServer_ImportKnockoutTwoFile(t *testing.T) {
 	store, link, alertChan := startCapturingServer(t)
 	report := feedImport(t, link, alertChan,
 		importUp(t, "hh/pko.txt", "cash", "hand_history", "draw27_pko_T9000000005.txt"),
 		importUp(t, "ts/pko.txt", "tournament", "tournament_summary", "draw27_pko_T9000000005.txt"),
 	)
-	// The hand file is not a cash session; only the summary counts.
 	if !strings.Contains(report, "recorded 0 cash session(s) and 1 tournament(s)") {
 		t.Errorf("report = %q, want 0 cash / 1 tournament", report)
 	}
@@ -671,8 +570,6 @@ func TestServer_ImportKnockoutTwoFile(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("KO tournament not found (err %v)", err)
 	}
-	// A -ko suffix only appears once the hand file's bounty markers are folded
-	// into the summary row — so it proves the two files correlated.
 	if got.BaseType() != "mtt" || !strings.HasSuffix(got.Type, "-ko") {
 		t.Errorf("Type = %q, want an mtt -ko (proves hand+summary correlation)", got.Type)
 	}
@@ -681,9 +578,6 @@ func TestServer_ImportKnockoutTwoFile(t *testing.T) {
 	}
 }
 
-// TestServer_ImportSkipsFreeroll confirms a zero-buy-in freeroll summary is
-// skipped (its real entry cost is unknown without a player answer), counted as
-// skipped, and never recorded.
 func TestServer_ImportSkipsFreeroll(t *testing.T) {
 	store, link, alertChan := startCapturingServer(t)
 	report := feedImport(t, link, alertChan,
@@ -697,40 +591,18 @@ func TestServer_ImportSkipsFreeroll(t *testing.T) {
 	}
 }
 
-// TestServer_ImportFreerollHandFileLeavesNoMoney pins what happens when a
-// freeroll's *hand* file is scanned before its summary — the real /scan order,
-// since the collector walks the hand-history folder first. The hand file parses
-// as tournament hand stats (not a cash session), so importUpload calls
-// UpdateTournamentHandStats, which creates a partial tournament row (stats only:
-// hands/bounty, no buy-in, no net, no ledger entry). The summary is then skipped
-// because a zero-buy-in freeroll needs a player answer. The hand file cannot
-// know in advance that its summary will be skipped (uploads arrive
-// independently), so the partial row is unavoidable — but it must carry no money:
-// no net, and no bankroll impact. It completes only if the tournament is later
-// replayed live (AppendTournament upserts by ID). This is the same benign
-// intermediate state the live pipeline produces when a hand file precedes its
-// summary, so there is nothing to fix — this test documents that it costs
-// nothing.
 func TestServer_ImportFreerollHandFileLeavesNoMoney(t *testing.T) {
 	store, link, alertChan := startCapturingServer(t)
 	report := feedImport(t, link, alertChan,
 		importUp(t, "hh/freeroll.txt", "cash", "hand_history", "freeroll_zero_T9000000002.txt"),
 		importUp(t, "ts/freeroll.txt", "tournament", "tournament_summary", "freeroll_zero_T9000000002.txt"),
 	)
-	// The hand file is not a cash session and the summary is skipped, so the
-	// scan reports nothing recorded and one skipped — even though a partial row
-	// now exists.
 	if !strings.Contains(report, "recorded 0 cash session(s) and 0 tournament(s)") || !strings.Contains(report, "Skipped 1") {
 		t.Errorf("report = %q, want 0/0 recorded and 1 skipped", report)
 	}
-	// A point lookup reports the stub as NOT recorded — GetTournamentByID treats
-	// a stats-only row (no summary yet) as not-found, so the stub can't be
-	// mistaken for a real tournament by the duplicate check or a re-scan.
 	if _, found, _ := store.GetTournamentByID("9000000002"); found {
 		t.Error("stats-only stub reported as a recorded tournament by GetTournamentByID, want not-found")
 	}
-	// It does surface in ExportSnapshot (so /export and a backend migration carry
-	// it) — but it holds no money: no net, no buy-in.
 	snap, err := store.ExportSnapshot()
 	if err != nil {
 		t.Fatalf("ExportSnapshot: %v", err)
@@ -747,8 +619,6 @@ func TestServer_ImportFreerollHandFileLeavesNoMoney(t *testing.T) {
 	if stub.NetCents != 0 || stub.BuyInCents != 0 {
 		t.Errorf("partial row carries money: net=%v buy-in=%v, want both 0", stub.NetCents, stub.BuyInCents)
 	}
-	// The decisive property: the ledger (bankroll) is untouched, so the
-	// incomplete tournament costs the player nothing until it's really recorded.
 	bankrollCents, err := store.GetCurrentBankroll()
 	if err != nil {
 		t.Fatalf("GetCurrentBankroll: %v", err)
@@ -758,8 +628,6 @@ func TestServer_ImportFreerollHandFileLeavesNoMoney(t *testing.T) {
 	}
 }
 
-// TestServer_ImportIdempotent checks that repeated scans report previously
-// recorded cash hands and leave the ledger unchanged.
 func TestServer_ImportIdempotent(t *testing.T) {
 	store, link, alertChan := startCapturingServer(t)
 	ups := []transport.Upload{
@@ -788,7 +656,6 @@ func TestServer_ImportIdempotent(t *testing.T) {
 
 func closeEnoughServer(aCents, bCents money.Cents) bool { return aCents == bCents }
 
-// waitForCommand blocks until a command arrives on ch or timeout elapses.
 func waitForCommand(t *testing.T, ch <-chan transport.Command, timeout time.Duration) (transport.Command, bool) {
 	t.Helper()
 	select {
@@ -799,14 +666,6 @@ func waitForCommand(t *testing.T, ch <-chan transport.Command, timeout time.Dura
 	}
 }
 
-// TestServer_SessionEndLedgerHardStop proves the deferred-cash change didn't
-// break the ledger-based hard stops: a cash session's ledger-based checks now
-// run at session end (in endCashSession), against the just-written ledger, on
-// the real Run loop. The consecutive-losses stop is date-agnostic, so it can be
-// driven here (the time-windowed downswing/daily stops stay in the hardstop unit
-// tests). With one prior losing session pre-seeded and the incoming session also
-// a loss, the two-in-a-row streak trips the stop — a lock command goes down the
-// link once the table falls quiet.
 func TestServer_SessionEndLedgerHardStop(t *testing.T) {
 	dir := t.TempDir()
 	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
@@ -814,8 +673,6 @@ func TestServer_SessionEndLedgerHardStop(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	// Hard stop after 2 losing sessions in a row; no session-loss stop, so the
-	// only thing that can fire is the session-end consecutive-losses check.
 	n, hours := 2, 1
 	configPath := filepath.Join(dir, "config.json")
 	if err := config.SaveConfig(configPath, &config.Config{
@@ -824,7 +681,6 @@ func TestServer_SessionEndLedgerHardStop(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	// Pre-seed one losing cash session so the incoming one makes two in a row.
 	prev := parsers.CashSession{
 		Date:  storage.AsStoredClock(time.Now()).Add(-time.Hour),
 		Stake: "NL2", BuyInCents: 200, NetCents: -150, Hands: 20, DurationMin: 15, FirstHandID: "prevloss1",
@@ -847,14 +703,11 @@ func TestServer_SessionEndLedgerHardStop(t *testing.T) {
 		<-done
 		store.Close()
 	})
-	go func() { // drain alerts so the hard-stop alert send never blocks
+	go func() {
 		for range alertChan {
 		}
 	}()
 
-	// A live losing cash session (nlhe_cash nets a small loss). No session-loss
-	// stop is configured, so nothing fires per hand; the consecutive-losses stop
-	// fires only once the session is written at session end.
 	cashBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -870,22 +723,6 @@ func TestServer_SessionEndLedgerHardStop(t *testing.T) {
 	}
 }
 
-// TestServer_LedgerHardStopDeferredNotPerHand proves the ledger-based hard stop
-// (consecutive losses) is evaluated only at session end, never per hand — the
-// property TestServer_SessionEndLedgerHardStop cannot show, because with only one
-// prior loss a regression that wrongly ran hardstop.Evaluate per hand wouldn't
-// trigger either (the current session isn't in the ledger yet), so its "fires"
-// assertion would pass regardless.
-//
-// The distinguishing setup: TWO prior losing sessions are pre-seeded and the
-// stop is set at 2 in a row. The incoming live session is also a loss, so at
-// session end the streak is intact and the stop fires — but the two pre-seeded
-// losses already satisfy the streak *before* the incoming session is written, so
-// a regression that evaluated the ledger per hand would fire immediately, well
-// inside the quiet period. The test asserts nothing fires in the first half of
-// the quiet period (timers never fire early, so a slow machine only delays the
-// real fire — it can't make this false-positive) and then the lock arrives at
-// session end.
 func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 	dir := t.TempDir()
 	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
@@ -901,8 +738,6 @@ func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	// Two prior losing sessions: the streak is already met before the incoming
-	// session is written, so a per-hand ledger evaluation would fire at once.
 	for i, hid := range []string{"prevloss1", "prevloss2"} {
 		prev := parsers.CashSession{
 			Date:  storage.AsStoredClock(time.Now()).Add(-time.Duration(2-i) * time.Hour),
@@ -919,7 +754,6 @@ func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	// A long-ish quiet period so the "nothing fires early" window has real margin.
 	srv.QuietPeriod = 500 * time.Millisecond
 	done := make(chan struct{})
 	go func() { srv.Run(); close(done) }()
@@ -939,12 +773,9 @@ func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 	}
 	link.Uploads <- transport.Upload{FileID: "hh/nlhe.txt", Type: "cash", Offset: 0, Bytes: cashBytes, ScreenName: importHero, ClientClock: time.Now()}
 
-	// Well inside the 500ms quiet period: no lock may have fired yet. A per-hand
-	// regression would have locked already.
 	if cmd, ok := waitForCommand(t, link.Commands, 200*time.Millisecond); ok {
 		t.Fatalf("hard stop fired before session end — the ledger check ran per hand: %+v", cmd)
 	}
-	// After the quiet period the session-end check fires exactly once.
 	cmd, ok := waitForCommand(t, link.Commands, 5*time.Second)
 	if !ok {
 		t.Fatal("no lock command at session end — the ledger-based hard stop didn't fire")
@@ -957,8 +788,6 @@ func TestServer_LedgerHardStopDeferredNotPerHand(t *testing.T) {
 	}
 }
 
-// TestArmCashSessionEnd_FiresAfterQuietPeriod confirms a single arm call
-// signals the table's FileID once the quiet period elapses.
 func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
 	timers := make(map[string]*quietTimer)
 	sessionEnd := make(chan quietSignal, 10)
@@ -974,9 +803,6 @@ func TestArmCashSessionEnd_FiresAfterQuietPeriod(t *testing.T) {
 	}
 }
 
-// TestArmCashSessionEnd_ResetOnNewHand confirms re-arming before the quiet
-// period elapses (a new hand at the same table) cancels the pending signal and
-// collapses to exactly one session-end.
 func TestArmCashSessionEnd_ResetOnNewHand(t *testing.T) {
 	timers := make(map[string]*quietTimer)
 	sessionEnd := make(chan quietSignal, 10)
@@ -997,8 +823,6 @@ func TestArmCashSessionEnd_ResetOnNewHand(t *testing.T) {
 	}
 }
 
-// TestArmCashSessionEnd_IndependentPerTable confirms two different tables each
-// get their own independent timer — re-arming one must never cancel another.
 func TestArmCashSessionEnd_IndependentPerTable(t *testing.T) {
 	timers := make(map[string]*quietTimer)
 	sessionEnd := make(chan quietSignal, 10)
@@ -1019,13 +843,6 @@ func TestArmCashSessionEnd_IndependentPerTable(t *testing.T) {
 	}
 }
 
-// TestEndCashSession_PrunesTimer pins the fix for the summaryTimers leak:
-// endCashSession must drop the table's quiet-period timer entry (Stop + delete)
-// alongside its pending session, or the map grows one entry per distinct
-// cash-table file path forever. The timer is armed with a long quiet period so
-// it's still active when endCashSession runs — that lets a second Stop() prove
-// deterministically whether endCashSession already stopped it (Stop returns
-// false only if the timer was already stopped/expired).
 func TestEndCashSession_PrunesTimer(t *testing.T) {
 	dir := t.TempDir()
 	store, err := sqlitestore.NewStore(filepath.Join(dir, "tracker.db"))
@@ -1033,8 +850,6 @@ func TestEndCashSession_PrunesTimer(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
-	// alertChan buffered so the post-session summary send doesn't block (no Run
-	// loop is draining it here — endCashSession is called directly).
 	alertChan := make(chan string, 10)
 	srv, err := NewServer(store, filepath.Join(dir, "config.json"), transport.NewLink(), alertChan)
 	if err != nil {
@@ -1044,8 +859,6 @@ func TestEndCashSession_PrunesTimer(t *testing.T) {
 	const fileID = `C:\hh\table.txt`
 	summaryTimers := make(map[string]*quietTimer)
 	sessionEnd := make(chan quietSignal, 1)
-	// Long quiet period: the timer stays active (won't fire during the test), so
-	// endCashSession's Stop() is what deactivates it — provable below.
 	armQuietTimer(summaryTimers, fileID, time.Hour, sessionEnd, nil)
 	timer := summaryTimers[fileID]
 
@@ -1061,22 +874,15 @@ func TestEndCashSession_PrunesTimer(t *testing.T) {
 	if _, ok := pendingSessions[fileID]; ok {
 		t.Error("pendingSessions entry not removed")
 	}
-	// Stop returns false only if endCashSession already stopped (or fired) it.
 	if timer.Stop() {
 		t.Error("endCashSession did not stop the timer before dropping it — a superseded timer could fire a stale send")
 	}
-	// The session was still written — pruning didn't skip the real work.
 	sessions, err := store.GetAllCashSessions()
 	if err != nil || len(sessions) != 1 {
 		t.Fatalf("GetAllCashSessions = %d rows (err %v), want the one written session", len(sessions), err)
 	}
 }
 
-// TestSyncedMessage covers the pure decision behind the "queued writes just
-// synced" Telegram notice: a message only when the sheets write-ahead
-// fallback queue (PendingWrites) shrank between two snapshots taken around a
-// successful write, naming exactly how many resolved. An unchanged or grown
-// count sends nothing.
 func TestSyncedMessage(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -1099,12 +905,6 @@ func TestSyncedMessage(t *testing.T) {
 	}
 }
 
-// startTestServer builds a Server over a temp sqlite store, starts its Run
-// loop, and drains alertChan so nothing blocks. It returns the store (to assert
-// the final persisted state), the link (to feed uploads), and the Server (for
-// white-box access to the clock helpers). Teardown stops Run (by closing the
-// Uploads channel) and waits for it to return before closing the store, so no
-// write lands on a closed database and no worker goroutine leaks past the test.
 func startTestServer(t *testing.T) (*sqlitestore.Store, *transport.Link, *Server) {
 	t.Helper()
 	dir := t.TempDir()
@@ -1118,7 +918,7 @@ func startTestServer(t *testing.T) (*sqlitestore.Store, *transport.Link, *Server
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.QuietPeriod = 50 * time.Millisecond // fire the cash session-end fast
+	srv.QuietPeriod = 50 * time.Millisecond
 	done := make(chan struct{})
 	go func() { srv.Run(); close(done) }()
 	go func() {
@@ -1126,17 +926,14 @@ func startTestServer(t *testing.T) (*sqlitestore.Store, *transport.Link, *Server
 		}
 	}()
 	t.Cleanup(func() {
-		close(link.Uploads) // ends Run's range over Uploads
-		<-done              // wait until no more store writes can happen
-		close(alertChan)    // now safe: Run (the only writer) has stopped
+		close(link.Uploads)
+		<-done
+		close(alertChan)
 		store.Close()
 	})
 	return store, link, srv
 }
 
-// waitForCashSession polls until exactly one cash session with wantHands is
-// stored, or the deadline passes, and returns it. A generous deadline covers
-// the asynchronous worker loop.
 func waitForCashSession(t *testing.T, store *sqlitestore.Store, wantHands int) storage.CashSessionRecord {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -1153,33 +950,13 @@ func waitForCashSession(t *testing.T, store *sqlitestore.Store, wantHands int) s
 	}
 }
 
-// TestServer_ClientClockAnchoring pins the split-mode client-clock anchoring at
-// the composed layer, without mutating any process global (time.Local is shared
-// with every other test's goroutines). After an upload carrying a collector
-// clock, ClientNow() must express the current instant in the collector's zone,
-// and storage.AsStoredClock(ClientNow()) must read the collector's *own*
-// wall-clock digits — never re-localize to the server's zone.
-//
-// The collector's zone is built to differ from the test host's real zone by a
-// fixed 5h, so the pre-fix t.Local() bug (which re-localizes to the host) is
-// always caught regardless of where the test runs: under the bug AsStoredClock
-// would yield the host's digits, which differ from the collector's by 5h; under
-// the fix it yields the collector's own digits. The value is captured from a
-// single ClientNow() read, so the comparison is exact — no clock-skew tolerance.
-//
-// All-local behavior is unchanged: before any upload ClientNow falls back to the
-// server's own clock (time.Local), which the fallback assertion pins.
 func TestServer_ClientClockAnchoring(t *testing.T) {
 	_, _, srv := startTestServer(t)
 
-	// Before any upload the collector's zone is unknown: ClientNow falls back to
-	// the server's own local clock.
 	if loc := srv.ClientNow().Location(); loc != time.Local {
 		t.Fatalf("pre-upload ClientNow location = %v, want the server's time.Local fallback", loc)
 	}
 
-	// A collector in a zone 5h off the test host (guaranteed distinct) sends an
-	// upload; the server adopts its zone from ClientClock.
 	_, hostOff := time.Now().Zone()
 	collectorZone := time.FixedZone("COLLECTOR", hostOff+5*60*60)
 	srv.updateClock(time.Now().In(collectorZone))
@@ -1188,8 +965,6 @@ func TestServer_ClientClockAnchoring(t *testing.T) {
 	if cn.Location() != collectorZone {
 		t.Fatalf("ClientNow location = %v, want the collector's zone", cn.Location())
 	}
-	// The stored-clock coordinate must be the collector's own wall-clock digits
-	// relabelled UTC — i.e. AsStoredClock must read cn's fields, not re-localize.
 	stored := storage.AsStoredClock(cn)
 	want := time.Date(cn.Year(), cn.Month(), cn.Day(), cn.Hour(), cn.Minute(), cn.Second(), cn.Nanosecond(), time.UTC)
 	if !stored.Equal(want) {
@@ -1197,27 +972,16 @@ func TestServer_ClientClockAnchoring(t *testing.T) {
 	}
 }
 
-// TestServer_StreamingChunksMatchWholeFile is the split's core parity guarantee:
-// a hand-history file streamed to the server as many small byte-delta uploads
-// (the collector's real behavior — reconstruct appends each delta, the parser
-// resumes) must persist byte-for-byte the same cash session as the identical
-// file delivered in one whole upload. Chunk boundaries are arbitrary byte
-// offsets (mid-hand and mid-line), the adversarial case the hand-boundary
-// equivalence unit test doesn't cover, exercised here through the real
-// reconstruct + incremental-parse path in Server.Run.
 func TestServer_StreamingChunksMatchWholeFile(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Reference: the whole file in a single upload.
 	wholeStore, wholeLink, _ := startTestServer(t)
 	wholeLink.Uploads <- transport.Upload{FileID: `C:\hh\whole.txt`, Type: "cash", Offset: 0, Bytes: data, ScreenName: "AnonHero01"}
-	// nlhe_cash.txt has 4 dealt hands (see TestServer_ScreenNameRecovery).
 	want := waitForCashSession(t, wholeStore, 4)
 
-	// Streamed: the same bytes in 7 arbitrary-sized append deltas.
 	chunkStore, chunkLink, _ := startTestServer(t)
 	const fileID = `C:\hh\stream.txt`
 	const n = 7
@@ -1236,8 +1000,6 @@ func TestServer_StreamingChunksMatchWholeFile(t *testing.T) {
 	}
 	got := waitForCashSession(t, chunkStore, 4)
 
-	// Session ID differs (it hashes FirstHandID+Date, identical here) — compare
-	// the money-and-stats payload, which must be identical.
 	got.SessionID = ""
 	want.SessionID = ""
 	got.HandDetails, want.HandDetails = nil, nil
@@ -1246,13 +1008,6 @@ func TestServer_StreamingChunksMatchWholeFile(t *testing.T) {
 	}
 }
 
-// TestServer_RewriteSelfHealsThroughServer confirms the reconstruct self-heal:
-// an offset-0 upload replaces the working file wholesale, and a subsequent parse
-// of a *shorter* rewritten file (fewer hands) discards the carried parse state
-// and re-parses from scratch, so the stored session reflects the new, smaller
-// content — never a stale merge of old and new. PokerStars only appends in
-// practice, but the split's reconstruct + parser must degrade correctly if a
-// file is ever replaced.
 func TestServer_RewriteSelfHealsThroughServer(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
 	if err != nil {
@@ -1262,22 +1017,16 @@ func TestServer_RewriteSelfHealsThroughServer(t *testing.T) {
 	if len(offs) < 3 {
 		t.Fatalf("need >=3 hands, got %d", len(offs))
 	}
-	twoHands := data[:offs[2]] // first two hands only
+	twoHands := data[:offs[2]]
 
 	store, link, _ := startTestServer(t)
 	const fileID = `C:\hh\rewrite.txt`
-	// Full file first (4 hands).
 	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: 0, Bytes: data, ScreenName: "AnonHero01"}
 	waitForCashSession(t, store, 4)
 
-	// A shorter rewrite at offset 0 (2 hands) must replace, not append.
 	link.Uploads <- transport.Upload{FileID: fileID, Type: "cash", Offset: 0, Bytes: twoHands, ScreenName: "AnonHero01"}
 	got := waitForCashSession(t, store, 2)
 
-	// Independent expectation: a from-scratch parse of the two-hand prefix.
-	// (FirstHandID is not a persisted column — it only seeds the Session ID — so
-	// it reads back empty and isn't compared; the self-heal is proven by the
-	// hand count dropping 4→2 and the net matching the shorter parse.)
 	tmp := filepath.Join(t.TempDir(), "two.txt")
 	if err := os.WriteFile(tmp, twoHands, 0o644); err != nil {
 		t.Fatal(err)
@@ -1295,8 +1044,6 @@ func TestServer_RewriteSelfHealsThroughServer(t *testing.T) {
 	}
 }
 
-// handHeaderOffsetsBytes returns the byte offset of every PokerStars hand header
-// line in data, for slicing the fixture at complete-hand boundaries.
 func handHeaderOffsetsBytes(data []byte) []int64 {
 	var offs []int64
 	var off int64
@@ -1313,7 +1060,6 @@ func handHeaderOffsetsBytes(data []byte) []int64 {
 	return offs
 }
 
-// splitKeepNL splits data into lines, keeping each line's trailing newline.
 func splitKeepNL(data []byte) [][]byte {
 	var lines [][]byte
 	start := 0
@@ -1329,11 +1075,6 @@ func splitKeepNL(data []byte) [][]byte {
 	return lines
 }
 
-// TestBlipMessage covers syncedMessage's failure-side counterpart: a Sheets
-// write failure caches to the fallback queue, so PendingWrites rises. A message
-// fires only on the 0→nonzero transition (the start of an outage), so a burst
-// of failed hands during one outage notifies once, not per hand; sqlite (always
-// 0) and mid-outage (before already nonzero) stay silent.
 func TestBlipMessage(t *testing.T) {
 	const want = "💔 Sheets briefly unreachable — your results are saved locally and I'll sync them automatically when it's back."
 	cases := []struct {

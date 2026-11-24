@@ -140,7 +140,6 @@ func TestTournamentRecoveryRestartAndLateSummary(t *testing.T) {
 	if msg, ok := waitForString(t, alerts, 100*time.Millisecond); ok {
 		t.Fatalf("equivalent summary repeated the alert: %s", msg)
 	}
-	// A later summary of a different recovered tournament can correct money.
 	secondID := "9900000201"
 	second := parsers.Tournament{Date: time.Date(2025, 2, 10, 22, 0, 0, 0, time.UTC), TournamentID: secondID, Type: "mtt", FinishPos: 5, BuyInCents: 110, NetCents: 0, ResultSource: parsers.TournamentSourceHistory}
 	if _, err := db.AppendTournament(second); err != nil {
@@ -263,7 +262,7 @@ func TestTournamentDeadlineSurvivesDeploymentTransfer(t *testing.T) {
 			t.Fatalf("transfer %s: %+v", kind, reply)
 		}
 	}
-	awaitBankroll(t, target.store, 233, time.Second) // 100 - 3 - 315 + 451
+	awaitBankroll(t, target.store, 233, time.Second)
 	rec, found, err := target.store.GetTournamentByID(rounderID)
 	if err != nil || !found || rec.ResultSource != parsers.TournamentSourceHistory || rec.NetCents != 451 {
 		t.Fatalf("recovery after transfer = %+v, %v, %v", rec, found, err)

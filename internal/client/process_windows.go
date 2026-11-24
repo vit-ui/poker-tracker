@@ -9,8 +9,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// pokerStarsRunning only inspects process names. It never terminates a process
-// or writes an enforcement lock while checking the migration precondition.
 func pokerStarsRunning() (bool, error) { return processRunning("PokerStars.exe") }
 
 func processRunning(name string) (bool, error) {

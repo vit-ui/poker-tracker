@@ -10,9 +10,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
-// CashSessionIdentities returns the canonical key and the historical Sheets
-// key. Upserts recognize both and preserve whichever already exists, including
-// after a raw backend migration. New rows use the canonical key in both stores.
 func CashSessionIdentities(date time.Time, firstHandID string) [2]string {
 	hash := func(clock string) string {
 		sum := sha256.Sum256([]byte(clock + "|" + firstHandID))
@@ -21,7 +18,6 @@ func CashSessionIdentities(date time.Time, firstHandID string) [2]string {
 	return [2]string{hash(date.UTC().Format(time.RFC3339)), hash(date.Format("2006-01-02 15:04"))}
 }
 
-// CashWrite reports how many dealt hands were new and how many were already recorded.
 type CashWrite struct {
 	New, Recorded int
 }
@@ -34,8 +30,6 @@ func CashHandIDs(hands []parsers.CashHand) []string {
 	return ids
 }
 
-// ReconcileCashHands preserves the first recorded owner of each hand. Imports
-// only add contributions, while live histories can correct any hand they contain.
 func ReconcileCashHands(rows []CashSessionRecord, session parsers.CashSession, hands []parsers.CashHand, liveSource string) ([]CashSessionRecord, CashWrite, error) {
 	var result CashWrite
 	keys := CashSessionIdentities(session.Date, session.FirstHandID)
@@ -88,8 +82,6 @@ func ReconcileCashHands(rows []CashSessionRecord, session parsers.CashSession, h
 			adopted = true
 			dirty[target] = true
 		} else {
-			// Keep the older aggregate intact when looking at an export or
-			// when another row already owns a hand in its proven prefix.
 			result.Recorded = old.Hands
 			hands = hands[old.Hands:]
 			target = -1
@@ -132,7 +124,6 @@ func ReconcileCashHands(rows []CashSessionRecord, session parsers.CashSession, h
 		if target < 0 {
 			target = len(rows)
 			id := CashSessionIdentities(hand.At, hand.ID)[0]
-			// Preserve the established live-file identity when all hands are new.
 			date := hand.At
 			if result.Recorded == 0 {
 				id, date = keys[0], session.Date

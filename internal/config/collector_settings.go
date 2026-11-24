@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// CollectorSettings contains only PC-owned fields. In a change, nil means leave
-// the field unchanged; in a confirmed snapshot, nil means not configured.
 type CollectorSettings struct {
 	ScreenName        *string `json:"screen_name,omitempty"`
 	HandHistory       *string `json:"hand_history,omitempty"`
@@ -36,8 +34,6 @@ func (s CollectorSettings) Complete() bool {
 	return s.ScreenName != nil && s.HandHistory != nil && s.TournamentSummary != nil
 }
 
-// Validate checks syntax only. Folder existence and relative-path resolution
-// belong to the collector, never the server accepting an offline edit.
 func (s CollectorSettings) Validate() error {
 	if s.ScreenName != nil && (strings.TrimSpace(*s.ScreenName) == "" || strings.ContainsAny(*s.ScreenName, `/\<>:"|?*`+"\x00") || *s.ScreenName == "." || *s.ScreenName == "..") {
 		return fmt.Errorf("send a screen name containing a single folder name")
@@ -55,9 +51,6 @@ type CollectorChange struct {
 	Settings CollectorSettings `json:"settings"`
 }
 
-// CollectorSettingsState lives on the server. Failed validation remains visible
-// and durable until a new edit replaces it; reconnection alone does not retry an
-// invalid path. A missing acknowledgement leaves a change pending for reconnect.
 type CollectorSettingsState struct {
 	Confirmed       *CollectorSettings `json:"confirmed,omitempty"`
 	Pending         *CollectorChange   `json:"pending,omitempty"`

@@ -98,7 +98,6 @@ func TestTransactionWindowsAndResultsExclusion(t *testing.T) {
 	}{{"today", "+$2.00"}, {"week", "+$2.00"}, {"month", "+$2.00"}, {"all", "+$3.00"}} {
 		t.Run(tc.period, func(t *testing.T) {
 			since := statsSince(tc.period, now)
-			// Isolate each period by using an independent temporary store.
 			local, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "window.db"))
 			if err != nil {
 				t.Fatal(err)

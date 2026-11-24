@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// ResolveCollectorPath runs on the collecting machine. Relative Windows paths
-// use the active desktop user's profile, even when the task runs as SYSTEM.
 func ResolveCollectorPath(input string) (string, error) {
 	path := strings.Trim(strings.TrimSpace(input), `"`)
 	if path == "" {
@@ -28,8 +26,6 @@ func ResolveCollectorPath(input string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-// ResolveCollection validates and resolves only edited fields, then verifies
-// configured screen-name subfolders before activating a complete watcher.
 func ResolveCollection(cfg *Config, change CollectorSettings) (CollectorSettings, error) {
 	if err := change.Validate(); err != nil {
 		return CollectorSettings{}, err
@@ -68,7 +64,6 @@ func ResolveCollection(cfg *Config, change CollectorSettings) (CollectorSettings
 	return settings, nil
 }
 
-// ResolveCollectorScanPath resolves a single .txt file on the poker PC.
 func ResolveCollectorScanPath(input string) (string, error) {
 	path := strings.Trim(strings.TrimSpace(input), `"`)
 	if !strings.EqualFold(filepath.Ext(path), ".txt") {

@@ -12,7 +12,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-// CashSession holds aggregated stats for a single cash game session file.
 type CashSession struct {
 	Date        time.Time
 	Stake       string
@@ -25,15 +24,9 @@ type CashSession struct {
 	VPIP        float64
 	PFR         float64
 
-	// FirstHandID is the PokerStars Hand # of the first hand in the file —
-	// globally unique and assigned once, so it never changes as PokerStars
-	// appends later hands to the same file. Storage backends use it (with
-	// Date) to identify this session across repeated re-parses of the same
-	// growing file, the same role TournamentID plays for tournaments.
 	FirstHandID string
 }
 
-// CashHand is the contribution of a completed cash hand dealt to the player.
 type CashHand struct {
 	ID            string      `json:"id"`
 	At            time.Time   `json:"at"`
@@ -45,7 +38,6 @@ type CashHand struct {
 	LiveSource    string      `json:"live_source,omitempty"`
 }
 
-// CashHands reads completed hand contributions when a live session is persisted.
 func CashHands(path, screenName string) ([]CashHand, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -57,7 +49,6 @@ func CashHands(path, screenName string) ([]CashHand, error) {
 	return hands, err
 }
 
-// SessionFromCashHands derives totals for the hands owned by one session.
 func SessionFromCashHands(stake string, hands []CashHand) (CashSession, error) {
 	if len(hands) == 0 {
 		return CashSession{}, fmt.Errorf("cash session has no completed dealt hands")
@@ -80,13 +71,6 @@ func SessionFromCashHands(stake string, hands []CashHand) (CashSession, error) {
 	return agg.session()
 }
 
-// TournamentHandStats holds stats extracted from a tournament hand history
-// file. Returned by ParseCashFile when the file is a tournament session.
-// Knockout-bounty winnings only ever appear here — the tournament summary
-// file has no concept of them at all, only the hand history file's
-// elimination lines do (why two files: plan §Why Tournaments Need Two
-// Files) — so BountyCents and IsKnockout, like VPIP/PFR, are always populated
-// from this struct, never from ParseTournamentFile.
 type TournamentHandStats struct {
 	TournamentID     string
 	LastPlayedHandID string
@@ -97,31 +81,13 @@ type TournamentHandStats struct {
 	VPIP             float64
 	PFR              float64
 
-	// Hands is the number of hands dealt to screenName in this tournament so
-	// far — the same weight CashSession.Hands provides for cash sessions,
-	// letting /stats weight a tournament's VPIP/PFR by how much of a sample
-	// they actually represent. Recomputed from scratch on every parse, same
-	// as VPIP/PFR/BountyCents, since the file keeps growing across the whole
-	// tournament.
 	Hands int
 
-	// BountyCents is the cumulative knockout-bounty cash won by screenName
-	// across every "<name> wins $X.XX for eliminating ..." line in the file,
-	// recomputed from scratch on every parse — the same file keeps growing
-	// with every hand across the whole tournament (not per table), so this
-	// is always the tournament's true cumulative bounty total, not a
-	// per-call increment. Zero for a non-knockout tournament.
 	BountyCents money.Cents
 
-	// IsKnockout is true if any seat in the file shows a bounty ("$X.XX
-	// bounty)" in the pre-hand seat listing) — present for every seat in a
-	// knockout tournament regardless of whether screenName ever eliminates
-	// anyone, unlike BountyCents which can legitimately be zero in a knockout
-	// tournament screenName didn't score a KO in.
 	IsKnockout bool
 }
 
-// LastObservedHandID identifies the latest tracked play or finish in the file.
 func (s TournamentHandStats) LastObservedHandID() string {
 	if s.Finish != nil {
 		return s.Finish.HandID
@@ -129,11 +95,6 @@ func (s TournamentHandStats) LastObservedHandID() string {
 	return s.LastPlayedHandID
 }
 
-// cashAgg holds the file-level accumulators a hand-history parse builds up as
-// it scans forward. Every field is monotonic across the strictly append-only
-// file (PokerStars only ever adds complete hands at the end), so a later parse
-// can resume from a byte offset carrying these values instead of rescanning
-// from zero — see ParseState / ParseCashFileFrom.
 type cashAgg struct {
 	firstTime, lastTime time.Time
 	bigBlindCents       money.Cents
@@ -154,22 +115,11 @@ type cashAgg struct {
 	spinAndGo        bool
 }
 
-// ParseState is the carry-forward state that lets ParseCashFileFrom resume a
-// growing hand-history file instead of re-parsing it from byte 0 on every
-// event. It holds the accumulators for every hand that starts strictly before
-// consumedOffset, and consumedOffset itself — the byte offset of the last hand
-// header seen, always a completed-hand boundary. The last hand is deliberately
-// left out of the carried aggregates and re-parsed on the next resume, so a
-// hand that was mid-write when first seen self-corrects. Callers treat it as
-// opaque: obtain it from ParseCashFileFrom and pass it back next time.
 type ParseState struct {
 	agg            cashAgg
 	consumedOffset int64
 }
 
-// ParseCashFile parses a PokerStars hand history file from the hand history
-// folder. Returns a CashSession for cash game files, or TournamentHandStats
-// for tournament hand history files. Exactly one of the two will be non-nil.
 func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats *TournamentHandStats, err error) {
 	session, tourneyStats, _, err = ParseCashFileFrom(path, screenName, nil)
 	if err == nil && session == nil && tourneyStats == nil {
@@ -178,35 +128,17 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 	return session, tourneyStats, err
 }
 
-// ParseCashFileFrom is ParseCashFile with an incremental fast path. With a nil
-// prior it parses the whole file from byte 0 (identical to ParseCashFile).
-// With a non-nil prior — the ParseState returned by the previous parse of the
-// same growing file — it seeks to prior.consumedOffset and scans only the new
-// bytes, folding them into the carried accumulators. The returned ParseState
-// must be passed back on the next parse of this file.
-// An in-progress cash hand with no earlier completed hand has no result yet.
-//
-// The optimization never affects correctness: if the file is shorter than
-// prior.consumedOffset, or the resume point no longer begins with a hand
-// header (the file was rewritten, not appended to), it silently discards the
-// carried state and re-parses from byte 0. Because storage upserts by session
-// ID / TournamentID, a redundant full re-parse is always safe.
 func ParseCashFileFrom(path, screenName string, prior *ParseState) (*CashSession, *TournamentHandStats, *ParseState, error) {
 	if prior != nil {
 		session, stats, st, err, ok := parseCashFrom(path, screenName, prior)
 		if ok {
 			return session, stats, st, err
 		}
-		// Resume point invalid (file rewritten/truncated) — fall back to a
-		// full re-parse, which is always correct.
 	}
 	session, stats, st, err, _ := parseCashFrom(path, screenName, nil)
 	return session, stats, st, err
 }
 
-// parseCashFrom does the actual scan. ok is false only when a non-nil prior's
-// resume point is no longer valid, signalling ParseCashFileFrom to fall back to
-// a full parse; a nil prior always returns ok true.
 func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -224,7 +156,7 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 			return nil, nil, nil, fmt.Errorf("stat %s: %w", path, err), true
 		}
 		if prior.consumedOffset > info.Size() {
-			return nil, nil, nil, nil, false // file shrank — fall back
+			return nil, nil, nil, nil, false
 		}
 		if _, err := f.Seek(prior.consumedOffset, io.SeekStart); err != nil {
 			return nil, nil, nil, nil, false
@@ -239,10 +171,6 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset int64, resuming bool, details *[]CashHand) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
 	r := bufio.NewReader(in)
 
-	// st is the working aggregate (includes every hand finalized so far);
-	// committed is a snapshot taken at each hand header, so it always excludes
-	// the hand starting at newConsumedOffset. The returned ParseState carries
-	// committed + newConsumedOffset; the returned result is built from st.
 	st := base
 	committed := base
 	newConsumedOffset := startOffset
@@ -347,9 +275,6 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 				line = line[3:]
 			}
 
-			// A non-nil prior stores the byte offset of a hand header; if the
-			// first line we read there isn't one, the file was rewritten in
-			// place, so bail to the full-parse fallback.
 			if firstLine && resuming && !isHandHeader(line) {
 				return nil, nil, nil, nil, false
 			}
@@ -414,38 +339,15 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 				handActive = true
 
 			case line == "*** HOLE CARDS ***":
-				// Only Hold'em/Omaha deal via "*** HOLE CARDS ***", so VPIP/PFR
-				// (preflop concepts) are only counted for those games. Stud/draw
-				// rounds in a mixed game (HORSE, 8-Game) open with "*** 3rd STREET
-				// ***" / "*** DEALING HANDS ***" instead and never set inPreflop,
-				// so their hands land in the denominator (playerDealt still fires
-				// on "Dealt to") but never register a VPIP/PFR action — VPIP/PFR
-				// are deliberately Hold'em/Omaha-only and read as diluted (or 0
-				// for an all-stud/draw sample) on mixed formats. Money fields are
-				// unaffected: tournament net comes from the summary plus folded
-				// bounty, not from these streets.
 				inPreflop = true
 
 			case strings.HasPrefix(line, dealtPfx):
 				playerDealt = true
 
 			case strings.HasPrefix(line, "Seat ") && strings.Contains(line, bountySeatMarker):
-				// Every seat in a knockout tournament shows a bounty in its
-				// pre-hand listing ("Seat 2: Name (5000 in chips, $0.36
-				// bounty)"), repeated on every hand — checked regardless of
-				// screenName, since screenName can finish a knockout tournament
-				// without ever scoring a KO themselves (bounty would then
-				// stay 0, but it's still a knockout tournament).
 				st.isKnockout = true
 
 			case strings.HasPrefix(line, bountyWinPfx):
-				// "<screenName> wins $X.XX for eliminating <Name> and their own
-				// bounty increases by $Y.YY to $Z.ZZ" — the summary file has no
-				// concept of bounties at all, so this is the only source for
-				// knockout winnings (why two files: plan §Why Tournaments Need
-				// Two Files). The amount right after "wins $" is the real cash
-				// credited, which can differ by a cent from the "increases by"
-				// figure due to the 50/50 split-and-round on an odd bounty.
 				if amtCents, ok := parseAmount(line[len(bountyWinPfx):]); ok {
 					add(&st.bountyCents, amtCents)
 				}
@@ -478,7 +380,6 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 				}
 
 			case strings.HasPrefix(line, ap+"calls "):
-				// Both cash ($X) and tournament (X chips) use this prefix.
 				if amtCents, ok := parseAmount(line[len(ap+"calls "):]); ok {
 					add(&handInvestedCents, amtCents)
 					add(&streetTotalCents, amtCents)
@@ -494,7 +395,6 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 				}
 
 			case strings.HasPrefix(line, ap+"raises "):
-				// Cash: "raises $X to $Y"; tournament: "raises X to Y [and is all-in]"
 				toIdx := strings.Index(line, " to ")
 				if toIdx >= 0 {
 					if totalCents, ok := parseAmount(line[toIdx+4:]); ok {
@@ -512,7 +412,6 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 				}
 
 			case st.isTournament && handActive && strings.HasPrefix(line, screenName+" ") && !strings.HasPrefix(line, collectedPfx):
-				// Payout and finish lines can precede the summary marker.
 				finish.readLine(strings.TrimPrefix(line, screenName+" "))
 
 			case strings.HasPrefix(line, uncalledPfx) && strings.HasSuffix(line, uncalledSfx):
@@ -621,23 +520,16 @@ func (st cashAgg) session() (CashSession, error) {
 	}, nil
 }
 
-// isHandHeader reports whether line is a PokerStars hand header (cash or Zoom
-// or tournament — all start with one of these two prefixes).
 func isHandHeader(line string) bool {
 	return strings.HasPrefix(line, "PokerStars Hand #") || strings.HasPrefix(line, "PokerStars Zoom Hand #")
 }
 
-// trimLineEnding strips the trailing "\n" and a single preceding "\r" from a
-// raw line, matching bufio.Scanner's ScanLines so byte-offset-tracked reads
-// produce the same line text the previous Scanner-based parser saw.
 func trimLineEnding(s string) string {
 	s = strings.TrimSuffix(s, "\n")
 	s = strings.TrimSuffix(s, "\r")
 	return s
 }
 
-// extractHandID returns the digits between "Hand #" and the following ":" in
-// a PokerStars hand header line (cash or Zoom — both contain "Hand #").
 func extractHandID(line string) string {
 	idx := strings.Index(line, "Hand #")
 	if idx < 0 {
@@ -651,12 +543,6 @@ func extractHandID(line string) string {
 	return rest[:end]
 }
 
-// parseLeadingAmount parses a leading decimal number from s, ignoring a
-// leading '$'. Thousands-separator commas are consumed and stripped — but
-// only when a digit follows, so "$12,500.00" parses as 12500 while a
-// sentence comma after the amount ("$1, and…") still ends the number.
-// Without this, "Total Prize Pool: $12,500.00" silently parsed as 12 —
-// corrupted money with no error and no user-facing signal.
 func parseLeadingAmount(s string) (money.Cents, bool) {
 	if len(s) > 0 && s[0] == '$' {
 		s = s[1:]

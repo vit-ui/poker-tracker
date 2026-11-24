@@ -1,24 +1,5 @@
 package main
 
-// End-to-end scenario suite: drives the REAL pipeline — the real fsnotify
-// watcher, the real runWorker, and a real sqlite store — with committed
-// anonymized fixture files, and asserts the real stored state (bankroll,
-// ledger, tournament rows), the alert strings the bot would send (drained off
-// alertChan), and pending_tournaments.json. No mocks, no skips.
-//
-// The only manual boundary is the Telegram *send*: the bot goroutine isn't
-// started, so alerts are asserted as the strings runWorker emits. The freeroll
-// *answer* (🆓/💵 tap) likewise runs in the bot and is covered by
-// sqlitestore.TestFreeroll_BuyInAnswer; here the freeroll scenario asserts up
-// to "queued + bounty stub written".
-//
-// Time-windowed triggers (rolling-30-day downswing, poker-day daily loss,
-// losing streak) depend on time.Now() vs each fixture's fixed historical date,
-// so they'd be date-fragile here — they stay covered by the hardstop/alerts
-// unit tests, which build ledgers with controlled dates. The session-loss hard
-// stop below is date-agnostic (a single session's net vs a threshold), so it
-// is exercised end-to-end.
-
 import (
 	"os"
 	"path/filepath"
@@ -51,9 +32,6 @@ type pipeline struct {
 	alerts []string
 }
 
-// newPipeline starts the real watcher + worker over temp dirs, backed by a real
-// sqlite store and the given config (screen name defaulted to the fixtures'
-// hero). Alerts are collected off alertChan.
 func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 	t.Helper()
 	dir := t.TempDir()
@@ -90,22 +68,15 @@ func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 
 	go func() {
 		if err := watcher.Watch(done, hhDir, tsDir, sessionChan); err != nil {
-			// Watch returns when done closes; a real construction error is worth surfacing.
 			t.Logf("watcher stopped: %v", err)
 		}
 	}()
 
-	// Drive the real split pipeline: watcher -> collector -> in-process link ->
-	// server -> store, with the server's lock commands flowing back to the
-	// collector's enforcement (which writes the lockfile the hard-stop scenario
-	// asserts). The Telegram send is still the only manual boundary.
 	link := transport.NewLink()
 	srv, err := server.NewServer(store, configPath, link, alertChan)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	// Cash sessions are written once the table goes quiet; shorten that window
-	// so the session-end write/eval/summary fires within the test's deadline.
 	srv.QuietPeriod = 150 * time.Millisecond
 	go srv.Run()
 	collector := client.NewCollector(link, client.NewEnforcer(lockfilePath), nil)
@@ -120,13 +91,10 @@ func newPipeline(t *testing.T, cfg *config.Config) *pipeline {
 		}
 	}()
 
-	// Let fsnotify register the watches before any fixture is dropped.
 	time.Sleep(200 * time.Millisecond)
 	return p
 }
 
-// drop copies a committed fixture into the matching watched folder, which the
-// real watcher then picks up. sub is "hand_history" or "tournament_summary".
 func (p *pipeline) drop(sub, name string) {
 	p.t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", sub, name))
@@ -142,8 +110,6 @@ func (p *pipeline) drop(sub, name string) {
 	}
 }
 
-// waitFor polls cond until it holds or a generous deadline (covering the
-// watcher's 2s debounce plus processing) elapses.
 func (p *pipeline) waitFor(what string, cond func() bool) {
 	p.t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
@@ -190,9 +156,6 @@ func (p *pipeline) countAlerts(substr string) int {
 	return n
 }
 
-// bountyStub returns the recorded bounty for a tournament ID via ExportSnapshot
-// (which, unlike GetAllTournaments, includes the date-less partial stub row a
-// hand-history-first tournament produces).
 func (p *pipeline) bountyStub(tournamentID string) (money.Cents, bool) {
 	snap, err := p.store.ExportSnapshot()
 	if err != nil {
@@ -208,10 +171,6 @@ func (p *pipeline) bountyStub(tournamentID string) (money.Cents, bool) {
 
 func closeEnough(aCents, bCents money.Cents) bool { return aCents == bCents }
 
-// TestPipeline_WonFreeroll: the hand file writes the knockout-bounty stub
-// ($0.88), and the summary (no buy-in) queues the tournament for the entry-cost
-// question rather than recording it — no ledger movement, no alert, until the
-// player answers.
 func TestPipeline_WonFreeroll(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("hand_history", "freeroll_won_T9000000001.txt")
@@ -244,15 +203,9 @@ func TestPipeline_WonFreeroll(t *testing.T) {
 	}
 }
 
-// TestPipeline_CashSession: a cash hand history flows through to a recorded
-// session and its ledger entry once the table goes quiet (the session is now
-// written at session end, not per hand); bankroll equals the session net.
 func TestPipeline_CashSession(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("hand_history", "nlhe_cash.txt")
-	// Nothing is stored until the quiet period elapses; then the whole session
-	// lands in one write. Poll the final invariant: one session row exists and
-	// bankroll equals its net.
 	p.waitFor("session recorded at session end", func() bool {
 		s, err := p.store.GetAllCashSessions()
 		return err == nil && len(s) == 1 && closeEnough(p.bankrollCents(), s[0].NetCents)
@@ -261,22 +214,17 @@ func TestPipeline_CashSession(t *testing.T) {
 	if sessions[0].Stake != "NL2" {
 		t.Errorf("stake = %q, want NL2", sessions[0].Stake)
 	}
-	// The post-session summary is sent once, at session end.
 	p.waitFor("cash session summary", func() bool { return p.countAlerts("✅ Cash Session") >= 1 })
 	if n := p.countAlerts("✅ Cash Session"); n != 1 {
 		t.Errorf("got %d cash session summaries, want 1; alerts=%v", n, p.alertSnapshot())
 	}
 }
 
-// TestPipeline_SpinGoWin: a won Spin & Go summary (real buy-in, not a freeroll)
-// records immediately — net +$10 to the ledger and a "🎰 Spin & Go" alert.
 func TestPipeline_SpinGoWin(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "spingo_won_T9000000007.txt")
 	p.waitFor("spin & go recorded", func() bool { return closeEnough(p.bankrollCents(), 1000) })
 
-	// The alert is emitted just after the store write, on the worker goroutine,
-	// then appended by the collector — wait for it rather than racing it.
 	p.waitFor("spin & go alert", func() bool { return p.countAlerts("🎰 Spin & Go") >= 1 })
 	if n := p.countAlerts("🎰 Spin & Go"); n != 1 {
 		t.Errorf("got %d Spin & Go alerts, want 1; alerts=%v", n, p.alertSnapshot())
@@ -287,8 +235,6 @@ func TestPipeline_SpinGoWin(t *testing.T) {
 	}
 }
 
-// TestPipeline_MTTLoss: a busted MTT summary records a losing tournament and a
-// "🏆 MTT" alert.
 func TestPipeline_MTTLoss(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "horse_T9000000003.txt")
@@ -300,8 +246,6 @@ func TestPipeline_MTTLoss(t *testing.T) {
 	}
 }
 
-// TestPipeline_SatelliteQueued: a ticket-denominated satellite summary queues
-// for the cash-vs-ticket question (reason satellite), not recorded, no ledger.
 func TestPipeline_SatelliteQueued(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "satellite_busted_T9000000013.txt")
@@ -315,17 +259,13 @@ func TestPipeline_SatelliteQueued(t *testing.T) {
 	}
 }
 
-// TestPipeline_DuplicateEvent: dropping the same summary twice records the
-// tournament once — one ledger movement, one alert.
 func TestPipeline_DuplicateEvent(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "spingo_won_T9000000007.txt")
 	p.waitFor("first record", func() bool { return closeEnough(p.bankrollCents(), 1000) })
 
-	// Re-drop the identical file; the debounce fires a fresh event that must be
-	// recognized as a duplicate and skipped.
 	p.drop("tournament_summary", "spingo_won_T9000000007.txt")
-	time.Sleep(4 * time.Second) // 2s debounce + processing margin
+	time.Sleep(4 * time.Second)
 
 	if !closeEnough(p.bankrollCents(), 1000) {
 		t.Errorf("bankroll = %v, want 10.00 (duplicate must not double-count)", p.bankrollCents())
@@ -335,9 +275,6 @@ func TestPipeline_DuplicateEvent(t *testing.T) {
 	}
 }
 
-// TestPipeline_TwoFileCorrelationKnockout: a knockout MTT's summary and hand
-// history correlate into one row that carries the "-ko" type once the hand file
-// flags the bounty markers, in either arrival order (summary-first here).
 func TestPipeline_TwoFileCorrelationKnockout(t *testing.T) {
 	p := newPipeline(t, &config.Config{})
 	p.drop("tournament_summary", "draw27_pko_T9000000005.txt")
@@ -353,16 +290,11 @@ func TestPipeline_TwoFileCorrelationKnockout(t *testing.T) {
 	}
 }
 
-// TestPipeline_HardStopSessionLoss: a cash session whose loss exceeds the
-// session-loss threshold trips the hard stop — a lockfile is written and a
-// "🛑 Hard Stop triggered" alert is sent. The threshold is set intentionally
-// tiny so the small committed fixture loss ($0.03) crosses it; session loss is
-// date-agnostic, so this runs end-to-end without a now-relative window.
 func TestPipeline_HardStopSessionLoss(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("real enforcement requires the coordinated owned-process native harness")
 	}
-	buyins := 0.01 // threshold = 0.01 buy-ins * $2 (NL2) = $0.02, below the $0.03 loss
+	buyins := 0.01
 	hours := 1
 	cfg := &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: &buyins, DurationHours: &hours}}
 	p := newPipeline(t, cfg)
@@ -382,25 +314,15 @@ func TestPipeline_HardStopSessionLoss(t *testing.T) {
 	}
 }
 
-// TestPipeline_IncrementalGrowingFile drives a hand-history file that grows
-// across two separate watcher events — the real per-hand append pattern — so it
-// exercises runWorker's incremental parse-state map end-to-end: event 1 is
-// parsed with no prior state and (once the table falls quiet) records the first
-// hands, event 2 appends more and is parsed with the carried state (resume from
-// a non-zero byte offset), then re-records the grown session. The final recorded
-// session must equal a whole-file parse regardless, which also guards the
-// self-healing fallback: a wiring bug can't corrupt the data, only lose the
-// speedup, and this asserts the data is right.
 func TestPipeline_IncrementalGrowingFile(t *testing.T) {
 	full, err := os.ReadFile(filepath.Join("..", "..", "testdata", "hand_history", "nlhe_cash.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Split after the first two hands so event 2 resumes from offset > 0.
 	sep := "PokerStars Hand #"
 	text := string(full)
 	var offs []int
-	first := true // the file's first header may sit just past a BOM, not a newline
+	first := true
 	for start := 0; ; {
 		idx := strings.Index(text[start:], sep)
 		if idx < 0 {
@@ -416,7 +338,7 @@ func TestPipeline_IncrementalGrowingFile(t *testing.T) {
 	if len(offs) < 3 {
 		t.Fatalf("need >=3 hands in nlhe_cash.txt, found %d", len(offs))
 	}
-	prefix := full[:offs[2]] // hands 1..2
+	prefix := full[:offs[2]]
 
 	p := newPipeline(t, &config.Config{})
 
@@ -432,7 +354,6 @@ func TestPipeline_IncrementalGrowingFile(t *testing.T) {
 		return err == nil && len(s) == 1 && s[0].Hands == 4 && closeEnough(p.bankrollCents(), s[0].NetCents)
 	})
 
-	// The grown-across-two-events session must match a whole-file parse.
 	want, _, err := parsers.ParseCashFile(filepath.Join(p.hhDir, "nlhe_cash.txt"), e2eHero)
 	if err != nil {
 		t.Fatalf("whole-file parse: %v", err)
@@ -444,9 +365,6 @@ func TestPipeline_IncrementalGrowingFile(t *testing.T) {
 	}
 }
 
-// writeHH creates or grows a hand-history file in the watched folder; the real
-// watcher then debounces and delivers it, exactly as PokerStars appending a hand
-// would.
 func (p *pipeline) writeHH(name string, data []byte) {
 	p.t.Helper()
 	if err := os.WriteFile(filepath.Join(p.hhDir, name), data, 0644); err != nil {
@@ -454,14 +372,6 @@ func (p *pipeline) writeHH(name string, data []byte) {
 	}
 }
 
-// TestPipeline_ScanBackfill drives the whole /scan path end to end — a real
-// collector walking real folders → the in-process link → a real server → a real
-// sqlite store — triggered exactly as the bot would, by a CommandRescan down the
-// link. It seeds the two folders (screen-name-nested, as PokerStars nests them)
-// with a cash session, a plain MTT, a satellite, and a knockout tournament whose
-// hand file AND summary are both present, then asserts the silent import
-// recorded the right rows (knockout correlated to one -ko row), skipped the
-// satellite, and reported the right counts.
 func TestPipeline_ScanBackfill(t *testing.T) {
 	const hero = e2eHero
 	dir := t.TempDir()
@@ -484,8 +394,6 @@ func TestPipeline_ScanBackfill(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Cash + the knockout's hand file in the hand-history folder; the plain MTT,
-	// the satellite, and the knockout's summary in the tournament-summary folder.
 	copyFixture("hand_history", "nlhe_cash.txt", hhDir)
 	copyFixture("hand_history", "draw27_pko_T9000000005.txt", hhDir)
 	copyFixture("tournament_summary", "horse_T9000000003.txt", tsDir)
@@ -515,14 +423,11 @@ func TestPipeline_ScanBackfill(t *testing.T) {
 	serverDone := make(chan struct{})
 	go func() { srv.Run(); close(serverDone) }()
 	t.Cleanup(func() {
-		close(link.Uploads) // ends the server's Run loop
+		close(link.Uploads)
 		<-serverDone
 		store.Close()
 	})
 
-	// The real collector: its applyCommands loop turns the CommandRescan into a
-	// folder walk. A never-closed sessionChan (no watcher here) is fine — the
-	// scan is command-driven.
 	collector := client.NewCollector(link, client.NewEnforcer(filepath.Join(dir, "lockfile.json")), nil)
 	go collector.Run(make(chan watcher.FileEvent), configPath, nil)
 
@@ -546,7 +451,6 @@ func TestPipeline_ScanBackfill(t *testing.T) {
 		return "", false
 	}
 
-	// Trigger the scan exactly as the bot's requestRescan does.
 	link.Commands <- transport.Command{Kind: transport.CommandRescan}
 
 	deadline := time.Now().Add(15 * time.Second)
@@ -565,7 +469,6 @@ func TestPipeline_ScanBackfill(t *testing.T) {
 	if !strings.Contains(got, "recorded 1 cash session(s) and 2 tournament(s)") || !strings.Contains(got, "Skipped 1") {
 		t.Errorf("report = %q, want 1 cash, 2 tournaments (MTT + KO), 1 skipped (satellite)", got)
 	}
-	// Silent import: the only message the scan emits is the report.
 	mu.Lock()
 	nAlerts := len(alerts)
 	mu.Unlock()

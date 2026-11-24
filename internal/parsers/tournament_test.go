@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// reEntrySummary is an MTT summary (anonymized, adapted from a real one) where
-// the hero re-entered once: they appear on row 5 ("[2]", cashed $2.07) and row
-// 32 (the busted first entry). "You made 1 re-entries for a total of $1.00" is
-// the extra cost. Correct result: finished 5th, buy-in $2.00 total, net +$0.07.
 const reEntrySummary = `PokerStars Tournament #9000000011, No Limit Hold'em
 Buy-In: $0.90/$0.10 USD
 32 players
@@ -30,8 +26,6 @@ You finished in 5th place (eliminated at hand #261494486121).You finished the to
 You made 1 re-entries for a total of $1.00.
 `
 
-// singleEntrySummary is a plain single-entry MTT (no "You made" line): the
-// re-entry handling must be a no-op. Buy-in $1.00, cashed $3.00 → net +$2.00.
 const singleEntrySummary = `PokerStars Tournament #9000000012, No Limit Hold'em
 Buy-In: $0.90/$0.10 USD
 32 players
@@ -97,11 +91,6 @@ func TestParseTournamentFileSingleEntryUnchanged(t *testing.T) {
 	}
 }
 
-// satelliteBustedSummary (anonymized, adapted from a real Power Path satellite)
-// is one the hero busted 3rd. PokerStars wrote the file mid-tournament, so the
-// other two rows read "still playing" and the hero's own row is empty — the
-// only satellite signal left is the ticket-denominated "Total Prize Pool" line.
-// This is the regression guard for that case.
 const satelliteBustedSummary = `PokerStars Tournament #9000000013, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
 3 players
@@ -115,13 +104,6 @@ Tournament started 2026/07/20 21:16:34 BRT [2026/07/20 20:16:34 ET]
 You finished in 3rd place.
 `
 
-// satelliteWonSummary (anonymized, adapted from a real Power Path satellite the
-// hero won outright) — position 1's row shows the ticket, so the row scan flags
-// LikelySatellite and derives WinnerPrizeDescription from that row. The
-// post-loop prize-pool guard must not clobber that. The pool line's text is
-// deliberately altered to DIFFER from the row payout text: with identical
-// strings the clobber assertion is unfalsifiable — the guard could overwrite
-// the row-derived value with the same bytes and the test would still pass.
 const satelliteWonSummary = `PokerStars Tournament #9000000014, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
 3 players
@@ -135,12 +117,6 @@ Tournament finished 2026/07/20 21:18:24 BRT [2026/07/20 20:18:24 ET]
 You finished in 1st place (eliminated at hand #261496886217).
 `
 
-// rebuyAddonSummary exercises the extra-spend accumulation across MULTIPLE
-// "You made … for a total of $" lines — the case arm is deliberately anchored
-// on the money phrase so re-entries, rebuys, and add-ons all fold into
-// BuyInCents uniformly, and ReEntries sums every line's leading count. Only the
-// single-line re-entry form exists in the file fixtures otherwise, so the
-// += accumulation path had no other coverage.
 const rebuyAddonSummary = `PokerStars Tournament #9000000015, No Limit Hold'em
 Buy-In: $0.90/$0.10 USD
 40 players
@@ -215,9 +191,6 @@ func TestParseTournamentFileSatelliteWonPrizePool(t *testing.T) {
 	if got.PrizePoolDescription != "$2.00 in Power Path Step 2 Tickets" {
 		t.Errorf("PrizePoolDescription = %q, want the pool line's text", got.PrizePoolDescription)
 	}
-	// The discriminating assertion: pool text and row text differ, and the
-	// row-derived one must win — a guard regression that overwrote it with
-	// PrizePoolDescription fails here.
 	if got.WinnerPrizeDescription != "$1.00 Power Path Step 2 Ticket" {
 		t.Errorf("WinnerPrizeDescription = %q, want %q (row-derived, not clobbered by the pool guard)", got.WinnerPrizeDescription, "$1.00 Power Path Step 2 Ticket")
 	}
@@ -229,10 +202,6 @@ func TestParseTournamentFileSatelliteWonPrizePool(t *testing.T) {
 	}
 }
 
-// TestParseTournamentFileFreeroll reads the committed anonymized freeroll
-// fixture (no "Buy-In: $" line) and confirms it parses to a zero-buy-in
-// tournament so the worker can ask the player for the real entry cost rather
-// than dropping the bounty cash.
 func TestParseTournamentFileFreeroll(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "tournament_summary", "freeroll_zero_T9000000002.txt")
 	got, err := ParseTournamentFile(path, testScreenName)
@@ -262,9 +231,6 @@ func TestParseTournamentFileFreeroll(t *testing.T) {
 	}
 }
 
-// TestParseTournamentFile parses every committed tournament-summary fixture in
-// testdata/tournament_summary/ (anonymized, derived from real files) and
-// asserts each parses without error.
 func TestParseTournamentFile(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "tournament_summary", "*.txt"))
 	if err != nil {

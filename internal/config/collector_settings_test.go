@@ -13,7 +13,6 @@ func TestConfigFieldUpdatesPreserveConcurrentOwners(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	var wg sync.WaitGroup
 	errs := make(chan error, 3)
-	// Include creation: an absent-config read must not replace another owner's save.
 	for owner := range 3 {
 		wg.Go(func() {
 			for i := range 30 {

@@ -36,7 +36,6 @@ func TestClosureQueueRequiresPersistenceBeforeAcknowledgement(t *testing.T) {
 	if !q.acknowledgements[event.ID] {
 		t.Fatal("saved event was not acknowledged")
 	}
-	// Distinct replay data must not replace the original lock snapshot.
 	replay := event
 	replay.Lock.ExpiresAt = at.Add(168 * time.Hour)
 	if err := q.receive(replay); err != nil {

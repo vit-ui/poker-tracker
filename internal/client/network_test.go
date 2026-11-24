@@ -16,8 +16,6 @@ func TestNetworkCollectorRecoversFromBootOutageAndDisconnect(t *testing.T) {
 	verifyNetworkCollectorRecovery(t, false)
 }
 
-// Active enforcement is invoked only by non-Windows tests or the coordinated,
-// ignored native check. Ordinary Windows tests must never terminate PokerStars.
 func verifyNetworkCollectorRecovery(t *testing.T, enforce bool) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.json")
@@ -27,7 +25,6 @@ func verifyNetworkCollectorRecovery(t *testing.T, enforce bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Reserve an address, then close it to reproduce unavailable-at-boot.
 	reserved, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +82,6 @@ func verifyNetworkCollectorRecovery(t *testing.T, enforce bool) {
 		if enforce && (up.Status.Lock == nil || !up.Status.Lock.ExpiresAt.Equal(lock.ExpiresAt)) {
 			t.Fatal("reconnect changed active lock expiry")
 		}
-		// Exercise live collection after each reconnect, including a fresh offset map.
 		file := filepath.Join(hh, name, "cycle"+strconv.Itoa(cycle)+".txt")
 		if err := os.WriteFile(file, []byte("cycle data"), 0600); err != nil {
 			t.Fatal(err)
@@ -121,7 +117,6 @@ func verifyNetworkCollectorEnforcesInvalidPairing(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.json")
 	connection := "tracker://127.0.0.1:1/owned#fp=invalid"
-	// Invalid pairing still cannot disable an existing lock or terminate checks.
 	if err := config.SaveConfig(path, &config.Config{Setup: config.Setup{ConnectionString: &connection}}); err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,6 @@ func TestCollectorConnectionCloseUnblocksFullCommandChannel(t *testing.T) {
 	}
 	connection.Link.Uploads <- Upload{Type: ImportStart}
 	recvUpload(t, link)
-	// Fill the receiving buffer and leave a reader blocked on its next command.
 	for i := 0; i < cap(connection.Link.Commands)+3; i++ {
 		link.Commands <- Command{Kind: CommandRescan}
 	}

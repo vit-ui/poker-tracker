@@ -33,7 +33,6 @@ func (s *serviceState) prepareUpdate(staged, oldVersion, newVersion string) erro
 	if prior != nil {
 		return fmt.Errorf("an unfinished update must be recovered before replacing this installation")
 	}
-	// TASK_CREATE refuses a name collision; it never overwrites another task.
 	output, err := powershell(`$ErrorActionPreference='Stop'; $scheduler=New-Object -ComObject Schedule.Service; $scheduler.Connect(); foreach($t in $scheduler.GetFolder('\').GetTasks(1)){if($t.Name -eq ` + psLiteral(s.recoveryTask()) + `){throw 'Update recovery task already exists'}}`)
 	if err != nil {
 		return fmt.Errorf("checking recovery task: %w: %s", err, output)
@@ -120,7 +119,6 @@ func (s *serviceState) finishUpdate() error {
 	if s.recovery == nil {
 		return nil
 	}
-	// Delete the definition, not its running instance: recovery can clean up itself.
 	script := `$ErrorActionPreference='Stop'; $scheduler=New-Object -ComObject Schedule.Service; $scheduler.Connect(); $folder=$scheduler.GetFolder('\'); foreach($task in $folder.GetTasks(1)){if($task.Name -eq ` + psLiteral(s.recoveryTask()) + `){[xml]$xml=$task.Xml; if([string]$xml.Task.Actions.Exec.Command -ne ` + psLiteral(s.recoveryHelper()) + ` -or [string]$xml.Task.Actions.Exec.Arguments -ne ` + psLiteral(s.recoveryArguments()) + `){throw 'Recovery task belongs to another installation'}; $folder.DeleteTask($task.Name,0)}}`
 	output, err := powershell(script)
 	if err != nil {
@@ -130,8 +128,6 @@ func (s *serviceState) finishUpdate() error {
 		return err
 	}
 	for _, name := range []string{s.recovery.Staged, s.recovery.Previous, recoveryHelperName} {
-		// A mapped previous image/helper may remain until its process exits. These
-		// reserved executable artifacts are removed by normal uninstall or the next update.
 		os.Remove(filepath.Join(filepath.Dir(s.target), name))
 	}
 	s.recovery = nil
@@ -151,12 +147,11 @@ func recoverPendingUpdate(target, role, id string, parent int) (string, error) {
 	release, err := installation.AcquireTransferLock(root)
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		return "", nil
-	} // The active updater owns the transaction.
+	}
 	if err != nil {
 		return "", err
 	}
 	defer release()
-	// Re-read after taking ownership; another helper may have completed cleanup.
 	state, err = config.LoadUpdateRecovery(filepath.Join(root, "update_recovery.json"))
 	if err != nil || state == nil {
 		return "", err

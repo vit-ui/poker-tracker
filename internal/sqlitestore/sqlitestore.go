@@ -1,8 +1,3 @@
-// Package sqlitestore implements storage.Store against a local SQLite
-// database file. It mirrors the Google Sheets backend's observable behavior
-// method-for-method — same upsert keys, same running-total cascading, same
-// two-file tournament correlation — but stores dates as RFC3339 UTC strings
-// rather than the sheets backend's local "2006-01-02 15:04" format.
 package sqlitestore
 
 import (
@@ -67,33 +62,16 @@ CREATE TABLE IF NOT EXISTS bankroll_ledger (
 );
 `
 
-// columnDef is one column's name and bare SQLite type, used by
-// expectedColumns/migrateSchema below.
 type columnDef struct {
 	name string
 	typ  string
 }
 
-// tableDef pairs a table with the columns it's expected to have.
 type tableDef struct {
 	table   string
 	columns []columnDef
 }
 
-// expectedColumns is the single source of truth migrateSchema diffs against
-// PRAGMA table_info to find columns missing from a database created by an
-// older binary — e.g. tournaments.hands, added after this backend's initial
-// release, which CREATE TABLE IF NOT EXISTS alone never retrofits onto a
-// table that already exists. Adding a new column to any table: add it to
-// that table's CREATE TABLE statement in schema above AND add its
-// (name, type) pair here — migrateSchema then ALTERs it into every existing
-// database automatically, no other code changes needed.
-//
-// Types here are always bare (no NOT NULL, no DEFAULT) — SQLite refuses
-// ALTER TABLE ADD COLUMN with NOT NULL and no non-NULL default on a table
-// that already has rows, so a retrofitted column must always be optional.
-// Existing rows get NULL for it, same as tournaments.hands does for any
-// tournament recorded before this column existed.
 var expectedColumns = []tableDef{
 	{"cash_sessions", []columnDef{
 		{"date", "TEXT"}, {"stake", "TEXT"}, {"hands", "INTEGER"},
@@ -113,27 +91,17 @@ var expectedColumns = []tableDef{
 	}},
 }
 
-// Store persists poker session data to a local SQLite database file.
 type Store struct {
 	db *sql.DB
 }
 
 var _ storage.Store = (*Store)(nil)
 
-// NewStore opens (creating if necessary) the SQLite database at dbPath,
-// applies the schema if the tables don't already exist, and migrates any
-// existing tables that are missing columns a newer binary expects.
 func NewStore(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening %s: %w", dbPath, err)
 	}
-	// The worker and bot goroutines both call methods on this Store
-	// concurrently. SQLite serializes writes at the file level regardless,
-	// but database/sql's default pool can still open a second connection
-	// and hand back SQLITE_BUSY under overlap. Capping the pool at one
-	// connection routes every call through the same connection instead,
-	// so database/sql queues them rather than surfacing a busy error.
 	db.SetMaxOpenConns(1)
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("opening %s: %w", dbPath, err)
@@ -141,8 +109,6 @@ func NewStore(dbPath string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
-	// The Time Analysis feature was removed; shed the orphan table from any
-	// database created by an older binary so it doesn't linger unused.
 	if _, err := db.Exec(`DROP TABLE IF EXISTS time_analysis`); err != nil {
 		return nil, fmt.Errorf("dropping legacy time_analysis table: %w", err)
 	}
@@ -153,11 +119,6 @@ func NewStore(dbPath string) (*Store, error) {
 	return s, nil
 }
 
-// migrateSchema adds any column listed in expectedColumns but missing from
-// the database on disk — the gap CREATE TABLE IF NOT EXISTS leaves behind
-// when a binary update adds a new column to a table an older version of
-// tracker.db already created. Idempotent: a column already present is left
-// untouched, so running this against an up-to-date database is a no-op.
 func (s *Store) migrateSchema() error {
 	for _, td := range expectedColumns {
 		existing, err := s.existingColumns(td.table)
@@ -176,9 +137,6 @@ func (s *Store) migrateSchema() error {
 	return nil
 }
 
-// existingColumns returns the set of column names table currently has, via
-// PRAGMA table_info — SQLite has no information_schema, so this is the only
-// reliable way to introspect a table's columns at runtime.
 func (s *Store) existingColumns(table string) (map[string]bool, error) {
 	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
@@ -199,18 +157,14 @@ func (s *Store) existingColumns(table string) (map[string]bool, error) {
 	return existing, rows.Err()
 }
 
-// Close closes the underlying database handle.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// cashSessionID is the canonical key used for new rows by both backends.
 func cashSessionID(date time.Time, firstHandID string) string {
 	return storage.CashSessionIdentities(date, firstHandID)[0]
 }
 
-// write serializes a complete mutation on the store's single connection and
-// commits its result rows and ledger corrections together.
 func (s *Store) write(apply func(*sql.Tx) error) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -226,10 +180,6 @@ func (s *Store) write(apply func(*sql.Tx) error) error {
 	return nil
 }
 
-// AppendCashSession upserts one row in cash_sessions and one row in
-// bankroll_ledger — both keyed by the same cashSessionID, so a re-processed
-// cash session corrects its existing rows in place instead of appending a new
-// set. Mirrors sheets.Client.AppendCashSession.
 func (s *Store) AppendCashSession(session parsers.CashSession) error {
 	if err := storage.ValidateCashSession(session); err != nil {
 		return err
@@ -267,7 +217,6 @@ func (s *Store) appendCashSession(tx *sql.Tx, session parsers.CashSession) error
 	return s.upsertLedgerCashSessionRow(tx, id, session.Date, session.NetCents)
 }
 
-// RecordCashHands writes ownership, session totals and the ledger in a single transaction.
 func (s *Store) RecordCashHands(session parsers.CashSession, hands []parsers.CashHand, liveSource string) (storage.CashWrite, error) {
 	var result storage.CashWrite
 	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
@@ -327,28 +276,14 @@ func (s *Store) upsertCashSessionsRow(tx *sql.Tx, id string, session parsers.Cas
 	return nil
 }
 
-// upsertLedgerCashSessionRow writes (or corrects, if it already exists) the
-// cash session's own bankroll_ledger row, keyed by the session ID — the same
-// upsert semantics as upsertCashSessionsRow.
 func (s *Store) upsertLedgerCashSessionRow(tx *sql.Tx, id string, date time.Time, netCents money.Cents) error {
 	return s.upsertLedgerRow(tx, id, date, "cash_session", netCents)
 }
 
-// upsertLedgerTournamentRow corrects the tournament's own bankroll_ledger row
-// in place, keyed by TournamentID. AppendTournament can legitimately run more
-// than once for the same TournamentID (satellite/ticket flow, or a stray
-// duplicate file event), so this is idempotency, not a hand-to-hand
-// correction — without it the ledger would double-count a tournament whose
-// tournaments row stays correctly deduplicated by tournament_id.
 func (s *Store) upsertLedgerTournamentRow(tx *sql.Tx, tournamentID string, date time.Time, netCents money.Cents) error {
 	return s.upsertLedgerRow(tx, tournamentID, date, "tournament", netCents)
 }
 
-// upsertLedgerRow finds the ledger row previously written for sessionID (the
-// Session ID column — a cash session ID or a TournamentID) and corrects its
-// amountCents and running total in place, cascading the running-total recompute to
-// every later row (see cascadeRunningTotals). If no such row exists yet, it
-// appends a fresh one built off the ledger's current last running total.
 func (s *Store) upsertLedgerRow(tx *sql.Tx, sessionID string, date time.Time, entryType string, amountCents money.Cents) error {
 	var rowID int64
 	err := tx.QueryRow(`SELECT id FROM bankroll_ledger WHERE session_id = ? AND type = ?`, sessionID, entryType).Scan(&rowID)
@@ -381,13 +316,6 @@ func (s *Store) upsertLedgerRow(tx *sql.Tx, sessionID string, date time.Time, en
 	return s.cascadeLedgerUpdate(tx, rowID, amountCents)
 }
 
-// cascadeLedgerUpdate sets the bankroll_ledger row identified by rowID to
-// newAmountCents and recomputes running_total_cents for that row and every row after it
-// (by insertion order). A plain update of rowID alone is only correct when
-// it's already the ledger's last row — with more than one table open at once,
-// a second table's session row (or a mid-session deposit) can land after this
-// row while it's still being corrected, and that later row's stored running
-// total was computed from this row's old amountCents.
 func (s *Store) cascadeLedgerUpdate(tx *sql.Tx, rowID int64, newAmountCents money.Cents) error {
 	var baseCents money.Cents
 	err := tx.QueryRow(`
@@ -453,16 +381,11 @@ func lastRunningTotal(row *sql.Row) (money.Cents, error) {
 	return totalCents, nil
 }
 
-// tournamentSnapshot holds the subset of an existing tournaments row needed
-// to reconcile NetCents/Type against knockout-bounty data, which is only ever
-// known from the hand history file and never from the summary file
-// AppendTournament parses its other fields from. Mirrors
-// sheets.tournamentRowSnapshot.
 type tournamentSnapshot struct {
-	date        string // RFC3339, empty if NULL (summary hasn't arrived)
+	date        string
 	typeVal     string
 	buyInCents  money.Cents
-	hasNetUSD   bool // false while the row is still a hand-file-only partial row
+	hasNetUSD   bool
 	netCents    money.Cents
 	bountyCents money.Cents
 	hands       sql.NullInt64
@@ -496,13 +419,6 @@ func (s *Store) readTournamentSnapshot(tx *sql.Tx, tournamentID string) (snap to
 	return snap, true, nil
 }
 
-// AppendTournament upserts one row in tournaments (keyed by TournamentID) and
-// upserts its bankroll_ledger row. If the tournaments row already exists
-// (created by UpdateTournamentHandStats), it folds in whatever bounty
-// winnings that row already has recorded and carries forward the knockout
-// signal into a real "<base>-ko" Type. Leaves vpip/pfr/bounty_cents untouched.
-// Returns the final NetCents (baseline net plus any bounty). Mirrors
-// sheets.Client.AppendTournament.
 func (s *Store) AppendTournament(t parsers.Tournament) (money.Cents, error) {
 	if err := storage.ValidateTournament(t); err != nil {
 		return 0, err
@@ -577,17 +493,6 @@ func (s *Store) appendTournament(tx *sql.Tx, t parsers.Tournament) (money.Cents,
 	return netCents, nil
 }
 
-// UpdateTournamentHandStats writes VPIP, PFR, hand count, and knockout-bounty
-// winnings for a tournament identified by tournamentID, extracted from its
-// hand history file. hands is the number of hands dealt to screenName so
-// far — the weight /stats uses to combine a tournament's VPIP/PFR into a
-// hands-weighted average, the same role Hands plays for cash sessions. If no
-// row exists yet, creates a partial one and stops there — AppendTournament
-// completes it once the summary file arrives. If a row exists but the
-// summary hasn't landed yet either, only type/vpip/pfr/hands/bounty are
-// written. If a row exists and already has summary data, NetCents and Prize
-// Won are reconciled and the tournament's bankroll_ledger row is corrected
-// to match. Mirrors sheets.Client.UpdateTournamentHandStats.
 func (s *Store) UpdateTournamentHandStats(tournamentID string, vpip, pfr float64, hands int, bountyCents money.Cents, isKnockout bool) error {
 	return s.writeTournamentHandStats(tournamentID, vpip, pfr, hands, bountyCents, isKnockout, false)
 }
@@ -648,7 +553,6 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 	}
 
 	if !snap.hasNetUSD {
-		// Summary still hasn't arrived — nothing to reconcile yet.
 		return nil
 	}
 
@@ -670,12 +574,6 @@ func (s *Store) updateTournamentHandStats(tx *sql.Tx, tournamentID string, vpip,
 	return s.upsertLedgerTournamentRow(tx, tournamentID, date, netCents)
 }
 
-// AppendLedgerEntry appends a deposit or withdrawal row to bankroll_ledger.
-// For withdrawals, the caller passes a negative amountCents. The date is
-// stored via storage.AsStoredClock — local wall-clock digits, not the true
-// UTC instant — so deposit/withdrawal rows live in the same date coordinate
-// system as session rows (whose dates come from PokerStars' zone-less local
-// timestamps) and window queries treat both alike.
 func (s *Store) AppendLedgerEntry(entryType string, amountCents money.Cents, now time.Time, operationID string) error {
 	if err := storage.ValidateMoneyOperationID(operationID); err != nil {
 		return err
@@ -712,20 +610,14 @@ func (s *Store) appendLedgerEntry(tx *sql.Tx, entryType string, amountCents mone
 	return nil
 }
 
-// GetCurrentBankroll returns the running total of the last bankroll_ledger
-// row. Returns 0 if the ledger is empty.
 func (s *Store) GetCurrentBankroll() (money.Cents, error) {
 	return lastRunningTotal(s.db.QueryRow(lastRunningTotalQuery))
 }
 
-// GetSheetURL always returns an empty string — a sqlite install has no
-// Google Sheet. Callers must branch on the storage backend before displaying
-// this (see CLAUDE.md's /sheet command).
 func (s *Store) GetSheetURL() string {
 	return ""
 }
 
-// GetLedgerEntriesSince returns all bankroll_ledger rows where Date >= t.
 func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, amount_cents, running_total_cents, session_id FROM bankroll_ledger WHERE date >= ? ORDER BY id ASC
@@ -761,12 +653,6 @@ func (s *Store) GetLedgerEntriesSince(t time.Time) ([]storage.LedgerEntry, error
 	return result, rows.Err()
 }
 
-// queryCashSessions reads every cash_sessions row with Date >= since,
-// including Session ID — the one column GetCashSessionsSince's existing
-// callers (stats, summaries) don't need but /export does. GetCashSessionsSince
-// and GetAllCashSessions are both thin wrappers over this single query,
-// differing only in the date cutoff and whether the caller wants the
-// Session ID kept or discarded.
 const cashRowsQuery = `SELECT date, stake, hands, duration_min, net_cents, rake_cents, bb100, vpip, pfr, session_id, hand_details FROM cash_sessions`
 
 func (s *Store) queryCashSessions(since time.Time) ([]storage.CashSessionRecord, error) {
@@ -819,9 +705,6 @@ func readCashRows(rows *sql.Rows) ([]storage.CashSessionRecord, error) {
 	return result, rows.Err()
 }
 
-// GetCashSessionsSince returns all cash_sessions rows where Date >= t.
-// BuyInCents is not stored and will be zero in returned structs, matching the
-// sheets backend.
 func (s *Store) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error) {
 	records, err := s.queryCashSessions(t)
 	if err != nil {
@@ -834,25 +717,14 @@ func (s *Store) GetCashSessionsSince(t time.Time) ([]parsers.CashSession, error)
 	return result, nil
 }
 
-// GetAllCashSessions returns every cash_sessions row, including Session ID.
-// Used only by /export.
 func (s *Store) GetAllCashSessions() ([]storage.CashSessionRecord, error) {
 	return s.queryCashSessions(time.Time{})
 }
 
-// queryTournaments reads every tournaments row with Date >= since, including
-// VPIP, PFR, Bounty Won, and Prize Won — columns GetTournamentsSince's
-// existing callers don't need but /export does. Partial rows (no Date —
-// created only by a hand file arriving before the summary) are skipped.
-// GetTournamentsSince and GetAllTournaments are both thin wrappers over this
-// single query, differing only in the date cutoff and whether the caller
-// wants those extra columns kept or discarded.
 func (s *Store) queryTournaments(since time.Time) ([]storage.TournamentRecord, error) {
 	return s.queryTournamentRows(`date >= ?`, since.UTC().Format(dateFormat))
 }
 
-// queryTournamentRows is the single SELECT+scan queryTournaments and
-// GetTournamentByID share; where is ANDed onto the partial-row skip.
 func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
@@ -930,8 +802,6 @@ func (s *Store) queryTournamentRows(where string, args ...any) ([]storage.Tourna
 	return result, rows.Err()
 }
 
-// GetTournamentsSince returns all tournaments rows where Date >= since.
-// Partial rows (no Date) are skipped.
 func (s *Store) GetTournamentsSince(since time.Time) ([]parsers.Tournament, error) {
 	records, err := s.queryTournaments(since)
 	if err != nil {
@@ -944,11 +814,6 @@ func (s *Store) GetTournamentsSince(since time.Time) ([]parsers.Tournament, erro
 	return result, nil
 }
 
-// GetTournamentByID returns the single completed tournament row with this
-// TournamentID — the point lookup the worker's duplicate check runs per file
-// event (tournament_id is UNIQUE). found is false for an absent tournament
-// and for a partial row (hand file before summary — no Date), matching
-// GetTournamentsSince's partial-row skip.
 func (s *Store) GetTournamentByID(tournamentID string) (parsers.Tournament, bool, error) {
 	records, err := s.queryTournamentRows(`tournament_id = ?`, tournamentID)
 	if err != nil || len(records) == 0 {
@@ -957,15 +822,10 @@ func (s *Store) GetTournamentByID(tournamentID string) (parsers.Tournament, bool
 	return records[0].Tournament, true, nil
 }
 
-// GetAllTournaments returns every tournaments row, including VPIP, PFR,
-// Bounty Won, and Prize Won. Used only by /export.
 func (s *Store) GetAllTournaments() ([]storage.TournamentRecord, error) {
 	return s.queryTournaments(time.Time{})
 }
 
-// ExportSnapshot returns every row of all three tables as full records, for a
-// backend migration. Unlike GetAllTournaments it keeps partial tournament rows
-// (no date), read via allTournamentRows.
 func (s *Store) ExportSnapshot() (storage.Snapshot, error) {
 	cash, err := s.GetAllCashSessions()
 	if err != nil {
@@ -986,11 +846,6 @@ func (s *Store) ExportSnapshot() (storage.Snapshot, error) {
 	}, nil
 }
 
-// allTournamentRows reads every tournaments row including partial ones (date
-// NULL — a hand file parsed before its summary arrived). Every column is
-// scanned nullably, since a partial row leaves date, buy-in, finish position,
-// net, and prize won unset. queryTournaments can't be reused: it filters
-// partials out and scans those columns non-nullably.
 func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT date, type, tournament_id, buy_in_cents, prize_pool_cents, prize_pool_description,
@@ -1067,11 +922,6 @@ func (s *Store) allTournamentRows() ([]storage.TournamentRecord, error) {
 	return result, rows.Err()
 }
 
-// ImportSnapshot writes a whole snapshot into an empty database in one
-// transaction, copying every value verbatim — session IDs, dates, running
-// totals, and each tournament's already-bounty-folded Net and Prize Won are
-// stored as-read, never recomputed, so no re-folding or ledger cascade runs.
-// The caller (storage.Migrate) guarantees the database is empty first.
 func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 	if err := storage.ValidateSnapshot(snap); err != nil {
 		return err
@@ -1093,11 +943,6 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 		return fmt.Errorf("destination database is not empty")
 	}
 
-	// A blank session ID (sheets rows from before v1.4, when the column was
-	// added — never backfilled) is stored as NULL, the same blank↔NULL mapping
-	// the ledger loop below uses. NULLs are mutually distinct under sqlite's
-	// UNIQUE, so any number of such legacy rows import cleanly, and no live
-	// upsert can ever match them — live writes always carry a computed ID.
 	for _, c := range snap.CashSessions {
 		var details sql.NullString
 		if len(c.HandDetails) > 0 {
@@ -1118,9 +963,6 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 
 	for _, t := range snap.Tournaments {
 		if t.Date.IsZero() {
-			// Partial row: only the hand-file columns are set, exactly as
-			// UpdateTournamentHandStats's partial INSERT writes them, so the
-			// row's Net stays NULL and can't be mistaken for summary data.
 			if _, err := tx.Exec(`
 				INSERT INTO tournaments (type, tournament_id, vpip, pfr, hands, bounty_cents)
 				VALUES (?, ?, ?, ?, ?, ?)
@@ -1159,8 +1001,6 @@ func (s *Store) ImportSnapshot(snap storage.Snapshot) error {
 	return tx.Commit()
 }
 
-// nullString maps a blank string to NULL — the blank↔NULL convention every
-// session_id column uses (see ImportSnapshot's cash-session comment).
 func nullString(s string) sql.NullString {
 	if s == "" {
 		return sql.NullString{}
@@ -1168,8 +1008,6 @@ func nullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: true}
 }
 
-// nullFloat / nullInt map an optional field to a nullable column so an unset
-// one (e.g. VPIP on a summary-only tournament) is stored NULL, not 0.
 func nullFloat(p *float64) sql.NullFloat64 {
 	if p == nil {
 		return sql.NullFloat64{}
@@ -1184,8 +1022,6 @@ func nullInt(p *int) sql.NullInt64 {
 	return sql.NullInt64{Int64: int64(*p), Valid: true}
 }
 
-// ClearAllData clears a transfer-owned destination without deleting its live
-// database. The serialized worker must verify ownership before calling it.
 func (s *Store) ClearAllData() error {
 	tx, err := s.db.Begin()
 	if err != nil {

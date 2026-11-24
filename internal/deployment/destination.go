@@ -9,14 +9,10 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// DestinationStandby keeps the source as the only command reader until cutover.
-// Rolled-back destinations remain in standby while their source is restored.
 func DestinationStandby(state *config.DeploymentTransferState) bool {
 	return state != nil && state.Phase != transport.TransferPhaseActivated
 }
 
-// DestinationOwner drains accepted bot work before reserving the worker, then
-// hands polling over only after the worker's durable activation receipt.
 type DestinationOwner struct {
 	Path     string
 	Requests <-chan transport.TransferCall
@@ -41,7 +37,6 @@ func (o *DestinationOwner) control(pause bool) error {
 	}
 }
 
-// Run serializes the polling/worker ownership boundary without a second writer.
 func (o *DestinationOwner) Run() {
 	for {
 		select {
@@ -67,8 +62,6 @@ func (o *DestinationOwner) Run() {
 			case <-o.Stop:
 				return
 			}
-			// A refusal before reservation returns this destination to its prior owner;
-			// a completed rollback keeps it in standby for the resumed combined source.
 			if result.Phase == transport.TransferPhaseActivated || (result.Phase == "" && o.Standby) {
 				state, err := config.LoadDeploymentTransfer(filepath.Join(filepath.Dir(o.Path), "deployment_transfer.json"))
 				if err == nil && !DestinationStandby(state) {

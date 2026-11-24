@@ -66,7 +66,7 @@ func TestOwnerShutdownDrainsUploadsPersistsCashAndRemovesWorkDir(t *testing.T) {
 			}
 			link.Uploads <- transport.Upload{FileID: "accepted.txt", Type: "cash", Bytes: data, ScreenName: name, ClientClock: time.Now()}
 			close(drain)
-			close(link.Uploads) // No producer may send after the owner joins it.
+			close(link.Uploads)
 			select {
 			case err := <-finished:
 				if err != nil {

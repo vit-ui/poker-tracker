@@ -41,7 +41,6 @@ func TestHardstopReceiptsPreserveExpiryAndSurviveCleanup(t *testing.T) {
 	if err != nil || !fresh || lock == nil || !lock.ExpiresAt.Equal(replay.ExpiresAt) {
 		t.Fatalf("new trigger blocked: %+v %v %v", lock, fresh, err)
 	}
-	// Replaying an older expired trigger cannot bypass a different active lock.
 	lock, fresh, err = ApplyHardstop(path, original, replay.TriggeredAt.Add(time.Minute))
 	if err != nil || fresh || lock == nil || lock.TriggerID != replay.TriggerID {
 		t.Fatalf("old replay bypassed current protection: %+v %v %v", lock, fresh, err)

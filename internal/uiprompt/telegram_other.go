@@ -46,7 +46,6 @@ func terminalState() ([]byte, error) {
 	return cmd.Output()
 }
 
-// CanPromptTelegram reports whether this process can collect a token privately.
 func CanPromptTelegram() bool {
 	if New().Graphical() {
 		return true

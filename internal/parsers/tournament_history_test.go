@@ -16,7 +16,7 @@ func TestTournamentFinishEvidence(t *testing.T) {
 	for _, test := range []struct {
 		name, body   string
 		position     int
-		payout, cost money.Cents // -1 means unknown
+		payout, cost money.Cents
 	}{
 		{"cash receipt and per-entry price", first + finish + summary, 5, 561, -1},
 		{"explicit grand total", first + finish + "AnonHero01 paid a total of $2.20 in entry fees\n" + summary, 5, 561, 220},

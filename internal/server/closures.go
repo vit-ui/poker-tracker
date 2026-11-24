@@ -9,8 +9,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/config"
 )
 
-// closureQueue is owned exclusively by the server worker. Receipts remain after
-// delivery; forgetting IDs would turn collector replay into new notifications.
 type closureQueue struct {
 	path             string
 	entries          map[string]config.ClosureNotification
@@ -73,7 +71,7 @@ func (q *closureQueue) result(result bot.ClosureResult) {
 	delete(q.inflight, result.ID)
 	if result.Err != nil {
 		return
-	} // maintenance/reconnect provides the next opportunity
+	}
 	entry := q.entries[result.ID]
 	entry.Delivered = true
 	q.entries[result.ID] = entry

@@ -65,8 +65,6 @@ func (b *Bot) resolveStorageReset(chatID int64, messageID int, confirmed bool) {
 		b.restarting = true
 		send(b.tg, chatID, "Storage is empty. Restarting the tracker. Recovery snapshot: "+backup)
 	})
-	// Pause and drain like migration. Once cleared, a restart drops old
-	// in-memory accounting state before collection can resume.
 	request := &b.pendingOperations[len(b.pendingOperations)-1].request
 	request.PrepareMigration = true
 }
@@ -107,8 +105,6 @@ func resetStorageHistory(store storage.Store, root string) (string, error) {
 		}
 		return "", fmt.Errorf("could not verify the reset (recovery snapshot %s): %w", backup, errors.Join(clearErr, readErr))
 	}
-	// A Sheets response can fail after the server applied the entire batch.
-	// A verified empty store establishes success in that case as well.
 	return backup, nil
 }
 

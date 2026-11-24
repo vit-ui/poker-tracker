@@ -16,7 +16,6 @@ const (
 	UpdateFailed    = "failed"
 )
 
-// UpdateRequest pins an accepted Telegram request to one stable release.
 type UpdateRequest struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
@@ -34,14 +33,11 @@ func (j UpdateJob) Pending() bool {
 	return j.State == UpdateQueued || j.State == UpdateWaiting || j.State == UpdateRunning
 }
 
-// UpdateReport is an observation from the running installation, not a send receipt.
 type UpdateReport struct {
 	Version string     `json:"version"`
 	Job     *UpdateJob `json:"job,omitempty"`
 }
 
-// CollectorUpdates is written only by the server worker. An unacknowledged
-// request stays here across disconnects and is replayed with the same identity.
 type CollectorUpdates struct {
 	Request *UpdateRequest `json:"request,omitempty"`
 	Report  UpdateReport   `json:"report"`
@@ -68,7 +64,6 @@ func loadUpdateState(path string, state any) error {
 	return nil
 }
 
-// saveUpdateState flushes the request before acknowledgement or process launch.
 func saveUpdateState(path string, state any) error {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -133,8 +128,6 @@ func SaveUpdateNotices(path string, state UpdateNotices) error {
 	return saveUpdateState(path, state)
 }
 
-// CheckUpdatesIdle prevents a storage/deployment handover from racing a saved
-// update that can stop this owner or its collector as soon as PokerStars closes.
 func CheckUpdatesIdle(root string) error {
 	job, err := LoadUpdateJob(filepath.Join(root, "requested_update.json"))
 	if err != nil {

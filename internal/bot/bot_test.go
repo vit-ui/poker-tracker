@@ -10,10 +10,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-// TestHeartbeatEvent covers the pure decision behind the Sheets connectivity
-// heartbeat: a down reading sends (and re-sends, on every 30-min check while
-// still down) the same "unreachable" message; the down-to-healthy transition
-// sends one recovery message; an already-healthy reading stays silent.
 func TestHeartbeatEvent(t *testing.T) {
 	since := time.Date(2026, 7, 24, 22, 16, 0, 0, time.UTC)
 	errDown := errors.New("dial tcp: lookup sheets.googleapis.com: no such host")
@@ -162,7 +158,7 @@ func TestValidateNotAbove(t *testing.T) {
 
 func TestParseStatsArgs(t *testing.T) {
 	cases := []struct {
-		name       string // the full command line this args string represents
+		name       string
 		args       string
 		wantType   string
 		wantPeriod string
@@ -187,12 +183,6 @@ func TestParseStatsArgs(t *testing.T) {
 	}
 }
 
-// TestSessionLossBuyinsCrossValidation exercises the actual cross-validation
-// behavior — hard rejection, not a warning — using session_loss_buyins as
-// the representative pair. The same validateNotBelow/validateNotAbove logic
-// applies to every alert/hardstop field pair; this covers both save
-// directions, since together they enforce "hardstop must never be lower
-// than alert" regardless of which side is being saved.
 func TestSessionLossBuyinsCrossValidation(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 
@@ -244,10 +234,6 @@ func TestSessionLossBuyinsCrossValidation(t *testing.T) {
 	})
 }
 
-// TestDownswingAlertThreshold exercises the same fires/does-not-fire
-// decision EvaluateDownswingAlert makes: an unconfigured (nil) threshold
-// never fires, otherwise fire only when peak-current strictly exceeds
-// threshold × buyInCents — equal is not over.
 func TestDownswingAlertThreshold(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 	const peak, current, buyInCents = 12.0, 4.0, 5.00

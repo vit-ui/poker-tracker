@@ -11,7 +11,6 @@ import (
 	"strconv"
 )
 
-// OperationalSettings moves player policy without backend or pairing identity.
 type OperationalSettings struct {
 	TelegramChatID *string       `json:"telegram_chat_id"`
 	Alerts         Alerts        `json:"alerts"`
@@ -20,13 +19,10 @@ type OperationalSettings struct {
 	Notifications  Notifications `json:"notifications"`
 }
 
-// GetOperational selects only transferable player settings.
 func GetOperational(cfg *Config) OperationalSettings {
 	return OperationalSettings{cfg.Setup.TelegramChatID, cfg.Alerts, cfg.Hardstop, cfg.Schedule, cfg.Notifications}
 }
 
-// ApplyOperational refuses a foreign saved chat and preserves an existing chat
-// when the source has none. Backend, paths and pairing remain destination-owned.
 func ApplyOperational(cfg *Config, settings OperationalSettings) error {
 	if settings.TelegramChatID != nil {
 		id, err := strconv.ParseInt(*settings.TelegramChatID, 10, 64)
@@ -43,14 +39,11 @@ func ApplyOperational(cfg *Config, settings OperationalSettings) error {
 	return nil
 }
 
-// RestoreOperational restores a previously verified transfer-owned policy.
 func RestoreOperational(cfg *Config, settings OperationalSettings) {
 	cfg.Setup.TelegramChatID = settings.TelegramChatID
 	cfg.Alerts, cfg.Hardstop, cfg.Schedule, cfg.Notifications = settings.Alerts, settings.Hardstop, settings.Schedule, settings.Notifications
 }
 
-// DeploymentTransferState is the durable destination reservation and receipt.
-// Payload bytes live beside it and are acknowledged only after their fsync.
 type DeploymentTransferState struct {
 	ID         string               `json:"id"`
 	Phase      string               `json:"phase"`
@@ -62,12 +55,10 @@ type DeploymentTransferState struct {
 	SheetID    *string              `json:"sheet_id"`
 }
 
-// DeploymentInProgress retains reservations for unknown/nonterminal phases.
 func DeploymentInProgress(state *DeploymentTransferState) bool {
 	return state != nil && state.Phase != "activated" && state.Phase != "rolled-back"
 }
 
-// LoadDeploymentTransfer reads a reservation without inventing a fresh one.
 func LoadDeploymentTransfer(path string) (*DeploymentTransferState, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -96,15 +87,12 @@ func loadDeploymentTransfer(path string) (*DeploymentTransferState, error) {
 	return state, nil
 }
 
-// SaveDeploymentTransfer atomically records durable progress under config ownership.
 func SaveDeploymentTransfer(path string, state *DeploymentTransferState) error {
 	mu.Lock()
 	defer mu.Unlock()
 	return saveTransferJSON(path, state)
 }
 
-// CommitDeploymentSettings changes policy only for the reserved transfer. The
-// caller has verified current policy ownership before invoking rollback.
 func CommitDeploymentSettings(path, id string, settings OperationalSettings, restore bool) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -127,7 +115,6 @@ func CommitDeploymentSettings(path, id string, settings OperationalSettings, res
 	return saveConfigUnchecked(path, cfg)
 }
 
-// CommitDeploymentPending replaces the queue only for the reserved transfer.
 func CommitDeploymentPending(path, id string, pending []PendingTournament) error {
 	mu.Lock()
 	defer mu.Unlock()

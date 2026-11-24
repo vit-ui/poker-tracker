@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 )
 
-// The outer release tar contains exactly one makeself executable. Ignore other
-// entries rather than unpacking paths supplied by the archive into the filesystem.
 func unpackLinuxInstaller(archive, output string) error {
 	file, err := os.Open(archive)
 	if err != nil {
@@ -65,8 +63,6 @@ func extractPackage(archive, payload, output string) error {
 		return err
 	}
 	defer out.Close()
-	// Makeself --tar exits after the tar operation. It cannot run install.sh,
-	// register a service, or write any other archive member to disk.
 	cmd := exec.Command("sh", self, "--tar", "xOf", "./"+payload)
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = out, &stderr

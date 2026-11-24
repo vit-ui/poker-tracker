@@ -167,7 +167,6 @@ func TestClosureDeliveryRecoversAcknowledgementsAndRestarts(t *testing.T) {
 			if err := config.SaveConfig(serverPath, &config.Config{}); err != nil {
 				t.Fatal(err)
 			}
-			// SaveConfig requires its directory to exist.
 			pcRoot := filepath.Dir(pcPath)
 			if err := makeClosurePC(pcRoot, pcPath); err != nil {
 				t.Fatal(err)
@@ -191,7 +190,6 @@ func TestClosureDeliveryRecoversAcknowledgementsAndRestarts(t *testing.T) {
 			defer store.Close()
 			p := newClosurePipeline(t, network, root, store)
 			p.startCollector()
-			// Lose the connection before a server worker can acknowledge anything.
 			closureWait(t, "accepted event before disconnect", func() bool { return len(p.link.Uploads) >= 2 })
 			p.stopCollector(true)
 			p.startWorker()
@@ -203,7 +201,6 @@ func TestClosureDeliveryRecoversAcknowledgementsAndRestarts(t *testing.T) {
 			if err != nil || entries[event.ID].Delivered || entries[event.ID].Event.ID != event.ID {
 				t.Fatal(entries, err)
 			}
-			// A failed bot send must remain pending, even after collector acknowledgement.
 			p.worker.ClosureNotifications.Results <- bot.ClosureResult{ID: event.ID, Err: errors.New("Telegram unavailable")}
 			p.barrier()
 			p.startCollector()
@@ -211,7 +208,6 @@ func TestClosureDeliveryRecoversAcknowledgementsAndRestarts(t *testing.T) {
 				entries, err := config.LoadClosureNotifications(collectorJournal)
 				return err == nil && len(entries) == 0
 			})
-			// Reconnect is an existing retry opportunity. A failed event may retry once.
 			if network {
 				retry := p.delivery()
 				if retry.ID != event.ID {
@@ -220,8 +216,6 @@ func TestClosureDeliveryRecoversAcknowledgementsAndRestarts(t *testing.T) {
 				p.worker.ClosureNotifications.Results <- bot.ClosureResult{ID: event.ID, Err: errors.New("still unavailable")}
 				p.barrier()
 			}
-			// The bot's existing maintenance operation is also a delivery opportunity
-			// on both transports; no independent notification retry loop is needed.
 			maintenanceReply := make(chan storage.OperationResult, 1)
 			p.worker.Operations <- storage.Operation{RetryHardstops: true, Reply: maintenanceReply, Apply: func(storage.Store) storage.OperationResult { return storage.OperationResult{} }}
 			if result := <-maintenanceReply; result.Err != nil {
@@ -234,7 +228,6 @@ func TestClosureDeliveryRecoversAcknowledgementsAndRestarts(t *testing.T) {
 			p.worker.ClosureNotifications.Results <- bot.ClosureResult{ID: event.ID, Err: errors.New("maintenance send failed")}
 			p.barrier()
 			p.stop()
-			// Both server and collector restart with fresh objects and the same files.
 			p = newClosurePipeline(t, network, root, store)
 			p.startWorker()
 			p.startCollector()
@@ -247,8 +240,6 @@ func TestClosureDeliveryRecoversAcknowledgementsAndRestarts(t *testing.T) {
 				entries, err := config.LoadClosureNotifications(serverJournal)
 				return err == nil && entries[event.ID].Delivered
 			})
-			// Replaying a delivered ID is acknowledged, while another real closure on
-			// the very same lock is a distinct notification with unchanged expiry.
 			second := event
 			second.ID = "closure:second"
 			second.ClosedAt = now.Add(time.Second)

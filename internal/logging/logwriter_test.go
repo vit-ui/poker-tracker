@@ -8,7 +8,6 @@ import (
 	"testing"
 )
 
-// readFile returns a file's contents as a string, or "" if it doesn't exist.
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -48,9 +47,7 @@ func TestRotatingWriterRotatesWhenExceeding(t *testing.T) {
 	}
 	defer w.Close()
 
-	// size 0 -> +5 = 5, not > 10: no rotation.
 	w.Write([]byte("aaaaa"))
-	// size 5 -> +7 = 12 > 10: rotate first, then write to a fresh file.
 	w.Write([]byte("bbbbbbb"))
 
 	if got := readFile(t, path+".old"); got != "aaaaa" {
@@ -69,10 +66,10 @@ func TestRotatingWriterSecondRotationOverwritesOld(t *testing.T) {
 	}
 	defer w.Close()
 
-	w.Write([]byte("aaaaa"))   // size 5
-	w.Write([]byte("bbbbb"))   // 5+5=10, not >10: size 10
-	w.Write([]byte("ccccc"))   // 10+5=15 >10: rotate -> .old="aaaaabbbbb", fresh, size 5
-	w.Write([]byte("ddddddd")) // 5+7=12 >10: rotate -> .old="ccccc" (overwrites), fresh
+	w.Write([]byte("aaaaa"))
+	w.Write([]byte("bbbbb"))
+	w.Write([]byte("ccccc"))
+	w.Write([]byte("ddddddd"))
 
 	if got := readFile(t, path+".old"); got != "ccccc" {
 		t.Errorf(".old = %q, want %q (only the most recent rollover survives)", got, "ccccc")
@@ -82,10 +79,6 @@ func TestRotatingWriterSecondRotationOverwritesOld(t *testing.T) {
 	}
 }
 
-// A rename failure (e.g. a transient lock on Windows) must not permanently
-// kill logging — the writer reopens the original file and keeps writing rather
-// than leaving a closed handle. Forced here by making the directory read-only
-// so the .old rename can't happen while the existing file stays writable.
 func TestRotatingWriterSurvivesRotateFailure(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("directory-permission trick doesn't force a rename failure as root or on Windows")
@@ -98,14 +91,13 @@ func TestRotatingWriterSurvivesRotateFailure(t *testing.T) {
 	}
 	defer w.Close()
 
-	w.Write([]byte("aaaaaaaa")) // size 8
+	w.Write([]byte("aaaaaaaa"))
 
-	if err := os.Chmod(dir, 0o500); err != nil { // r-x: rename blocked, existing file still writable
+	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	defer os.Chmod(dir, 0o700)
 
-	// 8+5=13 >10 triggers a rotate whose rename fails; the write must still land.
 	if _, err := w.Write([]byte("bbbbb")); err != nil {
 		t.Fatalf("Write after failed rotate returned error: %v", err)
 	}
@@ -129,18 +121,15 @@ func TestRotatingWriterResumesSizeAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newRotatingWriter: %v", err)
 	}
-	w1.Write([]byte("aaaaaaaa")) // size 8
+	w1.Write([]byte("aaaaaaaa"))
 	w1.Close()
 
-	// Reopen: size must seed from the 8-byte existing file, so the next small
-	// write rotates. If size reset to 0, 0+3 would not exceed 10 and nothing
-	// would rotate — this is what proves the seed.
 	w2, err := newRotatingWriter(path, 10)
 	if err != nil {
 		t.Fatalf("newRotatingWriter reopen: %v", err)
 	}
 	defer w2.Close()
-	w2.Write([]byte("bbb")) // 8+3=11 >10: rotate
+	w2.Write([]byte("bbb"))
 
 	if got := readFile(t, path+".old"); got != "aaaaaaaa" {
 		t.Errorf(".old = %q, want %q (size seeded from existing file across reopen)", got, "aaaaaaaa")

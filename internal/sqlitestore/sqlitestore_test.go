@@ -13,9 +13,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// closeEnough reports whether a and b differ by less than half a cent — USD
-// amounts derived from chained float64 arithmetic can land a few ULPs off an
-// exact decimal value.
 func closeEnough[T ~int64 | ~float64](a, b T) bool {
 	if _, ok := any(a).(money.Cents); ok {
 		return a == b
@@ -43,10 +40,6 @@ func mustTime(t *testing.T, s string) time.Time {
 	return tm
 }
 
-// ---------------------------------------------------------------------------
-// Pure calculation functions
-// ---------------------------------------------------------------------------
-
 func TestCashSessionID(t *testing.T) {
 	d1 := mustTime(t, "2026-07-01T20:00:00Z")
 	d2 := mustTime(t, "2026-07-01T20:01:00Z")
@@ -66,10 +59,6 @@ func TestCashSessionID(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// NewStore / schema
-// ---------------------------------------------------------------------------
-
 func TestNewStore_CreatesAllTables(t *testing.T) {
 	s := newTestStore(t)
 	want := []string{"cash_sessions", "tournaments", "bankroll_ledger"}
@@ -82,15 +71,12 @@ func TestNewStore_CreatesAllTables(t *testing.T) {
 	}
 }
 
-// TestNewStore_DropsLegacyTimeAnalysis proves a database created by an older
-// binary (which had a time_analysis table) has it dropped on reopen.
 func TestNewStore_DropsLegacyTimeAnalysis(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "tracker.db")
 	s1, err := NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("first NewStore: %v", err)
 	}
-	// Recreate the legacy table the current schema no longer defines.
 	if _, err := s1.db.Exec(`CREATE TABLE time_analysis (id INTEGER PRIMARY KEY, date TEXT)`); err != nil {
 		t.Fatalf("recreating legacy table: %v", err)
 	}
@@ -142,14 +128,6 @@ func TestNewStore_InvalidDirectory(t *testing.T) {
 	}
 }
 
-// TestNewStore_MigratesSchemaAddingHandsColumn simulates a tracker.db
-// created by an older binary, before tournaments.hands existed: the
-// tournaments table is recreated by hand without that column and seeded
-// with a real row, bypassing NewStore/the current schema entirely. Reopening
-// through NewStore must then migrate the missing column in — CREATE TABLE
-// IF NOT EXISTS alone is a no-op on a table that already exists, so without
-// migrateSchema this row's hand-file data would be unreadable/unwritable
-// forever after a binary update, with no signal beyond a runtime scan error.
 func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "tracker.db")
 
@@ -202,9 +180,6 @@ func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
 		t.Fatal("hands column missing after migration")
 	}
 
-	// The pre-existing row's data must survive untouched, with hands NULL —
-	// no hand file was ever parsed under the old schema, so there's nothing
-	// to backfill it with.
 	var typeVal, tournamentID string
 	var buyInCents, netCents money.Cents
 	var vpip, pfr float64
@@ -225,7 +200,6 @@ func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
 		t.Errorf("hands = %v, want NULL for a pre-migration row", hands.Int64)
 	}
 
-	// The migrated table must be immediately usable for new writes too.
 	if err := s.UpdateTournamentHandStats("9000000001", 22.0, 10.0, 88, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats after migration: %v", err)
 	}
@@ -238,9 +212,6 @@ func TestNewStore_MigratesSchemaAddingHandsColumn(t *testing.T) {
 	}
 }
 
-// TestMigrateSchema_Idempotent confirms running migrateSchema against an
-// already-current database (the normal case for every install after the
-// first) is a no-op — no duplicate-column error, no data change.
 func TestMigrateSchema_Idempotent(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
@@ -261,15 +232,11 @@ func TestMigrateSchema_Idempotent(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Cash sessions
-// ---------------------------------------------------------------------------
-
 func buildCashSession(date time.Time, firstHandID string, hands int, netCents money.Cents) parsers.CashSession {
 	return parsers.CashSession{
 		Date:        date,
 		Stake:       "NL10",
-		BuyInCents:  1000, // never stored — GetCashSessionsSince must return 0
+		BuyInCents:  1000,
 		Hands:       hands,
 		DurationMin: hands * 2,
 		NetCents:    netCents,
@@ -317,11 +284,6 @@ func TestAppendCashSession_InsertsNewSession(t *testing.T) {
 	}
 }
 
-// TestAppendCashSession_ReparseUpdatesInPlace mirrors a PokerStars hand
-// history file growing hand-by-hand: the same file is re-parsed from scratch
-// on every hand, so Hands/NetCents/etc. keep changing for the *same* session ID
-// (Date + FirstHandID are fixed from the file's first hand). Every table's
-// row for that session must be corrected in place, never appended twice.
 func TestAppendCashSession_ReparseUpdatesInPlace(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
@@ -390,11 +352,6 @@ func TestAppendCashSession_DistinctSessionsAppend(t *testing.T) {
 	}
 }
 
-// TestLedgerCascade_InterleavedTables reproduces the exact scenario CLAUDE.md
-// documents for updateLedgerAmountCascading: two tables open at once, then
-// the first table's session is corrected — the second table's already-written
-// ledger row must shift its running total too, even though it belongs to an
-// unrelated session.
 func TestLedgerCascade_InterleavedTables(t *testing.T) {
 	s := newTestStore(t)
 	tableA := mustTime(t, "2026-07-10T20:00:00Z")
@@ -409,7 +366,6 @@ func TestLedgerCascade_InterleavedTables(t *testing.T) {
 	if err := s.AppendCashSession(buildCashSession(tableB, "B0001", 3, -300)); err != nil {
 		t.Fatalf("table B hand 1: %v", err)
 	}
-	// Table A's second hand arrives, cumulative net now -8.
 	if err := s.AppendCashSession(buildCashSession(tableA, "A0001", 10, -800)); err != nil {
 		t.Fatalf("table A hand 2: %v", err)
 	}
@@ -421,7 +377,6 @@ func TestLedgerCascade_InterleavedTables(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("len(entries) = %d, want 3 (deposit, table A, table B)", len(entries))
 	}
-	// Order is insertion order: deposit, table A, table B.
 	if !closeEnough(entries[0].RunningTotalCents, 10000) {
 		t.Errorf("deposit running total = %v, want 100", entries[0].RunningTotalCents)
 	}
@@ -455,7 +410,7 @@ func TestGetCashSessionsSince_DateFiltering(t *testing.T) {
 		t.Errorf("sessions = %+v, want exactly the late session", sessions)
 	}
 
-	if err := s.AppendLedgerEntry("deposit", 0, time.Now(), ""); err != nil { // no-op sanity: ledger untouched by the date filter
+	if err := s.AppendLedgerEntry("deposit", 0, time.Now(), ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -475,10 +430,6 @@ func TestGetCashSessionsSince_CutoffIsInclusive(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Tournaments — two-file correlation, both arrival orders
-// ---------------------------------------------------------------------------
-
 func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
@@ -491,7 +442,7 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 		Multiplier:     floatPtr(3),
 		FinishPos:      1,
 		TotalPlayers:   3,
-		NetCents:       110, // 1.65 payout - 0.55 buyin
+		NetCents:       110,
 	}
 
 	netCents, err := s.AppendTournament(tourn)
@@ -539,10 +490,6 @@ func TestAppendTournament_SummaryFirstThenHandStats(t *testing.T) {
 	}
 }
 
-// TestGetTournamentByID covers the worker duplicate check's point lookup:
-// found for a completed row, not found for an absent ID, and not found for a
-// partial row (hand file arrived before the summary — no date), matching
-// GetTournamentsSince's partial-row skip.
 func TestGetTournamentByID(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-21T20:00:00Z")
@@ -566,8 +513,6 @@ func TestGetTournamentByID(t *testing.T) {
 		t.Errorf("absent ID = (found %v, err %v), want not found", found, err)
 	}
 
-	// Partial row: hand stats arrive before the summary — no date, so the
-	// lookup must report not-found (the summary still needs processing).
 	if err := s.UpdateTournamentHandStats("5000000002", 25, 12, 80, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
@@ -576,13 +521,6 @@ func TestGetTournamentByID(t *testing.T) {
 	}
 }
 
-// TestAppendTournament_ReEntryRewriteUpsertsInPlace reproduces the re-entry
-// bug: PokerStars overwrites the same tournament summary each time screenName
-// busts an entry, so AppendTournament is called once per bust with a growing
-// total buy-in and a different finish. Each call must UPDATE the single row
-// (correlated by TournamentID) and correct the ledger/bankroll in place — not
-// append a second row and not leave the first-bust snapshot frozen. Only the
-// final state ($3.30 risked across three entries, $0 won) may survive.
 func TestAppendTournament_ReEntryRewriteUpsertsInPlace(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-21T23:21:00Z")
@@ -598,11 +536,10 @@ func TestAppendTournament_ReEntryRewriteUpsertsInPlace(t *testing.T) {
 			NetCents:       netCents,
 		}
 	}
-	// The three busts, as the rewritten summary parses each time.
 	sequence := []parsers.Tournament{
-		base(110, 50, 126, -110), // original entry busts
-		base(220, 60, 140, -220), // one re-entry busts
-		base(330, 43, 162, -330), // second re-entry busts (final summary)
+		base(110, 50, 126, -110),
+		base(220, 60, 140, -220),
+		base(330, 43, 162, -330),
 	}
 	for i, tourn := range sequence {
 		if _, err := s.AppendTournament(tourn); err != nil {
@@ -641,8 +578,6 @@ func TestAppendTournament_HandStatsFirstThenSummary(t *testing.T) {
 	s := newTestStore(t)
 	tournamentID := "1000000002"
 
-	// Hand history file arrives before the summary — a partial row must be
-	// created, and it must not show up in GetTournamentsSince yet (no Date).
 	if err := s.UpdateTournamentHandStats(tournamentID, 30.0, 15.0, 80, 0, false); err != nil {
 		t.Fatalf("UpdateTournamentHandStats (partial): %v", err)
 	}
@@ -696,7 +631,6 @@ func TestKnockout_SummaryFirstThenHandStats(t *testing.T) {
 	if _, err := s.AppendTournament(tourn); err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
-	// Hand file reveals it's a knockout tournament, screenName won a bounty.
 	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 22.0, 10.0, 120, 90, true); err != nil {
 		t.Fatalf("UpdateTournamentHandStats: %v", err)
 	}
@@ -711,7 +645,6 @@ func TestKnockout_SummaryFirstThenHandStats(t *testing.T) {
 	if typeVal != "mtt-ko" {
 		t.Errorf("Type = %q, want %q", typeVal, "mtt-ko")
 	}
-	// -5.00 (baseline loss) + 0.90 (bounty) = -4.10; prize won = -4.10 + 5.00 = 0.90
 	if !closeEnough(netCents, -410) {
 		t.Errorf("NetCents = %v, want -4.10 (loss on paper, bounty makes it less bad)", netCents)
 	}
@@ -753,7 +686,6 @@ func TestKnockout_HandStatsFirstThenSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendTournament: %v", err)
 	}
-	// 1.65 (baseline) + 0.90 (bounty already recorded) = 2.55
 	if !closeEnough(netCents, 255) {
 		t.Errorf("netCents = %v, want 2.55 (placeholder-recorded bounty must be folded in)", netCents)
 	}
@@ -767,9 +699,6 @@ func TestKnockout_HandStatsFirstThenSummary(t *testing.T) {
 	}
 }
 
-// TestBounty_GrowingHandFileReparse mirrors a knockout tournament's hand
-// history file being reparsed repeatedly as it grows across the whole
-// tournament, each time recomputing the cumulative bounty from scratch.
 func TestBounty_GrowingHandFileReparse(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
@@ -781,25 +710,22 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 		t.Fatalf("AppendTournament: %v", err)
 	}
 
-	// First KO.
 	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 50, 90, true); err != nil {
 		t.Fatalf("first reparse: %v", err)
 	}
 	bankrollCents, _ := s.GetCurrentBankroll()
-	if !closeEnough(bankrollCents, 78) { // -0.12 + 0.90
+	if !closeEnough(bankrollCents, 78) {
 		t.Errorf("bankroll after 1st KO = %v, want 0.78", bankrollCents)
 	}
 
-	// Second KO — cumulative bounty grows to 1.80 (not incremented, recomputed).
 	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 180, true); err != nil {
 		t.Fatalf("second reparse: %v", err)
 	}
 	bankrollCents, _ = s.GetCurrentBankroll()
-	if !closeEnough(bankrollCents, 168) { // -0.12 + 1.80
+	if !closeEnough(bankrollCents, 168) {
 		t.Errorf("bankroll after 2nd KO = %v, want 1.68 (must replace, not add, the previous bounty)", bankrollCents)
 	}
 
-	// Unchanged reparse (no new KO since last hand) must be a no-op.
 	if err := s.UpdateTournamentHandStats(tourn.TournamentID, 20, 10, 90, 180, true); err != nil {
 		t.Fatalf("third (unchanged) reparse: %v", err)
 	}
@@ -817,28 +743,13 @@ func TestBounty_GrowingHandFileReparse(t *testing.T) {
 	}
 }
 
-// TestFreeroll_BuyInAnswer covers a zero-buy-in freeroll/Kick-Off recorded
-// once the player answers the entry-cost question. The knockout-bounty cash the
-// hand history recorded (B=0.88 — the hero's three KOs in the won-freeroll
-// fixture, $0.33+$0.22+$0.33) must land in the ledger for both a free (buy-in
-// $0) and a paid answer, and regardless of whether the hand file arrives before
-// or after the answer.
-//
-// The parser gives a freeroll BuyInCents 0, NetCents 0 (no cash payout row); the
-// bot's recordFreerollEntry then sets BuyInCents = X and NetCents -= X before
-// AppendTournament (mirrored here). Expected finals, both orders:
-//
-//	free (X=0):  net = 0 + B      = 0.88,  prize = 0.88
-//	paid (X=1):  net = -1 + B     = -0.12, prize = 0.88
 func TestFreeroll_BuyInAnswer(t *testing.T) {
-	const bountyCents money.Cents = 88 // the hero's three KOs: $0.33 + $0.22 + $0.33
+	const bountyCents money.Cents = 88
 	date := mustTime(t, "2026-07-25T00:10:09Z")
-	// A freeroll as parsed: 4-player MTT, no buy-in, no cash payout row.
 	parsed := parsers.Tournament{
 		Date: date, Type: "mtt", TournamentID: "T9000000001",
 		BuyInCents: 0, FinishPos: 1, TotalPlayers: 4, NetCents: 0,
 	}
-	// answered applies recordFreerollEntry's arithmetic for buy-in X.
 	answered := func(buyInCents money.Cents) parsers.Tournament {
 		t := parsed
 		t.NetCents -= buyInCents
@@ -911,11 +822,6 @@ func TestFreeroll_BuyInAnswer(t *testing.T) {
 	}
 }
 
-// TestAppendTournament_DuplicateCallIsIdempotent covers the satellite/ticket
-// flow and stray duplicate file events: AppendTournament can legitimately run
-// more than once for the same TournamentID, and must not double-count the
-// ledger even though the Tournaments-equivalent table stays deduplicated by
-// tournament_id (UNIQUE).
 func TestAppendTournament_DuplicateCallIsIdempotent(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
@@ -1056,10 +962,6 @@ func TestGetTournamentsSince_DateFiltering(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Bankroll ledger (deposit/withdrawal), GetCurrentBankroll, GetSheetURL
-// ---------------------------------------------------------------------------
-
 func TestAppendLedgerEntry_DepositAndWithdrawalAccumulate(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
@@ -1077,10 +979,6 @@ func TestAppendLedgerEntry_DepositAndWithdrawalAccumulate(t *testing.T) {
 	}
 }
 
-// TestAppendLedgerEntry_RunningTotalCanGoNegative confirms the running total
-// is stored as-is with no floor at zero — a player can withdraw more than
-// their tracked bankroll (e.g. a deposit made outside the tracker) and the
-// ledger must reflect that honestly rather than clamping.
 func TestAppendLedgerEntry_RunningTotalCanGoNegative(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.AppendLedgerEntry("deposit", 2000, time.Now(), ""); err != nil {
@@ -1152,14 +1050,6 @@ func TestGetSheetURL_ReturnsEmptyString(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Mixed-entry-type ledger cascade
-// ---------------------------------------------------------------------------
-
-// TestLedgerCascade_MixedEntryTypes exercises the exact edge case CLAUDE.md
-// calls out: a mid-session deposit landing after a session's own ledger row
-// while that row is still being corrected hand-to-hand. Every later row —
-// regardless of its own entry type — must have its running total shifted.
 func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 	s := newTestStore(t)
 	date := mustTime(t, "2026-07-10T20:00:00Z")
@@ -1170,7 +1060,6 @@ func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 	if err := s.AppendLedgerEntry("deposit", 5000, time.Now(), ""); err != nil {
 		t.Fatalf("mid-session deposit: %v", err)
 	}
-	// The session keeps playing and its net changes.
 	if err := s.AppendCashSession(buildCashSession(date, "M0001", 10, 400)); err != nil {
 		t.Fatalf("cash session hand 2: %v", err)
 	}
@@ -1190,10 +1079,6 @@ func TestLedgerCascade_MixedEntryTypes(t *testing.T) {
 			entries[1].AmountCents, entries[1].RunningTotalCents)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// GetAll* — /export's full-fidelity readers
-// ---------------------------------------------------------------------------
 
 func TestGetAllCashSessions_IncludesSessionID(t *testing.T) {
 	s := newTestStore(t)
@@ -1274,7 +1159,6 @@ func TestGetAllTournaments_IncludesHandStatsAndBounty(t *testing.T) {
 	if !closeEnough(got.BountyWonCents, 90) {
 		t.Errorf("BountyWonCents = %v, want 0.90", got.BountyWonCents)
 	}
-	// -5.00 baseline + 0.90 bounty = -4.10; prize won = -4.10 + 5.00 = 0.90
 	if !closeEnough(got.NetCents, -410) {
 		t.Errorf("NetCents = %v, want -4.10", got.NetCents)
 	}
@@ -1332,15 +1216,6 @@ func TestGetAllCashSessions_EmptyReturnsNoRowsNoError(t *testing.T) {
 
 func floatPtr(f float64) *float64 { return &f }
 
-// ---------------------------------------------------------------------------
-// Snapshot export/import + Migrate
-// ---------------------------------------------------------------------------
-
-// populateStore fills s with a varied, realistic history exercising every
-// branch a migration must preserve: deposits/withdrawals, cash sessions, a
-// cash-pool Spin & Go, a ticket-pool (satellite) tournament, a knockout MTT
-// with folded bounty, a summary-only tournament (nil VPIP/PFR/Hands), and a
-// hand-file-only partial tournament (no summary → blank date, no ledger row).
 func populateStore(t *testing.T, s *Store) {
 	t.Helper()
 
@@ -1357,7 +1232,6 @@ func populateStore(t *testing.T, s *Store) {
 		t.Fatalf("withdrawal: %v", err)
 	}
 
-	// Cash-pool Spin & Go with hand stats.
 	spingo := parsers.Tournament{
 		Date: mustTime(t, "2026-07-12T18:00:00Z"), TournamentID: "T-SPIN-1", Type: "spingo",
 		BuyInCents: 500, PrizePoolCents: 3000, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3, NetCents: 2500,
@@ -1369,7 +1243,6 @@ func populateStore(t *testing.T, s *Store) {
 		t.Fatalf("spingo hands: %v", err)
 	}
 
-	// Ticket-denominated satellite (non-cash prize pool).
 	sat := parsers.Tournament{
 		Date: mustTime(t, "2026-07-13T19:00:00Z"), TournamentID: "T-SAT-1", Type: "spingo",
 		BuyInCents: 100, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket", FinishPos: 2, TotalPlayers: 3, NetCents: -100,
@@ -1378,7 +1251,6 @@ func populateStore(t *testing.T, s *Store) {
 		t.Fatalf("sat summary: %v", err)
 	}
 
-	// Knockout MTT, hand stats first then summary — folds bounty into net.
 	if err := s.UpdateTournamentHandStats("T-KO-1", 22, 17, 120, 450, true); err != nil {
 		t.Fatalf("ko hands: %v", err)
 	}
@@ -1390,7 +1262,6 @@ func populateStore(t *testing.T, s *Store) {
 		t.Fatalf("ko summary: %v", err)
 	}
 
-	// Summary-only MTT — no hand file ever arrived, so VPIP/PFR/Hands stay nil.
 	mtt := parsers.Tournament{
 		Date: mustTime(t, "2026-07-15T20:00:00Z"), TournamentID: "T-MTT-2", Type: "mtt",
 		BuyInCents: 300, PrizePoolCents: 20000, FinishPos: 40, TotalPlayers: 100, NetCents: -300,
@@ -1399,7 +1270,6 @@ func populateStore(t *testing.T, s *Store) {
 		t.Fatalf("mtt summary: %v", err)
 	}
 
-	// Hand-file-only partial — summary hasn't arrived (blank date, no ledger row).
 	if err := s.UpdateTournamentHandStats("T-PARTIAL-1", 30, 25, 45, 200, true); err != nil {
 		t.Fatalf("partial hands: %v", err)
 	}
@@ -1440,7 +1310,6 @@ func TestExportImportSnapshot_RoundTrip(t *testing.T) {
 		t.Fatalf("ExportSnapshot: %v", err)
 	}
 
-	// The partial tournament must be present (GetAllTournaments would drop it).
 	var partial *storage.TournamentRecord
 	for i := range snap.Tournaments {
 		if snap.Tournaments[i].TournamentID == "T-PARTIAL-1" {
@@ -1498,12 +1367,6 @@ func TestMigrate_TwoSqliteStores(t *testing.T) {
 	assertSnapshotsEqual(t, srcSnap, got)
 }
 
-// TestImportSnapshot_BlankSessionIDLegacyRows covers pre-v1.4 sheets data:
-// rows written before the Session ID column existed (one-row-per-hand era)
-// have a blank ID, and a real sheet holds many of them. They must import
-// cleanly — stored as NULL, mutually distinct under sqlite's UNIQUE — read
-// back as "" (same as the sheets backend reads a blank cell), and never
-// collide with live sessions written afterwards.
 func TestImportSnapshot_BlankSessionIDLegacyRows(t *testing.T) {
 	d1 := mustTime(t, "2025-01-10T20:00:00Z")
 	d2 := mustTime(t, "2025-01-11T21:00:00Z")
@@ -1528,7 +1391,6 @@ func TestImportSnapshot_BlankSessionIDLegacyRows(t *testing.T) {
 	}
 	assertSnapshotsEqual(t, snap, got)
 
-	// A live session written afterwards must coexist with the legacy rows.
 	if err := dst.AppendCashSession(buildCashSession(mustTime(t, "2025-01-12T20:00:00Z"), "200000000009", 10, 500)); err != nil {
 		t.Fatalf("AppendCashSession after legacy import: %v", err)
 	}

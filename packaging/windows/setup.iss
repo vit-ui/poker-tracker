@@ -1,14 +1,3 @@
-; Poker Tracker installer. Compiled ONCE by .github/workflows/package.yml (a
-; single iscc run, no per-arch define) into ONE installer that carries every
-; role's binary for BOTH CPU architectures (x64 and ARM64) and installs the
-; matching one at runtime. ArchitecturesInstallIn64BitMode below covers x64 +
-; arm64 (native 64-bit Program Files / registry view on both), and each [Files]
-; entry is gated by an arch Check (IsARM64, via the Install*Amd64/Install*Arm64
-; wrappers in [Code]) combined with the role Check — so the player never picks
-; an architecture, the installer detects it. An x64 installer also runs on ARM64
-; Windows via the OS's built-in x64 emulation, so one build serves both.
-; Runs with /DAppVersion=<tag, "v" stripped>; the #ifndef lets a local manual
-; compile work without it.
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
 #endif
@@ -48,55 +37,21 @@ UninstallDisplayIcon={app}\tracker.exe
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; Every entry is gated by role AND architecture: the six Install* Check wrappers
-; ([Code]) each combine one role (IsCombinedMode/IsClientMode/IsServerMode) with
-; IsARM64, so exactly one Source per role installs and it matches the machine's
-; CPU. DestName is the fixed "tracker.exe" for combined and client — an external
-; .bat launcher (poker-tracker-plan.md, not in this repo) hardcodes
-; C:\poker-tracker\tracker.exe. Process stopping checks the full executable
-; path. The server role uses tracker-server.exe and a separate scheduled task.
-;
-; All-local (combined) build — installed unless the player chose connect-to-server
-; or run-a-server on the role page. Both arches; the matching one wins.
 Source: "tracker-amd64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallCombinedAmd64
 Source: "tracker-arm64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallCombinedArm64
-; Second copy, flagged dontcopy, exists only so ExtractTemporaryFile can pull
-; tracker.exe's bytes out during the wizard (Telegram setup), before the real
-; install step above has copied anything to {app} yet. PreInstallFiles then
-; copies this {tmp} extraction onward to {app} (via CombinedExeName) and runs it
-; from there — not from {tmp} directly — since tracker.exe resolves its own
-; config/credentials paths from its own executable location. Also used as the
-; transfer helper before a combined installation changes to the client role.
 Source: "tracker-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "tracker-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy
-; Split client build — installed as the same fixed tracker.exe name when the
-; player chose connect-to-server. It provides --serve and --check-lock; the
-; server owns storage and the bot.
 Source: "tracker-client-amd64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallClientAmd64
 Source: "tracker-client-arm64.exe"; DestDir: "{app}"; DestName: "tracker.exe"; Flags: ignoreversion; Check: InstallClientArm64
-; Split server build — installed as tracker-server.exe when the player chose
-; run-a-server-on-this-PC. It stores data, runs the bot, and enforces the rules;
-; CurStepChanged runs its --setup/--install and shows the connection string.
 Source: "tracker-server-windows-amd64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerAmd64
 Source: "tracker-server-windows-arm64.exe"; DestDir: "{app}"; DestName: "tracker-server.exe"; Flags: ignoreversion; Check: InstallServerArm64
 Source: "tracker-server-windows-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "tracker-server-windows-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 
-; The collector is also a temporary, network-free process-stop helper for setup.
 Source: "tracker-client-amd64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "tracker-client-arm64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 
 [UninstallDelete]
-; tracker.exe itself is removed automatically (tracked via [Files] above).
-; config.json, lockfile.json, credentials, and
-; pending_tournaments.json are deliberately NOT listed here — a fixed AppId
-; run of a new Setup.exe installs over the top without ever invoking this
-; uninstaller, so those files survive an upgrade regardless; the guard in
-; CurUninstallStepChanged below only matters for an actual uninstall
-; (Control Panel / manually running unins000.exe), where it distinguishes a
-; real removal from a silent one (e.g. a future chained old-version
-; uninstall before install) and deletes them only for the former. {app}
-; itself is removed last, once it's empty.
 Type: dirifempty; Name: "{app}\credentials"
 Type: dirifempty; Name: "{app}"
 
@@ -115,10 +70,6 @@ var
   PageScreenName: TInputQueryWizardPage;
   PageHandHistoryDir: TInputDirWizardPage;
   PageTournamentDir: TInputDirWizardPage;
-  // Split (v3.7+): the role choice (all-local vs connect-to-server vs
-  // run-a-server), the connection-string page (connect-to-server only), and the
-  // server storage-method page (run-a-server only). The all-local pages above
-  // are unchanged in identity; only their order relative to PageMethod moved.
   PageRole: TInputOptionWizardPage;
   PageUpgrade: TInputOptionWizardPage;
   ExistingRole: Integer;
@@ -129,72 +80,30 @@ var
   TransferStaged, TransferFinished: Boolean;
   TransferConnection: String;
   CombinedTaskSuspended, ServerTaskSuspended: Boolean;
-  // PageServerMethod asks the run-a-server install the same thing the Linux
-  // server's chooseBackend does: configure storage from Telegram (recommended,
-  // defaults SQLite) vs set it here now. ServerUseTelegram is its answer, read
-  // by ShouldSkipPage (skip the storage pages when deferring to Telegram) and
-  // RunServerSetup (pass --backend sqlite when deferring). Shown only in server
-  // mode; false everywhere else.
   PageServerMethod: TInputOptionWizardPage;
   ServerUseTelegram: Boolean;
   UsingTelegram: Boolean;
-  // Storage backend choice (PageBackend, first page of the wizard, shown
-  // regardless of Telegram vs manual). False = Google Sheets (default,
-  // matches PageBackend.SelectedValueIndex = 0), True = local sqlite file.
-  // Initialized from ExistingConfigJSON in InitializeWizard when
-  // BackendAlreadySet, so every downstream read of this var (ShouldSkipPage,
-  // PreInstallFiles, CurStepChanged) is correct whether the value came from
-  // this run's page or a prior install, without needing a separate
-  // "which source" branch at each call site.
   UsingSQLite: Boolean;
-  // Guards against CurPageChanged's auto-start and NextButtonClick's manual
-  // path both running RunTelegramSetup for the same visit to PageWaiting —
-  // see CurPageChanged and the PageWaiting branch of NextButtonClick.
   TelegramSetupDone: Boolean;
-  // Raw text of {app}\config.json, read at startup and refreshed after stopping
-  // the previous process before writing — '' means
-  // no existing install (fresh install: behave exactly as before). The
-  // four config-field booleans are computed from it once and drive both
-  // ShouldSkipPage (skip a page whose field is already configured) and
-  // CurStepChanged (splice the existing raw value back in for any field
-  // whose page was skipped, instead of rebuilding config.json from
-  // scratch — see BuildConfigJSON). Manual setup path only; the Telegram
-  // path already preserves these correctly on the Go side (bot.RunSetup
-  // loads the existing config and only mutates the fields it collects).
   ExistingConfigJSON: String;
   BackendAlreadySet: Boolean;
   SheetAlreadySet: Boolean;
   ScreenNameAlreadySet: Boolean;
   HandHistoryAlreadySet: Boolean;
   TournamentAlreadySet: Boolean;
-  // Same idea but not a config.json field — whether the credentials file
-  // itself already exists at the destination, checked directly rather
-  // than derived from ExistingConfigJSON (config.json doesn't record
-  // this). See ShouldSkipPage and the guarded FileCopy in PreInstallFiles.
   CredentialsAlreadySet: Boolean;
-  // True only when all five of the above are — i.e. there is genuinely
-  // nothing left to configure either way. Drives skipping PageMethod
-  // itself; see InitializeWizard and ShouldSkipPage.
   AllFieldsAlreadySet: Boolean;
 
-// IsClientMode reports whether the player chose "Connect to a server" on the
-// role page (PageRole index 1) — install the split client instead of the
-// all-local combined build. Guarded with Assigned so it's safe to call from a
-// [Files] Check before the page exists (it never actually is — files copy
-// after the wizard — but the guard keeps it total).
 function IsClientMode(): Boolean;
 begin
   Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = 1);
 end;
 
-// IsServerMode reports whether the player chose "Run a server on this PC"
-// (PageRole index 2) — install the split server (tracker-server.exe).
 function IsServerMode(): Boolean;
 begin
   Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = 2);
 end;
 
-// IsCombinedMode is the all-local default — neither of the split roles.
 function IsCombinedMode(): Boolean;
 begin
   Result := not IsClientMode() and not IsServerMode();
@@ -211,10 +120,6 @@ begin
   Result := KeepExistingSettings() and ExistingComplete;
 end;
 
-// The six role×arch Check wrappers gate the [Files] entries: each pairs one role
-// with IsARM64 (an Inno built-in) so exactly one Source per role installs and it
-// matches the machine's CPU. Kept as named functions (not inline Check
-// expressions) so each [Files] line reads as a single, self-describing Check.
 function InstallCombinedAmd64(): Boolean;
 begin
   Result := IsCombinedMode() and not IsARM64;
@@ -240,8 +145,6 @@ begin
   Result := IsServerMode() and IsARM64;
 end;
 
-// CombinedExeName is the arch-matching combined binary's source filename, used
-// by PreInstallFiles to ExtractTemporaryFile / copy the right one to tracker.exe.
 function CombinedExeName(): String;
 begin
   if IsARM64 then
@@ -250,13 +153,6 @@ begin
     Result := 'tracker-amd64.exe';
 end;
 
-// ReadFileAsString loads Path into a single raw String, or returns '' if
-// the file doesn't exist (the normal case on a fresh install — not an
-// error). Uses LoadStringFromFile rather than the line-splitting
-// LoadStringsFromFile so it doesn't have to reconcile this script's own
-// CRLF output with config.SaveConfig's LF-only json.MarshalIndent output
-// (Go, internal/config/config.go) — the whole-file string is scanned for
-// JSON tokens directly, so line endings never matter.
 function ReadFileAsString(const Path: String): String;
 var
   Content: AnsiString;
@@ -267,9 +163,6 @@ begin
     Result := Content;
 end;
 
-// JSONUnescape reverses JSONEscape (below) — backslash first, then quote,
-// the exact opposite order JSONEscape applies them, so the round trip is
-// lossless.
 function JSONUnescape(const S: String): String;
 var
   R: String;
@@ -280,12 +173,6 @@ begin
   Result := R;
 end;
 
-// JSONFieldIsSet reports whether FieldName's value in JSON is anything
-// other than the literal null. Marker includes the closing quote and
-// colon, so it can't false-match a longer key name. Whitespace after the
-// colon is skipped since this script's own JSON and Go's
-// json.MarshalIndent output (verified: both use exactly one space) don't
-// need to match byte-for-byte for this to work either way.
 function JSONFieldIsSet(const JSON, FieldName: String): Boolean;
 var
   Marker: String;
@@ -302,18 +189,6 @@ begin
   Result := Copy(JSON, I, 4) <> 'null';
 end;
 
-// JSONExtractRawValue returns FieldName's value in JSON exactly as it
-// appears — quotes and escaping intact — so it can be spliced straight
-// into a newly built document without an unescape/re-escape round trip.
-// The closing quote is found by counting consecutive backslashes
-// immediately before each candidate '"': an odd count means that quote is
-// itself escaped (part of the string), even (including zero) means it's
-// the real close. A naive "quote not preceded by a single backslash" test
-// gets this wrong for a value ending in an escaped backslash, e.g. a
-// Windows path with a trailing separator ("C:\HandHistory\" encodes as
-// "C:\\HandHistory\\" — the real closing quote IS preceded by a
-// backslash there). Returns '' if the field is null, absent, or not a
-// string.
 function JSONExtractRawValue(const JSON, FieldName: String): String;
 var
   Marker: String;
@@ -356,9 +231,6 @@ begin
   Result := Copy(JSON, I, EndI - I + 1);
 end;
 
-// JSONExtractStringValue is JSONExtractRawValue with the surrounding
-// quotes stripped and escaping reversed — the plain value, for contexts
-// outside JSON (see CurrentScreenName).
 function JSONExtractStringValue(const JSON, FieldName: String): String;
 var
   Raw: String;
@@ -370,9 +242,6 @@ begin
     Result := '';
 end;
 
-// JSONFieldRaw returns FieldName's existing value ready to splice into a
-// rebuilt config.json: its raw string literal, or the bare word null,
-// whichever JSON already has.
 function JSONFieldRaw(const JSON, FieldName: String): String;
 begin
   if JSONFieldIsSet(JSON, FieldName) then
@@ -381,16 +250,6 @@ begin
     Result := 'null';
 end;
 
-// JSONExtractObjectRaw returns FieldName's whole nested object verbatim,
-// braces included. Used to carry alerts/hardstop/schedule through a
-// rewrite untouched: the wizard never asks about any field inside them,
-// so byte-for-byte preservation is simpler and safer than reconstructing
-// them field by field. Brace-depth counting alone is only safe because
-// none of these three objects contain string values that could hide a
-// stray brace — true here (every leaf is a number or null) but not a
-// general-purpose JSON object extractor. Returns '' if FieldName isn't
-// present as an object (in particular: JSON = '', meaning no existing
-// install).
 function JSONExtractObjectRaw(const JSON, FieldName: String): String;
 var
   Marker: String;
@@ -425,14 +284,6 @@ begin
   end;
 end;
 
-// PreservedObjectOrDefault carries an existing alerts/hardstop/schedule
-// block through unchanged, or falls back to DefaultBlock when JSON has none
-// (JSONExtractObjectRaw returns '' — either JSON = '', a fresh install, or
-// FieldName genuinely isn't present as an object). JSON is a parameter
-// rather than reading the global ExistingConfigJSON directly so this can
-// also serve WritePreSeedConfig, which rebuilds from a live re-read of
-// config.json rather than the wizard-startup snapshot — see its own doc
-// comment for why that distinction matters there.
 function PreservedObjectOrDefault(const JSON, FieldName, DefaultBlock: String): String;
 var
   Existing: String;
@@ -444,13 +295,6 @@ begin
     Result := DefaultBlock;
 end;
 
-// CurrentScreenName is the screen name to use both for path-join
-// validation (NextButtonClick, PageHandHistoryDir/PageTournamentDir) and
-// for the final config.json: the page's own Values[0] if it was shown
-// this run, or the preserved value if ScreenNameAlreadySet skipped it.
-// Needed because HandHistoryDir/TournamentDir can still be shown (their
-// own field still unset) even when the screen name page itself was
-// skipped (already set) — the two don't skip together.
 function CurrentScreenName(): String;
 begin
   if ScreenNameAlreadySet and KeepExistingSettings() then
@@ -459,18 +303,6 @@ begin
     Result := PageScreenName.Values[0];
 end;
 
-// ApplyTestAnswers presets the wizard's answers from command-line params so a
-// local, unattended /VERYSILENT run can drive the storage flow without a human
-// clicking through pages. It is inert in every real install: real installs
-// never pass TESTROLE/TESTSERVERMETHOD/TESTBACKEND, so the ExpandConstant
-// defaults ('') leave every SelectedValueIndex and derived var untouched.
-//
-// It sets both the page SelectedValueIndex (read by the [Files] Check wrappers
-// and RunServerSetup via IsServerMode) AND the booleans NextButtonClick would
-// normally derive (ServerUseTelegram/UsingSQLite/UsingTelegram) — silent mode
-// skips page display, so those page-transition handlers never fire and the
-// booleans must be set here to match. Exercised only by the gitignored
-// localtest/windows-installer-check.sh; see CLAUDE.md.
 procedure ApplyTestAnswers();
 var
   Role, ServerMethod, Backend, Creds, Sheet, Answer: String;
@@ -517,10 +349,6 @@ begin
     UsingSQLite := True;
   end;
 
-  // For the "set storage here -> Sheets" path the credentials and sheet-name
-  // pages are shown and validated (FileExists + non-empty); a silent test must
-  // supply both or the wizard rightly refuses to proceed. TESTCREDS is a path
-  // to any existing file, TESTSHEET any non-empty name.
   Creds := ExpandConstant('{param:TESTCREDS|}');
   if Creds <> '' then PageCredentials.Values[0] := Creds;
   Sheet := ExpandConstant('{param:TESTSHEET|}');
@@ -535,8 +363,6 @@ begin
   if Answer <> '' then PageTournamentDir.Values[0] := Answer;
 end;
 
-// Disable triggers and failure recovery before asking the owner to exit.
-// Enumeration distinguishes an absent task from scheduler/access failures.
 procedure SuspendScheduledRecovery();
 var
   Scheduler, Tasks, Task: Variant;
@@ -581,8 +407,6 @@ begin
     SuppressibleMsgBox('Could not restart "' + TaskName + '". Run it in Task Scheduler.', mbError, MB_OK, IDOK);
 end;
 
-// Setup/uninstall replaces the installation itself; terminal-update recovery
-// must not later restore the image that the installer intentionally replaces.
 procedure CancelTerminalUpdateRecovery();
 var
   Scheduler, Folder, Tasks, Task: Variant;
@@ -742,9 +566,6 @@ begin
   end;
 end;
 
-// Updating extracts one payload and stops before wizard, config or task code.
-// Inno returns initialization exit code 1; the updater also requires the output
-// file and then probes its role/version before touching the installed owner.
 function InitializeSetup(): Boolean;
 var
   Payload, OutputPath: String;
@@ -775,8 +596,6 @@ var
   MethodDescription, BackendDescription, RoleOutput, RoleText, TransferState, ExistingExe, ConfigFile, Helper: String;
   RoleResult: Integer;
 begin
-  // WizardDirValue is available during initialization and includes /DIR and
-  // the directory restored from this installation identity's uninstall entry.
   ExistingRole := -1;
   ConfigFile := AddBackslash(WizardDirValue) + 'config.json';
   if FileExists(ConfigFile) then
@@ -821,9 +640,6 @@ begin
   IncompleteTransfer := (RoleText = 'preparing') or (RoleText = 'prepared') or (RoleText = 'stopping');
 
   BackendAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'storage_backend');
-  // Seeds UsingSQLite from the existing value when the page that would
-  // normally set it (PageBackend, below) is about to be skipped — see the
-  // doc comment on the UsingSQLite var declaration.
   if BackendAlreadySet then
     UsingSQLite := JSONExtractStringValue(ExistingConfigJSON, 'storage_backend') = 'sqlite';
   SheetAlreadySet := JSONFieldIsSet(ExistingConfigJSON, 'google_sheet_name') or
@@ -832,12 +648,6 @@ begin
   HandHistoryAlreadySet := JSONExtractStringValue(ExistingConfigJSON, 'hand_history') <> '';
   TournamentAlreadySet := JSONExtractStringValue(ExistingConfigJSON, 'tournament_summary') <> '';
   CredentialsAlreadySet := FileExists(AddBackslash(WizardDirValue) + 'credentials\google_service_account.json');
-  // On sqlite, Sheet/Credentials never get set by this wizard (there's no
-  // Google step for that backend at all — ShouldSkipPage), so requiring
-  // them here would keep AllFieldsAlreadySet permanently False for a fully
-  // configured sqlite install, showing PageMethod pointlessly on every
-  // rerun. UsingSQLite is already correct at this point (set above from
-  // BackendAlreadySet, or PageBackend's own default False otherwise).
   AllFieldsAlreadySet := BackendAlreadySet and ScreenNameAlreadySet and HandHistoryAlreadySet and
                           TournamentAlreadySet and (UsingSQLite or (SheetAlreadySet and CredentialsAlreadySet));
   if ExistingRole = 0 then ExistingComplete := AllFieldsAlreadySet
@@ -850,9 +660,6 @@ begin
       FileExists(AddBackslash(WizardDirValue) + 'server_cert.pem') and
       FileExists(AddBackslash(WizardDirValue) + 'server_key.pem');
 
-  // The two cases that DO show this page get their own wording — nothing
-  // (fresh) vs something-but-not-everything (partial) — so it's never the
-  // same generic text regardless of which is true.
   if ExistingConfigJSON = '' then
   begin
     MethodDescription := 'No existing installation was found — this will set up Poker Tracker from scratch.';
@@ -865,42 +672,10 @@ begin
     MethodDescription := 'An existing installation was found, but some settings are still missing. ' +
       'Whatever''s already configured — sheet, screen name, folders, credentials — will be kept as-is; ' +
       'you''ll only be asked about what''s still missing.';
-    // Skipped entirely when BackendAlreadySet (see ShouldSkipPage), so this
-    // text is only ever shown to a player upgrading an install that
-    // predates the backend field.
     BackendDescription := 'An existing installation was found without a storage backend recorded. Choose ' +
       'how Poker Tracker should store your tracked sessions going forward.';
   end;
 
-  // Anchored at wpSelectDir, not wpWelcome — {app} only becomes valid for
-  // ExpandConstant once the wizard's internal position passes wpSelectDir,
-  // regardless of DisableDirPage hiding that page from view (it hides the
-  // page, not its position in the underlying sequence). Every page in this
-  // chain sat before wpSelectDir when anchored at wpWelcome, so the first
-  // ExpandConstant('{app}') call anywhere (PreInstallFiles, triggered by
-  // the "Complete setup in Telegram" page's Next click) threw "An attempt
-  // was made to expand the 'app' constant before it was initialized" —
-  // and since that happens before RunTelegramSetup ever reaches the Exec
-  // call that launches tracker.exe --setup, the Telegram flow never
-  // actually started, which is why nothing ever responded. Visually
-  // nothing changes: wpSelectDir is still never shown, so Welcome is still
-  // immediately followed by this page either way.
-  //
-  // PageMethod (Telegram vs manual) now comes first — before PageBackend — so
-  // UsingTelegram is known by the time the wizard reaches the backend page. That
-  // is what lets ShouldSkipPage skip PageBackend in Telegram mode and hand the
-  // storage-backend question to bot.RunSetup (which asks it whenever the field
-  // is null); the manual path still answers it on PageBackend here. Both are
-  // anchored at/after wpSelectDir (PageMethod at wpSelectDir, PageBackend one
-  // page later) so ExpandConstant('{app}') is valid by the time either is
-  // reached — see the wpSelectDir note above. PageCredentials follows
-  // PageBackend (not PageMethod) so the storage pages stay contiguous.
-  //
-  // Role choice, shown first: all-local (both roles in one process, the default)
-  // vs connect-to-server (this PC is the poker PC) vs run-a-server (a separate
-  // always-on machine). Anchored at wpWelcome — it collects no {app}-dependent
-  // value, so it needn't sit past wpSelectDir like the pages below.
-  // ShouldSkipPage hides the pages that don't apply to the chosen role.
   PageUpgrade := CreateInputOptionPage(wpWelcome, 'Existing installation',
     'Upgrade Poker Tracker',
     'Installation folder: ' + WizardDirValue + #13#10 +
@@ -936,10 +711,6 @@ begin
   PageConnection.Add('Connection string:', False);
   PageConnection.Values[0] := JSONExtractStringValue(ExistingConfigJSON, 'connection_string');
 
-  // Run-a-server only (ShouldSkipPage): the same choice the Linux server offers
-  // in chooseBackend — defer storage/alerts/rules to Telegram (defaults SQLite,
-  // switchable later via /storage) or set the storage backend here now. Anchored
-  // after PageConnection so it sits early, before the wpSelectDir storage pages.
   PageServerMethod := CreateInputOptionPage(PageConnection.ID,
     'Server Setup',
     'How do you want to configure storage, alerts, and rules?',
@@ -967,10 +738,6 @@ begin
   PageBackend.Add('Local file (no Google account needed)');
   PageBackend.SelectedValueIndex := 0;
 
-  // Manual setup only — skipped entirely for Telegram (see ShouldSkipPage),
-  // since --setup has its own optional upload-or-skip step for this file.
-  // Anchored after PageBackend (which now precedes it) so the storage pages
-  // stay contiguous: Method -> Backend -> Credentials -> ... -> SheetName.
   PageCredentials := CreateInputFilePage(PageBackend.ID,
     'Google Service Account',
     'Locate your service account credentials file',
@@ -1011,7 +778,6 @@ begin
   PageTournamentDir.Add('Parent TournamentSummaries folder:');
   PageTournamentDir.Values[0] := JSONExtractStringValue(ExistingConfigJSON, 'tournament_summary');
 
-  // Inert unless the local installer test passes TEST* params; see ApplyTestAnswers.
   PageTransfer := CreateOutputMsgPage(PageTournamentDir.ID,
     'Move this PC to your server', 'Transfer existing history before switching roles',
     'Close PokerStars before continuing. Your existing sessions, bankroll, rules and unanswered tournament questions will be copied to the configured empty server and verified before this PC switches to collection only.' +
@@ -1038,35 +804,19 @@ begin
     Exit;
   end;
   if PageID = PageTransfer.ID then begin Result := not NeedsTransfer(); Exit; end;
-  // Run-a-server mode shows PageServerMethod (configure from Telegram vs set
-  // storage here) and, when the player sets storage here, the storage backend
-  // page (+ credentials + sheet name for Sheets) — exactly the all-local storage
-  // pages. The certificate, pairing token, and connection string are handled by
-  // tracker-server --setup after install (RunServerSetup). It never asks the
-  // screen name, folders, all-local Telegram-method, or connection-string pages:
-  // the collector owns the screen name/folders, and the server *generates* the
-  // connection string rather than consuming one.
   if IsServerMode() then
   begin
     Result := (PageID = PageConnection.ID) or (PageID = PageMethod.ID) or
               (PageID = PageWaiting.ID) or (PageID = PageScreenName.ID) or
               (PageID = PageHandHistoryDir.ID) or (PageID = PageTournamentDir.ID);
-    // Storage pages: skipped when the player chose to configure from Telegram
-    // (ServerUseTelegram — RunServerSetup then records the SQLite default and the
-    // bot owns storage/alerts/rules), or when a prior install already recorded a
-    // backend (don't silently switch — that's /storage's migration).
     if (PageID = PageBackend.ID) and (BackendAlreadySet or ServerUseTelegram) then
       Result := True;
-    // Sheets-only pages: shown only when Sheets is the choice, storage is being
-    // set here (not deferred to Telegram), and the value isn't already in place.
     if (PageID = PageCredentials.ID) and (UsingSQLite or CredentialsAlreadySet or ServerUseTelegram) then
       Result := True;
     if (PageID = PageSheetName.ID) and (UsingSQLite or SheetAlreadySet or ServerUseTelegram) then
       Result := True;
     Exit;
   end;
-  // Connect-to-server mode shows only the connection string, screen name, and
-  // the two folder pages; every all-local / Google / Telegram page is skipped.
   if IsClientMode() then
   begin
     Result := (PageID = PageBackend.ID) or (PageID = PageMethod.ID) or
@@ -1080,25 +830,16 @@ begin
         ((PageID = PageTournamentDir.ID) and TournamentAlreadySet);
     Exit;
   end;
-  // All-local mode never shows the connection-string or run-a-server pages.
   if (PageID = PageConnection.ID) or (PageID = PageServerMethod.ID) then
   begin
     Result := True;
     Exit;
   end;
-  // Backend page: skipped when a prior install already recorded a backend, or
-  // when the player chose Telegram — PageMethod now precedes this page, so
-  // UsingTelegram is set, and bot.RunSetup owns the backend question in that
-  // path (asks it when the field is null). The manual path answers it here.
   if (PageID = PageBackend.ID) and (BackendAlreadySet or UsingTelegram) then
   begin
     Result := True;
     Exit;
   end;
-  // Checked before the UsingTelegram branch below since UsingTelegram
-  // isn't meaningfully set yet when this page itself is what's being
-  // asked about — there's nothing for either path to ask when every
-  // field is already configured, so there's no method choice to make.
   if (PageID = PageMethod.ID) and AllFieldsAlreadySet and KeepExistingSettings() then
   begin
     Result := True;
@@ -1106,30 +847,12 @@ begin
   end;
   if UsingTelegram then
   begin
-    // PageCredentials is skipped for Telegram too — bot.RunSetup's own
-    // Step 1.5 (send the file as a Telegram attachment, or skip if
-    // already in place) covers it; asking again here via a native
-    // browse dialog would just be redundant. Also unconditionally correct
-    // on sqlite — bot.RunSetup skips its own Step 1.5/Step 2 for that
-    // backend already, so there's nothing for this native page to redo
-    // either way.
     if (PageID = PageCredentials.ID) or (PageID = PageSheetName.ID) or (PageID = PageScreenName.ID) or
        (PageID = PageHandHistoryDir.ID) or (PageID = PageTournamentDir.ID) then
       Result := True;
   end
   else
   begin
-    // Also skip whichever of these already has a value in an existing
-    // config.json (ExistingConfigJSON, computed in InitializeWizard) — a
-    // rerun over a complete install then shows none of them, matching
-    // CurStepChanged's decision below to preserve rather than re-collect
-    // the same fields. PageCredentials isn't a config.json field but
-    // follows the same rule: skip it once the file's already in place.
-    //
-    // PageCredentials and PageSheetName are additionally skipped whenever
-    // UsingSQLite — a local-file install has no Google Sheet and nothing
-    // to authenticate to, so neither question applies regardless of
-    // whether either field happens to be set in an existing config.
     if PageID = PageWaiting.ID then
       Result := True
     else if (PageID = PageCredentials.ID) and (CredentialsAlreadySet or UsingSQLite) then
@@ -1145,9 +868,6 @@ begin
   end;
 end;
 
-// JSONEscape escapes backslashes and double quotes so Windows paths and
-// free-text fields (sheet name, screen name) can be embedded safely as
-// JSON string values.
 function JSONEscape(const S: String): String;
 var
   R: String;
@@ -1158,11 +878,6 @@ begin
   Result := R;
 end;
 
-// ExtractSheetIDFromURL mirrors bot.extractSheetIDFromURL (Go) — returns
-// the spreadsheet ID from a pasted Google Sheets URL, or '' if Input
-// doesn't contain one. Doesn't require a regex engine (Pascal Script has
-// none): "spreadsheets/d/" is an unambiguous marker, and the ID is
-// whatever follows it up to the next path/query/fragment separator.
 function ExtractSheetIDFromURL(const Input: String): String;
 var
   Marker: String;
@@ -1180,11 +895,6 @@ begin
   Result := Copy(Input, IDStart, IDEnd - IDStart);
 end;
 
-// JSONStringOrNull renders S as a JSON string, or the literal null if S
-// is empty — used for google_sheet_id/google_sheet_name, which are
-// pointer fields in config.Config (see internal/config/config.go): empty
-// must produce null, not an empty string, or config.LoadConfig would
-// treat "not configured" as "configured to an empty string" instead.
 function JSONStringOrNull(const S: String): String;
 begin
   if S = '' then
@@ -1193,21 +903,6 @@ begin
     Result := '"' + JSONEscape(S) + '"';
 end;
 
-// BuildConfigJSON mirrors config.Config's JSON shape exactly (see
-// internal/config/config.go), but — unlike the old version of this
-// function — never invents null for a field this run didn't touch. Every
-// parameter is already a ready-to-splice JSON fragment (a quoted string,
-// the word null, or a whole "{...}" object), resolved by the caller
-// (CurStepChanged, WritePreSeedConfig) from either this run's freshly
-// collected wizard values or, for anything whose page was skipped as
-// already-set, the matching raw fragment out of ExistingConfigJSON. This is
-// what makes a rerun over a complete install a no-op write: every fragment
-// passed in is just the existing file's own content, copied back unchanged.
-// Threshold/schedule objects, notifications, and pairing identity are preserved
-// from Existing; no wizard page collects these operational preferences.
-// StorageBackendRaw sits second, matching config.Config's field order
-// (internal/config/config.go: telegram_chat_id, storage_backend,
-// google_sheet_id, google_sheet_name, pokerstars_screen_name).
 function BuildConfigJSON(const Existing, TelegramChatIDRaw, StorageBackendRaw, SheetNameRaw, SheetIDRaw, ScreenNameRaw,
   HandHistoryRaw, TournamentRaw, AlertsBlock, HardstopBlock, ScheduleBlock, ConnectionStringRaw: String): String;
 begin
@@ -1233,12 +928,6 @@ begin
     '}' + #13#10;
 end;
 
-// DefaultAlertsBlock/DefaultHardstopBlock/DefaultScheduleBlock are the
-// all-null fallback fragments for a wizard page that never asks about
-// these three objects — used both by PreservedObjectOrDefault (manual
-// path, CurStepChanged) and by WritePreSeedConfig (Telegram path's partial
-// pre-seed), so there's exactly one literal copy of each block rather than
-// two that could drift apart.
 function DefaultAlertsBlock(): String;
 begin
   Result :=
@@ -1272,8 +961,6 @@ begin
     '  }';
 end;
 
-// Collector upgrades retain the complete existing configuration while replacing
-// only fields collected by this wizard. Fresh installs leave server fields null.
 function BuildClientConfigJSON(const Existing, ConnectionStringRaw, ScreenNameRaw, HandHistoryRaw, TournamentRaw: String): String;
 begin
   Result := BuildConfigJSON(Existing,
@@ -1286,12 +973,6 @@ begin
     PreservedObjectOrDefault(Existing, 'schedule', DefaultScheduleBlock()), ConnectionStringRaw);
 end;
 
-// UTF16Bytes converts S to raw UTF-16LE bytes with a leading byte-order
-// mark, packed into an AnsiString (one Pascal Char per byte). Every value
-// written (BOM bytes, low/high byte of each UTF-16 code unit) is within
-// 0-255, so this round-trips through AnsiString without lossy conversion.
-// schtasks /Create /XML rejects a plain UTF-8/ANSI file — it requires this
-// encoding, same as bot.utf16File in the Go codebase (main.go).
 function UTF16Bytes(const S: String): AnsiString;
 var
   I: Integer;
@@ -1315,16 +996,6 @@ begin
   StringChangeEx(Result, '>', '&gt;', True);
 end;
 
-// BuildTaskXML mirrors internal/installation.WindowsTaskXML, so
-// a task registered by manual setup behaves identically to one registered
-// by tracker.exe --setup (Telegram path) — same battery/time-limit/
-// multiple-instance settings either way. WorkingDirectory matters less
-// than it used to now that tracker.exe resolves its own deployment paths
-// from its executable's location rather than cwd (see main.go) — but a
-// real Task Scheduler bug was caused by exactly this being missing
-// (defaults to %SystemRoot%\System32, silently pointing relative paths at
-// the wrong place), so it's set here too rather than relying solely on
-// that fix.
 function BuildTaskXML(const ExePath, WorkingDir: String): String;
 begin
   Result :=
@@ -1377,40 +1048,13 @@ begin
     '</Task>';
 end;
 
-// PreInstallFiles creates {app} and writes the credentials copy, plus a
-// copy of tracker.exe itself — both needed before tracker.exe --setup can
-// run (Telegram path, called mid-wizard) and again, harmlessly idempotent,
-// during the real install step (both paths).
-//
-// tracker.exe resolves its three deployment paths (service account,
-// config, lockfile) via os.Executable() — wherever the running binary's
-// own file actually is, not the process's working directory (see
-// cmd/tracker/main.go). That's correct for a normally-installed,
-// long-running --serve, but it means RunTelegramSetup running --setup
-// from a {tmp}-extracted copy would resolve those paths to {tmp}, not
-// {app} — WorkingDirectory doesn't matter to os.Executable() at all. So
-// tracker.exe has to actually *be* at {app} before it's ever run for
-// setup, not just at {tmp} where ExtractTemporaryFile puts it. The real
-// [Files]-driven copy to {app} doesn't happen until the Install step,
-// which is after this — too late for RunTelegramSetup, called mid-wizard.
 procedure PreInstallFiles();
 begin
   StopInstallation();
   ForceDirectories(ExpandConstant('{app}'));
-  // Sqlite installs never read or write a credentials file — no directory
-  // for it either (CLAUDE.md: "the credentials file may not exist on a
-  // sqlite-backend install"). UsingSQLite is already correct here whether
-  // this run's PageBackend set it or it was seeded from an existing config.
   if not UsingSQLite then
   begin
     ForceDirectories(ExpandConstant('{app}\credentials'));
-    // Manual path only — PageCredentials is skipped entirely for Telegram
-    // (see ShouldSkipPage), so Values[0] would be empty here; that flow's
-    // credentials come from bot.RunSetup's own upload-or-skip step instead.
-    // On the manual path itself, PageCredentials is also skipped when
-    // CredentialsAlreadySet — Values[0] is empty there too, and correctly
-    // so: the file already exists at the destination, so there's nothing
-    // to copy and no risk of FileCopy overwriting it with an empty source.
     if not UsingTelegram and (PageCredentials.Values[0] <> '') then
       FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
   end;
@@ -1419,14 +1063,6 @@ begin
   FileCopy(ExpandConstant('{tmp}\' + CombinedExeName()), ExpandConstant('{app}\tracker.exe'), True);
 end;
 
-// RegisterScheduledTask is the manual-setup path's equivalent of what
-// tracker.exe --setup already does for itself on the Telegram path — see
-// runSetup in cmd/tracker/main.go. Not fatal if either step fails: the
-// rest of the install has already succeeded, so this only warns. Also
-// starts the task immediately (schtasks /Run) the same way runSetup does
-// — without this, the manual path left the player with a registered but
-// not-yet-running service until the next logon/reboot, unlike the
-// Telegram path, which starts it right away.
 procedure RegisterScheduledTask();
 var
   XMLPath, ExePath: String;
@@ -1457,15 +1093,6 @@ begin
   DeleteFile(XMLPath);
 end;
 
-// WritePreSeedConfig runs on the Telegram path (RunTelegramSetup) right before
-// tracker.exe --setup. It deliberately does NOT force storage_backend: with
-// PageMethod now ahead of PageBackend, a Telegram install skips the native
-// backend page (ShouldSkipPage) and bot.RunSetup asks the backend itself — it
-// prompts whenever the field is null (internal/bot/setup.go). So this leaves
-// storage_backend null on a fresh config and preserves whatever is on disk for
-// an existing one. Existing bytes are left intact; the Go setup owns field
-// updates and reads the latest progress on every retry. Only a fresh install
-// needs a default stub before setup begins.
 procedure WritePreSeedConfig();
 begin
   if FileExists(ExpandConstant('{app}\config.json')) then
@@ -1476,15 +1103,6 @@ begin
     RaiseException('Could not create this installation''s configuration.');
 end;
 
-// RunTelegramSetup runs tracker.exe --setup from {app} — PreInstallFiles
-// has already copied it there, precisely so it resolves its own
-// deployment paths against the real install directory rather than {tmp}
-// — see PreInstallFiles' doc comment for why running it from {tmp} was
-// wrong. The installer owns task registration/startup so recovery cannot
-// reopen tracker.exe before the final file replacement.
-// Release builds use -H=windowsgui, so tracker.exe never creates a console
-// regardless of ShowCmd — SW_HIDE here just states that honestly; all of
-// --setup's progress is visible through the Telegram conversation itself.
 function RunTelegramSetup(): Boolean;
 var
   ResultCode: Integer;
@@ -1507,38 +1125,16 @@ begin
   Result := True;
 end;
 
-// CurPageChanged fires after a page has actually been displayed (unlike
-// NextButtonClick, which fires when the player tries to leave the
-// *previous* page). PageWaiting's own text tells the player to go to
-// Telegram and send a message "to begin" — before this hook existed, that
-// was false: RunTelegramSetup only ran once NextButtonClick(PageWaiting.ID)
-// fired, i.e. only after the player clicked Next on this same page, so any
-// message sent on arrival just sat queued server-side until that click
-// eventually happened. Running it here instead means --setup genuinely is
-// listening by the time the page's own instructions say it is. On success,
-// WizardForm.NextButton.OnClick(nil) is the documented way to simulate the
-// player clicking Next themselves, advancing the wizard automatically
-// instead of leaving them staring at a page that already finished its job.
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if (CurPageID = PageWaiting.ID) and not TelegramSetupDone then
   begin
-    // Displaying a page only queues its repaint (WM_PAINT), dispatched the
-    // next time the message loop runs. RunTelegramSetup's Exec call blocks
-    // that loop for the whole Telegram conversation, so without forcing
-    // the paint now, the page would sit blank the entire time instead of
-    // showing the "this window may look frozen" text above — worse than
-    // before, when the block only started after a Next click on an
-    // already-painted page.
     WizardForm.Update;
     if RunTelegramSetup() then
     begin
       TelegramSetupDone := True;
       WizardForm.NextButton.OnClick(nil);
     end;
-    // RunTelegramSetup already showed a MsgBox on failure. Leave
-    // TelegramSetupDone False and stay on the page — NextButtonClick's
-    // PageWaiting branch becomes the player's manual retry.
   end;
 end;
 
@@ -1561,8 +1157,6 @@ begin
     UsingSQLite := (PageBackend.SelectedValueIndex = 1)
 
   else if CurPageID = PageServerMethod.ID then
-    // Index 0 = "From Telegram (recommended)": defer storage to Telegram, so
-    // ShouldSkipPage hides the storage pages and RunServerSetup records SQLite.
     ServerUseTelegram := (PageServerMethod.SelectedValueIndex = 0)
 
   else if CurPageID = PageMethod.ID then
@@ -1595,12 +1189,6 @@ begin
 
   else if CurPageID = PageWaiting.ID then
   begin
-    // Normal path: CurPageChanged already ran RunTelegramSetup when this
-    // page appeared and simulated this very click on success, so
-    // TelegramSetupDone is already True here — just let the click through.
-    // Manual-retry path: CurPageChanged's automatic attempt failed (its
-    // own MsgBox already told the player), so TelegramSetupDone is still
-    // False; a real click here means the player is retrying by hand.
     if TelegramSetupDone then
       Result := True
     else
@@ -1613,9 +1201,6 @@ begin
 
   else if CurPageID = PageSheetName.ID then
   begin
-    // Written back trimmed, matching resolveSheetInput's TrimSpace (Go) —
-    // otherwise a trailing space would pass this check but still end up
-    // saved untrimmed in CurStepChanged, unlike the Telegram flow.
     PageSheetName.Values[0] := Trim(PageSheetName.Values[0]);
     if PageSheetName.Values[0] = '' then
     begin
@@ -1626,8 +1211,6 @@ begin
 
   else if CurPageID = PageScreenName.ID then
   begin
-    // Matches bot.RunSetup's screen name step exactly: trimmed before
-    // both the emptiness check and being saved/used to join paths below.
     PageScreenName.Values[0] := Trim(PageScreenName.Values[0]);
     if PageScreenName.Values[0] = '' then
     begin
@@ -1638,10 +1221,6 @@ begin
 
   else if CurPageID = PageHandHistoryDir.ID then
   begin
-    // Matches bot.handlePathsReply exactly: DirExists on the base folder
-    // alone isn't enough — any real, unrelated folder would pass that
-    // check. The base only matters joined with the screen name, since
-    // that's the actual folder PokerStars writes into.
     PageHandHistoryDir.Values[0] := Trim(PageHandHistoryDir.Values[0]);
     JoinedPath := AddBackslash(PageHandHistoryDir.Values[0]) + CurrentScreenName();
     if not DirExists(JoinedPath) then
@@ -1663,17 +1242,6 @@ begin
   end;
 end;
 
-// RunServerSetup finishes a run-a-server install: tracker-server.exe --setup
-// generates the TLS certificate + pairing token and records the storage backend
-// (passed as --backend/--sheet-name/--sheet-id, with the service-account key
-// copied for Sheets, since the hidden-console --setup can't prompt). When the
-// player chose "Configure from Telegram" on PageServerMethod, that's --backend
-// sqlite — the working default they configure from Telegram after pairing; when
-// they chose "Set storage here", it's their PageBackend selection. --install
-// registers the PokerTrackerServer boot task; schtasks /Run starts it now; then
-// --pair's connection string (printed to stdout, captured via a cmd redirect) is
-// shown so the player can pair their poker PC. Alerts and rules are set later
-// from Telegram.
 function RunServerSetup(): Boolean;
 var
   ExePath, ConnPath, Conn, SetupArgs, SheetInput, SheetName, SheetID: String;
@@ -1682,17 +1250,10 @@ begin
   Result := False;
   ExePath := ExpandConstant('{app}\tracker-server.exe');
 
-  // Pass the storage choice the wizard collected to --setup, which owns
-  // config.json and preserves the pairing token. Only when this run actually
-  // asked — a re-install with a backend already recorded keeps it untouched,
-  // regardless of the PageServerMethod answer.
   SetupArgs := '--setup';
   if not BackendAlreadySet then
   begin
     if ServerUseTelegram or UsingSQLite then
-      // "Configure from Telegram" defers storage/alerts/rules to the bot and
-      // records the working SQLite default now (switchable later via /storage);
-      // an explicit "set storage here -> Local file" also lands on SQLite.
       SetupArgs := SetupArgs + ' --backend sqlite'
     else
     begin
@@ -1707,7 +1268,6 @@ begin
         SetupArgs := SetupArgs + ' --sheet-name "' + SheetName + '"';
       if SheetID <> '' then
         SetupArgs := SetupArgs + ' --sheet-id "' + SheetID + '"';
-      // Copy the service-account key so the server can reach the sheet at runtime.
       ForceDirectories(ExpandConstant('{app}\credentials'));
       if PageCredentials.Values[0] <> '' then
         FileCopy(PageCredentials.Values[0], ExpandConstant('{app}\credentials\google_service_account.json'), False);
@@ -1798,12 +1358,6 @@ begin
       Exit;
     end;
     ExistingConfigJSON := ReadFileAsString(ExpandConstant('{app}\config.json'));
-    // Connect-to-server: the client binary is already installed as tracker.exe
-    // ([Files] Check: IsClientMode). Write its config (connection string +
-    // paths + screen name; everything the server owns stays null) and register
-    // the same scheduled task, which runs the client's own --serve. No
-    // PreInstallFiles (no combined binary to extract, no credentials) and no
-    // Telegram setup.
     if IsClientMode() then
     begin
       SaveStringToFile(ExpandConstant('{app}\config.json'),
@@ -1828,19 +1382,12 @@ begin
       else RegisterScheduledTask();
       Exit;
     end;
-    // Run-a-server: the server binary is installed as tracker-server.exe
-    // ([Files] Check: InstallServer*). Finish its setup, register + start its
-    // boot task, and show the connection string. No combined binary, no
-    // Telegram wizard, no credentials.
     if IsServerMode() then
     begin
       if RunServerSetup() then
         FinishTelegramSetup('tracker-server.exe');
       Exit;
     end;
-    // Idempotent for the Telegram path (already done once in
-    // RunTelegramSetup); the only time it matters is manual setup, where
-    // this is the first and only time it runs.
     PreInstallFiles();
     if UsingTelegram and not TelegramSetupDone then
     begin
@@ -1850,14 +1397,8 @@ begin
     end;
     if not UsingTelegram then
     begin
-      // Never asked by this wizard — always carried over from the
-      // existing file if there is one (a fresh chat ID is auto-detected
-      // at runtime by --serve; see CLAUDE.md).
       TelegramChatIDRaw := JSONFieldRaw(ExistingConfigJSON, 'telegram_chat_id');
 
-      // BackendAlreadySet preserves the existing value verbatim; otherwise
-      // UsingSQLite (set by NextButtonClick(PageBackend.ID) above) is
-      // this run's own answer.
       if BackendAlreadySet then
         StorageBackendRaw := JSONFieldRaw(ExistingConfigJSON, 'storage_backend')
       else if UsingSQLite then
@@ -1897,8 +1438,6 @@ begin
       else
         TournamentRaw := '"' + JSONEscape(PageTournamentDir.Values[0]) + '"';
 
-      // Never asked by this wizard at all — always preserved verbatim if
-      // an existing config has them, else the same null block as before.
       AlertsBlock := PreservedObjectOrDefault(ExistingConfigJSON, 'alerts', DefaultAlertsBlock());
       HardstopBlock := PreservedObjectOrDefault(ExistingConfigJSON, 'hardstop', DefaultHardstopBlock());
       ScheduleBlock := PreservedObjectOrDefault(ExistingConfigJSON, 'schedule', DefaultScheduleBlock());
@@ -1927,8 +1466,6 @@ begin
   end;
 end;
 
-// Stop before deleting any files, including on silent uninstall. Player data
-// keeps the existing manual-versus-silent uninstall policy.
 procedure DeletePlayerState(const Name: String);
 begin
   DeleteFile(ExpandConstant('{app}\') + Name);
@@ -1970,7 +1507,6 @@ begin
     DelTree(ExpandConstant('{app}\tracker-source-*.exe'), False, True, False);
     DeleteFile(ExpandConstant('{app}\tracker.db'));
     DelTree(ExpandConstant('{app}\storage-backups'), True, True, False);
-    // Server role's TLS material (absent on combined/client installs).
     DeleteFile(ExpandConstant('{app}\server_cert.pem'));
     DeleteFile(ExpandConstant('{app}\server_key.pem'));
   end;

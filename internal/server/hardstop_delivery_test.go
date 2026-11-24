@@ -55,7 +55,7 @@ func TestHardstopDeliverySurvivesLostAcknowledgementWithoutExtendingExpiry(t *te
 	if err != nil || !fresh || effective == nil {
 		t.Fatalf("first collector application: %+v %v %v", effective, fresh, err)
 	}
-	stop() // applied on collector, acknowledgement lost before reaching server
+	stop()
 	if err := config.SavePendingCash(journal, saved); err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +84,6 @@ func TestHardstopDeliverySurvivesLostAcknowledgementWithoutExtendingExpiry(t *te
 		time.Sleep(5 * time.Millisecond)
 	}
 	stop()
-	// Recovering the identical row restores only the confirmed active clock,
-	// never a new decision or a freshly calculated expiry.
 	if err := config.SavePendingCash(journal, saved); err != nil {
 		t.Fatal(err)
 	}

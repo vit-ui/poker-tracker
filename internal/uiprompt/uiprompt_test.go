@@ -29,7 +29,6 @@ func TestHasDisplay(t *testing.T) {
 }
 
 func TestDetectTool(t *testing.T) {
-	// look simulates exec.LookPath: found is the set of tools present on PATH.
 	look := func(found ...string) func(string) (string, error) {
 		set := map[string]bool{}
 		for _, f := range found {

@@ -1,4 +1,3 @@
-// Package update replaces only the local role from a stable GitHub release.
 package update
 
 import (
@@ -41,10 +40,8 @@ func Register(flags *flag.FlagSet) *Options {
 	return options
 }
 
-// LocalUpdate reports whether the caller invoked the interactive update command.
 func (options *Options) LocalUpdate() bool { return options.update }
 
-// Handle runs before setup/serve so updating never loads another installation's config.
 func (options *Options) Handle(flags *flag.FlagSet, role, version, installationID string) (bool, error) {
 	if options.recoverTarget != "" {
 		if runtime.GOOS != "windows" {
@@ -305,7 +302,6 @@ func run(target, role, version, id string, parent int, out io.Writer, job *confi
 		return fmt.Errorf("staging update: %w", err)
 	}
 	defer os.Remove(staged)
-	// A release executable must identify itself before the running owner is touched.
 	if runtime.GOOS == "windows" {
 		renamed := staged + ".exe"
 		if err := moveExecutable(staged, renamed); err != nil {
@@ -413,7 +409,6 @@ func replace(target, staged string, service *serviceState, newVersion, oldVersio
 	if err := service.finishUpdate(); err != nil {
 		return fmt.Errorf("finishing update recovery: %w", err)
 	}
-	// Windows may retain the caller's mapped image until --update returns.
 	if err := os.Remove(old); err != nil && !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(os.Stdout, "Previous executable retained at %s\n", old)
 	}

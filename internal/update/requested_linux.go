@@ -24,8 +24,6 @@ func lockRequested(path string) (func(), error) {
 }
 
 func startRequestedHelper(helper string, args []string, role, installationID, requestID string) error {
-	// A process in the server's systemd cgroup would be killed by its own
-	// systemctl stop. Launch a separate transient user unit when managed.
 	unit := installation.ServerServiceName(installationID)
 	output, err := exec.Command("systemctl", "--user", "show", unit, "--property=MainPID", "--value").Output()
 	if err == nil && strings.TrimSpace(string(output)) == fmt.Sprint(os.Getpid()) {

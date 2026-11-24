@@ -15,9 +15,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// closeEnough reports whether a and b differ by less than half a cent —
-// USD amounts derived from chained float64 arithmetic (e.g. -0.12 + 0.55)
-// can land a few ULPs off an exact decimal value.
 func closeEnough[T ~int64 | ~float64](a, b T) bool {
 	if _, ok := any(a).(money.Cents); ok {
 		return a == b
@@ -100,7 +97,7 @@ func TestParseLedgerRows(t *testing.T) {
 
 	t.Run("short row is skipped, not erroring", func(t *testing.T) {
 		rows := [][]interface{}{
-			{"2026-07-01 10:00", "deposit"}, // only 2 columns, skipped
+			{"2026-07-01 10:00", "deposit"},
 			{"2026-07-02 09:30", "cash_session", float64(-5.5), float64(94.5)},
 		}
 		entries, err := parseLedgerRows(rows)
@@ -134,9 +131,6 @@ func TestParseLedgerRows(t *testing.T) {
 	})
 }
 
-// TestCashSessionID confirms the upsert key is stable across repeated
-// re-parses of the same growing file (same date + first hand ID always
-// produces the same ID) and distinct for anything that actually differs.
 func TestCashSessionID(t *testing.T) {
 	d1, _ := time.Parse(dateFormat, "2026-07-01 20:00")
 	d2, _ := time.Parse(dateFormat, "2026-07-01 20:01")
@@ -165,8 +159,8 @@ func TestColumnLetter(t *testing.T) {
 	}{
 		{0, "A"},
 		{1, "B"},
-		{11, "L"}, // Bounty Won (USD), the first backfilled column in the real Tournaments migration
-		{12, "M"}, // Prize Won (USD)
+		{11, "L"},
+		{12, "M"},
 		{25, "Z"},
 		{26, "AA"},
 		{27, "AB"},
@@ -180,10 +174,6 @@ func TestColumnLetter(t *testing.T) {
 	}
 }
 
-// TestNewClient_MissingCredentialsFile confirms NewClient fails fast at the
-// os.ReadFile step for a nonexistent service account path — no network
-// access is attempted. This is the only part of Client construction
-// testable without a live Google Sheets API call.
 func TestNewClient_MissingCredentialsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
 	_, err := NewClient(path, "some-spreadsheet-id", "")
@@ -192,9 +182,6 @@ func TestNewClient_MissingCredentialsFile(t *testing.T) {
 	}
 }
 
-// TestResolveSheetID_MissingCredentialsFile mirrors
-// TestNewClient_MissingCredentialsFile for ResolveSheetID's own
-// credentials read.
 func TestResolveSheetID_MissingCredentialsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
 	_, err := ResolveSheetID(path, "My Poker Sheet")
@@ -203,9 +190,6 @@ func TestResolveSheetID_MissingCredentialsFile(t *testing.T) {
 	}
 }
 
-// TestNewClient_InvalidCredentialsJSON confirms a file that exists but
-// isn't valid service-account JSON fails at credential parsing, still
-// before any network call.
 func TestNewClient_InvalidCredentialsJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "google_service_account.json")
@@ -239,8 +223,6 @@ func TestFlushDecision(t *testing.T) {
 	}
 }
 
-// TestLoadFallback_MissingFileIsEmpty confirms an absent fallback file is the
-// normal empty state, not an error that would brick startup.
 func TestLoadFallback_MissingFileIsEmpty(t *testing.T) {
 	c := &Client{fallbackPath: filepath.Join(t.TempDir(), "nope.json")}
 	if err := c.loadFallback(); err != nil {
@@ -251,10 +233,6 @@ func TestLoadFallback_MissingFileIsEmpty(t *testing.T) {
 	}
 }
 
-// TestFallbackRoundTrip caches all three entry kinds — including a tournament
-// summary and its hand-stats sharing one TournamentID, which must coexist
-// under distinct composite keys — persists them via cacheFailed, and confirms
-// a fresh client reloads them intact and that a deletion survives a reload.
 func TestFallbackRoundTrip(t *testing.T) {
 	fbPath := filepath.Join(t.TempDir(), "sheets_fallback.json")
 	c := &Client{fallbackPath: fbPath, fallback: make(map[string]fallbackEntry)}
@@ -311,15 +289,6 @@ func TestFallbackRoundTrip(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Migration row builders — pure build → parse round-trip (no live Sheets API)
-// ---------------------------------------------------------------------------
-
-// viaWire round-trips a built row through JSON the way the Sheets API does:
-// every numeric cell a build* function writes as a Go int/float64 comes back
-// as float64 (JSON has one number type), and trailing empty cells are dropped.
-// Parsing this — not the raw built row — is what proves the parse* functions
-// decode real API output, since parseInt/parseFloat only handle float64/string.
 func viaWire(row []interface{}) []interface{} {
 	data, err := json.Marshal(dollarCells([][]interface{}{row})[0])
 	if err != nil {
@@ -351,7 +320,7 @@ func TestBuildTournamentRows_RoundTrip(t *testing.T) {
 		return tm
 	}
 	want := []storage.TournamentRecord{
-		{ // full knockout Spin & Go with hand stats and a cash prize pool
+		{
 			Tournament: parsers.Tournament{
 				Date: utc("2026-07-12 18:00"), Type: "spingo-ko", TournamentID: "T-SPIN-1",
 				BuyInCents: 500, PrizePoolCents: 3000, Multiplier: floatPtr(6), FinishPos: 1, TotalPlayers: 3,
@@ -359,21 +328,21 @@ func TestBuildTournamentRows_RoundTrip(t *testing.T) {
 			},
 			BountyWonCents: 450, PrizeWonCents: 3450,
 		},
-		{ // summary-only MTT: nil multiplier, nil VPIP/PFR/Hands
+		{
 			Tournament: parsers.Tournament{
 				Date: utc("2026-07-15 20:00"), Type: "mtt", TournamentID: "T-MTT-2",
 				BuyInCents: 300, PrizePoolCents: 20000, FinishPos: 40, TotalPlayers: 100, NetCents: -300,
 			},
 			PrizeWonCents: 0,
 		},
-		{ // ticket-denominated satellite: description prize pool, no cash value
+		{
 			Tournament: parsers.Tournament{
 				Date: utc("2026-07-13 19:00"), Type: "spingo", TournamentID: "T-SAT-1",
 				BuyInCents: 100, PrizePoolDescription: "$1.00 Power Path Step 2 Ticket",
 				FinishPos: 2, TotalPlayers: 3, NetCents: -100,
 			},
 		},
-		{ // hand-file-only partial: blank Date, placeholder Type, no summary cols
+		{
 			Tournament: parsers.Tournament{
 				Type: "ko", TournamentID: "T-PARTIAL-1",
 				VPIP: floatPtr(30), PFR: floatPtr(25), Hands: intPtr(45),
@@ -442,44 +411,27 @@ func TestBuildCashRows_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestParseRowGuards_ShortRowsSkipped pins the pre-refactor behavior: a
-// hand-edited row with a valid date but fewer cells than the script ever
-// writes is skipped, not parsed into a zeroed record that would feed /stats
-// and the migration snapshot. Script-written rows are never short — the
-// Sheets API only omits trailing empty cells and every writer ends rows with
-// a non-empty cell — so these guards only re-exclude corrupt rows.
 func TestParseRowGuards_ShortRowsSkipped(t *testing.T) {
 	if _, ok, err := parseCashRow([]interface{}{"2026-07-01 20:00", "NL10", float64(50)}); err != nil || ok {
 		t.Error("parseCashRow accepted a 3-cell row")
 	}
-	// The shortest legitimate cash rows — 9-column pre-v1.4 rows (no Session
-	// ID yet) — still parse.
 	if _, ok, err := parseCashRow(viaWire([]interface{}{"2026-07-01 20:00", "NL10", 50, 100, -5.0, 2.5, -10.0, 24.5, 18.2})); err != nil || !ok {
 		t.Error("parseCashRow rejected a 9-cell pre-v1.4 row")
 	}
 }
 
-// TestParseSheetDate covers both serializations a Date cell can arrive in: the
-// plain text the tracker writes, and the serial-number float64 Sheets returns
-// when the column has been formatted as a Date/Time (the bug that crashed
-// /status with "parsing time \"46218.61319444444\"").
 func TestParseSheetDate(t *testing.T) {
 	want, _ := time.Parse(dateFormat, "2026-07-17 16:49")
 
-	// String form — the normal case.
 	if got, err := parseSheetDate("2026-07-17 16:49"); err != nil || !got.Equal(want) {
 		t.Errorf("string form: got %v, err %v; want %v", got, err, want)
 	}
 
-	// Serial form — same instant expressed as days-since-1899-12-30. Computed
-	// the way Sheets would, then fed back to prove the round-trip.
 	serial := float64(want.Sub(sheetsEpoch)) / float64(24*time.Hour)
 	if got, err := parseSheetDate(serial); err != nil || !got.Equal(want) {
 		t.Errorf("serial form: got %v, err %v; want %v (serial %v)", got, err, want, serial)
 	}
 
-	// The exact value from the crash must parse (to some sane mid-2026 date)
-	// rather than error.
 	got, err := parseSheetDate(46218.61319444444)
 	if err != nil {
 		t.Fatalf("crash value errored: %v", err)
@@ -488,7 +440,6 @@ func TestParseSheetDate(t *testing.T) {
 		t.Errorf("crash value parsed to %v, want a July 2026 date", got)
 	}
 
-	// A blank/garbage cell still errors, so callers keep skipping it.
 	if _, err := parseSheetDate(""); err == nil {
 		t.Error("empty cell should still error")
 	}

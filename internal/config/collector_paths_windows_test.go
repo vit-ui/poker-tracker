@@ -41,7 +41,6 @@ func TestWindowsCollectorRelativePathUsesActiveDesktop(t *testing.T) {
 		t.Log("No accessible active desktop identity: a full path is required")
 		return
 	}
-	// The real desktop home is read only. No directories are created there.
 	path, err := ResolveCollectorPath(".")
 	if err != nil || path != filepath.Clean(home) {
 		t.Fatalf("relative path %q %v; desktop home %q", path, err, home)

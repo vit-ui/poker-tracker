@@ -45,7 +45,7 @@ func TestLockCommandsRemainResponsiveWithBlockedUploadsAndControlRequests(t *tes
 	link.Uploads = make(chan transport.Upload)
 	collector := NewCollector(link, NewEnforcer(path), nil)
 	finished, stopped := make(chan struct{}), make(chan struct{})
-	requests := make(chan transport.Command) // deliberately no receiver
+	requests := make(chan transport.Command)
 	go func() { collector.applyCommands(nil, finished, requests); close(stopped) }()
 	defer func() { close(finished); <-stopped }()
 	link.Commands <- transport.Command{Kind: transport.CommandRescan}

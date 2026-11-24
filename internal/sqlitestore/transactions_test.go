@@ -157,7 +157,6 @@ func TestOverlappingCorrectionsAndMovements(t *testing.T) {
 			t.Fatalf("row %d total = %v, want %v", i, row.RunningTotalCents, totalCents)
 		}
 	}
-	// 100 + 10 - 20 - 7 + (-2 + 1 bounty) + 3 = 85.
 	if !closeEnough(totalCents, 8500) {
 		t.Fatalf("final bankroll = %v, want 85", totalCents)
 	}

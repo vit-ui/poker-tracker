@@ -10,8 +10,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/config"
 )
 
-// Exercise real journals using termination outcomes. No process termination is
-// invoked: actual Windows enforcement needs a separately coordinated window.
 func TestClosureOutcomesAndPersistence(t *testing.T) {
 	for _, test := range []struct {
 		name    string

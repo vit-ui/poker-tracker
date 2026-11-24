@@ -11,19 +11,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Stop requests owner shutdown and waits for processes in dir to exit.
-// The caller is excluded so setup and uninstall can use the installed binary.
 func Stop(dir string) error { return StopExcept(dir, 0) }
 
-// StopExcept also excludes the terminal updater, which has no service shutdown event.
 func StopExcept(dir string, excludedPID int) (result error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return fmt.Errorf("resolving installation directory: %w", err)
 	}
-	// Elevated installers must explicitly enable their existing debug privilege
-	// to inspect SYSTEM-owned task processes. Restore the prior token state on
-	// every exit; ordinary users retain same-user shutdown behavior.
 	if windows.GetCurrentProcessToken().IsElevated() {
 		var token windows.Token
 		if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token); err != nil {
@@ -75,7 +69,7 @@ func StopExcept(dir string, excludedPID int) (result error) {
 func stopProcess(pid uint32, target string) error {
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-		return nil // The process exited after the snapshot.
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("opening tracker process %d to verify installation: %w", pid, err)

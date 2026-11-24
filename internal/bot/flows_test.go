@@ -1,8 +1,5 @@
 package bot
 
-// Tests for flows.go's pure input helpers: numeric input validation, the
-// comma-decimal normalization /deposit accepts, and threshold validation.
-
 import (
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/money"

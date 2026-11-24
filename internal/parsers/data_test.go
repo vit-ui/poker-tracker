@@ -10,13 +10,10 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-// fixturePath returns the path to a committed anonymized fixture — sub is
-// "hand_history" or "tournament_summary".
 func fixturePath(sub, name string) string {
 	return filepath.Join("..", "..", "testdata", sub, name)
 }
 
-// firstLine returns the first line of a file with any UTF-8 BOM stripped.
 func firstLine(t *testing.T, path string) string {
 	t.Helper()
 	f, err := os.Open(path)
@@ -35,10 +32,6 @@ func firstLine(t *testing.T, path string) string {
 	return line
 }
 
-// TestFixtureSummaryMoney spot-checks exact money/finish values on one
-// committed summary fixture per non-NLHE format, proving the game type is
-// irrelevant to the money fields. The fixtures are anonymized copies of real
-// summaries (see testdata/tournament_summary/), so the values are real.
 func TestFixtureSummaryMoney(t *testing.T) {
 	cases := []struct {
 		file              string
@@ -52,11 +45,7 @@ func TestFixtureSummaryMoney(t *testing.T) {
 	}{
 		{"horse_T9000000003.txt", "mtt", 110, 69, 41, 7500, false, 0},
 		{"plo_T9000000004.txt", "mtt", 110, 183, 59, 8784, false, 0},
-		// PKO 2-7 draw: "Buy-In: $2.94/$0.36" — the $2.94 half already sums
-		// the base buy-in and the bounty, so BuyInCents is the full 3.30.
 		{"draw27_pko_T9000000005.txt", "mtt", 330, 19, 0, 7150, false, 0},
-		// PLO re-entry: the hero played 3 entries, busted 43rd of 162, $2.20
-		// across 2 re-entries on top of the $1.10 base.
 		{"plo_reentry_T9000000006.txt", "mtt", 330, 162, 43, 7776, false, 2},
 	}
 	for _, c := range cases {
@@ -90,9 +79,6 @@ func TestFixtureSummaryMoney(t *testing.T) {
 	}
 }
 
-// TestFixtureHandHistoryFormats spot-checks that the exotic hand-history
-// formats classify correctly: a PKO draw tournament flags IsKnockout, and the
-// All-In Poker cash table parses as a cash session with the right stake.
 func TestFixtureHandHistoryFormats(t *testing.T) {
 	t.Run("2-7 draw PKO is knockout", func(t *testing.T) {
 		session, stats, err := ParseCashFile(fixturePath("hand_history", "draw27_pko_T9000000005.txt"), testScreenName)
@@ -121,10 +107,6 @@ func TestFixtureHandHistoryFormats(t *testing.T) {
 	})
 }
 
-// detectHero returns the screen name PokerStars wrote in the file's first
-// "Dealt to <name>" line — always the hero in a hand history. Empty if none.
-// Lets the dev-only sweep parse real hand histories without naming the real
-// player anywhere in committed source.
 func detectHero(t *testing.T, path string) string {
 	t.Helper()
 	f, err := os.Open(path)
@@ -148,12 +130,6 @@ func detectHero(t *testing.T, path string) string {
 	return ""
 }
 
-// TestParseDataFiles is a dev-machine-only smoke test: it parses every raw file
-// in data/ (gitignored real hand histories/summaries, present only where the
-// player keeps them) and asserts none fail to parse. It skips when data/ is
-// absent (CI, a fresh checkout). Hand histories are parsed for their own hero
-// (auto-detected via detectHero, so the real nick never appears in source);
-// summaries parse without needing the nick.
 func TestParseDataFiles(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "data", "*.txt"))
 	if err != nil {

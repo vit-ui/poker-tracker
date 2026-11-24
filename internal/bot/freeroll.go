@@ -1,12 +1,5 @@
 package bot
 
-// The freeroll/Kick-Off buy-in confirmation flow: the inline-keyboard question
-// asking whether a zero-buy-in tournament was entered for free or paid, and
-// the answer handling that records the queued tournament. PokerStars records
-// no buy-in and no entry method for these, but a knockout freeroll still pays
-// real bounty cash (folded in from the hand history file), so the row must be
-// recorded — only the entry cost is unknown, and the player supplies it.
-
 import (
 	"fmt"
 	"log/slog"
@@ -19,10 +12,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// sendFreerollBuyInMenu asks whether a zero-buy-in tournament was entered for
-// free (a won level-up) or paid. Includes buy-in-free, date, and finish/field
-// size so the player can tell tournaments apart when more than one is pending —
-// the identifying detail is otherwise just a TournamentID.
 func (b *Bot) sendFreerollBuyInMenu(t parsers.Tournament) {
 	gameType := "MTT"
 	if t.BaseType() == "spingo" {
@@ -38,9 +27,6 @@ func (b *Bot) sendFreerollBuyInMenu(t parsers.Tournament) {
 	b.sendMessageWithKeyboard(text, markup)
 }
 
-// beginFreerollBuyInEntry starts the single-flight text entry for a paid
-// freeroll's buy-in amount, remembering the tournament ID and the menu message
-// to edit back once the amount is typed. Mirrors beginValueEntry.
 func (b *Bot) beginFreerollBuyInEntry(chatID int64, messageID int, tournamentID string) {
 	b.flow = "freeroll_buyin"
 	b.field = tournamentID
@@ -48,9 +34,6 @@ func (b *Bot) beginFreerollBuyInEntry(chatID int64, messageID int, tournamentID 
 	send(b.tg, chatID, "How much did you pay to enter? Send the USD amount (as shown on PokerStars, not BRL).")
 }
 
-// handleFreerollBuyInReply saves the buy-in typed in response to
-// beginFreerollBuyInEntry and records the tournament. On an invalid amount it
-// re-prompts and keeps the flow state so the player can retry.
 func (b *Bot) handleFreerollBuyInReply(chatID int64, text string) {
 	amountCents, err := parsePositiveMoney(text)
 	if err != nil {
@@ -63,13 +46,6 @@ func (b *Bot) handleFreerollBuyInReply(chatID int64, text string) {
 	b.recordFreerollEntry(chatID, messageID, tournamentID, amountCents)
 }
 
-// recordFreerollEntry records a queued freeroll with the resolved buy-in
-// (0 for a free entry) and removes it from the pending queue. NetCents from the
-// parser is the payout with a zero buy-in, so subtracting the answered buy-in
-// folds it in (same as re-entry's cost subtraction); AppendTournament then
-// folds in whatever knockout bounty the hand history file already recorded.
-// messageID is edited to the confirmation (a callback message for the free
-// tap, the remembered menu message for the paid text reply).
 func (b *Bot) recordFreerollEntry(chatID int64, messageID int, tournamentID string, buyInCents money.Cents) {
 	b.queueTournamentAnswer(storage.TournamentAnswer{
 		TournamentID: tournamentID, Reason: config.PendingFreerollBuyin, TotalCostCents: buyInCents,

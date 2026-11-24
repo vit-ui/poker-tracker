@@ -127,10 +127,6 @@ func TestLoadPendingTournaments_MalformedJSON(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_PartialFile confirms fields absent from a hand-written
-// partial config.json load as nil rather than zero-erroring, and fields
-// present survive alongside them — the null-vs-zero contract every pointer
-// field in Config exists for.
 func TestLoadConfig_PartialFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	partial := `{

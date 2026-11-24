@@ -140,7 +140,6 @@ func TestRecoveredCashShorterReplacementUpdatesSameSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	// An earlier write may have succeeded before interruption of journal retirement.
 	hands, err := parsers.CashHands(fixture, hero)
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +152,7 @@ func TestRecoveredCashShorterReplacementUpdatesSameSession(t *testing.T) {
 	offsets := handHeaderOffsetsBytes(data)
 	link.Uploads <- transport.Upload{FileID: "table", Type: "cash", ScreenName: "AnonHero01", Bytes: data[:offsets[2]], Recovery: true, FileActivity: time.Now(), ClientClock: time.Now()}
 	waitForCashSession(t, store, 2)
-	awaitBankroll(t, store, -3, time.Second) // first hand big blind .02 + second hand small blind .01
+	awaitBankroll(t, store, -3, time.Second)
 	snapshot, err := store.ExportSnapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +193,7 @@ func TestSitOutUpdateRearmsPendingCash(t *testing.T) {
 	if updated.Session.Hands != initial.Session.Hands || updated.Session.NetCents != initial.Session.NetCents {
 		t.Fatalf("sit-out hand changed player results: %+v", updated)
 	}
-	time.Sleep(200 * time.Millisecond) // past original deadline, before the rearmed deadline
+	time.Sleep(200 * time.Millisecond)
 	if bankrollCents, err := store.GetCurrentBankroll(); err != nil || bankrollCents != 0 {
 		t.Fatalf("old deadline completed rearmed session: %v %v", bankrollCents, err)
 	}
@@ -272,8 +271,6 @@ func TestRecoveredCashRestoresRemainingQuietInterval(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				// Only virtual time advances here. Real filesystem/database setup and CPU
-				// scheduling cannot consume the saved session's remaining quiet interval.
 				time.Sleep(test.startupDelay)
 				worker, link, stop := runRecoveredWorker(t, store, path, 400*time.Millisecond)
 				defer stop()

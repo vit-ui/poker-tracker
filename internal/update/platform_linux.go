@@ -77,9 +77,6 @@ func inspectService(target, role, id string, parent int) (*serviceState, error) 
 				return nil, readErr
 			}
 			if !s.managed && strings.Contains(string(cgroup), "/"+s.name) {
-				// The generated unit can use a fixed shell command which
-				// execs the server. Verify the unit's actual main process
-				// and executable when ExecStart names the shell.
 				if pid != mainPID || !strings.Contains(string(cgroup), "/"+s.name+"\n") {
 					return nil, fmt.Errorf("cannot verify the service owning this installation")
 				}

@@ -1,8 +1,5 @@
 package bot
 
-// Tests for help.go's command help lookup. Moved verbatim from the former
-// bot_calc_test.go so test files mirror the package's file-per-concern split.
-
 import (
 	"strings"
 	"testing"

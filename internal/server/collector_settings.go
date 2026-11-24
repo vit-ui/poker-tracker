@@ -7,8 +7,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// collectorSettingsQueue is owned by Run alongside uploads and storage writes.
-// Edits coalesce by field; an older acknowledgement cannot retire newer edits.
 type collectorSettingsQueue struct {
 	path     string
 	state    config.CollectorSettingsState

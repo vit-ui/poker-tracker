@@ -14,8 +14,6 @@ import (
 
 func TestStop(t *testing.T) {
 	if os.Getenv("TRACKER_INSTALLATION_TEST_CHILD") == "1" {
-		// Exercise self-exclusion in a real tracker.exe process before allowing
-		// the parent to exercise process-path matching.
 		exe, err := os.Executable()
 		if err != nil {
 			os.Exit(3)
@@ -34,7 +32,6 @@ func TestStop(t *testing.T) {
 		<-done
 		return
 	}
-	// Exercise the elevated installer's disabled initial privilege state too.
 	var token windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY, &token); err != nil {
 		t.Fatal(err)
@@ -106,7 +103,7 @@ func TestStop(t *testing.T) {
 			var exitCode uint32
 			err = windows.GetExitCodeProcess(handle, &exitCode)
 			windows.CloseHandle(handle)
-			if err != nil || exitCode != 259 { // STILL_ACTIVE
+			if err != nil || exitCode != 259 {
 				t.Fatalf("other installation exit code = %d, error = %v", exitCode, err)
 			}
 			if err := Stop(other); err != nil {

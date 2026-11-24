@@ -1,5 +1,3 @@
-// Package money represents USD amounts as integer cents. Decimal conversion
-// happens only at input and display boundaries, never through a binary float.
 package money
 
 import (
@@ -12,14 +10,10 @@ import (
 	"strings"
 )
 
-// Cents is a USD amount in hundredths of a dollar.
 type Cents int64
 
-// ErrOverflow identifies an amount that cannot be represented as int64 cents.
 var ErrOverflow = errors.New("USD cents overflow")
 
-// Parse converts decimal dollars to cents. A fractional cent rounds away from
-// zero: 1.001 becomes 101 cents and -1.001 becomes -101 cents.
 func Parse(dollars string) (Cents, error) {
 	text := strings.TrimSpace(dollars)
 	if len(text) > 128 || strings.IndexFunc(text, func(r rune) bool {
@@ -49,7 +43,6 @@ func Parse(dollars string) (Cents, error) {
 	return Cents(whole.Int64()), nil
 }
 
-// Add rejects overflow instead of allowing a running total to wrap its sign.
 func Add(leftCents, rightCents Cents) (Cents, error) {
 	if (rightCents > 0 && leftCents > Cents(math.MaxInt64)-rightCents) ||
 		(rightCents < 0 && leftCents < Cents(math.MinInt64)-rightCents) {
@@ -58,7 +51,6 @@ func Add(leftCents, rightCents Cents) (Cents, error) {
 	return leftCents + rightCents, nil
 }
 
-// Subtract rejects overflow, including subtraction of the smallest int64.
 func Subtract(leftCents, rightCents Cents) (Cents, error) {
 	if (rightCents < 0 && leftCents > Cents(math.MaxInt64)+rightCents) ||
 		(rightCents > 0 && leftCents < Cents(math.MinInt64)+rightCents) {
@@ -67,7 +59,6 @@ func Subtract(leftCents, rightCents Cents) (Cents, error) {
 	return leftCents - rightCents, nil
 }
 
-// Multiply scales an amount by a whole-number count with overflow checking.
 func Multiply(amountCents Cents, count int64) (Cents, error) {
 	result := new(big.Int).Mul(big.NewInt(int64(amountCents)), big.NewInt(count))
 	if !result.IsInt64() {
@@ -76,7 +67,6 @@ func Multiply(amountCents Cents, count int64) (Cents, error) {
 	return Cents(result.Int64()), nil
 }
 
-// String formats decimal dollars with exactly two fractional digits.
 func (cCents Cents) String() string {
 	negative := cCents < 0
 	magnitude := uint64(cCents)
@@ -94,10 +84,8 @@ func (cCents Cents) String() string {
 	return result
 }
 
-// Dollars is an exact JSON decimal for a USD-denominated external cell.
 func (cCents Cents) Dollars() json.Number { return json.Number(cCents.String()) }
 
-// Ratio converts an amount ratio to a dimensionless statistic for display.
 func Ratio(numeratorCents, denominatorCents Cents) float64 {
 	if denominatorCents == 0 {
 		return 0
@@ -107,13 +95,11 @@ func Ratio(numeratorCents, denominatorCents Cents) float64 {
 	return value
 }
 
-// LossExceeds compares a negative result without overflowing when negating it.
 func LossExceeds(netCents, buyInCents Cents, multiplier float64) bool {
 	lossCentsRat := new(big.Rat).Neg(new(big.Rat).SetInt64(int64(netCents)))
 	return exceedsMultiple(lossCentsRat, buyInCents, multiplier)
 }
 
-// DifferenceExceeds compares a drawdown without overflowing its subtraction.
 func DifferenceExceeds(peakCents, currentCents, buyInCents Cents, multiplier float64) bool {
 	differenceCentsRat := new(big.Rat).Sub(new(big.Rat).SetInt64(int64(peakCents)), new(big.Rat).SetInt64(int64(currentCents)))
 	return exceedsMultiple(differenceCentsRat, buyInCents, multiplier)

@@ -20,8 +20,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/uiprompt"
 )
 
-// The Telegram client puts the bot token in the request URL. Keep transport
-// errors from including that URL in process logs or update status.
 type telegramHTTPClient struct{}
 
 func (telegramHTTPClient) Do(req *http.Request) (*http.Response, error) {
@@ -36,12 +34,10 @@ func newTelegramBot(token string) (*tgbotapi.BotAPI, error) {
 	return tgbotapi.NewBotAPIWithClient(token, apiEndpoint, telegramHTTPClient{})
 }
 
-// TelegramSetupOptions exposes local pairing and a read-only pairing check.
 type TelegramSetupOptions struct {
 	connect, ifNeeded, status bool
 }
 
-// RegisterTelegramSetup adds setup commands to an executable that hosts the bot.
 func RegisterTelegramSetup(flags *flag.FlagSet) *TelegramSetupOptions {
 	options := new(TelegramSetupOptions)
 	flags.BoolVar(&options.connect, "connect-telegram", false, "link this installation to your Telegram bot")
@@ -50,7 +46,6 @@ func RegisterTelegramSetup(flags *flag.FlagSet) *TelegramSetupOptions {
 	return options
 }
 
-// Handle runs a local setup command. Status returns 1 for pending and 2 for a read error.
 func (o *TelegramSetupOptions) Handle(flags *flag.FlagSet, path string) (handled bool, exitCode int) {
 	if (o.status || o.ifNeeded || o.connect) && (flags.NFlag() != 1 || flags.NArg() != 0) {
 		fmt.Fprintln(os.Stderr, "Use a Telegram setup command by itself.")
@@ -84,7 +79,6 @@ func (o *TelegramSetupOptions) Handle(flags *flag.FlagSet, path string) (handled
 	return true, 0
 }
 
-// FinishTelegramSetup offers local pairing when missing and reports any pending setup.
 func FinishTelegramSetup(path string) error {
 	credentials, err := loadTelegramCredentials(path)
 	if err != nil {
@@ -120,7 +114,6 @@ func telegramSetupPending() string {
 	return "Telegram setup pending. On the bot host, run: '" + strings.ReplaceAll(exe, "'", "'\"'\"'") + "' --connect-telegram"
 }
 
-// ConnectTelegram provisions a first or replacement bot from local setup.
 func ConnectTelegram(configPath string) error {
 	proceed, err := uiprompt.EnsureTelegramSetupPrivileges()
 	if err != nil || !proceed {
@@ -168,7 +161,6 @@ func ConnectTelegram(configPath string) error {
 	}
 }
 
-// TelegramTokenForSetup reuses an existing private pairing for the setup wizard.
 func TelegramTokenForSetup(path string) (string, error) {
 	credentials, err := loadTelegramCredentials(path)
 	if err != nil || credentials.token != "" {

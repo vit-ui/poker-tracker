@@ -1,10 +1,3 @@
-// Package uiprompt is a small setup front-end. When a graphical dialog tool and
-// a display are available (a Linux desktop), it collects input through zenity or
-// kdialog so the server/client --setup shows a window like the Windows installer
-// does; otherwise — a headless SSH box, or Windows, where either the terminal or
-// the Inno wizard drives setup — it falls back to plain stdin/stdout prompts. It
-// shells out to the dialog tools rather than taking a GUI dependency, the same
-// approach the rest of the program uses for taskkill/schtasks/systemctl.
 package uiprompt
 
 import (
@@ -16,15 +9,11 @@ import (
 	"strings"
 )
 
-// Prompter renders setup questions either as GUI dialogs or as terminal prompts,
-// decided once at construction from the environment.
 type Prompter struct {
-	tool    string // "zenity", "kdialog", or "" for the terminal fallback
+	tool    string
 	scanner *bufio.Scanner
 }
 
-// New picks the dialog tool from the current environment (a graphical desktop
-// with zenity or kdialog installed) and falls back to the terminal otherwise.
 func New() *Prompter {
 	return &Prompter{
 		tool:    detectTool(os.Environ(), exec.LookPath),
@@ -32,16 +21,10 @@ func New() *Prompter {
 	}
 }
 
-// Graphical reports whether prompts render as GUI dialogs (true) or as terminal
-// prompts (false), so callers can word follow-up instructions to match.
 func (p *Prompter) Graphical() bool { return p.tool != "" }
 
-// HasGraphicalSession reports whether the current process has a graphical
-// desktop session (an X11 or Wayland display), the shared signal for "prefer a
-// window / a graphical password prompt over a terminal one".
 func HasGraphicalSession() bool { return hasDisplay(os.Environ()) }
 
-// Info shows a message and waits for the user to acknowledge it.
 func (p *Prompter) Info(title, message string) error {
 	switch p.tool {
 	case "zenity":
@@ -54,7 +37,6 @@ func (p *Prompter) Info(title, message string) error {
 	}
 }
 
-// Ask prompts for one line of text and returns it trimmed.
 func (p *Prompter) Ask(title, prompt string) (string, error) {
 	switch p.tool {
 	case "zenity":
@@ -72,20 +54,14 @@ func (p *Prompter) Ask(title, prompt string) (string, error) {
 	}
 }
 
-// Choose presents a single-choice list and returns the chosen option's text. The
-// first option is the default. The terminal fallback reads a 1-based number.
 func (p *Prompter) Choose(title, prompt string, options []string) (string, error) {
 	switch p.tool {
 	case "zenity":
-		// A plain single-column list: zenity --list prints the selected row's
-		// first (here only) column — the label — by default. A --radiolist would
-		// add a leading boolean column, which --print-column returns instead.
 		args := []string{"--list", "--title", title, "--text", prompt, "--hide-header", "--column", "Option"}
 		args = append(args, options...)
 		out, err := exec.Command("zenity", args...).Output()
 		return strings.TrimSpace(string(out)), err
 	case "kdialog":
-		// kdialog --menu prints the selected item's tag; tag == label here.
 		args := []string{"--title", title, "--menu", prompt}
 		for _, o := range options {
 			args = append(args, o, o)
@@ -109,9 +85,6 @@ func (p *Prompter) Choose(title, prompt string, options []string) (string, error
 	}
 }
 
-// detectTool returns the graphical dialog tool to use, or "" for the terminal
-// fallback: it needs both a display (an X11 or Wayland session) and one of the
-// tools on PATH. environ is os.Environ()-shaped; look is exec.LookPath.
 func detectTool(environ []string, look func(string) (string, error)) string {
 	if !hasDisplay(environ) {
 		return ""
@@ -124,13 +97,10 @@ func detectTool(environ []string, look func(string) (string, error)) string {
 	return ""
 }
 
-// hasDisplay reports whether a graphical session is present, i.e. DISPLAY (X11)
-// or WAYLAND_DISPLAY is set to a non-empty value. A headless SSH box has neither.
 func hasDisplay(environ []string) bool {
 	return envValue(environ, "DISPLAY") != "" || envValue(environ, "WAYLAND_DISPLAY") != ""
 }
 
-// envValue returns the value of key in an os.Environ()-shaped slice, or "".
 func envValue(environ []string, key string) string {
 	prefix := key + "="
 	for _, kv := range environ {

@@ -10,9 +10,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/update"
 )
 
-// RunNetworkCollector keeps protection alive independently of server availability.
-// Only unexpected collection failures return to the service manager. Reconnect
-// attempts use the idle check cadence; no separate connectivity probe is needed.
 func RunNetworkCollector(configPath string, enforcer *Enforcer, done <-chan struct{}, updater *update.Agent) error {
 	return runNetworkCollector(configPath, enforcer, done, lockCheckInterval(false), updater)
 }

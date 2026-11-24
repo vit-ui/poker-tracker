@@ -18,16 +18,10 @@ import (
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
-// Collector is the collector-side loop: it turns file events into uploads of a
-// file's newly-appended bytes (sent up the link) and applies the lock commands
-// that come back down. It never parses or stores anything — that's the server's
-// job.
 type Collector struct {
-	Updater *update.Agent
-	Ready   chan struct{}
-	// Stop requests a watcher drain while transport and enforcement remain available.
-	Stop <-chan struct{}
-	// StartPaused holds the watcher during interrupted source-transfer recovery.
+	Updater     *update.Agent
+	Ready       chan struct{}
+	Stop        <-chan struct{}
 	StartPaused bool
 	link        *transport.Link
 	enforcer    *Enforcer
@@ -35,41 +29,20 @@ type Collector struct {
 	collection  *collection
 }
 
-// NewCollector creates a Collector over the given link, writing enforced locks
-// to lockfilePath. control pauses/resumes its watcher and returns drained events.
 func NewCollector(link *transport.Link, enforcer *Enforcer, control func(bool) ([]watcher.FileEvent, error)) *Collector {
 	return &Collector{Ready: make(chan struct{}), link: link, enforcer: enforcer, control: control}
 }
 
-// sentEntry is a file's last-sent byte offset plus when it was last touched, so
-// idle entries can be evicted (see sentStateCap/TTL). Mirrors the server's
-// parseEntry bookkeeping so both sides of the link bound their per-file maps the
-// same way.
 type sentEntry struct {
 	offset   int64
 	lastSeen time.Time
 }
 
-// sentStateCap and sentStateTTL bound the per-file sent-offset map. A long-lived
-// collector watching a folder that accumulates a new hand-history file per table
-// per day would otherwise grow the map without limit; when it exceeds the cap,
-// entries not touched within the TTL (finished sessions) are dropped. An
-// actively-growing file keeps a recent lastSeen and is never evicted; a
-// wrongly-evicted file just re-sends whole once (the server rebuilds it from
-// offset 0, always correct), so the bound can be aggressive. Same shape as the
-// server's parseStateCap/TTL.
 const (
 	sentStateCap = 128
 	sentStateTTL = 12 * time.Hour
 )
 
-// Run consumes file events from sessionChan, sends an Upload for each, and (in a
-// background goroutine) applies incoming lock commands. configPath is read per
-// event for the screen name the server needs to score results. dead is closed
-// by the network transport when the connection to the server drops; Run returns
-// then so the connection owner can reconnect while enforcement continues. In the
-// all-local build the link never drops, so a nil dead is passed and Run blocks
-// until sessionChan is closed.
 func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string, dead <-chan struct{}) error {
 	finished := make(chan struct{})
 	requests := make(chan transport.Command)
@@ -196,8 +169,6 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 				continue
 			}
 			pokerStarsState = running
-			// Older servers can still handle the update report during a
-			// split upgrade and ignore the new process-state field.
 			if !c.send(transport.Upload{Update: &report, PokerStarsRunning: running, ClientClock: time.Now()}, dead) {
 				return nil
 			}
@@ -371,9 +342,6 @@ func (c *Collector) Run(sessionChan <-chan watcher.FileEvent, configPath string,
 
 }
 
-// applyCommands carries out commands from the server until the link dies: a
-// lock kills PokerStars and writes the lockfile. File/control requests are
-// forwarded to Run so uploads and pause acknowledgements keep their order.
 func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<- transport.Command) {
 	var updateChanges <-chan config.UpdateReport
 	if c.Updater != nil {
@@ -466,12 +434,6 @@ func (c *Collector) applyCommands(dead, finished <-chan struct{}, requests chan<
 	}
 }
 
-// rescan walks both watched folders and uploads every file as an Import upload,
-// bracketed by ImportStart/ImportDone markers, so the server can silently
-// backfill everything not yet recorded (the /scan command). The paths are the
-// config's base folders joined with the screen name — the same join the watcher
-// is started with. A file that can't be read is logged and skipped. Sends stop
-// early if the link dies mid-scan.
 func (c *Collector) rescan(configPath string, dead <-chan struct{}) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -494,9 +456,6 @@ func (c *Collector) rescan(configPath string, dead <-chan struct{}) {
 	c.send(transport.Upload{Type: transport.ImportDone}, dead)
 }
 
-// uploadDir sends every regular .txt file in dir as a whole-file Import upload
-// of the given Type. PokerStars writes .txt files; anything else (or a
-// subdirectory) is skipped.
 func (c *Collector) uploadDir(dir, fileType, screenName string, dead <-chan struct{}) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -528,8 +487,6 @@ func (c *Collector) uploadDir(dir, fileType, screenName string, dead <-chan stru
 	}
 }
 
-// send delivers one upload, returning false if the link died first so the
-// caller can stop the scan.
 func (c *Collector) send(up transport.Upload, dead <-chan struct{}) bool {
 	select {
 	case c.link.Uploads <- up:
@@ -539,12 +496,6 @@ func (c *Collector) send(up transport.Upload, dead <-chan struct{}) bool {
 	}
 }
 
-// readUpload builds the Upload for a file event. A cash hand-history file is
-// append-only, so only the bytes past what was last sent are read (sent tracks
-// the last offset per file); nothing new means no upload. A tournament summary
-// is rewritten wholesale on each bust, so it is always sent whole (offset 0).
-// The screen name is read fresh from config each event so a value filled in at
-// runtime isn't missed.
 func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Time, configPath string) (transport.Upload, bool, error) {
 	screenName := ""
 	if cfg, err := config.LoadConfig(configPath); err == nil && cfg.Setup.PokerStarsScreenName != nil {
@@ -569,15 +520,12 @@ func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Ti
 			last = e.offset
 		}
 		if size >= last {
-			offset = last // append case: send only the new bytes
+			offset = last
 		}
-		// size < last means the file was rewritten/truncated: offset stays 0,
-		// resending the whole file so the server rebuilds it from scratch.
 		if size == offset {
-			return transport.Upload{}, false, nil // nothing new to send
+			return transport.Upload{}, false, nil
 		}
 	}
-	// Tournament summaries (and rewritten cash files) send whole from offset 0.
 
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return transport.Upload{}, false, fmt.Errorf("seeking file for upload %s: %w", event.Path, err)
@@ -599,5 +547,4 @@ func readUpload(event watcher.FileEvent, sent map[string]*sentEntry, now time.Ti
 	}, true, nil
 }
 
-// RunEnforcementLoop shares failed-save protection with command handling.
 func (c *Collector) RunEnforcementLoop(done <-chan struct{}) { c.enforcer.Run(done) }

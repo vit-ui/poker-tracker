@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// TestLockfileActiveAt covers the predicate the enforcement loop polls: a lock
-// is active only if the file exists and its expiry is still in the future.
-// Absent, expired, and malformed all read as inactive.
 func TestLockfileActiveAt(t *testing.T) {
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
 

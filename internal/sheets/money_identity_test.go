@@ -27,8 +27,6 @@ func TestIdentifiedMoneyRecoveryReconcilesLostAcknowledgement(t *testing.T) {
 	if !strings.Contains(string(data), `"operation_id": "money:lost-response"`) {
 		t.Fatalf("missing durable identity: %s", data)
 	}
-	// Script the independently observed ledger column after a remote commit with
-	// a failed acknowledgement. This is a GET fixture, not a spreadsheet model.
 	fake.mu.Lock()
 	fake.failWrites = false
 	fake.getBody = func(rng string) valueRange {

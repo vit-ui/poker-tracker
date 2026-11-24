@@ -33,8 +33,6 @@ func TestParseLeadingAmount(t *testing.T) {
 		{"dollar sign only", "$", 0, false},
 		{"chips, no dollar sign", "25", 2500, true},
 		{"zero", "0", 0, true},
-		// Thousands separators: a comma inside a digit run is consumed and
-		// stripped ("$12,500.00" was silently parsed as 12 before this).
 		{"thousands-separated dollars", "$12,500.00", 1250000, true},
 		{"thousands-separated with trailing text", "1,048.00 USD) - 2026", 104800, true},
 		{"multiple thousands groups", "1,234,567.89", 123456789, true},
@@ -51,7 +49,6 @@ func TestParseLeadingAmount(t *testing.T) {
 	}
 }
 
-// writeHandHistory writes contents to a temp .txt file and returns its path.
 func writeHandHistory(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hand.txt")
@@ -61,9 +58,6 @@ func writeHandHistory(t *testing.T, contents string) string {
 	return path
 }
 
-// TestParseCashFile_SingleHand covers the "single session" edge case: one
-// dealt hand, hero posts the small blind and folds preflop with no further
-// action. Every returned field is hand-checked against the algorithm.
 func TestParseCashFile_SingleHand(t *testing.T) {
 	contents := `PokerStars Hand #200000000001:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET
 Table 'Test' 6-max Seat #1 is the button
@@ -122,9 +116,6 @@ Total pot $0.15 | Rake $0
 	}
 }
 
-// TestParseCashFile_MultiHand covers a 4-hand session exercising fold, call
-// (VPIP only), and raise (VPIP+PFR) preflop actions, hand-checking BB/100,
-// VPIP, PFR, and DurationMin over the whole session.
 func TestParseCashFile_MultiHand(t *testing.T) {
 	contents := `PokerStars Hand #200000000001:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET
 Table 'Test' 6-max Seat #1 is the button
@@ -209,9 +200,6 @@ Total pot $0.15 | Rake $0
 	if session.PFR != 25 {
 		t.Errorf("PFR = %v, want 25", session.PFR)
 	}
-	// FirstHandID must stay pinned to the file's first hand, not drift to the
-	// last one parsed — this is what keeps the session's storage key stable
-	// as PokerStars keeps appending hands to the same file.
 	if session.FirstHandID != "200000000001" {
 		t.Errorf("FirstHandID = %q, want 200000000001 (the first hand, not the last)", session.FirstHandID)
 	}
@@ -238,8 +226,6 @@ func TestExtractHandID(t *testing.T) {
 	}
 }
 
-// TestParseCashFile_NoHandsDealt covers the zero-hands edge case: a header
-// with no matching "Dealt to <screenName>" line anywhere in the file.
 func TestParseCashFile_NoHandsDealt(t *testing.T) {
 	contents := `PokerStars Hand #200000000005:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET
 Table 'Test' 6-max Seat #1 is the button
@@ -257,8 +243,6 @@ Total pot $0.15 | Rake $0
 	}
 }
 
-// TestParseCashFile_MalformedHeader covers a cash hand header missing the
-// "($" blinds marker entirely.
 func TestParseCashFile_MalformedHeader(t *testing.T) {
 	contents := `PokerStars Hand #200000000006:  Hold'em No Limit - 2025/01/15 22:30:00 ET
 Dealt to AnonHero01 [Ah Kd]
@@ -269,9 +253,6 @@ Dealt to AnonHero01 [Ah Kd]
 	}
 }
 
-// TestParseCashFile_TournamentHand covers the tournament-hand branch: a hand
-// history file whose header contains "Tournament #" returns TournamentHandStats
-// instead of a CashSession, with VPIP/PFR computed the same way.
 func TestParseCashFile_TournamentHand(t *testing.T) {
 	contents := `PokerStars Hand #300000000001: Tournament #987654321, $1.00+$0.10 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Table '987654321 1' 3-max Seat #1 is the button
@@ -314,9 +295,6 @@ Total pot 75 | Rake 0
 	}
 }
 
-// TestParseCashFile_TournamentHand_MixedActions covers a 2-hand tournament
-// file where hero calls in one hand (VPIP only) and folds in the other
-// (neither), producing non-100% VPIP/PFR.
 func TestParseCashFile_TournamentHand_MixedActions(t *testing.T) {
 	contents := `PokerStars Hand #300000000002: Tournament #987654322, $1.00+$0.10 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 (1500 in chips)
@@ -360,10 +338,6 @@ Total pot 75 | Rake 0
 	}
 }
 
-// TestParseCashFile_KnockoutBounty covers a knockout tournament hand where
-// hero eliminates one villain (scoring a bounty) and is later eliminated by
-// the other (no bounty for hero on that one) — format confirmed against a
-// real PokerStars progressive-knockout hand history.
 func TestParseCashFile_KnockoutBounty(t *testing.T) {
 	contents := `PokerStars Hand #300000000004: Tournament #987654323, $0.49+$0.06 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Table '987654323 1' 3-max Seat #1 is the button
@@ -419,9 +393,6 @@ Total pot 9710 | Rake 0
 	}
 }
 
-// TestParseCashFile_NonKnockoutTournament confirms a plain (non-bounty)
-// tournament hand never flags IsKnockout or accrues BountyCents, even though
-// its lines happen to contain "wins" and "collected".
 func TestParseCashFile_NonKnockoutTournament(t *testing.T) {
 	contents := `PokerStars Hand #300000000006: Tournament #987654324, $1.00+$0.10 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 (1500 in chips)
@@ -452,9 +423,6 @@ Total pot 75 | Rake 0
 	}
 }
 
-// TestParseCashFile_KnockoutBounty_MultipleEliminations confirms BountyCents
-// accumulates across more than one elimination by hero in the same file,
-// not just the single-KO case.
 func TestParseCashFile_KnockoutBounty_MultipleEliminations(t *testing.T) {
 	contents := `PokerStars Hand #300000000007: Tournament #987654325, $0.49+$0.06 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 (5000 in chips, $0.36 bounty)
@@ -497,11 +465,6 @@ Total pot 10000 | Rake 0
 	}
 }
 
-// TestParseCashFile_KnockoutTournament_NoHeroBounty confirms IsKnockout is
-// still true when hero plays a knockout tournament but never scores a KO
-// themselves — BountyCents stays 0, but the tournament is still flagged as
-// knockout (every seat carries a bounty marker regardless of who cashes in
-// on it), the distinction documented on TournamentHandStats.IsKnockout.
 func TestParseCashFile_KnockoutTournament_NoHeroBounty(t *testing.T) {
 	contents := `PokerStars Hand #300000000009: Tournament #987654326, $0.49+$0.06 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 (5000 in chips, $0.36 bounty)
@@ -530,10 +493,6 @@ Total pot 150 | Rake 0
 	}
 }
 
-// TestParseCashFile_KnockoutBounty_SittingOutSeat confirms the bounty seat
-// marker is still detected when trailing text follows it on the same line
-// (e.g. "... bounty) is sitting out") — a suffix-only check would miss this,
-// since "bounty)" isn't the end of the line in that case.
 func TestParseCashFile_KnockoutBounty_SittingOutSeat(t *testing.T) {
 	contents := `PokerStars Hand #300000000010: Tournament #987654327, $0.49+$0.06 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 (5000 in chips, $0.36 bounty) is sitting out
@@ -559,13 +518,6 @@ Total pot 150 | Rake 0
 	}
 }
 
-// TestParseCashFile_KnockoutBounty_OddCentRounding confirms BountyCents uses
-// the "wins $X.XX" amount, not the "bounty increases by $Y.YY" amount —
-// these can differ by a cent on an odd bounty, since PokerStars splits the
-// eliminated player's bounty 50/50 (half cash to the eliminator, half stays
-// on their own head) and rounds each half independently, confirmed against
-// a real hand history: "<eliminator> wins $0.68 for eliminating <victim> and
-// their own bounty increases by $0.67 to $1.03".
 func TestParseCashFile_KnockoutBounty_OddCentRounding(t *testing.T) {
 	contents := `PokerStars Hand #300000000011: Tournament #987654328, $0.49+$0.06 USD Hold'em No Limit - Level V (25/50) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 (5000 in chips, $0.68 bounty)
@@ -594,12 +546,6 @@ Total pot 10000 | Rake 0
 	}
 }
 
-// TestParseCashFile_UncalledBet confirms an uncalled raise's returned
-// portion is added back into NetCents, not counted as money lost — hero
-// raises to $0.30, villain folds, and PokerStars refunds the $0.20 hero
-// never had to have called by anyone via "Uncalled bet ($0.20) returned to
-// AnonHero01". Only the $0.10 that was actually contested (won back via
-// "collected") should count as hero's net for the hand.
 func TestParseCashFile_UncalledBet(t *testing.T) {
 	contents := `PokerStars Hand #200000000010:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET
 Table 'Test' 6-max Seat #1 is the button
@@ -624,18 +570,11 @@ Total pot $0.20 | Rake $0
 	if session == nil {
 		t.Fatal("expected non-nil session")
 	}
-	// Invested $0.30 total (posted $0.05 SB + raised $0.25 more to $0.30),
-	// got back $0.20 uncalled plus collected $0.20 pot (villain's $0.10 BB
-	// plus hero's own $0.10 that stayed in after the uncalled refund):
-	// net = 0.20 (uncalled) + 0.20 (collected) - 0.30 (invested) = 0.10.
 	if !approxEqual(session.NetCents, 10) {
 		t.Errorf("NetCents = %v, want 0.10 (uncalled portion refunded, not counted as invested)", session.NetCents)
 	}
 }
 
-// TestParseCashFile_RakeAccumulation confirms RakeCents sums across multiple
-// hands — every existing hand-parsing test up to this one uses "Rake $0",
-// so real rake accumulation was never actually exercised.
 func TestParseCashFile_RakeAccumulation(t *testing.T) {
 	contents := `PokerStars Hand #200000000011:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 ($10 in chips)
@@ -679,10 +618,6 @@ Total pot $0.20 | Rake $0.02
 	}
 }
 
-// TestParseCashFile_SidePot confirms a "collected $X from side pot" line
-// (distinct from the plain "collected $X from pot" / "collected $X" forms
-// already exercised elsewhere) is still recognized — the collectedPfx match
-// is a prefix check, so it must not care what follows "collected $X".
 func TestParseCashFile_SidePot(t *testing.T) {
 	contents := `PokerStars Hand #200000000013:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET
 Seat 1: AnonHero01 ($10 in chips)
@@ -709,18 +644,11 @@ Total pot $1.80 | Main pot $1.50 | Side pot $0.30 | Rake $0
 	if session == nil {
 		t.Fatal("expected non-nil session")
 	}
-	// Invested $0.50 (posted $0.05 SB + called $0.45 more); collected both
-	// pots: 0.30 + 1.50 - 0.50 = 1.30.
 	if !approxEqual(session.NetCents, 130) {
 		t.Errorf("NetCents = %v, want 1.30 (both side pot and main pot collections counted)", session.NetCents)
 	}
 }
 
-// TestParseCashFile_ZoomHand_EndToEnd confirms a full Zoom-format hand
-// history parses a complete, correct session — extractHandID already covers
-// the header prefix in isolation, but that alone doesn't prove the rest of
-// the session (Stake, Net, VPIP/PFR) computes correctly for a real Zoom
-// file, since Zoom and regular cash hands are otherwise formatted the same.
 func TestParseCashFile_ZoomHand_EndToEnd(t *testing.T) {
 	contents := `PokerStars Zoom Hand #251912345678:  Hold'em No Limit ($0.05/$0.10 USD) - 2025/01/15 22:30:00 ET
 Table 'Test' 6-max Seat #1 is the button
@@ -762,7 +690,6 @@ Total pot $0.20 | Rake $0
 	}
 }
 
-// TestParseCashFile_MissingFile confirms the os.Open error path is wrapped.
 func TestParseCashFile_MissingFile(t *testing.T) {
 	_, _, err := ParseCashFile(filepath.Join(t.TempDir(), "does-not-exist.txt"), testScreenName)
 	if err == nil {

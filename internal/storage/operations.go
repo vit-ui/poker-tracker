@@ -1,16 +1,5 @@
 package storage
 
-// Operation is a bot-originated storage or collector-settings request executed
-// by the server worker.
-// Reply is buffered once so completion never waits for a Telegram send.
-// PrepareMigration first pauses/drains collection and finalizes pending cash.
-// On success the worker stays held until restart, or Release is closed after
-// rollback. Resumed must then be buffered once to receive the resume outcome.
-// PrepareRestart drains collection without requiring PokerStars to close and
-// preserves pending cash, unless FinalizeAllCash is set for a sheet change.
-// RequireConfirmedProtection prevents deployment cutover from losing the sole
-// replay owner of an unconfirmed hard-stop intent, including unsaved intents.
-
 import (
 	"github.com/vit-ui/self-tracker/internal/config"
 	"github.com/vit-ui/self-tracker/internal/money"
@@ -27,8 +16,8 @@ type TournamentAnswer struct {
 
 type Operation struct {
 	TournamentAnswer           *TournamentAnswer
-	ScanPath                   string // requested path on the poker PC
-	ScanAttachment             string // staged Telegram file on the storage machine
+	ScanPath                   string
+	ScanAttachment             string
 	Updates                    bool
 	UpdateRequest              *config.UpdateRequest
 	CollectorSettings          bool
@@ -45,7 +34,6 @@ type Operation struct {
 	Reply                      chan OperationResult
 }
 
-// OperationResult is consumed on the bot event loop, where replies are sent.
 type OperationResult struct {
 	Scan              ScanTally
 	Updates           config.CollectorUpdates

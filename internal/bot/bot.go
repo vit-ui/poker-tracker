@@ -1,13 +1,3 @@
-// Package bot implements the Telegram bot: outgoing session alerts and
-// incoming commands for configuration and status queries.
-//
-// The package is split by concern: bot.go holds the Bot struct, the serve
-// loop, and update dispatch; setup.go the --setup wizard and startup
-// recovery; flows.go the four config flows; stats.go the read-side commands
-// and scheduled summaries; alerts.go the worker-side alert evaluators;
-// export.go /export; sheet.go /sheet, /credentials, /screenname;
-// satellite.go the satellite/ticket confirmation flow; help.go the static
-// help text.
 package bot
 
 import (
@@ -26,22 +16,8 @@ import (
 	"github.com/vit-ui/self-tracker/internal/update"
 )
 
-// apiEndpoint is the Telegram Bot API root every bot connection dials. It is
-// always the real endpoint in any committed build; the only thing that ever
-// reassigns it is this package's own local, gitignored tests (*_local_test.go),
-// which point it at an httptest server so the setup wizard and the incoming-
-// command handlers can be driven without a real bot. This mirrors the sheets
-// REST transport's baseURL test seam — an inert var whose default is production.
 var apiEndpoint = tgbotapi.APIEndpoint
 
-// Bot bundles the dependencies every serve-mode handler needs — the
-// Telegram connection, the storage backend, the on-disk config/lockfile
-// paths, and the watcher-restart callback main.go provides — so they aren't
-// threaded hand-to-hand through every handler call. It also embeds the
-// single configured chat's conversation state. Setup-mode code runs before a
-// Bot exists and stays plain functions. The
-// worker-side alert evaluators (alerts.go) run on the worker goroutine,
-// which has no Bot, and stay plain functions too.
 type Bot struct {
 	updater            *update.Agent
 	releaseResults     chan releaseCheckResult
@@ -65,44 +41,24 @@ type Bot struct {
 	serviceAccountPath string
 	dbPath             string
 
-	// requestRescan triggers a /scan backfill. The caller
-	// supplies it: both builds send a CommandRescan down the link, which the
-	// collector (in-process or remote) turns into a walk of the watched folders.
-	// The bot only asks; the collector does the walk and the server records.
 	requestRescan  func()
 	fileScanActive bool
 	menus          map[menuKey]*openMenu
 
-	// now returns the time the read-side date windows (/status, /stats, weekly
-	// and monthly summaries) anchor to. The all-local build passes time.Now; the
-	// split server passes its client-anchored clock so windows follow the
-	// player's local day even when the server is in another timezone.
 	now func() time.Time
 
-	// pendingSwitch holds a /storage migration awaiting the player's
-	// confirmation tap. Touched only on the bot event loop, like conversation.
 	pendingSwitch         *pendingBackendSwitch
 	storageResetMessageID int
 
-	// pendingStorageSheetArg holds the sheet name/URL from a /storage sheets
-	// migration that paused to collect the service-account key inline, resumed
-	// once the file is uploaded. Touched only on the bot event loop.
 	pendingStorageSheetArg string
 
 	conversation
 }
 
-// conversation tracks the in-progress inline-keyboard flow, if any, for the
-// single configured chat. It is only ever touched from the
-// bot event loop, so no locking is needed.
 type conversation struct {
-	flow  string // "", "menu", "credentials", "storage_credentials", "freeroll_buyin"
-	field string // field awaiting a text reply within flow, "" if none (freeroll_buyin: the tournament ID)
+	flow  string
+	field string
 
-	// menuMessageID is the message a cascade config menu currently lives in,
-	// captured when a value prompt is issued (beginValueEntry) so the typed
-	// reply can edit that same message back to the relevant screen instead of
-	// sending a new one.
 	menuMessageID       int
 	recovery            *config.PendingTournament
 	recoveryPayoutCents *money.Cents
@@ -116,18 +72,6 @@ func (c *conversation) reset() {
 	c.recoveryPayoutCents = nil
 }
 
-// Run starts the bot in serve mode. Forwards alerts from alertChan to
-// Telegram, sends weekly/monthly summaries and satellite/ticket reminders on
-// a schedule, and polls Telegram for incoming commands. Blocks until
-// alertChan is closed.
-//
-// serviceAccountPath is only used by /sheet, /credentials, and /storage
-// when switching to a different spreadsheet or service account. dbPath is the
-// sqlite database path, used by /storage to construct a sqlite target.
-// taskName identifies the role/installation Windows task or Linux user unit for restarts.
-// stop ends command intake; drained closes after accepted operations finish (also
-// after a successful restart request). The owner then stops producers/worker and
-// closes alertChan. Run joins the update poller before returning.
 func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccountPath, dbPath string, sendLock func(config.LockFile), requestRescan func(), now func() time.Time, taskName string, worker chan<- storage.Operation, currentLock func() (*config.LockFile, error), stop <-chan struct{}, drained chan<- struct{}, controls <-chan OwnerControl, standby bool, notifications ClosureNotifications, lockStatusText func() (string, error), ready chan<- struct{}, updater *update.Agent, releaseChecks <-chan struct{}) error {
 
 	b := &Bot{
@@ -395,10 +339,6 @@ func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccoun
 			if b.migrating || b.ownerPaused || b.deploymentPaused() {
 				continue
 			}
-			// realNow drives real-elapsed timing (the 30-min heartbeat, pending
-			// reminders); now is the player-anchored clock the weekly/monthly
-			// day windows fire on, so "Monday 09:00" is the player's, not the
-			// server host's.
 			if active == nil && len(b.pendingOperations) == 0 {
 				b.queueOperation(func(store storage.Store) storage.OperationResult {
 					if client, ok := store.(*sheets.Client); ok && client.PendingWrites() > 0 {
@@ -467,14 +407,6 @@ func Run(alertChan <-chan string, store storage.Store, configPath, serviceAccoun
 	}
 }
 
-// heartbeatEvent decides what (if anything) to send given the latest
-// Health() reading and whether Sheets was already known down. Every 30-min
-// check while still down re-sends the down message (a persistent reminder,
-// matching the caller's check cadence); one recovery message fires on the
-// down→healthy transition; an already-healthy check stays silent. The raw
-// Health() error is deliberately not shown to the user — it's a developer
-// string, and the failing operation already logged it at its call site; the
-// user-facing message carries only the outage's start time.
 func heartbeatEvent(down bool, since time.Time, err error, wasDown bool) (msg string, nowDown bool) {
 	switch {
 	case down:
@@ -490,7 +422,6 @@ func (b *Bot) connectedChat() (int64, bool) {
 	return b.chatID, b.tg != nil && b.chatID > 0
 }
 
-// send sends text to chatID.
 func send(tgBot *tgbotapi.BotAPI, chatID int64, text string) {
 	if tgBot == nil {
 		return
@@ -500,7 +431,6 @@ func send(tgBot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
-// sendWithKeyboard sends text with an inline keyboard to chatID.
 func sendWithKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, text string, markup tgbotapi.InlineKeyboardMarkup) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ReplyMarkup = markup
@@ -509,16 +439,8 @@ func sendWithKeyboard(tgBot *tgbotapi.BotAPI, chatID int64, text string, markup 
 	}
 }
 
-// emptyKeyboard is the markup that clears a message's buttons when edited in.
-// It must be an empty-but-non-nil slice — NewInlineKeyboardMarkup() with no
-// args produces a nil slice, which marshals to a null the Telegram API
-// rejects for this field. Shared by clearKeyboard and resolveSatellite so
-// that quirk is encoded once.
 var emptyKeyboard = tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}}
 
-// clearKeyboard removes the inline keyboard from a message after it's been
-// answered, leaving its text intact — a tapped confirmation shouldn't stay
-// tappable.
 func (b *Bot) clearKeyboard(chatID int64, messageID int) {
 	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, emptyKeyboard)
 	if _, err := b.tg.Send(edit); err != nil {
@@ -526,9 +448,6 @@ func (b *Bot) clearKeyboard(chatID int64, messageID int) {
 	}
 }
 
-// sendMessage reads the configured Telegram chat ID and sends text to it.
-// If no chat ID is configured yet, the message is silently discarded — with
-// no chat there is nowhere to deliver or report it.
 func (b *Bot) sendMessage(text string) {
 	chatID, ok := b.connectedChat()
 	if !ok {
@@ -537,10 +456,6 @@ func (b *Bot) sendMessage(text string) {
 	send(b.tg, chatID, text)
 }
 
-// summaryModeAllows loads the current config and reports whether a result
-// summary with the given net should go out under its configured mode (pick
-// selects which summary's mode from Notifications). On a config read error it
-// fails open — a transient error must never silently drop a summary.
 func (b *Bot) summaryModeAllows(netCents money.Cents, pick func(config.Notifications) *string) bool {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -550,7 +465,6 @@ func (b *Bot) summaryModeAllows(netCents money.Cents, pick func(config.Notificat
 	return config.ShouldSendSummary(config.SummaryMode(pick(cfg.Notifications)), netCents)
 }
 
-// sendMessageWithKeyboard is sendMessage with an inline keyboard attached.
 func (b *Bot) sendMessageWithKeyboard(text string, markup tgbotapi.InlineKeyboardMarkup) {
 	chatID, ok := b.connectedChat()
 	if !ok {
@@ -596,9 +510,6 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 
 	msg := update.Message
 
-	// A document upload has no Text — the check below would otherwise
-	// silently drop it. This is the only flow that ever expects a file
-	// instead of a text reply.
 	if msg.Document != nil {
 		b.refreshMenuPrompt(msg.Chat.ID)
 	}
@@ -664,7 +575,6 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	}
 	if stale {
 		if b.menus[key] == nil {
-			// The message may predate this process. Its buttons are inert.
 			_, _ = b.tg.Request(tgbotapi.NewDeleteMessage(chatID, messageID))
 		}
 		return
@@ -702,7 +612,6 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	}
 }
 
-// handleCommand dispatches a slash command to its handler.
 func (b *Bot) handleCommand(msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	switch msg.Command() {

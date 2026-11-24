@@ -7,8 +7,6 @@ import (
 	"os"
 )
 
-// SourceTransferState is written only by the running combined owner. Its frozen
-// payload survives an installer interruption without reopening source history.
 type SourceTransferState struct {
 	ID             string          `json:"id"`
 	Phase          string          `json:"phase"`
@@ -21,11 +19,8 @@ type SourceTransferState struct {
 	Error          string          `json:"error,omitempty"`
 }
 
-// SourceTransferRequest is written only by the installer helper. Separate files
-// keep the request/result exchange from relying on a process-local mutex.
 type SourceTransferRequest struct{ ID, RequestID, Kind, Connection string }
 
-// LoadSourceTransfer reads owner progress without changing it.
 func LoadSourceTransfer(path string) (*SourceTransferState, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -58,14 +53,12 @@ func LoadSourceTransfer(path string) (*SourceTransferState, error) {
 	return state, nil
 }
 
-// SaveSourceTransfer persists a source owner result.
 func SaveSourceTransfer(path string, state *SourceTransferState) error {
 	mu.Lock()
 	defer mu.Unlock()
 	return saveTransferJSON(path, state)
 }
 
-// LoadSourceTransferRequest reads a durable helper request.
 func LoadSourceTransferRequest(path string) (SourceTransferRequest, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -77,7 +70,6 @@ func LoadSourceTransferRequest(path string) (SourceTransferRequest, error) {
 	return r, err
 }
 
-// SaveSourceTransferRequest persists a helper request before signalling its event.
 func SaveSourceTransferRequest(path string, r SourceTransferRequest) error {
 	mu.Lock()
 	defer mu.Unlock()

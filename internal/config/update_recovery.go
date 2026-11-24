@@ -7,8 +7,6 @@ import (
 	"os"
 )
 
-// UpdateRecovery is saved before the updater suspends the installation task.
-// Executable paths are basenames relative to the installation directory.
 type UpdateRecovery struct {
 	Target         string `json:"target"`
 	Previous       string `json:"previous"`

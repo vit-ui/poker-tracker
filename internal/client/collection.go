@@ -11,18 +11,16 @@ import (
 	"github.com/vit-ui/self-tracker/internal/watcher"
 )
 
-// collection belongs to the collector loop. Replacements start paused, and the
-// previous watcher drains before changing the screen name used for uploads.
 type collection struct {
 	events chan watcher.FileEvent
 	active *collectionWatcher
-	err    error // collection is inactive; commands and enforcement remain available
+	err    error
 }
 
 type collectionWatcher struct {
 	control *watcher.Control
 	done    chan struct{}
-	err     error // read only after done closes
+	err     error
 }
 
 func (w *collectionWatcher) stop() ([]watcher.FileEvent, error) {
@@ -64,8 +62,6 @@ func (c *collection) stopped() <-chan struct{} {
 	return c.active.done
 }
 
-// Serve owns watcher startup, replacement and cleanup in both deployment modes.
-// A required watcher failure returns to the service manager's restart path.
 func (c *Collector) Serve(configPath string, dead <-chan struct{}) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -119,8 +115,6 @@ func (c *Collector) changeSettings(configPath string, patch config.CollectorSett
 		pending, err = c.collection.active.stop()
 		c.collection.active = nil
 	}
-	// The old watcher has stopped sending, so this includes every accepted,
-	// buffered event; all uploads still read the old screen name from config.
 drain:
 	for {
 		select {
@@ -160,7 +154,6 @@ drain:
 	}
 	actual, readErr := config.LoadConfig(configPath)
 	if readErr != nil || !reflect.DeepEqual(previous, config.CollectionSettings(actual)) {
-		// Never resume old folders under an unconfirmed on-disk screen name.
 		c.collection.err = errors.Join(fmt.Errorf("previous collection settings could not be restored"), rollbackErr, readErr)
 		if readErr == nil {
 			previous = config.CollectionSettings(actual)

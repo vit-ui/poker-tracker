@@ -108,7 +108,6 @@ func (r *tournamentResults) history(stats parsers.TournamentHandStats, activity 
 
 	finish := *stats.Finish
 	if stats.IsKnockout && finish.PayoutCents != nil && *finish.PayoutCents != 0 {
-		// The finish line does not say whether a positive receipt includes bounties.
 		finish.PayoutCents = nil
 	}
 	t := parsers.Tournament{
@@ -138,8 +137,6 @@ func (r *tournamentResults) history(stats parsers.TournamentHandStats, activity 
 			}
 			entry.FirstQueuedAt = previous.FirstQueuedAt
 			entry.LastRemindedAt = previous.LastRemindedAt
-			// A folder scan must not prematurely finalize a tournament
-			// that is still within its live quiet period.
 			if historical && previous.QuietUntil != nil && previous.QuietUntil.After(now) {
 				return true
 			}
@@ -268,7 +265,6 @@ func (r *tournamentResults) official(t parsers.Tournament, historical bool) (pos
 		return false, true, nil
 	}
 	if duplicate {
-		// Preserve the scan report's count of successfully imported summaries.
 		return historical && reason == "", historical && reason != "", nil
 	}
 	if reason != "" {

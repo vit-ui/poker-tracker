@@ -108,8 +108,6 @@ func (b *Bot) showTransactions(chatID int64, messageID int, path, period string,
 	})
 }
 
-// transactionPages shares filtering and exact totals between summaries and history.
-// Stable date sorting preserves ledger order for equal timestamps before reversal.
 func transactionPages(entries []storage.LedgerEntry, period string, history bool) ([]string, error) {
 	totals := map[string]money.Cents{}
 	var movements []storage.LedgerEntry
@@ -145,7 +143,6 @@ func transactionPages(entries []storage.LedgerEntry, period string, history bool
 	for i := len(movements) - 1; i >= 0; i-- {
 		entry := movements[i]
 		line := fmt.Sprintf("\n%s · %s · %s", entry.Date.Format("2006-01-02 15:04"), entry.Type, FormatSignedUSD(entry.AmountCents))
-		// Reserve space for the header and page indicator below Telegram's limit.
 		if count == 10 || len([]rune(header+body+line)) > 3900 {
 			bodies = append(bodies, body)
 			body = ""

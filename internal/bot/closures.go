@@ -10,8 +10,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/hardstop"
 )
 
-// ClosureNotifications is separate from ordinary fire-and-forget string alerts.
-// Only the bot loop sends to Telegram; its result returns to the server worker.
 type ClosureNotifications struct {
 	Deliveries chan config.ClosureEvent
 	Results    chan ClosureResult

@@ -7,18 +7,10 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// entry is a terse constructor for a storage.LedgerEntry used only to build
-// test fixtures — entries are listed oldest first, matching the chronological
-// order GetLedgerEntriesSince returns.
 func entry(entryType string, amountCents money.Cents) storage.LedgerEntry {
 	return storage.LedgerEntry{Type: entryType, AmountCents: amountCents}
 }
 
-// TestLosingStreakTriggered exercises the fixed decision end to end:
-// filtering to session rows and windowing to the last n happen together
-// (recentSessionRows) before the streak is measured, so a deposit or
-// withdrawal anywhere in the ledger can never dilute or break the window a
-// losing streak is measured against.
 func TestLosingStreakTriggered(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -80,7 +72,7 @@ func TestLosingStreakTriggered(t *testing.T) {
 		{
 			name: "an older win outside the N-row window doesn't block the current streak",
 			entries: []storage.LedgerEntry{
-				entry("cash_session", 1000), // old win, outside the last-3 window
+				entry("cash_session", 1000),
 				entry("cash_session", -500),
 				entry("cash_session", -300),
 				entry("cash_session", -200),
@@ -114,10 +106,6 @@ func TestLosingStreakTriggered(t *testing.T) {
 	}
 }
 
-// TestRecentSessionRows exercises the filtering+windowing helper directly:
-// deposits/withdrawals are dropped before, not after, the last-n window is
-// taken, and rows beyond the window (whether sessions or transfers) are
-// dropped entirely.
 func TestRecentSessionRows(t *testing.T) {
 	t.Run("deposit is filtered out before windowing, not counted as a slot", func(t *testing.T) {
 		entries := []storage.LedgerEntry{
@@ -153,7 +141,7 @@ func TestRecentSessionRows(t *testing.T) {
 
 	t.Run("older session rows outside the window are dropped", func(t *testing.T) {
 		entries := []storage.LedgerEntry{
-			entry("cash_session", 99900), // far outside the last-2 window
+			entry("cash_session", 99900),
 			entry("cash_session", -500),
 			entry("cash_session", -300),
 		}

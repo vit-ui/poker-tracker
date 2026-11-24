@@ -10,9 +10,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
-// PendingCash is a successfully processed table snapshot and its last observed
-// activity. Absolute activity times restore the remaining quiet interval;
-// session dates retain their stored wall-clock representation.
 type PendingCash struct {
 	ScreenName   string              `json:"screen_name,omitempty"`
 	FileID       string              `json:"file_id"`

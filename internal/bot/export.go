@@ -1,8 +1,5 @@
 package bot
 
-// The /export command: every row of the three data sets as CSV files sent
-// through Telegram, byte-identical on both storage backends.
-
 import (
 	"encoding/csv"
 	"fmt"
@@ -24,32 +21,16 @@ var (
 	bankrollLedgerCSVHeader = []string{"Date", "Type", "Amount (USD)", "Running Total (USD)", "Session ID"}
 )
 
-// fullPrecision tells formatFloat/formatFloatPtr to render the shortest
-// string that round-trips the value exactly, rather than a fixed decimal
-// count — pass this for every numeric CSV column except VPIP/PFR.
 const fullPrecision = -1
 
-// vpipPfrPrecision is the fixed decimal count VPIP/PFR are rounded to.
-// Both are raw-division results (e.g. 25.36231884057971) with no observable
-// meaning beyond a couple of decimal places, unlike every other numeric CSV
-// column, which keeps full precision.
 const vpipPfrPrecision = 2
 
-// bb100Precision is the fixed decimal count BB/100 is rounded to in CSV
-// output, matching how Telegram already displays it ("%.1f" in
-// cashStatsMessage, buildWeeklySummary, buildMonthlySummary).
 const bb100Precision = 1
 
-// formatFloat renders v to prec decimal places (fullPrecision for the
-// shortest exact round-trip, a fixed count to round off meaningless
-// precision).
 func formatFloat(v float64, prec int) string {
 	return strconv.FormatFloat(v, 'f', prec, 64)
 }
 
-// formatFloatPtr is formatFloat for a possibly-nil pointer (e.g. an MTT's
-// Multiplier, or a tournament's VPIP/PFR before its hand file has arrived),
-// rendering an empty cell for nil rather than a misleading "0".
 func formatFloatPtr(v *float64, prec int) string {
 	if v == nil {
 		return ""
@@ -57,8 +38,6 @@ func formatFloatPtr(v *float64, prec int) string {
 	return formatFloat(*v, prec)
 }
 
-// formatIntPtr renders an empty cell for nil (a tournament's Hands, before
-// its hand file has arrived) rather than a misleading "0".
 func formatIntPtr(v *int) string {
 	if v == nil {
 		return ""
@@ -66,12 +45,6 @@ func formatIntPtr(v *int) string {
 	return strconv.Itoa(*v)
 }
 
-// prizePoolCSVCell coalesces Tournament's two mutually exclusive prize pool
-// fields into the single cell the sheet itself stores — description text for
-// a non-cash-denominated pool, otherwise the numeric amount. Without this,
-// /export would either emit two columns or silently drop one, breaking the
-// byte-identical output CLAUDE.md requires between backends (SQLite splits
-// this into two nullable columns internally; the sheet never did).
 func prizePoolCSVCell(t parsers.Tournament) string {
 	if t.PrizePoolDescription != "" {
 		return t.PrizePoolDescription
@@ -135,7 +108,6 @@ func bankrollLedgerCSVRows(entries []storage.LedgerEntry) [][]string {
 	return rows
 }
 
-// writeCSVFile writes header followed by rows to path, using encoding/csv.
 func writeCSVFile(path string, header []string, rows [][]string) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -156,16 +128,6 @@ func writeCSVFile(path string, header []string, rows [][]string) error {
 	return w.Error()
 }
 
-// handleExportCommand implements /export: queries every row of all three data
-// sets via storage.Store — never a backend-specific type, so the command is
-// identical on both backends — writes each to a CSV file in os.TempDir(),
-// sends each as a Telegram document, then deletes the temp files. An empty
-// data set still sends a header-only CSV. Dates are RFC3339 UTC on both
-// backends: the sqlite backend already stores them that way, and the sheets
-// backend's Date field is parsed back from its internal
-// "2006-01-02 15:04" format by GetAllCashSessions/GetAllTournaments before
-// ever reaching here, so formatting with time.RFC3339 here is enough to keep
-// output byte-identical between backends.
 func (b *Bot) handleExportCommand(chatID int64) {
 	cashSessions, err := b.store.GetAllCashSessions()
 	if err != nil {
@@ -224,15 +186,6 @@ func (b *Bot) handleExportCommand(chatID int64) {
 	send(b.tg, chatID, "✅ Export complete — 3 files.")
 }
 
-// handleScanCommand implements /scan: it triggers a one-shot backfill that
-// walks both watched folders and records every cash session and tournament not
-// already stored — useful for a new install seeded from existing history. The
-// walk and the recording happen on the collector and server (see
-// Collector.rescan / Server.importUpload); the bot only asks. It does not check
-// the folder paths here: in the split build the collector's config (not the
-// server's, which the bot reads) holds them, so the collector is the one place
-// that can guard — an unconfigured install no-ops there with a log line. The
-// completion report (with counts) arrives later via alertChan.
 func (b *Bot) handleScanCommand(chatID int64) {
 	if b.fileScanActive {
 		send(b.tg, chatID, "A file scan is already in progress.")

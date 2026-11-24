@@ -75,7 +75,6 @@ func remote(state *config.SourceTransferState, kind string) (*transport.Transfer
 	return conn, reply, err
 }
 
-// BackupPath keeps the original combined executable separate from role overwrite.
 func BackupPath(path, id string) string {
 	hash := sha256.Sum256([]byte(id))
 	return filepath.Join(filepath.Dir(path), fmt.Sprintf("tracker-source-%x.exe", hash[:12]))
@@ -103,8 +102,6 @@ func preserveExecutable(path, id string) error {
 	return errors.Join(writeErr, file.Sync(), file.Close())
 }
 
-// Stage freezes the existing source owner, verifies the raw destination import,
-// then waits for source shutdown. It never activates the destination or collector.
 func Stage(path, connection string) error {
 	if _, err := transport.ParseConnectionString(connection); err != nil {
 		return err
@@ -131,8 +128,6 @@ func Stage(path, connection string) error {
 		conn.Close()
 		switch reply.Phase {
 		case transport.TransferPhaseActivated, transport.TransferPhaseApplyingSettings:
-			// An installed collector may already be connected after a lost final
-			// acknowledgement. Status does not require disconnecting/replacing it.
 			return finishSourceCutover(path, state)
 		case transport.TransferPhaseRollingBack, transport.TransferPhaseRolledBack:
 			if err := Rollback(path); err != nil {
@@ -141,7 +136,6 @@ func Stage(path, connection string) error {
 			return fmt.Errorf("interrupted transfer was rolled back; rerun setup after the combined source resumes")
 		}
 	}
-	// Reserve destination command ownership before pausing/finalizing the source.
 	if state.Phase != "stopping" {
 		state, err = exchangeSource(path, state, "reserve")
 		if err != nil {
@@ -260,7 +254,6 @@ func failStage(path string, state *config.SourceTransferState, cause error, remo
 	return cause
 }
 
-// Activate commits verified operational settings after the old source has exited.
 func Activate(path string) error {
 	state, err := config.LoadSourceTransfer(sourcePath(path))
 	if err != nil {
@@ -293,8 +286,6 @@ func Activate(path string) error {
 	return nil
 }
 
-// Rollback confirms destination ownership and rollback before restoring source
-// configuration/executable. It leaves PC lock files and receipts untouched.
 func Rollback(path string) error {
 	state, err := config.LoadSourceTransfer(sourcePath(path))
 	if err != nil {
@@ -303,9 +294,6 @@ func Rollback(path string) error {
 	if state == nil {
 		return fmt.Errorf("no source transfer exists")
 	}
-	// Setup disables the installation task before requesting rollback. Stop its
-	// replacement collector before reserving the destination, which deliberately
-	// refuses any connected collector. On failure setup restarts the current role.
 	if state.Phase == "stopping" {
 		if err := installation.Stop(filepath.Dir(path)); err != nil {
 			return err
@@ -360,11 +348,9 @@ func Rollback(path string) error {
 	state.Phase = "aborted"
 	state.Payload = nil
 	state.Error = ""
-	// The old owner is stopped; the helper now owns this terminal source update.
 	return config.SaveSourceTransfer(sourcePath(path), state)
 }
 
-// Complete records installer handoff only after verified destination activation.
 func Complete(path string) error {
 	state, err := config.LoadSourceTransfer(sourcePath(path))
 	if err != nil {

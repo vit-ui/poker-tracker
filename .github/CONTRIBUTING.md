@@ -19,21 +19,15 @@ interfaces are avoided by default.
 Three binaries share the `internal/` packages: `cmd/tracker` (all-local, both roles in one process), `cmd/server` (split brain — storage + bot), `cmd/client` (split collector — watcher + enforcement). Setup provisions the locally protected Telegram credential for `tracker` and `server`. The collector needs no Telegram credential.
 
 ```bash
-# Local build for the host platform (all three binaries).
 go build ./...
 
-# Release builds, as the packaging workflow does them.
-
-# All-local (combined) — Windows GUI.
 GOOS=windows GOARCH=amd64 go build -trimpath \
   -ldflags "-s -w -H=windowsgui" \
   -o tracker-amd64.exe ./cmd/tracker
 
-# Split client — Windows console app.
 GOOS=windows GOARCH=amd64 go build -trimpath \
   -ldflags "-s -w" -o tracker-client-amd64.exe ./cmd/client
 
-# Split server — Windows and Linux, amd64 and arm64.
 GOOS=windows GOARCH=amd64 go build -trimpath \
   -ldflags "-s -w" \
   -o tracker-server-windows-amd64.exe ./cmd/server
@@ -90,8 +84,8 @@ Linux user-service restarts wait for SIGTERM handling and process exit.
 ## Tests
 
 ```bash
-go test ./...                       # everything
-go test ./internal/parsers/...      # one package
+go test ./...
+go test ./internal/parsers/...
 ```
 
 - For isolated timer regressions, use `testing/synctest` with real temporary
@@ -189,6 +183,8 @@ Verify the recovery snapshot before clearing the active backend. Preserve
 headers and use one atomic write for the three history datasets.
 
 ## Code style
+
+- Reuse existing functions and extract shared functions when call sites implement the same behavior. Use descriptive names and control flow. Omit explanatory comments throughout source, tests, scripts, configuration and code examples. Preserve directives required by compilers, interpreters and tooling.
 
 - Run `gofmt` before every commit; `go vet ./...` should be clean.
 - Keep it lean: inline single-use helpers, prefer concrete types over

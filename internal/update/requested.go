@@ -61,8 +61,6 @@ func runRequested(target, role, version, installationID, requestID string, out i
 	return errors.Join(updateErr, config.SaveUpdateJob(path, *job))
 }
 
-// waitForPokerStars leaves enforcement and collection running. A saved request
-// resumes after reboot; operational failures are reported instead of retried.
 func waitForPokerStars(path, role string, job *config.UpdateJob) error {
 	if role == "server" {
 		return nil

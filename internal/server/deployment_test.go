@@ -161,8 +161,6 @@ func TestDeploymentInterruptedImportOwnsOnlySourcePrefixes(t *testing.T) {
 			conn.Close()
 			target.close()
 
-			// Persist the state left by a nontransactional import interrupted
-			// between tabs/batches. Use a real store without a Sheets simulator.
 			var payload storage.DeploymentPayload
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatal(err)
@@ -173,7 +171,7 @@ func TestDeploymentInterruptedImportOwnsOnlySourcePrefixes(t *testing.T) {
 				partial.Ledger = payload.Snapshot.Ledger[:1]
 			}
 			if tc.foreign {
-				partial.CashSessions[0].NetCents = -2 // source is -3 cents
+				partial.CashSessions[0].NetCents = -2
 			}
 			db, err := sqlitestore.NewStore(filepath.Join(root, "target.db"))
 			if err != nil {
@@ -379,7 +377,6 @@ func TestDeploymentTransferDurableResumeAndActivation(t *testing.T) {
 	if first.Error != "" || first.NextOffset != 257 {
 		t.Fatalf("first=%+v", first)
 	}
-	// A replay must match durable bytes, and no unacknowledged gap is accepted.
 	for _, req := range []transport.TransferRequest{{Kind: transport.TransferChunk, ID: id, Offset: 258, Data: []byte("gap")}, {Kind: transport.TransferChunk, ID: id, Data: []byte("wrong")}} {
 		reply := transferExchange(t, conn, req)
 		if reply.Error == "" || reply.NextOffset != 257 {
@@ -396,7 +393,6 @@ func TestDeploymentTransferDurableResumeAndActivation(t *testing.T) {
 	}
 	conn.Close()
 	target.close()
-	// Simulate a crash after bytes were written but before their offset was saved.
 	file, err := os.OpenFile(filepath.Join(root, "deployment_transfer.data"), os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -453,7 +449,6 @@ func TestDeploymentTransferDurableResumeAndActivation(t *testing.T) {
 	if reply.Phase != transport.TransferPhaseActivated {
 		t.Fatalf("lost ACK receipt=%+v", reply)
 	}
-	// A later intentional movement makes rollback unsafe; it must survive refusal.
 	if err := target.store.AppendLedgerEntry("deposit", 1, time.Now(), "money:after-activation"); err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +565,6 @@ func TestDeploymentTransferRollbackAndDurableAckFailures(t *testing.T) {
 					t.Fatal(reply.Error)
 				}
 				if phase == "applying-settings" {
-					// A failed pending-queue replacement occurs after settings commit.
 					blocker := filepath.Join(root, "pending_tournaments.json.tmp")
 					if err := os.Mkdir(blocker, 0700); err != nil {
 						t.Fatal(err)
@@ -618,7 +612,6 @@ func TestDeploymentTransferRollbackAndDurableAckFailures(t *testing.T) {
 			if err != nil || len(questions) != 0 {
 				t.Fatalf("rollback questions=%+v %v", questions, err)
 			}
-			// An intentional later write remains usable through the original open handle.
 			if err := target.store.AppendLedgerEntry("deposit", 1, time.Now(), "money:after-rollback"); err != nil {
 				t.Fatal(err)
 			}
@@ -649,7 +642,6 @@ func TestDeploymentTransferDigestAndOwnershipRefusal(t *testing.T) {
 				}
 			}
 			if corruption == "foreign-policy" {
-				// Simulate an out-of-process edit, bypassing the application's mutex/guard.
 				data, err := os.ReadFile(target.worker.configPath)
 				if err != nil {
 					t.Fatal(err)

@@ -1,7 +1,5 @@
 package bot
 
-// /config and /help: static command descriptions.
-
 import (
 	"fmt"
 	"strings"

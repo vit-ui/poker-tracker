@@ -7,7 +7,6 @@ import (
 	"os"
 )
 
-// CollectorObservation is a display copy, never proof of live enforcement.
 type CollectorObservation struct {
 	Known bool      `json:"known"`
 	Lock  *LockFile `json:"lock,omitempty"`

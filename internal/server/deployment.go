@@ -354,14 +354,10 @@ func (d *deploymentReceiver) verify() error {
 	return d.phase(transport.TransferPhaseVerified)
 }
 
-// ownedPrefix compares raw rows per data set; it does not require a partial
-// nontransactional import to already have a complete reconciled ledger.
 func ownedPrefix(expected, actual storage.Snapshot, precision time.Duration) error {
 	if len(actual.CashSessions) > len(expected.CashSessions) || len(actual.Tournaments) > len(expected.Tournaments) || len(actual.Ledger) > len(expected.Ledger) {
 		return fmt.Errorf("destination contains rows outside this transfer")
 	}
-	// VerifySnapshot also checks sums, so compare complete zero-ledger snapshots
-	// per record class and validate ledger prefixes with their original totals.
 	want := storage.Snapshot{CashSessions: expected.CashSessions[:len(actual.CashSessions)], Tournaments: expected.Tournaments[:len(actual.Tournaments)], Ledger: expected.Ledger[:len(actual.Ledger)]}
 	if err := storage.VerifySnapshot(want, actual, precision); err != nil {
 		return fmt.Errorf("destination rows are not owned by this transfer: %w", err)

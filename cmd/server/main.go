@@ -1,8 +1,3 @@
-// Command tracker-server is the brain half of the split build: it stores data,
-// runs the Telegram bot, evaluates the rules, and listens for a collector (the
-// poker PC) to connect over TLS. It never watches PokerStars files or kills
-// PokerStars — the collector does that. The all-local build is cmd/tracker;
-// this binary is only for running the server on a separate always-on machine.
 package main
 
 import (
@@ -33,11 +28,8 @@ import (
 	"github.com/vit-ui/self-tracker/internal/update"
 )
 
-// InstallationID is injected into disposable builds; production leaves it empty.
 var InstallationID string
 
-// listenPort is the fixed TCP port the server listens on and advertises in the
-// connection string. Fixed rather than configurable to keep pairing simple.
 const listenPort = 8443
 
 var (
@@ -74,10 +66,6 @@ func main() {
 	setup := flag.Bool("setup", false, "generate credentials and print the connection string")
 	pair := flag.Bool("pair", false, "reprint the connection string to pair another collector")
 	install := flag.Bool("install", false, "register the server as a boot service (systemd on Linux, Task Scheduler on Windows)")
-	// The Windows installer collects the storage choice on its own wizard pages
-	// and passes it here, since it runs --setup in a hidden console that can't
-	// prompt. Empty --backend means ask (Linux desktop/terminal) or keep an
-	// existing/default backend. --sheet-name/--sheet-id preseed a Sheets install.
 	backend := flag.String("backend", "", `storage backend to preseed on --setup: "sqlite" or "sheets"`)
 	sheetName := flag.String("sheet-name", "", "Google Sheet name to preseed on --setup (sheets backend)")
 	sheetID := flag.String("sheet-id", "", "Google Sheet ID to preseed on --setup (sheets backend)")
@@ -129,8 +117,6 @@ func main() {
 	}
 }
 
-// runInstall registers the server as a boot service via the per-OS
-// installService, so it starts on boot and restarts on failure.
 func runInstall() {
 	if err := installService(); err != nil {
 		fmt.Fprintln(os.Stderr, "install failed:", err)
@@ -152,21 +138,6 @@ func runServe() (failure error) {
 		return err
 	}
 	defer releaseShutdown()
-	// Keep the idle footprint small without starving the read spikes. GOGC=50
-	// (vs the default 100) halves the heap growth ratio, so the idle heap floor
-	// stays low and freed pages are scavenged back to the OS sooner — this is
-	// the lever that matters, since the server is idle almost all the time.
-	//
-	// The soft memory limit is deliberately generous (not the combined build's
-	// 32 MiB): unlike the poker PC, the server is the query endpoint — /export
-	// and /stats materialize whole storage tabs — and a limit sized near that
-	// working set would make the GC burn CPU and overshoot anyway under a big
-	// read, on a machine where memory isn't the scarce resource. 128 MiB is far
-	// above any single user's read spike yet still caps a runaway. (On Linux the
-	// systemd unit could set GOMEMLIMIT/GOGC or a cgroup cap instead; the
-	// Windows server has no such hook, so set a portable default in code.) These
-	// are runtime knobs only — stored data, alerts, and enforcement are
-	// unaffected.
 	debug.SetGCPercent(50)
 	debug.SetMemoryLimit(128 << 20)
 
@@ -228,13 +199,6 @@ func runServe() (failure error) {
 	srv.TransferCalls = workerTransfers
 	go func() { workerDone <- srv.Run() }()
 
-	// A hard-stop decision (manual via the bot, or automatic in the server) is
-	// sent down the link to the collector, which kills PokerStars and writes the
-	// lockfile on the poker PC.
-
-	// A /scan backfill sends a rescan command down the link; the remote
-	// collector walks the poker PC's folders and uploads them for a silent
-	// import.
 	sendLock := srv.RequestHardstop
 	requestRescan := func() {
 		link.Commands <- transport.Command{Kind: transport.CommandRescan}
@@ -280,7 +244,7 @@ func runServe() (failure error) {
 	case err := <-startupErrors:
 		failure = fmt.Errorf("confirming startup: %w", err)
 	case <-shutdown:
-	case <-botDrained: // A successful configuration restart requests owner cleanup.
+	case <-botDrained:
 	case err := <-botDone:
 		botFailed(err)
 	case err := <-workerDone:
@@ -336,8 +300,6 @@ func runServe() (failure error) {
 func runSetup(storageChoice, sheetName, sheetID string) {
 	p := uiprompt.New()
 
-	// Generate the TLS cert/key once and keep them; the fingerprint the client
-	// pins is derived from the cert, so it must not change across restarts.
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
 		certPEM, keyPEM, _, err := transport.GenerateServerCert()
 		if err != nil {
@@ -375,12 +337,6 @@ func runSetup(storageChoice, sheetName, sheetID string) {
 	showConnection(p, cfg)
 }
 
-// applyStorageChoice sets the storage backend for a new install. The Windows
-// installer collects it on its own wizard pages (like the all-local install)
-// and passes it as flags; on Linux with no flag it's asked via chooseBackend
-// (desktop dialog or terminal), defaulting SQLite. An install that already has a
-// backend keeps it — LoadConfig read the existing config, so a re-run preserves
-// the backend and the pairing token rather than resetting them.
 func applyStorageChoice(cfg *config.Config, p *uiprompt.Prompter, backend, sheetName, sheetID string) {
 	if cfg.Setup.StorageBackend != nil {
 		return
@@ -404,20 +360,8 @@ func applyStorageChoice(cfg *config.Config, p *uiprompt.Prompter, backend, sheet
 	}
 }
 
-// chooseBackend asks how the player wants to configure the server. Everything
-// (storage, alerts, rules) can be set from Telegram once paired, so that's the
-// recommended default and lands on SQLite (switchable anytime via /storage). If
-// they'd rather set storage here, they pick SQLite or Google Sheets; Sheets is
-// finished from Telegram since it needs the sheet shared and the key uploaded.
 func chooseBackend(p *uiprompt.Prompter) *string {
 	sqlite := "sqlite"
-	// Skip the prompt only on Windows: there the server is set up by the Inno
-	// installer, which runs this in a hidden console with no interactive stdin,
-	// so a terminal-mode read could block the installer — default to SQLite
-	// silently (switchable anytime from Telegram via /storage). On Linux both
-	// the desktop dialog and a real terminal (SSH) can answer safely, and a
-	// non-interactive stdin (double-click with no terminal) just reads EOF and
-	// falls through to the default — so the window and terminal ask identically.
 	if runtime.GOOS == "windows" {
 		return &sqlite
 	}
@@ -454,8 +398,6 @@ func runPair() {
 	showConnection(uiprompt.New(), cfg)
 }
 
-// showConnection surfaces the pairing connection string: always to stdout (so a
-// terminal/log run never loses it), plus a dialog window on a graphical desktop.
 func showConnection(p *uiprompt.Prompter, cfg *config.Config) {
 	msg, err := connectionMessage(cfg)
 	if err != nil {
@@ -468,8 +410,6 @@ func showConnection(p *uiprompt.Prompter, cfg *config.Config) {
 	}
 }
 
-// connectionMessage builds the explainer + the tracker:// connection string a
-// poker PC pastes into its installer to pair with this server.
 func connectionMessage(cfg *config.Config) (string, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
@@ -492,7 +432,6 @@ func connectionMessage(cfg *config.Config) (string, error) {
 	}, "\n"), nil
 }
 
-// randomToken returns a 128-bit hex token for the pairing secret.
 func randomToken() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -501,9 +440,6 @@ func randomToken() string {
 	return hex.EncodeToString(b)
 }
 
-// localIP returns this machine's first non-loopback IPv4 address, a reasonable
-// default for a server and collector on the same LAN. For a VPS the user
-// replaces it with the public address in the printed connection string.
 func localIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err == nil {

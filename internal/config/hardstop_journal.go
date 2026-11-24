@@ -7,8 +7,6 @@ import (
 	"os"
 )
 
-// HardstopDelivery is both the durable outgoing command and its confirmation
-// receipt. Confirmed entries remain to suppress recovery of the same decision.
 type HardstopDelivery struct {
 	Lock          LockFile  `json:"lock"`
 	Confirmed     bool      `json:"confirmed"`
@@ -56,9 +54,6 @@ func saveHardstopDeliveries(path string, entries map[string]HardstopDelivery) er
 	return nil
 }
 
-// MergeHardstopDeliveries preserves concurrent manual requests and worker
-// confirmations. Confirmation is monotonic and an existing trigger retains its
-// original clock, including after a lost acknowledgement.
 func MergeHardstopDeliveries(path string, changes map[string]HardstopDelivery) (map[string]HardstopDelivery, error) {
 	mu.Lock()
 	defer mu.Unlock()

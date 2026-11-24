@@ -96,7 +96,6 @@ func EnsureTelegramSetupPrivileges() (bool, error) {
 	return false, nil
 }
 
-// CanPromptTelegram reports whether this process has an interactive session.
 func CanPromptTelegram() bool {
 	var session uint32
 	return windows.ProcessIdToSessionId(uint32(os.Getpid()), &session) == nil && session != 0

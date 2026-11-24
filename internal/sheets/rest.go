@@ -1,16 +1,5 @@
 package sheets
 
-// A minimal REST transport for the seven Google API endpoints this app
-// actually calls, replacing the official google.golang.org/api client. The
-// official client transitively linked gRPC, protobuf, OpenTelemetry, and the
-// cloud auth stack — none of it used by these plain-REST calls — and cost
-// ~12 MB of the release binary (20.3 MB with it, ~8 MB without). Wire shapes
-// (JSON bodies, query parameters, URL layout) match what the official client
-// sent and received, so cell encoding/decoding semantics are unchanged:
-// json.Unmarshal into [][]interface{} yields float64/string exactly as
-// before. Auth is the service account's JWT flow via golang.org/x/oauth2,
-// whose http.Client refreshes tokens automatically.
-
 import (
 	"bytes"
 	"context"
@@ -34,55 +23,26 @@ const (
 	spreadsheetsScope          = "https://www.googleapis.com/auth/spreadsheets"
 	driveMetadataReadonlyScope = "https://www.googleapis.com/auth/drive.metadata.readonly"
 
-	// sheetsRateInterval/sheetsRateBurst pace every Google API call at the
-	// doJSON choke point (see waitForSlot) so no path — a /scan backfill, a
-	// fallback-flush replay, live play, or an interactive /stats or /export —
-	// can exceed Google's per-user Sheets quota (60 reads/min AND 60 writes/min,
-	// tracked separately). One combined token bucket at ~50 calls/min keeps the
-	// total call rate under 60/min with margin, which bounds each of the two
-	// separate quota buckets under 60/min as well (any subset of a <=55 total is
-	// <=60). This is a quota-conformance control, not a timeout or a retry: the
-	// write-ahead fallback still catches the rare residual failure; the limiter
-	// is what stops a bulk import from hitting the 429 cliff in the first place
-	// (a whole folder of files used to fire hundreds of calls in seconds).
 	sheetsRateInterval = 1200 * time.Millisecond
 	sheetsRateBurst    = 5
 )
 
-// restService issues authenticated Google API requests. hc comes from the
-// service account's JWT config and refreshes its token automatically.
-// baseURL and driveURL are the API roots — always the real Google endpoints
-// in production (see newRESTService), overridden only by the package's own
-// tests, which point them at an httptest server standing in for Google so
-// the read/write/fallback code paths run against real HTTP without real
-// credentials.
 type restService struct {
 	hc       *http.Client
 	baseURL  string
 	driveURL string
 
-	// healthMu guards lastErr/downSince, updated by doJSON on every call —
-	// the single choke point every endpoint below goes through — so Health
-	// (see sheets.go) reflects the outcome of the most recent API call
-	// regardless of which endpoint made it.
 	healthMu  sync.Mutex
-	lastErr   error     // nil when the most recent doJSON call succeeded
-	downSince time.Time // zero when healthy; set once, on the nil→non-nil transition
+	lastErr   error
+	downSince time.Time
 
-	// rateMu guards the token bucket waitForSlot drains before every doJSON
-	// call. rateInterval is the per-token refill period; a zero rateInterval
-	// disables throttling entirely (the package's own httptest-backed tests
-	// leave it unset so the suite runs at full speed — the same seam that
-	// overrides baseURL/driveURL). rateBurst caps the idle token reserve.
 	rateMu       sync.Mutex
 	rateInterval time.Duration
 	rateBurst    int
-	rateTokens   float64   // may go negative: a reservation held by a waiting caller
-	rateLast     time.Time // last refill instant; zero until the first call
+	rateTokens   float64
+	rateLast     time.Time
 }
 
-// newRESTService builds a transport from the service account key JSON,
-// authorized for the given scope.
 func newRESTService(serviceAccountJSON []byte, scope string) (*restService, error) {
 	conf, err := google.JWTConfigFromJSON(serviceAccountJSON, scope)
 	if err != nil {
@@ -97,13 +57,6 @@ func newRESTService(serviceAccountJSON []byte, scope string) (*restService, erro
 	}, nil
 }
 
-// waitForSlot blocks until the rate limiter has a token, then consumes one, so
-// the caller (doJSON) stays within Google's per-user Sheets quota. It's a
-// reservation token bucket: rateTokens is topped up by elapsed/rateInterval on
-// each call (capped at rateBurst) and decremented by one per call. When it goes
-// negative the caller sleeps for the deficit — a second concurrent caller
-// refills only a sliver before its own decrement, so it reserves a later slot
-// and the two serialize correctly. A zero rateInterval (tests) is a no-op.
 func (s *restService) waitForSlot() {
 	if s.rateInterval <= 0 {
 		return
@@ -130,18 +83,11 @@ func (s *restService) waitForSlot() {
 	}
 }
 
-// valueRange is the request/response payload for every values endpoint —
-// the same JSON shape the official client used on the wire.
 type valueRange struct {
 	Range  string          `json:"range,omitempty"`
 	Values [][]interface{} `json:"values,omitempty"`
 }
 
-// doJSON performs one API call: marshals body (if non-nil), sends, checks
-// for a 2xx status, and decodes the response into out (if non-nil). Non-2xx
-// responses return an error carrying the status and the start of the body —
-// enough to tell an unshared sheet (403) from a bad ID (404) from a
-// transient server error (5xx, which the write-ahead fallback catches).
 func (s *restService) doJSON(method, reqURL string, body, out interface{}) (err error) {
 	s.waitForSlot()
 	defer func() {
@@ -192,45 +138,32 @@ func (s *restService) doJSON(method, reqURL string, body, out interface{}) (err 
 	return nil
 }
 
-// health reports whether the most recent doJSON call (through any endpoint)
-// failed. since is when the current outage began (zero if healthy).
 func (s *restService) health() (down bool, since time.Time, err error) {
 	s.healthMu.Lock()
 	defer s.healthMu.Unlock()
 	return s.lastErr != nil, s.downSince, s.lastErr
 }
 
-// valuesURL builds the .../values/{range} URL. Ranges contain spaces (tab
-// names like "Cash Sessions") and must be path-escaped; suffix is "" or an
-// API verb like ":append".
 func (s *restService) valuesURL(spreadsheetID, rng, suffix, query string) string {
 	return s.baseURL + spreadsheetID + "/values/" + url.PathEscape(rng) + suffix + "?" + query
 }
 
-// valuesGet reads a range with UNFORMATTED_VALUE rendering — numbers come
-// back as JSON numbers (float64), text as strings, exactly what parseFloat/
-// parseInt/fmt.Sprint downstream expect. Trailing empty cells and rows are
-// omitted by the API, same as with the official client.
 func (s *restService) valuesGet(spreadsheetID, rng string) (valueRange, error) {
 	var out valueRange
 	err := s.doJSON(http.MethodGet, s.valuesURL(spreadsheetID, rng, "", "valueRenderOption=UNFORMATTED_VALUE"), nil, &out)
 	return out, err
 }
 
-// valuesUpdate overwrites a range with RAW input (no cell-format parsing).
 func (s *restService) valuesUpdate(spreadsheetID, rng string, values [][]interface{}) error {
 	return s.doJSON(http.MethodPut, s.valuesURL(spreadsheetID, rng, "", "valueInputOption=RAW"),
 		valueRange{Values: dollarCells(values)}, nil)
 }
 
-// valuesAppend appends rows after the last data row of the table containing
-// rng, with RAW input.
 func (s *restService) valuesAppend(spreadsheetID, rng string, values [][]interface{}) error {
 	return s.doJSON(http.MethodPost, s.valuesURL(spreadsheetID, rng, ":append", "valueInputOption=RAW"),
 		valueRange{Values: dollarCells(values)}, nil)
 }
 
-// valuesBatchUpdate writes several disjoint ranges in one call.
 func (s *restService) valuesBatchUpdate(spreadsheetID string, data []valueRange) error {
 	for i := range data {
 		data[i].Values = dollarCells(data[i].Values)
@@ -242,9 +175,6 @@ func (s *restService) valuesBatchUpdate(spreadsheetID string, data []valueRange)
 	return s.doJSON(http.MethodPost, s.baseURL+spreadsheetID+"/values:batchUpdate", body, nil)
 }
 
-// spreadsheetTabTitles returns the titles of every tab in the spreadsheet.
-// Also NewClient's reachability check: an unshared or nonexistent sheet
-// fails here first.
 func (s *restService) spreadsheetTabTitles(spreadsheetID string) ([]string, error) {
 	var out struct {
 		Sheets []struct {
@@ -263,7 +193,6 @@ func (s *restService) spreadsheetTabTitles(spreadsheetID string) ([]string, erro
 	return titles, nil
 }
 
-// addSheet creates a new tab with the given title.
 func (s *restService) addSheet(spreadsheetID, title string) error {
 	body := map[string]interface{}{
 		"requests": []map[string]interface{}{
@@ -275,8 +204,6 @@ func (s *restService) addSheet(spreadsheetID, title string) error {
 	return s.doJSON(http.MethodPost, s.baseURL+spreadsheetID+":batchUpdate", body, nil)
 }
 
-// driveFindSpreadsheets returns the IDs of every spreadsheet the service
-// account can see with exactly the given name. Used only by ResolveSheetID.
 func (s *restService) driveFindSpreadsheets(name string) ([]string, error) {
 	q := url.Values{
 		"q":      {fmt.Sprintf("name = '%s' and mimeType = 'application/vnd.google-apps.spreadsheet'", name)},
@@ -297,7 +224,6 @@ func (s *restService) driveFindSpreadsheets(name string) ([]string, error) {
 	return ids, nil
 }
 
-// dollarCells preserves numeric USD cells while the accounting model uses cents.
 func dollarCells(rows [][]interface{}) [][]interface{} {
 	result := make([][]interface{}, len(rows))
 	for i, row := range rows {
@@ -311,8 +237,6 @@ func dollarCells(rows [][]interface{}) [][]interface{} {
 	return result
 }
 
-// clearHistoryValues clears only values in the supplied grid ranges, in one
-// atomic spreadsheet update. The ranges start after the header rows.
 func (s *restService) clearHistoryValues(spreadsheetID string, columnsByTitle map[string]int, cashMetadataEnds map[int]int) error {
 	var out struct {
 		Sheets []struct {
@@ -372,8 +296,6 @@ type gridWrite struct {
 	values      [][]interface{}
 }
 
-// writeHistoryGrid applies result rows and the whole ledger
-// cascade in the same atomic batch, expanding the grid where necessary.
 func (s *restService) writeHistoryGrid(spreadsheetID string, writes []gridWrite) error {
 	type gridSize struct {
 		Rows    int `json:"rowCount"`

@@ -14,9 +14,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// AutomaticTriggerID fingerprints only the financial inputs to the rule that
-// fired. It excludes bankroll totals, transfers, replay time and display stats.
-// Stored dates use minute digits so backend migration cannot change identity.
 func AutomaticTriggerID(reason string, duration int, cfg *config.Config, now time.Time, cash *parsers.CashSession, tournament *parsers.Tournament, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament) (string, error) {
 	type result struct {
 		ID, Date    string

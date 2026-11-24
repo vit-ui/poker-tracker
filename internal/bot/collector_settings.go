@@ -19,7 +19,6 @@ func (b *Bot) saveCollectorChange(chatID int64, settings config.CollectorSetting
 	if b.updateID != 0 {
 		id = fmt.Sprintf("collector-settings:%d:%d:%d", b.tg.Self.ID, chatID, b.updateID)
 	}
-	// A queue-save reply is immediate local durability, never PC acknowledgement.
 	b.queueOperation(nil, func(result storage.OperationResult) {
 		if result.Err != nil {
 			send(b.tg, chatID, "Could not save the PC change locally. It was not queued. Check logs.")

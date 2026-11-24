@@ -30,8 +30,6 @@ type deploymentPipeline struct {
 	collectorStop               chan struct{}
 }
 
-// Both paths use the real watcher and collector. Split mode has separate PC and
-// server configuration files as well as an authenticated, pinned TLS connection.
 func newDeploymentPipeline(t *testing.T, network, watch bool) *deploymentPipeline {
 	t.Helper()
 	root := t.TempDir()
@@ -281,7 +279,6 @@ func TestDeploymentChannelsAndTLSRecordAndAlertParity(t *testing.T) {
 			}
 			for _, row := range snapshot.CashSessions {
 				for i := range row.HandDetails {
-					// The two fixtures use distinct poker-PC directories.
 					row.HandDetails[i].LiveSource = ""
 				}
 			}
@@ -300,8 +297,6 @@ func TestDeploymentChannelsAndTLSRecordAndAlertParity(t *testing.T) {
 	}
 }
 
-// Controlled collector clocks travel in import-only messages over both actual
-// links. No live/status upload may establish the timezone for this test.
 func TestDeploymentScanOnlyClockDateWindows(t *testing.T) {
 	for _, network := range []bool{false, true} {
 		t.Run(map[bool]string{false: "channels", true: "TLS"}[network], func(t *testing.T) {
@@ -315,8 +310,6 @@ func TestDeploymentScanOnlyClockDateWindows(t *testing.T) {
 			zone := time.FixedZone("collector", offset)
 			clock := instant.In(zone)
 			cfg := &config.Config{}
-			// Place the collector at noon (or 18:00), safely away from rollover.
-			// Expected stored digits are independent of the shared clock helper.
 			start := time.Date(clock.Year(), clock.Month(), clock.Day(), 6, 0, 0, 0, time.UTC)
 			fixture, err := os.ReadFile(filepath.Join("..", "..", "testdata", "tournament_summary", "spingo_won_T9000000007.txt"))
 			if err != nil {

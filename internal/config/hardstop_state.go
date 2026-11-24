@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// The active lock and receipts share one atomic replacement. A crash can never
-// leave a receipt claiming enforcement without its corresponding durable lock.
-// Receipts survive expiry and --check-lock cleanup; dropping old IDs would let
-// delayed recovery restart an already served lock.
 type lockState struct {
 	LockFile
 	Triggers map[string]time.Time `json:"triggers,omitempty"`
@@ -43,9 +39,6 @@ func saveLockState(path string, state lockState) error {
 	return nil
 }
 
-// ApplyHardstop returns the effective active lock and whether this is a new
-// trigger. A duplicate never changes expiry; an expired duplicate does not
-// reactivate protection, but an unrelated active lock still remains enforced.
 func ApplyHardstop(path string, proposed LockFile, now time.Time) (*LockFile, bool, error) {
 	mu.Lock()
 	defer mu.Unlock()

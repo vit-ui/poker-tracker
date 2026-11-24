@@ -9,7 +9,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// killPokerStars reports success only when taskkill itself terminated the game.
 func killPokerStars() (bool, error) {
 	running, err := pokerStarsRunning()
 	if err != nil {
@@ -30,7 +29,6 @@ func killPokerStars() (bool, error) {
 		if running {
 			return false, fmt.Errorf("terminating PokerStars: %w", err)
 		}
-		// An external exit is not a successful tracker termination.
 		return false, nil
 	}
 	return true, nil

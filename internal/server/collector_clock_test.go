@@ -34,7 +34,6 @@ func TestCollectorClockRestoredBeforeUploads(t *testing.T) {
 			if offset != tc.offset {
 				t.Fatalf("offset=%d want %d", offset, tc.offset)
 			}
-			// At 02:30 UTC, -03:00 must retain the preceding calendar day.
 			instant := time.Date(2026, 11, 12, 2, 30, 0, 0, time.UTC)
 			got := storage.AsStoredClock(instant.In(second.clientLoc))
 			want := instant.Add(time.Duration(tc.offset) * time.Second)

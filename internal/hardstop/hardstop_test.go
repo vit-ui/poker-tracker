@@ -100,10 +100,6 @@ func TestDailyLossExceeds(t *testing.T) {
 	}
 }
 
-// TestSpingoOnly confirms a knockout Spin & Go ("spingo-ko") still counts
-// toward the Spin & Go daily-loss hard stop, the same as a non-knockout one
-// — evaluateDailyLoss filters by BaseType() specifically so a knockout
-// tournament isn't silently excluded from this check.
 func TestSpingoOnly(t *testing.T) {
 	tournaments := []parsers.Tournament{
 		{Type: "spingo", NetCents: -100},
@@ -151,9 +147,6 @@ func TestSpingoDailyLossExceeds(t *testing.T) {
 	}
 }
 
-// TestDailyLossIndependence confirms the Spin & Go-specific check and the
-// unified all-game-types check are evaluated independently — a winning cash
-// session must not mask a Spin & Go-specific breach, and vice versa.
 func TestDailyLossIndependence(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -189,11 +182,6 @@ func TestDailyLossIndependence(t *testing.T) {
 	}
 }
 
-// TestRollingPeak confirms the downswing peak is the highest point reached
-// on the results-only equity curve (cumulative AmountCents), not the highest
-// RunningTotalCents — RunningTotalCents includes deposits/withdrawals and would read
-// a large withdrawal as an equally large downswing (see
-// TestDownswingExcludesTransfers for that specific case).
 func TestRollingPeak(t *testing.T) {
 	entriesOf := func(amountsCents ...money.Cents) []storage.LedgerEntry {
 		entries := make([]storage.LedgerEntry, len(amountsCents))
@@ -228,9 +216,6 @@ func TestRollingPeak(t *testing.T) {
 	}
 }
 
-// TestDownswingExcludesTransfers confirms deposit/withdrawal rows never
-// enter the equity curve computed by evaluateDownswing — sessionOnly must
-// filter them out before ComputeEquityCurve ever sees them.
 func TestDownswingExcludesTransfers(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -271,8 +256,6 @@ func TestDownswingExcludesTransfers(t *testing.T) {
 	}
 }
 
-// TestComputeEquityCurve exercises the peak/current equity-curve math in
-// isolation, independent of any type filtering or windowing.
 func TestComputeEquityCurve(t *testing.T) {
 	entriesOf := func(amountsCents ...money.Cents) []storage.LedgerEntry {
 		entries := make([]storage.LedgerEntry, len(amountsCents))
@@ -305,31 +288,23 @@ func TestComputeEquityCurve(t *testing.T) {
 	}
 }
 
-// TestDownswingEquityCurve confirms the data-taking curve — which windows a
-// full-ledger fetch locally — produces exactly what the old per-evaluator
-// windowed fetch did: the 30-day boundary stays exclusive, transfers stay
-// out of the curve, and rows older than the window never contribute to the
-// peak. now is constructed in time.Local so its wall-clock digits are fixed
-// regardless of the machine's zone (see TestPokerDayStart_DefaultHour);
-// entry dates are constructed directly in UTC, the stored-date coordinate.
 func TestDownswingEquityCurve(t *testing.T) {
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.Local)
-	cutoff := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC) // now's digits minus 30 days
+	cutoff := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
 
 	dated := func(entryType string, amountCents money.Cents, date time.Time) storage.LedgerEntry {
 		return storage.LedgerEntry{Type: entryType, AmountCents: amountCents, Date: date}
 	}
 	entries := []storage.LedgerEntry{
-		dated("cash_session", 5000, time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)), // outside window
-		dated("cash_session", 1000, cutoff),                                       // exactly at cutoff — excluded
-		dated("cash_session", 1000, cutoff.Add(time.Minute)),                      // just inside
-		dated("deposit", 10000, time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)),    // transfer — excluded
+		dated("cash_session", 5000, time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)),
+		dated("cash_session", 1000, cutoff),
+		dated("cash_session", 1000, cutoff.Add(time.Minute)),
+		dated("deposit", 10000, time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)),
 		dated("cash_session", -300, time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)),
-		dated("withdrawal", -4000, time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)), // transfer — excluded
+		dated("withdrawal", -4000, time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)),
 		dated("tournament", -200, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)),
 	}
 
-	// Curve over the three included rows (+10, -3, -2): 10 → 7 → 5.
 	peakCents, currentCents := DownswingEquityCurve(entries, now)
 	if peakCents != 1000 || currentCents != 500 {
 		t.Errorf("DownswingEquityCurve(...) = (peak=%v, current=%v), want (peak=10, current=5)", peakCents, currentCents)
@@ -371,12 +346,8 @@ func TestHistoricalLedgerOrderForLossProtection(t *testing.T) {
 	}
 }
 
-// TestPokerDaySessionEntries confirms the data-taking poker-day filter —
-// applied to a full-ledger fetch — matches the old windowed
-// GetLedgerEntriesSince fetch: the day-start boundary is inclusive, rows
-// before it are dropped, and transfers inside the day are excluded.
 func TestPokerDaySessionEntries(t *testing.T) {
-	cfg := &config.Config{} // default 6am day start
+	cfg := &config.Config{}
 	now := time.Date(2026, 7, 13, 15, 0, 0, 0, time.Local)
 	dayStart := time.Date(2026, 7, 13, 6, 0, 0, 0, time.UTC)
 
@@ -384,9 +355,9 @@ func TestPokerDaySessionEntries(t *testing.T) {
 		return storage.LedgerEntry{Type: entryType, AmountCents: amountCents, Date: date}
 	}
 	entries := []storage.LedgerEntry{
-		dated("cash_session", -500, dayStart.Add(-time.Minute)), // previous poker day — dropped
-		dated("deposit", 10000, dayStart.Add(2*time.Hour)),      // in the day but a transfer — dropped
-		dated("cash_session", -300, dayStart),                   // exactly at the boundary — kept (inclusive)
+		dated("cash_session", -500, dayStart.Add(-time.Minute)),
+		dated("deposit", 10000, dayStart.Add(2*time.Hour)),
+		dated("cash_session", -300, dayStart),
 		dated("tournament", -200, dayStart.Add(6*time.Hour)),
 	}
 
@@ -424,11 +395,6 @@ func TestInRollingWindow(t *testing.T) {
 	}
 }
 
-// lockWriter returns an onTrigger callback matching what the real callers do:
-// build the lockfile + alert (hardstop.BuildTrigger), write the lockfile, and
-// send the alert. It lets these decision tests assert the same observable
-// outcomes — lockfile contents and alert text — they did when Evaluate wrote
-// the lockfile itself, now that writing has moved to the enforcement side.
 func lockWriter(lockPath string, ch chan string) func(reason string, durationHours int) {
 	return func(reason string, durationHours int) {
 		lock, msg, _ := BuildTrigger(reason, durationHours, time.Now().UTC())
@@ -439,10 +405,6 @@ func lockWriter(lockPath string, ch chan string) func(reason string, durationHou
 	}
 }
 
-// TestEvaluateTriggers drives the full decision path — Evaluate through the
-// onTrigger callback to the lockfile and alert (via lockWriter) — for each hard
-// stop reason, against a real temp lockfile. Ledger dates are recent
-// stored-clock instants so the downswing window and poker-day filters see them.
 func TestEvaluateTriggers(t *testing.T) {
 	duration := 12
 	stored := storage.AsStoredClock(time.Now())
@@ -467,8 +429,6 @@ func TestEvaluateTriggers(t *testing.T) {
 		}
 		select {
 		case msg := <-ch:
-			// The lockfile keeps the raw reason key; the alert shows its
-			// humanized phrase (reasonPhrase).
 			wantPhrase := reasonPhrase(wantReason)
 			if !strings.Contains(msg, "Hard Stop triggered") || !strings.Contains(msg, wantPhrase) {
 				t.Errorf("alert = %q, want it to name the hard stop and reason %q", msg, wantPhrase)
@@ -490,12 +450,9 @@ func TestEvaluateTriggers(t *testing.T) {
 		session        parsers.CashSession
 		ledger         []storage.LedgerEntry
 		dayTournaments []parsers.Tournament
-		wantReason     string // "" = must not trigger
+		wantReason     string
 	}{
 		{
-			// Session loss is not Evaluate's job anymore (it's EvaluateSessionLoss,
-			// run per hand) — a losing session with only session_loss_buyins set
-			// must NOT trigger here.
 			name:    "session loss is not evaluated by Evaluate",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
 			session: losingSession,
@@ -508,7 +465,6 @@ func TestEvaluateTriggers(t *testing.T) {
 			wantReason: "consecutive_losses",
 		},
 		{
-			// Curve +100 → +70: drawdown 30 > 2 × $5.
 			name:       "downswing",
 			cfg:        &config.Config{Hardstop: config.Hardstop{DownswingBuyins: pf(2), DurationHours: pi(duration)}},
 			session:    calmSession,
@@ -516,7 +472,6 @@ func TestEvaluateTriggers(t *testing.T) {
 			wantReason: "downswing_buyins",
 		},
 		{
-			// Spin net -1.20 < -$1.00.
 			name:           "spin & go daily loss",
 			cfg:            &config.Config{Hardstop: config.Hardstop{SpingoDailyLossCents: centsPtr(100), DurationHours: pi(duration)}},
 			session:        calmSession,
@@ -524,7 +479,6 @@ func TestEvaluateTriggers(t *testing.T) {
 			wantReason:     "spingo_daily_loss_cents",
 		},
 		{
-			// Day net -6 < -$5.
 			name:       "unified daily loss",
 			cfg:        &config.Config{Hardstop: config.Hardstop{DailyLossCents: centsPtr(500), DurationHours: pi(duration)}},
 			session:    calmSession,
@@ -590,10 +544,6 @@ func TestEvaluateTriggers(t *testing.T) {
 	})
 }
 
-// TestEvaluateSessionLoss covers the per-hand session-loss check, which reads
-// only the in-memory session (no ledger): it triggers when the session's net
-// loss exceeds session_loss_buyins × buy-in, stays silent otherwise, and
-// errors when the threshold is set without duration_hours.
 func TestEvaluateSessionLoss(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	pi := func(v int) *int { return &v }
@@ -607,37 +557,22 @@ func TestEvaluateSessionLoss(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			// Loss 12 > 1 × $5 buy-in.
 			name:     "breach locks",
 			cfg:      &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
 			session:  parsers.CashSession{BuyInCents: 500, NetCents: -1200},
 			wantLock: true,
 		},
 		{
-			// Loss 12 < 10 × $5 = $50.
 			name:    "within threshold does not lock",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(10), DurationHours: pi(duration)}},
 			session: parsers.CashSession{BuyInCents: 500, NetCents: -1200},
 		},
 		{
-			// Boundary: loss exactly == 1 × $5. money.LossExceeds uses a strict
-			// ">", so equality must NOT lock — a flip to ">=" would be caught here.
-			// Covered at the pure money.LossExceeds level (TestSessionLossExceeds)
-			// but never through this wrapper until now.
 			name:    "loss exactly at the threshold does not lock",
 			cfg:     &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
 			session: parsers.CashSession{BuyInCents: 500, NetCents: -500},
 		},
 		{
-			// Zero buy-in makes the threshold 1 × $0 = $0, so any loss exceeds it
-			// and locks. This is an arithmetic consequence, not a desired rule:
-			// unlike EvaluateSessionLossAlert (which guards session.BuyInCents == 0)
-			// and evaluateDownswing (which skips buyInCents == 0), the per-hand
-			// session-loss hard stop has no zero guard — and needs none, because a
-			// real cash header always carries non-zero blinds (BuyInCents =
-			// bigBlind × 100) and the parser errors rather than emitting a
-			// zero-buy-in session, so this path is unreachable in production. Pinned
-			// so the divergence from the alert is understood, not accidental.
 			name:     "zero buy-in makes any loss exceed the zero threshold",
 			cfg:      &config.Config{Hardstop: config.Hardstop{SessionLossBuyins: pf(1), DurationHours: pi(duration)}},
 			session:  parsers.CashSession{BuyInCents: 0, NetCents: -1},
@@ -689,8 +624,6 @@ func TestEvaluateSessionLoss(t *testing.T) {
 	}
 }
 
-// TestManualTrigger covers /hardstop now's path: it loads the duration
-// from a real config.json and refuses when duration_hours was never set.
 func TestManualTrigger(t *testing.T) {
 	t.Run("locks for the configured duration with reason manual", func(t *testing.T) {
 		dir := t.TempDir()
@@ -731,10 +664,6 @@ func TestManualTrigger(t *testing.T) {
 	})
 }
 
-// TestBuildTrigger pins the lockfile fields and alert text BuildTrigger
-// assembles from a reason + duration + now: TriggeredAt is now, ExpiresAt is
-// now + duration, the raw reason key is kept in the lockfile, and the alert
-// names the hard stop and the humanized reason phrase.
 func TestBuildTrigger(t *testing.T) {
 	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
 	lock, alert, _ := BuildTrigger("session_loss_buyins", 12, now)
@@ -753,9 +682,6 @@ func TestBuildTrigger(t *testing.T) {
 	}
 }
 
-// TestReasonPhrase pins the lockfile-key → user-facing phrase mapping used in
-// the hard stop alert. Every trigger reason must map to a phrase, and an
-// unknown key must fall back to itself (never blank).
 func TestReasonPhrase(t *testing.T) {
 	cases := []struct {
 		reason string

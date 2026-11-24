@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// CollectorClock retains calendar context, not an adjustment to absolute time.
 type CollectorClock struct {
 	Name          string `json:"name"`
 	OffsetSeconds int    `json:"offset_seconds"`

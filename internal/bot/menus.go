@@ -21,8 +21,6 @@ type openMenu struct {
 	revision  uint64
 }
 
-// showMenu creates a root message or replaces the current screen in place.
-// Only successfully rendered buttons can dispatch menu actions.
 func (b *Bot) showMenu(chatID int64, messageID int, text string, rows [][]tgbotapi.InlineKeyboardButton) int {
 	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	key := menuKey{chatID, messageID}
@@ -132,7 +130,6 @@ func (b *Bot) acceptMenuCallback(key menuKey, data string) bool {
 	return true
 }
 
-// Deferred screens must still belong to the last action on the menu.
 func (b *Bot) menuRevision(chatID int64, messageID int) uint64 {
 	if menu := b.menus[menuKey{chatID, messageID}]; menu != nil {
 		return menu.revision

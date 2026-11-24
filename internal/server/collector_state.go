@@ -23,8 +23,6 @@ func (s *Server) observeCollectorLock(lock *config.LockFile, message string, con
 	s.collectorLockConnection = connection
 }
 
-// CollectorLock reports observed enforcement state from the current collector,
-// independent of the server machine's filesystem or timezone.
 func (s *Server) CollectorLock() (*config.LockFile, error) {
 	connection := s.link.CollectorDone()
 	select {
@@ -47,7 +45,6 @@ func (s *Server) CollectorLock() (*config.LockFile, error) {
 	return &copy, nil
 }
 
-// LockStatusText reads display state without establishing enforcement confirmation.
 func (s *Server) LockStatusText() (string, error) {
 	liveLock, liveErr := s.CollectorLock()
 	state := config.CollectorObservation{Known: liveErr == nil, Lock: liveLock}
@@ -62,8 +59,6 @@ func (s *Server) LockStatusText() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Existing confirmation receipts can reconstruct a missing display copy.
-	// A newer explicit collector observation (including clear) always wins.
 	if !state.Known {
 		for _, delivery := range deliveries {
 			if delivery.Confirmed && delivery.EffectiveLock != nil && (state.Lock == nil || delivery.EffectiveLock.ExpiresAt.After(state.Lock.ExpiresAt)) {
@@ -109,9 +104,6 @@ func (s *Server) saveCollectorObservation(lock *config.LockFile, message string)
 	return config.SaveCollectorObservation(filepath.Join(filepath.Dir(s.configPath), "collector_observation.json"), config.CollectorObservation{Known: true, Lock: lock})
 }
 
-// RequestHardstop leaves the bot free to drain alerts while the worker accepts
-// the request. The journal already holds successful bot-side saves; failed
-// saves retain this in-memory request until the worker accepts it or exits.
 func (s *Server) RequestHardstop(lock config.LockFile) {
 	go func() {
 		select {

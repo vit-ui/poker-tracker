@@ -27,7 +27,6 @@ func TestLinuxPackageSelectsOnlyRegularInstaller(t *testing.T) {
 			}
 			gz := gzip.NewWriter(file)
 			writer := tar.NewWriter(gz)
-			// A traversal entry must never be materialized while looking for the installer.
 			if err := writer.WriteHeader(&tar.Header{Name: "../outside", Typeflag: tar.TypeReg, Mode: 0600, Size: 6}); err != nil {
 				t.Fatal(err)
 			}

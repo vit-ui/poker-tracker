@@ -1,12 +1,5 @@
 package bot
 
-// Tests for stats.go: the pure display/aggregation helpers (prize-pool text,
-// hands-weighted averages, ROI, formatters, summary-schedule windows) and the
-// store-reading summary builders behind /stats, /status, and the weekly/
-// monthly summaries, driven against a real sqlite store. The pure-helper
-// tests were moved verbatim from the former bot_calc_test.go so test files
-// mirror the package's file-per-concern split.
-
 import (
 	"path/filepath"
 	"testing"
@@ -18,9 +11,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// TestSpinGoPrizePoolText covers both the real-cash-pool and
-// ticket-denominated-pool cases — the second is the one that used to crash
-// main.go's post-session alert by dereferencing a nil Multiplier.
 func TestSpinGoPrizePoolText(t *testing.T) {
 	mult := 3.0
 	cases := []struct {
@@ -53,9 +43,6 @@ func TestSpinGoPrizePoolText(t *testing.T) {
 	}
 }
 
-// TestWeightedCashAverages covers weightedCashAverages' shared weighting
-// loop for BB/100, VPIP, and PFR together — a 10-hand session must not count
-// the same as a 200-hand one, for any of the three.
 func TestWeightedCashAverages(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -74,8 +61,8 @@ func TestWeightedCashAverages(t *testing.T) {
 		{
 			"weighted average across sessions of different sizes",
 			[]parsers.CashSession{
-				{Hands: 10, BB100: 50, VPIP: 80, PFR: 70},  // a small, loose sample session
-				{Hands: 200, BB100: -2, VPIP: 20, PFR: 15}, // a large, representative session
+				{Hands: 10, BB100: 50, VPIP: 80, PFR: 70},
+				{Hands: 200, BB100: -2, VPIP: 20, PFR: 15},
 			},
 			(10*50 + 200*-2) / 210.0,
 			(10*80 + 200*20) / 210.0,
@@ -93,9 +80,6 @@ func TestWeightedCashAverages(t *testing.T) {
 	}
 
 	t.Run("a 10-hand session does not count the same as a 200-hand session", func(t *testing.T) {
-		// If hands weren't weighted, a plain average of 80 and 20 would be 50 —
-		// far from the hands-weighted true value, which sits close to the
-		// 200-hand session's own 20 since it dominates the sample.
 		_, gotVPIP, _ := weightedCashAverages([]parsers.CashSession{
 			{Hands: 10, VPIP: 80},
 			{Hands: 200, VPIP: 20},
@@ -106,11 +90,6 @@ func TestWeightedCashAverages(t *testing.T) {
 	})
 }
 
-// TestWeightedAverages covers the generic core both weightedCashAverages and
-// weightedTournamentAverages are built on — the ok=false exclusion path
-// neither of those two exercises by itself is what makes a tournament
-// without a hand file parsed yet correctly drop out of the average instead
-// of counting as a 0-hand (and therefore zero-weight, but present) item.
 func TestWeightedAverages(t *testing.T) {
 	t.Run("no items returns zero values, not a panic", func(t *testing.T) {
 		got := weightedAverages([]int{}, 2, func(int) (float64, []float64, bool) { return 0, nil, false })
@@ -127,7 +106,7 @@ func TestWeightedAverages(t *testing.T) {
 		}
 		items := []item{
 			{hands: 100, val: 50, handFileIn: true},
-			{hands: 999, val: 0, handFileIn: false}, // excluded — would swamp the average as a 0 if counted
+			{hands: 999, val: 0, handFileIn: false},
 		}
 		got := weightedAverages(items, 1, func(it item) (float64, []float64, bool) {
 			if !it.handFileIn {
@@ -148,10 +127,6 @@ func TestWeightedAverages(t *testing.T) {
 	})
 }
 
-// TestWeightedTournamentAverages mirrors TestWeightedCashAverages for
-// tournaments — a tournament whose hand file hasn't arrived yet (Hands/
-// VPIP/PFR all nil) must be excluded entirely, not counted as a 0-hand
-// (zero-weight) tournament.
 func TestWeightedTournamentAverages(t *testing.T) {
 	handsFor := func(n int) *int { return &n }
 	pctFor := func(v float64) *float64 { return &v }
@@ -186,7 +161,7 @@ func TestWeightedTournamentAverages(t *testing.T) {
 			"a tournament missing its hand file is excluded from an otherwise-weighted set",
 			[]parsers.Tournament{
 				{Hands: handsFor(100), VPIP: pctFor(30), PFR: pctFor(20)},
-				{Hands: nil, VPIP: nil, PFR: nil}, // summary arrived, hand file hasn't — excluded
+				{Hands: nil, VPIP: nil, PFR: nil},
 			},
 			30, 20,
 		},
@@ -209,7 +184,7 @@ func TestFormatPercent(t *testing.T) {
 	}{
 		{24.3, "24.3%"},
 		{0, "0.0%"},
-		{88.0 / 347.0 * 100, "25.4%"}, // raw value 25.360230547550433, rounds to 1dp
+		{88.0 / 347.0 * 100, "25.4%"},
 	}
 	for _, c := range cases {
 		if got := formatPercent(c.v); got != c.want {
@@ -409,10 +384,6 @@ func TestInSummaryWindow(t *testing.T) {
 	}
 }
 
-// TestStatsSince checks structural properties against an independently
-// computed "now" rather than asserting on exact timestamps, since statsSince
-// calls time.Now() internally — a day-boundary race between the two calls is
-// theoretically possible but not what these assertions depend on.
 func TestStatsSince(t *testing.T) {
 	t.Run("today truncates to midnight of the current day", func(t *testing.T) {
 		now := time.Now()
@@ -437,10 +408,6 @@ func TestStatsSince(t *testing.T) {
 	})
 
 	t.Run("week is roughly 7 days ago in the stored-date coordinate system", func(t *testing.T) {
-		// statsSince computes windows via storage.AsStoredClock (local
-		// wall-clock digits read as UTC), so the reference point must be
-		// converted the same way — comparing against a real local-zone
-		// instant would be off by the machine's UTC offset.
 		now := storage.AsStoredClock(time.Now())
 		got := statsSince("week", time.Now())
 		want := now.AddDate(0, 0, -7)
@@ -462,12 +429,6 @@ func TestStatsSince(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Store-reading summary builders — the money numbers the player reads in
-// /stats and the weekly/monthly summaries, against a real sqlite store.
-// ---------------------------------------------------------------------------
-
-// newStatsStore returns an empty sqlite store in a temp directory.
 func newStatsStore(t *testing.T) *sqlitestore.Store {
 	t.Helper()
 	store, err := sqlitestore.NewStore(filepath.Join(t.TempDir(), "tracker.db"))
@@ -478,10 +439,6 @@ func newStatsStore(t *testing.T) *sqlitestore.Store {
 	return store
 }
 
-// TestBuildWeeklySummary hand-checks the full weekly message: 3 in-window
-// sessions netting -3.00 (-3 cash, +2 spin, -2 mtt), one 10-day-old winning
-// session outside the window, and an in-window deposit that must not turn
-// the losing week into an apparent winning one.
 func TestBuildWeeklySummary(t *testing.T) {
 	store := newStatsStore(t)
 	now := time.Now()
@@ -511,7 +468,6 @@ func TestBuildWeeklySummary(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendTournament(mtt): %v", err)
 	}
-	// Dated now by AppendLedgerEntry — inside the window, excluded by type.
 	if err := store.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {
 		t.Fatalf("AppendLedgerEntry: %v", err)
 	}
@@ -520,9 +476,6 @@ func TestBuildWeeklySummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildWeeklySummary: %v", err)
 	}
-	// Sessions: 1 in-window cash + 2 tournaments. Net: -3+2-2 = -3 (deposit
-	// and the 10-day-old +50 both excluded). BB/100: the one in-window cash
-	// session's -15. Spins ROI: 2/1 = +200%. MTT ROI: -2/2 = -100%.
 	want := "📊 Weekly Summary\nSessions: 3\nNet: -$3.00\nBB/100: -15.0\nSpin & Go ROI: +200%\nMTT ROI: -100%\nHands: 100"
 	if got != want {
 		t.Errorf("buildWeeklySummary =\n%q\nwant\n%q", got, want)
@@ -532,9 +485,6 @@ func TestBuildWeeklySummary(t *testing.T) {
 	}
 }
 
-// TestBuildMonthlySummary hand-checks the previous-calendar-month message
-// with fully fixed dates: June 2026 holds +10 cash / -1 spin / +4 mtt, and a
-// July 2 session that must stay out of June's summary.
 func TestBuildMonthlySummary(t *testing.T) {
 	store := newStatsStore(t)
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.Local)
@@ -568,8 +518,6 @@ func TestBuildMonthlySummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildMonthlySummary: %v", err)
 	}
-	// June only: Cash +10, Spins -1, MTT +4, Total +13. BB/100 from the one
-	// June cash session. Spins ROI -1/1 = -100%; MTT ROI 4/2 = +200%.
 	want := "📅 Monthly Summary — June 2026\nCash Net: +$10.00\nSpins Net: -$1.00\nMTT Net: +$4.00\nTotal: +$13.00\nBB/100: 5.0\nSpins ROI: -100%\nMTT ROI: +200%\nHands: 200\nVolume: 3 sessions"
 	if got != want {
 		t.Errorf("buildMonthlySummary =\n%q\nwant\n%q", got, want)
@@ -579,8 +527,6 @@ func TestBuildMonthlySummary(t *testing.T) {
 	}
 }
 
-// TestCashStatsMessage hand-checks the /stats cash section: one session
-// inside the window, one before it.
 func TestCashStatsMessage(t *testing.T) {
 	store := newStatsStore(t)
 	stored := storage.AsStoredClock(time.Now())
@@ -608,11 +554,6 @@ func TestCashStatsMessage(t *testing.T) {
 	}
 }
 
-// TestTournamentStatsMessage hand-checks both /stats tournament sections —
-// Spin & Go without the avg-finish line, MTT with it — including the type
-// filter keeping each other's rows out. VPIP/PFR render 0.0% because no hand
-// file has arrived for any row (nil stats exclude the row from the weighted
-// average entirely).
 func TestTournamentStatsMessage(t *testing.T) {
 	store := newStatsStore(t)
 	date := time.Date(2026, 7, 20, 21, 0, 0, 0, time.UTC)
@@ -644,7 +585,6 @@ func TestTournamentStatsMessage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tournamentStatsMessage: %v", err)
 		}
-		// Net -2+4 = +2; ROI 2/4 = +50%; avg finish (10/100 + 40/200)/2 = 15%.
 		want := "🏆 MTT Stats (all)\nNet: +$2.00\nROI: +50%\nVPIP: 0.0%\nPFR: 0.0%\nGames: 2\nAvg finish: 15%"
 		if got != want {
 			t.Errorf("mtt stats =\n%q\nwant\n%q", got, want)
@@ -652,9 +592,6 @@ func TestTournamentStatsMessage(t *testing.T) {
 	})
 }
 
-// TestNetSince confirms /status's window sum includes transfers — unlike the
-// weekly/monthly summaries, /status shows bankroll movement, so a deposit
-// counts.
 func TestNetSince(t *testing.T) {
 	store := newStatsStore(t)
 	if err := store.AppendLedgerEntry("deposit", 10000, time.Now(), ""); err != nil {

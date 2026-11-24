@@ -1,9 +1,3 @@
-// Package server is the brain half of the tracker: it receives file uploads
-// from the collector (internal/client), reconstructs each file, parses it,
-// writes storage, evaluates the hard stop and the outgoing alerts, and runs the
-// Telegram bot. Everything except watching the PokerStars folders and enforcing
-// locks lives here, so this half can run on a machine that never sees
-// PokerStars.
 package server
 
 import (
@@ -28,71 +22,35 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// Cash tables and tournament recovery use the same inactivity threshold.
 const resultQuietPeriod = parsers.CashQuietPeriod
 
-// parseEntry is one file's carried incremental-parse state plus when it was
-// last touched, so idle entries can be evicted (see parseStateCap/TTL).
 type parseEntry struct {
 	state    *parsers.ParseState
 	lastSeen time.Time
 }
 
-// parseStateCap and parseStateTTL bound the per-file parse-state map the worker
-// keeps for the incremental parser. A long-lived server processing a new
-// hand-history file per table per day would otherwise grow the map without
-// limit; when it exceeds the cap, entries not touched within the TTL (finished
-// sessions) are dropped. An actively-growing file keeps a recent lastSeen and
-// is never evicted; a wrongly-evicted file just full-reparses once on its next
-// event (always correct), so the bound can be aggressive.
 const (
 	parseStateCap = 128
 	parseStateTTL = 12 * time.Hour
 )
 
-// Server holds the brain-side dependencies. It consumes uploads from the link,
-// reconstructs each file under workDir (keyed by the upload's FileID), and
-// emits alerts on alertChan and hard-stop lock commands back down the link.
 type Server struct {
-	Ready chan struct{}
-	// Operations shares the file worker with bot-originated storage writes.
+	Ready                chan struct{}
 	Operations           chan storage.Operation
 	hardstopRequests     chan config.LockFile
 	stopped              chan struct{}
 	ClosureNotifications bot.ClosureNotifications
-	// ReleaseChecks signals a change in whether PokerStars is running.
-	ReleaseChecks chan struct{}
-	// TransferCalls defaults to the link; split owners may broker polling handoff first.
-	TransferCalls <-chan transport.TransferCall
-	// Drain releases a prepared restart hold before upload producers are joined.
-	Drain      <-chan struct{}
-	store      storage.Store
-	configPath string
-	link       *transport.Link
-	alertChan  chan<- string
-	workDir    string
+	ReleaseChecks        chan struct{}
+	TransferCalls        <-chan transport.TransferCall
+	Drain                <-chan struct{}
+	store                storage.Store
+	configPath           string
+	link                 *transport.Link
+	alertChan            chan<- string
+	workDir              string
 
-	// QuietPeriod is the time without activity before the worker finalizes a
-	// cash session or considers recovering a tournament from a finished hand.
 	QuietPeriod time.Duration
 
-	// clockOffset is the difference between the collector's clock and this
-	// server's, updated from each upload's ClientClock. Every date-window
-	// computation ("today", the poker day, the rolling-30-day downswing) uses
-	// ClientNow() instead of the server's own clock, so a server in a different
-	// timezone than the poker PC still windows against the player's local day.
-	// Absolute-time uses (lock expiry, parse-state TTL, pending reminders) keep
-	// the server's real clock. Guarded because ClientNow is read from the bot
-	// goroutine too.
-	//
-	// It's the collector's timezone (its *time.Location), not a duration: the
-	// two machines' clocks agree on the absolute instant (both keep real time),
-	// so what differs is the wall-clock *calendar* — the timezone. A duration
-	// offset from clientClock.Sub(now) would capture only clock skew (≈0 with
-	// NTP) and do nothing for the timezone, which is the whole point. Taken from
-	// Upload.ClientClock.Location(): over the network the client's UTC offset
-	// survives the RFC3339 JSON round-trip as a fixed zone; in-process it's the
-	// client's actual time.Local.
 	clockMu                 sync.Mutex
 	clientLoc               *time.Location
 	savedClock              *config.CollectorClock
@@ -103,9 +61,6 @@ type Server struct {
 	collectorLockConnection <-chan struct{}
 }
 
-// NewServer creates a Server with a fresh working directory for reconstructed
-// files. The directory is created under the OS temp dir and left for the OS to
-// reclaim; it holds only transient copies of files the collector already has.
 func NewServer(store storage.Store, configPath string, link *transport.Link, alertChan chan<- string) (*Server, error) {
 	clock, err := config.LoadCollectorClock(filepath.Join(filepath.Dir(configPath), "collector_clock.json"))
 	if err != nil {
@@ -122,9 +77,6 @@ func NewServer(store storage.Store, configPath string, link *transport.Link, ale
 	return &Server{Ready: make(chan struct{}), clientLoc: loc, savedClock: clock, ClosureNotifications: bot.ClosureNotifications{Deliveries: make(chan config.ClosureEvent), Results: make(chan bot.ClosureResult)}, ReleaseChecks: make(chan struct{}, 1), TransferCalls: link.Transfers, hardstopRequests: make(chan config.LockFile), stopped: make(chan struct{}), Operations: make(chan storage.Operation), store: store, configPath: configPath, link: link, alertChan: alertChan, workDir: workDir, QuietPeriod: resultQuietPeriod}, nil
 }
 
-// updateClock records the collector's timezone (from an upload's ClientClock)
-// so ClientNow can express the current instant on the player's wall clock. A
-// zero ClientClock (e.g. an internally-generated event) is ignored.
 func (s *Server) updateClock(clientClock time.Time) {
 	if clientClock.IsZero() {
 		return
@@ -144,12 +96,6 @@ func (s *Server) updateClock(clientClock time.Time) {
 	s.savedClock = &clock
 }
 
-// ClientNow returns the current instant expressed in the collector's timezone,
-// so AsStoredClock reads the player's local wall-clock digits. Used for every
-// poker-day / date-window computation, including the bot's read-side (/status,
-// /stats, the weekly and monthly tickers), so windows follow the player's local
-// day. Before any upload the timezone is unknown, so it falls back to this
-// server's local clock.
 func (s *Server) ClientNow() time.Time {
 	s.clockMu.Lock()
 	loc := s.clientLoc
@@ -160,11 +106,6 @@ func (s *Server) ClientNow() time.Time {
 	return time.Now().In(loc)
 }
 
-// reconstruct writes an upload's bytes into the working file for its FileID and
-// returns that file's path. Offset 0 replaces the file wholesale (a fresh cash
-// file or a rewritten tournament summary); a non-zero offset appends the new
-// bytes at that position, rebuilding the growing hand-history file the
-// collector is streaming.
 func (s *Server) reconstruct(up transport.Upload) (string, error) {
 	path := filepath.Join(s.workDir, cashWorkingName(up.FileID))
 	if up.Type == "cash" && !up.Import {
@@ -227,9 +168,6 @@ func (s *Server) pruneCashHistory(pending map[string]string) {
 	}
 }
 
-// Run is the worker loop: it receives uploads, reconstructs and parses each
-// file, writes storage, and evaluates the hard stop and alerts. It blocks until
-// the link's Uploads channel is closed.
 func (s *Server) Run() error {
 	defer close(s.stopped)
 	defer os.RemoveAll(s.workDir)
@@ -266,12 +204,6 @@ func (s *Server) Run() error {
 	if settingsErr != nil {
 		return settingsErr
 	}
-	// summaryTimers holds one quiet-period timer per cash table (FileID). A new
-	// hand resets its table's timer; when the table goes quiet the timer signals
-	// sessionEndChan, and the worker writes the session and runs the
-	// ledger-based evaluation (endCashSession). Both the map and pendingSessions
-	// are touched only on this goroutine — the timer callback merely sends on the
-	// channel — so no mutex is needed.
 	summaryTimers := make(map[string]*quietTimer)
 	defer func() {
 		for _, timer := range summaryTimers {
@@ -322,22 +254,10 @@ func (s *Server) Run() error {
 		return config.SavePendingCash(journalPath, entries)
 	}
 
-	// firedAlerts dedups the streak/daily/stake alert evaluations: multiple cash
-	// sessions in one poker day each reach endCashSession, and those conditions,
-	// once true, stay true for the rest of the session or poker day — without
-	// this, the same warning would re-send (and re-query the store). Keys are per
-	// session (FirstHandID / TournamentID) or per poker day (the day's start
-	// time); the map lives for the process and is rebuilt empty on restart, worst
-	// case repeating one already-sent warning.
 	firedAlerts := make(map[string]bool)
 
-	// Sent at most once per run: a missing screen name skips every file, so
-	// without this a folder of unparsed files would fire one prompt each.
 	screenNameWarned := false
 
-	// importCounts accumulates what the current /scan backfill records, reset by
-	// the ImportStart marker and reported by ImportDone. Touched only on this
-	// goroutine.
 	var importCounts storage.ScanTally
 	var importTournaments tournamentScan
 	var folderScan bool
@@ -349,15 +269,8 @@ func (s *Server) Run() error {
 		}
 	}()
 
-	// parseStates carries per-file incremental parse state so a growing session
-	// file is resumed from its last byte offset instead of re-parsed from zero
-	// on every hand event (parsers.ParseCashFileFrom). Local to this goroutine —
-	// no global state — and bounded (parseStateCap/TTL). Keyed by upload FileID.
 	parseStates := make(map[string]*parseEntry)
 
-	// enforce turns a hard-stop decision into its two effects: the alert goes to
-	// Telegram, and a lock command goes down the link to the collector, which
-	// kills PokerStars and writes the lockfile. hardstop only decides.
 	deliveriesPath := filepath.Join(filepath.Dir(s.configPath), "hardstop_deliveries.json")
 	deliveries, err := config.LoadHardstopDeliveries(deliveriesPath)
 	if err != nil {
@@ -436,8 +349,6 @@ func (s *Server) Run() error {
 			return err
 		}
 		if deliveriesDirty && present {
-			// The financial write succeeded, but its safety intent is not durable yet.
-			// Retain recovery material until the existing maintenance tick saves it.
 			pendingSessions[fileID] = snapshot
 			if err := persistPending(); err != nil {
 				return err
@@ -476,8 +387,6 @@ func (s *Server) Run() error {
 			}
 		}
 		if operation.RequireConfirmedProtection {
-			// Merge the worker's in-memory intents with manual requests before
-			// checking. A disk-only check would miss a failed journal write.
 			if err := saveDeliveries(); err != nil {
 				return fmt.Errorf("persisting source protection before transfer: %w", err)
 			}
@@ -537,7 +446,6 @@ func (s *Server) Run() error {
 		if heldOperation == nil {
 			uploads = s.link.Uploads
 			endings = sessionEndChan
-			// Apply buffered play and summaries before deciding a recovery.
 			if !folderScan && scanningFile == nil && len(s.link.Uploads) == 0 {
 				tournamentEndings = tournaments.signals
 			}
@@ -888,16 +796,13 @@ func (s *Server) Run() error {
 				continue
 			}
 			fileID := signal.Key
-			// A cash table went quiet: write the now-complete session and run
-			// the ledger-based hard stops, alerts, and summary — all on this
-			// goroutine. The per-hand session-loss guard already ran below.
 			if err := finalizeCash(fileID); err != nil {
 				slog.Error("finalizing pending cash", "err", err)
 			}
 			continue
 		case u, ok := <-uploads:
 			if !ok {
-				return persistPending() // accepted buffered uploads have drained
+				return persistPending()
 			}
 			up = u
 		}
@@ -1058,8 +963,6 @@ func (s *Server) Run() error {
 				pendingCollection = nil
 				continue
 			}
-			// Every drained upload preceding the reply has now been processed. Flush
-			// all current table snapshots before taking the raw source snapshot.
 			err := pendingCollection.result.Err
 			if err == nil {
 				err = prepareRestart(pendingCollection.operation)
@@ -1086,10 +989,6 @@ func (s *Server) Run() error {
 
 		s.updateClock(up.ClientClock)
 
-		// Import markers bracket a /scan backfill. They carry no bytes and no
-		// screen name, so handle them here, before reconstruct and the
-		// screen-name guard. ImportStart resets the per-scan tally; ImportDone
-		// reports it.
 		switch up.Type {
 		case transport.ImportStart:
 			folderScan, folderScanDisconnected = true, connection
@@ -1107,14 +1006,6 @@ func (s *Server) Run() error {
 			continue
 		}
 
-		// Reconstruct FIRST, before any guard that might skip this event. The
-		// collector advances its per-file sent offset unconditionally, so the
-		// working file must absorb every upload's bytes even when we skip
-		// parsing below (e.g. the screen name isn't set yet, or config failed to
-		// load). Otherwise a later delta would land at an offset past a
-		// never-written working file and corrupt it — and when the skip
-		// condition clears, a full parse of the now-complete working file
-		// records everything, matching the pre-split whole-file re-read.
 		path, err := s.reconstruct(up)
 		if err != nil {
 			recordDrainFailure(err)
@@ -1122,8 +1013,6 @@ func (s *Server) Run() error {
 			continue
 		}
 
-		// Re-read on every event rather than capturing once at startup — config
-		// can change at runtime (e.g. the screen name filled in via the bot).
 		cfg, err := config.LoadConfig(s.configPath)
 		if err != nil {
 			recordDrainFailure(err)
@@ -1141,9 +1030,6 @@ func (s *Server) Run() error {
 		}
 		screenName := up.ScreenName
 
-		// A /scan backfill upload is recorded silently — no hard stop, no
-		// alerts, no summary, no quiet-period deferral — and never touches the
-		// live evaluation path below.
 		if up.Import {
 			s.updateClock(up.ClientClock)
 			switch up.Type {
@@ -1175,17 +1061,10 @@ func (s *Server) Run() error {
 			continue
 		}
 
-		// Threshold evaluation must see a turned-off alert/hard-stop as unset.
-		// Blank the off ones out here (EffectiveAlerts/EffectiveHardstop) so the
-		// evaluators and the per-event fetch never learn about the *_enabled
-		// flags; cfg stays raw for the notification gates further down.
 		evalCfg := *cfg
 		evalCfg.Alerts = config.EffectiveAlerts(cfg.Alerts)
 		evalCfg.Hardstop = config.EffectiveHardstop(cfg.Hardstop)
 
-		// Anchor every date-window computation to the collector's clock, so a
-		// server in a different timezone than the poker PC still windows against
-		// the player's local poker day.
 		s.updateClock(up.ClientClock)
 		evalNow := s.ClientNow()
 
@@ -1237,7 +1116,6 @@ func (s *Server) Run() error {
 
 				continue
 			}
-			// newState is always non-nil on the no-error path.
 			parseStates[up.FileID] = &parseEntry{state: newState, lastSeen: now}
 			if session != nil {
 				if previous, known := recoveredSnapshots[up.FileID]; known && up.Recovery {
@@ -1248,28 +1126,15 @@ func (s *Server) Run() error {
 						continue
 					}
 				}
-				// Per hand, from the in-memory session only — no store write and
-				// no ledger read. The session-loss hard stop is the one guard
-				// that must fire mid-session, and the session-loss alert warns at
-				// its lower threshold before it. The write, the ledger-based hard
-				// stops/alerts, and the summary all run once the table goes quiet
-				// (endCashSession, via the sessionEndChan timer below).
 				if err := hardstop.EvaluateSessionLoss(*session, &evalCfg, automaticEnforcement(&evalCfg, evalNow, session, nil, nil, nil, enforce)); err != nil {
 					recordDrainFailure(err)
 					slog.Error("evaluating session-loss hard stop", "err", err)
 				}
-				// The alert's bankroll is fetched lazily — only if it fires — so
-				// a hand that doesn't breach costs no store I/O. The session isn't
-				// written yet, so the live bankroll is the stored (prior) bankroll
-				// plus this session's in-memory net.
 				bot.EvaluateSessionLossAlert(*session, &evalCfg, func() money.Cents {
 					priorCents, _ := s.store.GetCurrentBankroll()
 					return priorCents + session.NetCents
 				}, s.alertChan)
 
-				// Remember the latest parse for this table and (re)arm its
-				// quiet-period timer; the last hand's session is what gets
-				// written when the table falls quiet.
 				pendingSessions[up.FileID] = *session
 				pendingScreenNames[up.FileID] = screenName
 				activity[up.FileID] = lastActivity
@@ -1324,8 +1189,6 @@ func (s *Server) Run() error {
 	}
 }
 
-// sheetsPending returns the sheets backend's current write-ahead fallback
-// queue length, or 0 on the sqlite backend, which has no such queue.
 func sheetsPending(sc storage.Store) int {
 	if c, ok := sc.(*sheets.Client); ok {
 		return c.PendingWrites()
@@ -1333,11 +1196,6 @@ func sheetsPending(sc storage.Store) int {
 	return 0
 }
 
-// syncedMessage reports how many previously-failed Sheets writes just resolved,
-// as a Telegram-ready message, or "" if none did. before/after are sheetsPending
-// snapshots taken immediately around one of the three sheets write calls — each
-// of those calls flushes the fallback queue internally on success, so a drop in
-// the count means queued entries from an earlier outage just synced.
 func syncedMessage(before, after int) string {
 	if n := before - after; n > 0 {
 		return fmt.Sprintf("✅ Synced %d queued write(s) to Sheets", n)
@@ -1345,7 +1203,6 @@ func syncedMessage(before, after int) string {
 	return ""
 }
 
-// writeFailureMessage distinguishes durable fallback from failure to save it.
 func writeFailureMessage(before, after int, err error) string {
 	var writeErr *storage.WriteError
 	if errors.As(err, &writeErr) && !writeErr.Queued {
@@ -1354,11 +1211,6 @@ func writeFailureMessage(before, after int, err error) string {
 	return blipMessage(before, after)
 }
 
-// blipMessage is syncedMessage's counterpart for the failure side: a Sheets
-// write that fails is cached to the fallback queue, so sheetsPending rises.
-// Fired only on the 0→nonzero transition (the start of an outage) so a burst of
-// failed hands during one outage sends a single notice, not one per hand.
-// Returns "" on sqlite (sheetsPending always 0) and mid-outage (before > 0).
 func blipMessage(before, after int) string {
 	if before == 0 && after > 0 {
 		return "💔 Sheets briefly unreachable — your results are saved locally and I'll sync them automatically when it's back."
@@ -1366,10 +1218,6 @@ func blipMessage(before, after int) string {
 	return ""
 }
 
-// evaluateOncePerKeyAlerts runs the losing-streak, daily-loss, and Spin & Go
-// daily-loss alert evaluators, each deduped via firedAlerts (per session for the
-// streak, per poker day for the two daily checks) since a cash file fires an
-// event per hand.
 func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, bankrollCents money.Cents, now time.Time, alertChan chan<- string, firedAlerts map[string]bool, sessionKey string) {
 	if !firedAlerts["streak:"+sessionKey] {
 		if bot.EvaluateLosingStreakAlert(cfg, ledger, bankrollCents, alertChan) {
@@ -1390,14 +1238,6 @@ func evaluateOncePerKeyAlerts(cfg *config.Config, ledger []storage.LedgerEntry, 
 	}
 }
 
-// fetchEvalData reads the shared data every post-write evaluation runs on — the
-// full Bankroll Ledger and the current poker day's tournaments — once per
-// evaluation, replacing the per-hand identical fetches the evaluators used to do
-// themselves. Each fetch is skipped entirely when nothing configured needs it;
-// forceLedger forces the ledger fetch because the post-session and
-// post-tournament summaries need the bankroll regardless of config. A failed
-// fetch is logged and returns nil for that data set — every consumer treats nil
-// as "no rows".
 func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forceLedger bool) (ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament) {
 	a, h := cfg.Alerts, cfg.Hardstop
 	needLedger := forceLedger ||
@@ -1421,11 +1261,6 @@ func fetchEvalData(sc storage.Store, cfg *config.Config, now time.Time, forceLed
 	return ledger, dayTournaments
 }
 
-// ledgerBankroll returns the account's current bankroll from an already-fetched
-// full ledger — the last row's running total, exactly what
-// storage.Store.GetCurrentBankroll reads, without a second store call. 0 for an
-// empty (or unfetched) ledger, matching GetCurrentBankroll's empty-ledger
-// behavior.
 func ledgerBankroll(ledger []storage.LedgerEntry) money.Cents {
 	if len(ledger) == 0 {
 		return 0
@@ -1433,17 +1268,6 @@ func ledgerBankroll(ledger []storage.LedgerEntry) money.Cents {
 	return ledger[len(ledger)-1].RunningTotalCents
 }
 
-// isDuplicateTournament checks whether an official summary is already
-// awaiting an answer or recorded with the same result content.
-//
-// refreshPendingIdx >= 0 means t matched a pending entry by ID but its content
-// changed — a re-entry rewrite arriving while the satellite/ticket question is
-// unanswered. The event is still handled (duplicate true), but the caller must
-// replace the queued snapshot with t so the eventual answer records the current
-// money, not the first bust's.
-//
-// Net is deliberately not compared — a hand file folding in knockout bounty
-// changes the recorded net without any re-entry.
 func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournament, recorded parsers.Tournament, recordedFound bool) (duplicate bool, refreshPendingIdx int) {
 	for i, p := range pending {
 		if p.Tournament.TournamentID == t.TournamentID {
@@ -1454,11 +1278,6 @@ func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournam
 		}
 	}
 	if recordedFound && !recorded.Recovered() {
-		// The buy-in can't always be compared, because either side may hold a
-		// value that came from a player answer the summary file doesn't
-		// reproduce (a satellite answered "used a ticket", or a freeroll whose
-		// file never carries a buy-in). In either case fall back to finish +
-		// field size (ignore buy-in).
 		if recorded.BuyInCents == 0 || t.BuyInCents == 0 {
 			return t.FinishPos == recorded.FinishPos && t.TotalPlayers == recorded.TotalPlayers, -1
 		}
@@ -1467,19 +1286,12 @@ func isDuplicateTournament(t parsers.Tournament, pending []config.PendingTournam
 	return false, -1
 }
 
-// sameTournamentContent reports whether two parses of a tournament summary carry
-// the same money-relevant content: buy-in (within half a cent), finish
-// position, and field size. Exact float equality would misfire: a re-entry
-// buy-in is a sum, and the sheets backend's number round-trip is not guaranteed
-// to preserve the last bit.
 func sameTournamentContent(a, b parsers.Tournament) bool {
 	return a.BuyInCents == b.BuyInCents &&
 		a.FinishPos == b.FinishPos &&
 		a.TotalPlayers == b.TotalPlayers
 }
 
-// The timer object is a generation token. Only the worker changes the
-// timer map, and an old callback can never match a reused key.
 type quietTimer struct{ *time.Timer }
 type quietSignal struct {
 	Key        string
@@ -1505,24 +1317,12 @@ func armQuietTimer(timers map[string]*quietTimer, key string, quietPeriod time.D
 	})
 }
 
-// endCashSession runs when a cash table has gone quiet: it writes the
-// now-complete session (Cash Sessions row + Bankroll Ledger row, one write —
-// like a tournament, not per hand), then runs the ledger-based hard stops and
-// alerts and sends the post-session summary. The per-hand session-loss guard
-// already ran in Run's cash branch. A missing pendingSessions entry means this
-// FileID was already flushed (a stale timer signal), so it's a no-op. It prunes
-// this table's quiet-period timer alongside its pending session. Runs on the
-// worker goroutine, so pendingSessions/summaryTimers/firedAlerts stay
-// single-threaded.
 func (s *Server) endCashSession(fileID, screenName string, pendingSessions map[string]parsers.CashSession, summaryTimers map[string]*quietTimer, firedAlerts map[string]bool, enforce func(reason string, durationHours int, triggerID string)) error {
 	session, ok := pendingSessions[fileID]
 	if !ok {
 		return nil
 	}
 
-	// Re-read config: it may have changed during the quiet period, and the
-	// notification gates below need the raw (flag-preserving) config while the
-	// evaluators need the effective one.
 	cfg, err := config.LoadConfig(s.configPath)
 	if err != nil {
 		slog.Error("loading config for cash session end", "err", err)
@@ -1604,9 +1404,6 @@ func (s *Server) evaluateResult(cfg *config.Config, cash *parsers.CashSession, t
 	return bankrollCents
 }
 
-// tournamentAlertText formats the post-tournament summary alert. When the
-// summary reports re-entries, a trailing line makes clear this is a re-entry
-// bust and supersedes the earlier alert for the same tournament.
 func tournamentAlertText(t parsers.Tournament, netCents, bankrollCents money.Cents) string {
 	var msg string
 	if t.BaseType() == "spingo" {
@@ -1620,7 +1417,6 @@ func tournamentAlertText(t parsers.Tournament, netCents, bankrollCents money.Cen
 	return msg
 }
 
-// cashSessionSummaryText formats the post-session summary alert.
 func cashSessionSummaryText(session parsers.CashSession, bankrollCents money.Cents) string {
 	return fmt.Sprintf("✅ Cash Session\nStake: %s\nNet: %s\nHands: %d\nDuration: %d min\nBankroll: $%s", session.Stake, bot.FormatSignedUSD(session.NetCents), session.Hands, session.DurationMin, bankrollCents)
 }

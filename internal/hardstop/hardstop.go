@@ -1,10 +1,3 @@
-// Package hardstop implements the hard stop decision: detecting loss
-// conditions and deciding when to trigger. Deciding is all this package does —
-// the enforcement half (killing PokerStars, writing the lockfile) lives with
-// the collector in internal/client, because only the machine PokerStars runs
-// on can carry it out. A decision here is signalled through an onTrigger
-// callback the caller supplies; the caller turns it into the alert plus the
-// lock command the client enforces.
 package hardstop
 
 import (
@@ -18,13 +11,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// EvaluateSessionLoss checks the one hard-stop condition that reads only the
-// just-parsed session, not the stored ledger — the session's own netCents loss
-// against session_loss_buyins × buy-in — and calls onTrigger if it's breached.
-// It runs on every hand (in-memory, no store I/O) so a bleeding session is
-// stopped mid-session, unlike the ledger-based checks in Evaluate, which run
-// once the session closes (see the server's cash branch). Errors if the
-// threshold is set without duration_hours, matching Evaluate.
 func EvaluateSessionLoss(session parsers.CashSession, cfg *config.Config, onTrigger func(reason string, durationHours int)) error {
 	h := cfg.Hardstop
 	if h.SessionLossBuyins != nil && session.NetCents < 0 &&
@@ -37,16 +23,6 @@ func EvaluateSessionLoss(session parsers.CashSession, cfg *config.Config, onTrig
 	return nil
 }
 
-// Evaluate checks the ledger-based hard stop conditions after a cash session
-// has closed and calls onTrigger (reason, durationHours) for the first
-// condition met, if any: consecutive losses, then downswing, then daily loss.
-// The session's own netCents-loss check is EvaluateSessionLoss (run per hand, from
-// the in-memory session); this reads the stored ledger, so it runs once at
-// session end, when the just-closed session is in the ledger. ledger is the
-// full Bankroll Ledger and dayTournaments the currentCents poker day's tournaments,
-// both fetched once per file event by the worker (internal/server) and shared
-// with the alert evaluators — no function on this path fetches from the store
-// itself.
 func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) error {
 	h := cfg.Hardstop
 	if h.ConsecutiveLosses == nil && h.DailyLossCents == nil &&
@@ -72,26 +48,11 @@ func Evaluate(session parsers.CashSession, cfg *config.Config, ledger []storage.
 	return err
 }
 
-// LosingStreakTriggered reports whether entries — the full Bankroll Ledger,
-// any type, in chronological order — show n consecutive losing session rows
-// (cash_session or tournament) among the account's most recent session
-// history. The shared decision behind both the consecutive-losses hard stop
-// and the losing-streak alert (bot.EvaluateLosingStreakAlert), so the two
-// sides can never disagree on what counts as a streak. Deposits and
-// withdrawals are filtered out before the n-row window is taken (see
-// recentSessionRows), so a transfer never occupies one of the n slots and
-// never breaks up an otherwise-contiguous losing streak. False when the
-// account doesn't yet have n session rows in its history at all — an early
-// streak of fewer than n rows, even if every one of them is a loss, must not
-// fire.
 func LosingStreakTriggered(entries []storage.LedgerEntry, n int) bool {
 	sessionRows := recentSessionRows(entries, n)
 	return len(sessionRows) == n && consecutiveLossStreak(sessionRows) == len(sessionRows)
 }
 
-// consecutiveLossStreak returns how many of the most recent contiguous
-// entries at the end of entries (in chronological order) have a negative
-// AmountCents. Counting stops at the first non-negative entry.
 func consecutiveLossStreak(entries []storage.LedgerEntry) int {
 	count := 0
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -103,13 +64,6 @@ func consecutiveLossStreak(entries []storage.LedgerEntry) int {
 	return count
 }
 
-// recentSessionRows filters entries to session type (cash_session or
-// tournament — see sessionOnly) and returns the last n of them in
-// chronological order. Deposits and withdrawals are dropped before the
-// n-row window is taken, so a transfer anywhere in entries never occupies
-// one of the n slots and never breaks up an otherwise-contiguous run of
-// session rows. Returns fewer than n rows when entries has fewer than n
-// session rows in total.
 func recentSessionRows(entries []storage.LedgerEntry, n int) []storage.LedgerEntry {
 	rows := chronologicalSessions(entries)
 	if len(rows) > n {
@@ -126,11 +80,6 @@ func chronologicalSessions(entries []storage.LedgerEntry) []storage.LedgerEntry 
 	return rows
 }
 
-// PokerDayStart computes the start of the poker day containing now, using
-// cfg.Schedule.DayStartHour (default 6) as the daily reset hour. Computed in
-// the stored-date coordinate system (storage.AsStoredClock — local
-// wall-clock digits read as UTC) so it compares correctly against dates read
-// back from either backend, which carry no real zone offset.
 func PokerDayStart(cfg *config.Config, now time.Time) time.Time {
 	hour := 6
 	if cfg.Schedule.DayStartHour != nil {
@@ -144,21 +93,10 @@ func PokerDayStart(cfg *config.Config, now time.Time) time.Time {
 	return start
 }
 
-// rollingWindowStart computes the start of a rolling window of the given
-// duration ending at now, in the same stored-date coordinate system as
-// PokerDayStart (storage.AsStoredClock) so it stays comparable against dates
-// read back from either backend.
 func rollingWindowStart(now time.Time, window time.Duration) time.Time {
 	return storage.AsStoredClock(now).Add(-window)
 }
 
-// PokerDaySessionEntries filters entries — the full Bankroll Ledger in
-// chronological order — down to the currentCents poker day's session-result rows
-// (cash_session/tournament only — transfers excluded, see sessionOnly). The
-// day boundary is inclusive (Date >= PokerDayStart), matching the
-// GetLedgerEntriesSince windowed fetch this filter replaced. The shared
-// decision behind both the unified daily-loss hard stop and the daily-loss
-// alert (bot.EvaluateDailyLossAlert).
 func PokerDaySessionEntries(entries []storage.LedgerEntry, cfg *config.Config, now time.Time) []storage.LedgerEntry {
 	start := PokerDayStart(cfg, now)
 	var day []storage.LedgerEntry
@@ -170,20 +108,10 @@ func PokerDaySessionEntries(entries []storage.LedgerEntry, cfg *config.Config, n
 	return sessionOnly(day)
 }
 
-// inRollingWindow reports whether entryDate falls after cutoff. The
-// boundary is exclusive: an entry dated exactly at cutoff (e.g. exactly 30
-// days ago) is outside the window, not in it. cutoff is normally computed
-// via rollingWindowStart.
 func inRollingWindow(entryDate, cutoff time.Time) bool {
 	return entryDate.After(cutoff)
 }
 
-// SpingoOnly filters tournaments to Spin & Go rows only, matching by
-// BaseType so a knockout Spin & Go ("spingo-ko") is still included — a
-// knockout tournament must count toward the Spin & Go daily-loss hard stop
-// the same as a non-knockout one. Exported because the Spin & Go daily-loss
-// alert (bot.EvaluateSpingoDailyLossAlert) applies the same filter to the
-// same worker-fetched day window.
 func SpingoOnly(tournaments []parsers.Tournament) []parsers.Tournament {
 	var result []parsers.Tournament
 	for _, t := range tournaments {
@@ -194,10 +122,6 @@ func SpingoOnly(tournaments []parsers.Tournament) []parsers.Tournament {
 	return result
 }
 
-// sessionOnly filters entries to cash_session and tournament rows only,
-// excluding deposit/withdrawal transfers. RunningTotalCents includes transfers,
-// so mixing them into an equity curve would read a large withdrawal as an
-// equally large poker downswing.
 func sessionOnly(entries []storage.LedgerEntry) []storage.LedgerEntry {
 	var result []storage.LedgerEntry
 	for _, e := range entries {
@@ -208,13 +132,6 @@ func sessionOnly(entries []storage.LedgerEntry) []storage.LedgerEntry {
 	return result
 }
 
-// ComputeEquityCurve reconstructs a results-only equity curve from rows
-// (expected in chronological order, already filtered to poker results) by
-// summing AmountCents cumulatively. peakCents is the highest point reached on that
-// curve, including the implicit starting point of 0 before any row; currentCents
-// is the final point. Exported so the hard stop check (hardstop.go) and the
-// downswing alert (bot.go) compute the exact same curve rather than each
-// deriving their own.
 func ComputeEquityCurve(rows []storage.LedgerEntry) (peakCents, currentCents money.Cents) {
 	var sumCents money.Cents
 	for _, r := range rows {
@@ -226,11 +143,6 @@ func ComputeEquityCurve(rows []storage.LedgerEntry) (peakCents, currentCents mon
 	return peakCents, sumCents
 }
 
-// DownswingEquityCurve windows the full Bankroll Ledger to the rolling
-// 30 days ending at now (see
-// rollingWindowStart/inRollingWindow; the boundary is exclusive), filters
-// them to poker results only (see sessionOnly), and returns the resulting
-// equity curve. Shared by the hard stop check and the downswing alert.
 func DownswingEquityCurve(entries []storage.LedgerEntry, now time.Time) (peakCents, currentCents money.Cents) {
 	cutoff := rollingWindowStart(now, 30*24*time.Hour)
 	var windowed []storage.LedgerEntry
@@ -242,20 +154,10 @@ func DownswingEquityCurve(entries []storage.LedgerEntry, now time.Time) (peakCen
 	return ComputeEquityCurve(chronologicalSessions(windowed))
 }
 
-// DownswingExceeds reports whether the equity-curve peakCents minus currentCents
-// exceeds thresholdBuyins × buyInCents. Exported alongside ComputeEquityCurve
-// so the alert side (bot.go) applies the exact same formula as the hard
-// stop side.
 func DownswingExceeds(peakCents, currentCents, buyInCents money.Cents, thresholdBuyins float64) bool {
 	return money.DifferenceExceeds(peakCents, currentCents, buyInCents, thresholdBuyins)
 }
 
-// evaluateDownswing checks whether the rolling 30-day results-only equity
-// curve has dropped from its peakCents by more than DownswingBuyins ×
-// buyInCents, and calls onTrigger if so. buyInCents of 0 (nil buy-in, or a
-// satellite entry corrected to a ticket — see RecoverTicketPayout in
-// bot.go) skips the check entirely: a 0 buy-in would make the threshold 0,
-// so any downswing at all would trigger it.
 func evaluateDownswing(cfg *config.Config, ledger []storage.LedgerEntry, buyInCents money.Cents, now time.Time, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.DownswingBuyins == nil || buyInCents == 0 {
@@ -273,13 +175,6 @@ func evaluateDownswing(cfg *config.Config, ledger []storage.LedgerEntry, buyInCe
 	return false, nil
 }
 
-// DailyLossExceeds sums AmountCents across entries (expected to already be
-// filtered to the currentCents poker day and Type == "cash_session" or
-// "tournament", i.e. PokerDaySessionEntries' output) and reports whether
-// that netCents P&L falls below -thresholdCents. This is netCents P&L, not gross loss —
-// a win elsewhere in the same day offsets losses. Exported so the daily-loss
-// alert applies the exact same comparison as the hard stop, just against its
-// own threshold.
 func DailyLossExceeds(entries []storage.LedgerEntry, thresholdCents money.Cents) bool {
 	var netCents money.Cents
 	for _, e := range entries {
@@ -288,11 +183,6 @@ func DailyLossExceeds(entries []storage.LedgerEntry, thresholdCents money.Cents)
 	return netCents < -thresholdCents
 }
 
-// SpingoDailyLossExceeds sums NetCents across tournaments (expected to already
-// be filtered to the currentCents poker day and Spin & Go only — SpingoOnly
-// applied to the worker's poker-day fetch) and reports whether that netCents P&L falls
-// below -thresholdCents. Same netCents-P&L semantics as DailyLossExceeds, scoped to
-// Spin & Go; exported for the same alert-side reuse.
 func SpingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdCents money.Cents) bool {
 	var netCents money.Cents
 	for _, t := range tournaments {
@@ -301,12 +191,6 @@ func SpingoDailyLossExceeds(tournaments []parsers.Tournament, thresholdCents mon
 	return netCents < -thresholdCents
 }
 
-// evaluateDailyLoss runs two independent daily-loss checks for the currentCents
-// poker day — a Spin & Go-specific one and a unified one across all game
-// types — and calls onTrigger if either has fallen below its configured
-// threshold. Either check firing is sufficient; they are not mutually
-// exclusive, but only the first one to fire actually triggers — triggered
-// reports whether one did.
 func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) (triggered bool, err error) {
 	h := cfg.Hardstop
 	if h.SpingoDailyLossCents == nil && h.DailyLossCents == nil {
@@ -336,10 +220,6 @@ func evaluateDailyLoss(cfg *config.Config, ledger []storage.LedgerEntry, dayTour
 	return false, nil
 }
 
-// EvaluateTournament checks hard stop conditions after a tournament (cash or
-// Spin & Go). The downswing and daily loss checks re-evaluate against the
-// whole account rather than filtering by t's type. ledger and dayTournaments
-// carry the same worker-fetched, once-per-event data Evaluate documents.
 func EvaluateTournament(t parsers.Tournament, cfg *config.Config, ledger []storage.LedgerEntry, dayTournaments []parsers.Tournament, now time.Time, onTrigger func(reason string, durationHours int)) error {
 	if triggered, err := evaluateDownswing(cfg, ledger, t.BuyInCents, now, onTrigger); err != nil {
 		return err
@@ -351,8 +231,6 @@ func EvaluateTournament(t parsers.Tournament, cfg *config.Config, ledger []stora
 	return err
 }
 
-// ManualTrigger uses an explicit one-time duration or the configured default.
-// It validates without changing configuration.
 func ManualTrigger(configPath string, overrideHours *int, onTrigger func(reason string, durationHours int)) error {
 	durationHours := overrideHours
 	if durationHours == nil {
@@ -372,12 +250,6 @@ func ManualTrigger(configPath string, overrideHours *int, onTrigger func(reason 
 	return nil
 }
 
-// BuildTrigger constructs the lockfile and the user-facing alert text for a
-// hard stop of the given reason and duration, as of now. The caller (the
-// worker's or the bot's onTrigger) sends the alert to Telegram and hands the
-// lockfile to the client, which kills PokerStars and writes it. Splitting the
-// build out from enforcement is what lets the decision stay on the server
-// while the taskkill and lockfile write happen on the collector.
 func BuildTrigger(reason string, durationHours int, now time.Time) (config.LockFile, string, error) {
 	duration, err := Duration(durationHours)
 	if err != nil {
@@ -394,16 +266,10 @@ func BuildTrigger(reason string, durationHours int, now time.Time) (config.LockF
 	return lock, alert, nil
 }
 
-// LockMessage formats the collector-confirmed lock instead of a speculative
-// retry expiry. Split mode supplies the collector's observed timezone.
 func LockMessage(lock config.LockFile, now time.Time) string {
 	return fmt.Sprintf("🛑 Hard Stop triggered\nReason: %s\n%s", reasonPhrase(lock.Reason), LockDetails(lock, now))
 }
 
-// reasonPhrase turns a lockfile reason key into the plain-language line the
-// Telegram alert shows. The raw key stays in the lockfile and the Info log;
-// only the user-facing message is humanized. An unrecognized key falls back to
-// itself, so a future reason never renders blank.
 func reasonPhrase(reason string) string {
 	switch reason {
 	case "session_loss_buyins":

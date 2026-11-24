@@ -1,9 +1,3 @@
-// Command tracker-client is the collector half of the split build: it watches
-// the PokerStars folders on the poker PC, streams each file's new bytes to the
-// server over TLS, and enforces the hard-stop locks the server sends back
-// (killing PokerStars, writing the lockfile). It never parses, stores, or talks
-// to Telegram — that's the server. The all-local build is cmd/tracker; this
-// binary is only for a poker PC paired to a separate server.
 package main
 
 import (
@@ -107,17 +101,9 @@ func runServe() (failure error) {
 		return err
 	}
 	defer releaseShutdown()
-	// Bound this idle background service's footprint. Same knobs, and the same
-	// reasoning, as cmd/tracker's runServe (see its long comment): the scheduled
-	// task can't set GOMEMLIMIT/GOGC env vars, so set the in-code equivalents.
-	// The collector is the lightest role — it only watches files, streams bytes,
-	// and enforces locks; it never parses or stores — so the combined build's
-	// 32 MiB soft limit is ample here too.
 	debug.SetMemoryLimit(32 << 20)
 	debug.SetGCPercent(50)
 
-	// Enforcement belongs to the process, not a network connection. The same
-	// enforcer retains unsaved protection across every reconnect attempt.
 	enforcer := client.NewEnforcer(lockfilePath)
 	enforcer.EnforceActive()
 	updater, err := update.NewAgent("client", Version, InstallationID)
@@ -178,10 +164,6 @@ func runSetup() {
 	fmt.Println("Configured. Start the collector with: tracker-client --serve")
 }
 
-// runCheckLock reads the local lockfile the server's lock commands wrote: absent
-// → exit 0 (clear), expired → delete and exit 0, active → print and exit 1. It
-// trusts the saved file and its dates; it never contacts the server. Same
-// contract as the all-local tracker's --check-lock, over the client-side file.
 func runCheckLock() {
 	lock, err := config.LoadLock(lockfilePath)
 	if err != nil {

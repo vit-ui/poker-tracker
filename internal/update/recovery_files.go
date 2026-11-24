@@ -69,8 +69,6 @@ func validateRecovery(state config.UpdateRecovery, target, task string) error {
 	return nil
 }
 
-// recoverExecutable is repeatable at every rename boundary. A missing backup
-// is safe only when the installed executable is still the previous image.
 func recoverExecutable(state config.UpdateRecovery, target string) error {
 	if state.Confirmed {
 		got, err := executableSHA256(target)

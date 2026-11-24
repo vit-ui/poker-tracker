@@ -26,8 +26,6 @@ func packageName(version, goos string) (string, error) {
 	}
 }
 
-// downloadPackage validates the published package before any embedded code runs.
-// GitHub supplies the digest in release metadata; no extra checksum asset exists.
 func downloadPackage(client *http.Client, asset releaseAsset, path string) (err error) {
 	expected, valid := strings.CutPrefix(asset.Digest, "sha256:")
 	decoded, decodeErr := hex.DecodeString(expected)

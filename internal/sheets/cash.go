@@ -196,7 +196,6 @@ func resultLedgerWrites(ledger [][]interface{}, changes []storage.LedgerEntry) (
 	return writes, nil
 }
 
-// Each chunk stays below the cell text limit, including on unusually busy tables.
 const cashMetadataChunk = 40000
 
 func encodeCashMetadata(hands []parsers.CashHand) []interface{} {

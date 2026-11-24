@@ -46,7 +46,7 @@ jobs:
                       [[ "$(gh release view v3.0.0 --json isDraft --jq .isDraft)" == false ]]
                   fi
                   echo 'ready=true' >> "$GITHUB_OUTPUT"
-            - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+            - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
               id: release
               if: steps.baseline.outputs.ready == 'true'
               with:

@@ -9,8 +9,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/transport"
 )
 
-// streamScanFile keeps bulk file reads off the watcher and command loops.
-// The completion marker follows every byte and is the server's commit boundary.
 func (c *Collector) streamScanFile(cmd transport.Command, configPath string, dead, finished <-chan struct{}) {
 	send := func(chunk transport.ScanChunk) bool {
 		chunk.RequestID = cmd.RequestID

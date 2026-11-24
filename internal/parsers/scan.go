@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// CashQuietPeriod also defines the boundary between cash sessions in a
-// PokerStars export, whose hands have no session IDs.
 const CashQuietPeriod = 150 * time.Second
 
 type scannedHand struct {
@@ -55,8 +53,6 @@ type scanSection struct {
 	offset, bytes int64
 }
 
-// ScanHistoryFile indexes a PokerStars text file and parses each history group
-// and official summary. The export stays on disk during indexing.
 func ScanHistoryFile(path, screenName string, visitHand func(*CashSession, []CashHand, *TournamentHandStats, error) bool, visitSummary func(Tournament, error) bool) error {
 	if screenName == "" {
 		return fmt.Errorf("set the PokerStars screen name before scanning")
@@ -78,8 +74,6 @@ func ScanHistoryFile(path, screenName string, visitHand func(*CashSession, []Cas
 	if len(groups) == 0 && len(summaries) == 0 {
 		return fmt.Errorf("no complete PokerStars hands or summaries found")
 	}
-	// A complete single-table file uses the same hand order and identity as
-	// live collection. Mixed exports can contain several table visits.
 	mixed := len(groups) > 1
 	var sessions [][]scannedHand
 	for _, hands := range groups {
@@ -126,7 +120,6 @@ func compareScannedHands(a, b scannedHand) int {
 	if order := a.at.Compare(b.at); order != 0 {
 		return order
 	}
-	// PokerStars IDs can have different lengths. Within a second they sort numerically.
 	if order := cmp.Compare(len(a.id), len(b.id)); order != 0 {
 		return order
 	}

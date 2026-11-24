@@ -1,18 +1,5 @@
 package bot
 
-// Read-side commands and scheduled summaries: /status, /lastsession,
-// /stats, the weekly/monthly summary builders, and the shared display/math
-// helpers they use.
-//
-// Every date window in this file is computed in the stored-date coordinate
-// system (storage.AsStoredClock — the machine's local wall-clock digits
-// read as UTC), because that's the coordinate system stored dates live in
-// on both backends. Computing "today" as a real local-zone instant instead
-// shifts the boundary by the machine's UTC offset — on the player's UTC-3
-// machine that silently dropped any session played between midnight and
-// 3am from /status and /stats today, while the hard stop's poker-day math
-// (which always compensated — see hardstop.PokerDayStart) counted it.
-
 import (
 	"fmt"
 	"log/slog"
@@ -26,19 +13,14 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// inSummaryWindow reports whether now falls within the 09:00–09:01 local
-// trigger window for scheduled summaries.
 func inSummaryWindow(now time.Time) bool {
 	return now.Hour() == 9 && now.Minute() <= 1
 }
 
-// sameDay reports whether a and b fall on the same calendar day.
 func sameDay(a, b time.Time) bool {
 	return a.Year() == b.Year() && a.YearDay() == b.YearDay()
 }
 
-// buildWeeklySummary formats the past 7 days of activity and returns the
-// period's results-only netCents (for the notification win/loss filter).
 func buildWeeklySummary(sc storage.Store, now time.Time) (string, money.Cents, error) {
 	since := storage.AsStoredClock(now).AddDate(0, 0, -7)
 	cashSessions, err := sc.GetCashSessionsSince(since)
@@ -49,9 +31,6 @@ func buildWeeklySummary(sc storage.Store, now time.Time) (string, money.Cents, e
 	if err != nil {
 		return "", 0, fmt.Errorf("loading tournaments: %w", err)
 	}
-	// Net is session results only, unlike /status — deposits/withdrawals are
-	// excluded so a deposit this week can't turn a losing week into an
-	// apparent winning one.
 	rawLedger, err := sc.GetLedgerEntriesSince(since)
 	if err != nil {
 		return "", 0, fmt.Errorf("loading ledger entries: %w", err)
@@ -80,8 +59,6 @@ func buildWeeklySummary(sc storage.Store, now time.Time) (string, money.Cents, e
 	), netCents, nil
 }
 
-// buildMonthlySummary formats the previous calendar month's activity and
-// returns the month's results-only netCents (for the notification win/loss filter).
 func buildMonthlySummary(sc storage.Store, now time.Time) (string, money.Cents, error) {
 	stored := storage.AsStoredClock(now)
 	firstOfThisMonth := time.Date(stored.Year(), stored.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -124,9 +101,6 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, money.Cents, 
 	}
 	sessionCount := len(cashSessions) + len(tournaments)
 
-	// Total is session results only, unlike /status — deposits/withdrawals
-	// are excluded so a deposit last month can't turn a losing month into an
-	// apparent winning one.
 	rawLedger, err := sc.GetLedgerEntriesSince(firstOfPrevMonth)
 	if err != nil {
 		return "", 0, fmt.Errorf("loading ledger entries: %w", err)
@@ -153,14 +127,6 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, money.Cents, 
 	), totalNetCents, nil
 }
 
-// weightedAverages computes the hands-weighted average of each of an item's
-// values — a low-hand-count item (a 10-hand cash session, or a tournament
-// whose hand file hasn't arrived yet) must not count the same as a
-// high-hand-count one. extract returns an item's hand count and its n
-// values (aligned across every item), or ok=false to exclude that item
-// entirely. One shared weighting loop, reused for both cash sessions
-// (hands, BB/100, VPIP, PFR — always known) and tournaments (hands, VPIP,
-// PFR — nil, and so excluded, until the hand file arrives).
 func weightedAverages[T any](items []T, n int, extract func(T) (hands float64, values []float64, ok bool)) []float64 {
 	sums := make([]float64, n)
 	var totalHands float64
@@ -184,10 +150,6 @@ func weightedAverages[T any](items []T, n int, extract func(T) (hands float64, v
 	return result
 }
 
-// weightedCashAverages returns the hands-weighted average BB/100, VPIP, and
-// PFR across cash sessions. Thin wrapper over weightedAverages, kept named
-// since it's called from three places (buildWeeklySummary,
-// buildMonthlySummary, cashStatsMessage).
 func weightedCashAverages(sessions []parsers.CashSession) (bb100, vpip, pfr float64) {
 	res := weightedAverages(sessions, 3, func(s parsers.CashSession) (float64, []float64, bool) {
 		return float64(s.Hands), []float64{s.BB100, s.VPIP, s.PFR}, true
@@ -195,10 +157,6 @@ func weightedCashAverages(sessions []parsers.CashSession) (bb100, vpip, pfr floa
 	return res[0], res[1], res[2]
 }
 
-// weightedTournamentAverages returns the hands-weighted average VPIP and PFR
-// across tournaments. Thin wrapper over weightedAverages, mirroring
-// weightedCashAverages — a tournament whose hand file hasn't arrived yet
-// (Hands/VPIP/PFR all nil) is excluded entirely rather than counted as 0.
 func weightedTournamentAverages(tournaments []parsers.Tournament) (vpip, pfr float64) {
 	res := weightedAverages(tournaments, 2, func(t parsers.Tournament) (float64, []float64, bool) {
 		if t.Hands == nil || t.VPIP == nil || t.PFR == nil {
@@ -209,7 +167,6 @@ func weightedTournamentAverages(tournaments []parsers.Tournament) (vpip, pfr flo
 	return res[0], res[1]
 }
 
-// roi returns netCents / buy-in as a percentage across tournaments of the given type.
 func roi(tournaments []parsers.Tournament, tType string) float64 {
 	var netSumCents, buyInSumCents money.Cents
 	for _, t := range tournaments {
@@ -225,10 +182,6 @@ func roi(tournaments []parsers.Tournament, tType string) float64 {
 	return money.Ratio(netSumCents, buyInSumCents) * 100
 }
 
-// FormatSignedUSD renders a netCents amount as "+$5.50" / "-$12.75" — the single
-// signed-USD formatter, shared by /stats, /status, the flow displays, and
-// main.go's post-session and post-tournament alerts. Do not hand-roll the
-// sign/abs split at a call site.
 func FormatSignedUSD(amountCents money.Cents) string {
 	text := amountCents.String()
 	if amountCents < 0 {
@@ -246,16 +199,10 @@ func formatSignedPercent(v float64) string {
 	return fmt.Sprintf("%s%.0f%%", sign, v)
 }
 
-// formatPercent renders v as a plain (unsigned) percentage with 1 decimal
-// place, e.g. "24.3%" — used for VPIP/PFR, which are always non-negative,
-// unlike formatSignedPercent's ROI use (signed, whole number).
 func formatPercent(v float64) string {
 	return fmt.Sprintf("%.1f%%", v)
 }
 
-// formatPercentPtr is formatPercent for a possibly-nil VPIP/PFR pointer (a
-// tournament's, before its hand file has arrived) — renders "N/A" for nil
-// rather than a misleading "0.0%".
 func formatPercentPtr(v *float64) string {
 	if v == nil {
 		return "N/A"
@@ -263,7 +210,6 @@ func formatPercentPtr(v *float64) string {
 	return formatPercent(*v)
 }
 
-// commas formats n with thousands separators, e.g. 4201 -> "4,201".
 func commas(n int) string {
 	s := strconv.Itoa(n)
 	neg := strings.HasPrefix(s, "-")
@@ -283,9 +229,6 @@ func commas(n int) string {
 	return string(out)
 }
 
-// Ordinal formats n as "1st", "2nd", "3rd", "4th", etc. Exported because
-// main.go's post-tournament alert needs the same formatting — previously
-// each package kept its own identical copy.
 func Ordinal(n int) string {
 	if n%100 >= 11 && n%100 <= 13 {
 		return fmt.Sprintf("%dth", n)
@@ -314,7 +257,6 @@ func netSince(sc storage.Store, since time.Time) (money.Cents, error) {
 	return netCents, nil
 }
 
-// handleStatus implements /status.
 func (b *Bot) handleStatus(chatID int64) {
 	bankrollCents, err := b.store.GetCurrentBankroll()
 	if err != nil {
@@ -354,15 +296,6 @@ func (b *Bot) handleStatus(chatID int64) {
 	send(b.tg, chatID, text)
 }
 
-// SpinGoPrizePoolText formats a Spin & Go's prize pool for display: the real
-// dollar amount and multiplier when there's a real cash pool, or the pool's
-// ticket/pass description text when there isn't (e.g. "$1.00 Power Path
-// Step 2 Ticket" — see parsers.Tournament.PrizePoolDescription; a
-// ticket-denominated pool has no real dollar amount to show a multiplier
-// for, so Multiplier is nil in that case). The one place this is computed,
-// so every notification that shows a Spin & Go's prize pool (the
-// post-session alert in main.go, /lastsession here) renders it identically
-// and never risks dereferencing a nil Multiplier.
 func SpinGoPrizePoolText(t parsers.Tournament) string {
 	if t.PrizePoolDescription != "" {
 		return t.PrizePoolDescription
@@ -377,11 +310,6 @@ func SpinGoPrizePoolText(t parsers.Tournament) string {
 	return fmt.Sprintf("$%s (%gx)", t.PrizePoolCents, mult)
 }
 
-// handleLastSession implements /lastsession. The Bankroll Ledger alone
-// doesn't carry enough detail (stake, hands, buy-in, finish, ...) to
-// reproduce the post-session summary format, so this pulls the most recent
-// row from Cash Sessions and Tournaments directly and picks whichever is
-// more recent.
 func (b *Bot) handleLastSession(chatID int64) {
 	cashSessions, err := b.store.GetCashSessionsSince(time.Time{})
 	if err != nil {
@@ -432,7 +360,6 @@ func (b *Bot) handleLastSession(chatID int64) {
 		formatPercentPtr(lastTourn.VPIP), formatPercentPtr(lastTourn.PFR), bankrollCents))
 }
 
-// handleStats implements /stats.
 func (b *Bot) handleStats(chatID int64, args string) {
 	gameType, period := ParseStatsArgs(args)
 	since := statsSince(period, b.now())
@@ -483,9 +410,6 @@ func ParseStatsArgs(args string) (gameType, period string) {
 	return gameType, period
 }
 
-// statsSince computes the window start for a /stats period, in the
-// stored-date coordinate system (see the file comment above). now is the
-// player-anchored current time.
 func statsSince(period string, now time.Time) time.Time {
 	now = storage.AsStoredClock(now)
 	switch period {
@@ -552,7 +476,6 @@ func tournamentStatsMessage(sc storage.Store, since time.Time, tType, periodLabe
 	return message, nil
 }
 
-// lockStatus is shared by the status command and hard-stop menu.
 func (b *Bot) lockStatus() string {
 	if b.lockStatusText != nil {
 		text, err := b.lockStatusText()

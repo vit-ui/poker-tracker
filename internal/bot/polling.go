@@ -10,8 +10,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// pollingClient scopes library HTTP cancellation to the polling copy of BotAPI.
-// Message sends keep the original client and remain on the bot event loop.
 type pollingClient struct {
 	context context.Context
 	client  tgbotapi.HTTPClient
@@ -36,7 +34,7 @@ func startUpdatePoller(api *tgbotapi.BotAPI, offset int) *updatePoller {
 		defer close(p.done)
 		defer close(p.updates)
 		u := tgbotapi.NewUpdate(offset)
-		u.Timeout = 30 // Preserve the existing Telegram long poll.
+		u.Timeout = 30
 		for {
 			updates, err := polling.GetUpdates(u)
 			if ctx.Err() != nil {
@@ -44,7 +42,6 @@ func startUpdatePoller(api *tgbotapi.BotAPI, offset int) *updatePoller {
 			}
 			if err != nil {
 				slog.Error("receiving Telegram updates", "err", err)
-				// This is the library poller's existing retry cadence, now owner-cancellable.
 				timer := time.NewTimer(3 * time.Second)
 				select {
 				case <-ctx.Done():
@@ -71,8 +68,6 @@ func startUpdatePoller(api *tgbotapi.BotAPI, offset int) *updatePoller {
 }
 func (p *updatePoller) stop() { p.cancel(); <-p.done }
 
-// telegramSender lets ownership changes cancel an in-flight Telegram response
-// while keeping every command and send on the bot event loop.
 type telegramSender struct {
 	mu     sync.Mutex
 	ctx    context.Context

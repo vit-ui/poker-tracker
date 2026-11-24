@@ -28,12 +28,6 @@ func TestTournament_BaseType(t *testing.T) {
 	}
 }
 
-// TestIsNonCashPrize covers the full word list — ticket/pass confirmed
-// against real PokerStars files, seat/package/T$ added on PokerStars' own
-// documented terminology for non-cash prizes without a confirmed real file
-// yet (deliberately: a false positive here only costs one extra tap on the
-// cash/ticket confirmation, a false negative costs silently wrong bankroll
-// data with no way to notice — see isNonCashPrize's doc comment).
 func TestIsNonCashPrize(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -65,11 +59,6 @@ func TestIsNonCashPrize(t *testing.T) {
 	}
 }
 
-// TestParseTournamentFile_TournamentDollarsPayout confirms a T$
-// (Tournament Dollars) payout is treated as non-cash end to end: excluded
-// from NetCents and flagged as LikelySatellite, the same as a Ticket/Pass
-// payout — even though "T$11.00" starts with a recognizable amount, it's
-// PokerStars' own tournament-only currency, not real cash.
 func TestParseTournamentFile_TournamentDollarsPayout(t *testing.T) {
 	contents := `PokerStars Tournament #666666666, $5.00+$0.50 USD
 Hold'em No Limit
@@ -92,12 +81,6 @@ Total Prize Pool: $45.00
 	}
 }
 
-// TestParseTournamentFile_SatelliteFromHeader covers a satellite whose only
-// signal is the title line: a real cash prize pool, and every result row still
-// reading "still playing" or blank because PokerStars wrote the summary the
-// moment hero busted while the field played on. The result-row scan finds no
-// non-cash payout — LikelySatellite must fire from the "Super Satellite" title
-// (confirmed against a real summary, Tournament #9000000020).
 func TestParseTournamentFile_SatelliteFromHeader(t *testing.T) {
 	contents := `PokerStars Tournament #9000000020, No Limit Hold'em
 Super Satellite
@@ -164,8 +147,6 @@ func writeTournamentSummary(t *testing.T, contents string) string {
 	return path
 }
 
-// TestParseTournamentFile_SpinGoWin covers a 3-player Spin & Go where hero
-// wins — every field is hand-checked, including the Multiplier computation.
 func TestParseTournamentFile_SpinGoWin(t *testing.T) {
 	contents := `PokerStars Tournament #123456789, $1.00+$0.10 USD
 Hold'em No Limit
@@ -220,9 +201,6 @@ Tournament finished 2025/01/15 9:35:12 ET
 	}
 }
 
-// TestParseTournamentFile_MTTSatelliteTicket covers a 9-player MTT where the
-// winner (not hero) receives a ticket, exercising LikelySatellite detection
-// independent of which player is being tracked.
 func TestParseTournamentFile_MTTSatelliteTicket(t *testing.T) {
 	contents := `PokerStars Tournament #223456789, $2.00+$0.20 USD
 Hold'em No Limit
@@ -263,14 +241,6 @@ Tournament started 2025/02/01 14:05:00 ET
 	}
 }
 
-// TestParseTournamentFile_TicketPrizePool confirms a "Total Prize Pool" line
-// suffixed with ticket text (e.g. "$1.00 Power Path Step 2 Ticket", the real
-// PokerStars format for a Power Path Spin & Go satellite) is never parsed as
-// a real dollar amount — PrizePoolCents stays 0, the raw text is captured in
-// PrizePoolDescription instead, and Multiplier stays nil since there's no
-// real cash pool to divide by BuyInCents — confirmed against a real summary
-// file. (TestParseTournamentFile_SpinGoWin covers the real-cash-pool case,
-// where PrizePoolCents and Multiplier are populated normally.)
 func TestParseTournamentFile_TicketPrizePool(t *testing.T) {
 	contents := `PokerStars Tournament #9000000022, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
@@ -301,12 +271,6 @@ Tournament started 2026/07/14 17:04:07 ET
 	}
 }
 
-// TestParseTournamentFile_HeroWinsTicket covers a Power Path-style satellite
-// where hero themselves finishes 1st and wins a ticket, not cash — the exact
-// PokerStars text still starts with a dollar sign (the ticket's own
-// face-value name, e.g. "$1.00 Power Path Step 2 Ticket"), which must not be
-// parsed as a real cash payout: NetCents should reflect only the lost buy-in,
-// the same as winning nothing at all, confirmed against a real hand history.
 func TestParseTournamentFile_HeroWinsTicket(t *testing.T) {
 	contents := `PokerStars Tournament #9000000022, No Limit Hold'em
 Buy-In: $0.46/$0.04 USD
@@ -340,14 +304,6 @@ You finished in 1st place (eliminated at hand #261437820632).
 	}
 }
 
-// TestParseTournamentFile_HeroWinsTicket_Position1StillPlaying covers a
-// Power Path-style satellite where the summary is captured before finish
-// position 1 is decided (their row reads "still playing" — PokerStars can
-// write the summary once hero busts, while the tournament continues for
-// other players) and hero themselves, not in 1st, wins a ticket. Relying on
-// finish position 1's payout alone misses this entirely — LikelySatellite
-// must also trigger from hero's own row, confirmed against a real summary
-// file (Tournament #9000000023).
 func TestParseTournamentFile_HeroWinsTicket_Position1StillPlaying(t *testing.T) {
 	contents := `PokerStars Tournament #9000000023, No Limit Hold'em
 Buy-In: $0.96/$0.04 USD
@@ -381,11 +337,6 @@ You finished in 3rd place (eliminated at hand #261439247515).
 	}
 }
 
-// TestParseTournamentFile_Position1TicketTakesPriorityOverHero confirms that
-// when BOTH finish position 1 and hero have ticket payouts, the description
-// shown is position 1's — the more universally meaningful one for a player
-// recognizing which tournament this is about — not silently overwritten by
-// hero's own text processed later in the file.
 func TestParseTournamentFile_Position1TicketTakesPriorityOverHero(t *testing.T) {
 	contents := `PokerStars Tournament #555555555, $2.00+$0.20 USD
 Hold'em No Limit
@@ -406,13 +357,6 @@ Total Prize Pool: $18.00
 	}
 }
 
-// TestParseTournamentFile_TicketAtOtherDecidedPosition covers the case
-// neither position-1-only nor hero-own-row-only detection could catch:
-// position 1 hasn't been decided yet ("still playing"), hero busted with no
-// payout at all, but a worse (already-decided, since worse positions bust
-// first) position's ticket is still visible in the file. Scanning every row
-// is what catches this — position 1 and hero's own row alone would both
-// report LikelySatellite = false here.
 func TestParseTournamentFile_TicketAtOtherDecidedPosition(t *testing.T) {
 	contents := `PokerStars Tournament #9000000023, No Limit Hold'em
 Buy-In: $0.96/$0.04 USD
@@ -444,9 +388,6 @@ Total Prize Pool: $15.36 USD
 	}
 }
 
-// TestParseTournamentFile_HeroBusted covers a tournament where hero's results
-// line has no payout marker at all (busted out of the money), which the code
-// treats as a loss of the full buy-in.
 func TestParseTournamentFile_HeroBusted(t *testing.T) {
 	contents := `PokerStars Tournament #323456789, $5.00+$0.50 USD
 Hold'em No Limit
@@ -473,11 +414,6 @@ Tournament started 2025/03/10 20:00:00 ET
 	}
 }
 
-// TestParseTournamentFile_Freeroll covers the zero-buy-in path: no "Buy-In: $"
-// line anywhere in the file leaves BuyInCents at 0, and the file parses to a
-// normal Tournament (no error) so the worker can ask for the entry cost. A
-// 3-player freeroll classifies as spingo but must not divide by a zero buy-in
-// to compute a Multiplier.
 func TestParseTournamentFile_Freeroll(t *testing.T) {
 	contents := `PokerStars Tournament #333456789, Freeroll
 Hold'em No Limit
@@ -502,7 +438,6 @@ Tournament started 2025/03/01 10:00:00 ET
 	}
 }
 
-// TestParseTournamentFile_MissingFile confirms the os.ReadFile error path is wrapped.
 func TestParseTournamentFile_MissingFile(t *testing.T) {
 	_, err := ParseTournamentFile(filepath.Join(t.TempDir(), "does-not-exist.txt"), testScreenName)
 	if err == nil {

@@ -97,7 +97,6 @@ func (s *serviceState) stop() error {
 			return fmt.Errorf("suspending scheduled recovery: %w: %s", err, output)
 		}
 	}
-	// The terminal caller remains mapped until the helper returns, but is not a service owner.
 	return installation.StopExcept(filepath.Dir(s.target), s.parent)
 }
 func (s *serviceState) restore() error {

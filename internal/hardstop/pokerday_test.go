@@ -8,12 +8,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-// TestPokerDayStart_DefaultHour covers the day-boundary edge case named in
-// the testing brief: a session recorded just before the reset hour belongs
-// to the previous poker day, one recorded at or after it belongs to today's.
-// now is constructed directly in time.Local so its wall-clock digits are
-// exactly what the test picks, regardless of the machine's real zone offset
-// (PokerDayStart reinterprets those digits as UTC — see its doc comment).
 func TestPokerDayStart_DefaultHour(t *testing.T) {
 	cfg := &config.Config{}
 
@@ -53,8 +47,6 @@ func TestPokerDayStart_DefaultHour(t *testing.T) {
 	}
 }
 
-// TestPokerDayStart_CustomHour confirms a non-default DayStartHour shifts
-// the same boundary logic.
 func TestPokerDayStart_CustomHour(t *testing.T) {
 	hour := 14
 	cfg := &config.Config{Schedule: config.Schedule{DayStartHour: &hour}}
@@ -85,8 +77,6 @@ func TestPokerDayStart_CustomHour(t *testing.T) {
 	}
 }
 
-// TestRollingWindowStart confirms the cutoff is now's wall-clock digits
-// (reinterpreted as UTC, same as PokerDayStart) minus the window duration.
 func TestRollingWindowStart(t *testing.T) {
 	now := time.Date(2026, 7, 13, 15, 30, 0, 0, time.Local)
 	want := time.Date(2026, 6, 13, 15, 30, 0, 0, time.UTC)
@@ -97,8 +87,6 @@ func TestRollingWindowStart(t *testing.T) {
 	}
 }
 
-// TestDownswingExceeds exercises the shared downswing comparison directly —
-// bot.go's alert path and hardstop's own trigger path both call this.
 func TestDownswingExceeds(t *testing.T) {
 	cases := []struct {
 		name         string

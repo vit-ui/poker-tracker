@@ -7,10 +7,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/config"
 )
 
-// TestResolveStorageBackend covers the three startup-guard outcomes: an
-// already-set backend is returned as-is, a v1.0 install (storage_backend unset,
-// google_sheet_id already set) is silently migrated to "sheets" and persisted,
-// and an install where neither field is set errors instead of guessing.
 func TestResolveStorageBackend(t *testing.T) {
 	t.Run("already set is returned as-is", func(t *testing.T) {
 		name := "sqlite"

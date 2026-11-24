@@ -1,9 +1,5 @@
 package bot
 
-// Tests for export.go's CSV formatting: per-column precision, nil-vs-zero
-// rendering, and the CSV file writer. Moved verbatim from the former
-// bot_calc_test.go so test files mirror the package's file-per-concern split.
-
 import (
 	"os"
 	"path/filepath"
@@ -47,16 +43,12 @@ func TestFormatFloat(t *testing.T) {
 		}
 	})
 
-	// vpipPfrPrecision covers the exact case a real VPIP calculation
-	// produces — an unrounded division like 88/347*100 — to confirm /export
-	// no longer emits full float64 precision for VPIP/PFR while every other
-	// numeric column (covered above) is untouched.
 	t.Run("vpipPfrPrecision rounds to 2 decimal places", func(t *testing.T) {
 		cases := []struct {
 			v    float64
 			want string
 		}{
-			{88.0 / 347.0 * 100, "25.36"}, // raw value: 25.360230547550433
+			{88.0 / 347.0 * 100, "25.36"},
 			{0, "0.00"},
 			{24.5, "24.50"},
 			{18.204, "18.20"},
@@ -113,8 +105,6 @@ func TestCashSessionsCSVRows(t *testing.T) {
 	records := []storage.CashSessionRecord{
 		{
 			CashSession: parsers.CashSession{
-				// Amounts are exact cents; statistical fields still exercise
-				// nonterminating divisions and their own display precision.
 				Date: date, Stake: "NL10", Hands: 50, DurationMin: 60,
 				NetCents: -30, RakeCents: 33, BB100: 10.0 / 3.0,
 				VPIP: 88.0 / 347.0 * 100, PFR: 60.0 / 347.0 * 100,
@@ -126,7 +116,6 @@ func TestCashSessionsCSVRows(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}
-	// Net/Rake round to 2dp (money), BB/100 to 1dp, VPIP/PFR to 2dp.
 	want := []string{"2026-07-10T20:00:00Z", "NL10", "50", "60", "-0.30", "0.33", "3.3", "25.36", "17.29", "abc123"}
 	for i, w := range want {
 		if rows[0][i] != w {
@@ -197,7 +186,6 @@ func TestTournamentsCSVRows(t *testing.T) {
 func TestBankrollLedgerCSVRows(t *testing.T) {
 	date := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	entries := []storage.LedgerEntry{
-		// Stored cent integers render as decimal dollars without rounding.
 		{Date: date, Type: "cash_session", AmountCents: -52, RunningTotalCents: -32, SessionID: "abc123"},
 		{Date: date, Type: "deposit", AmountCents: 10000, RunningTotalCents: 10000, SessionID: ""},
 	}

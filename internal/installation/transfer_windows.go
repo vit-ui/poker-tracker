@@ -7,8 +7,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// TransferMailbox is the combined owner's installation/PID-scoped event pair.
-// Durable request/result files contain the exchange; events only wake owners.
 type TransferMailbox struct {
 	Events               <-chan struct{}
 	request, reply, stop windows.Handle
@@ -30,7 +28,6 @@ func transferEventNames(dir string, pid uint32) (*uint16, *uint16, error) {
 	return request, reply, err
 }
 
-// NewTransferMailbox registers a source owner's request and acknowledgement events.
 func NewTransferMailbox(dir string) (*TransferMailbox, error) {
 	reqName, resName, err := transferEventNames(dir, uint32(os.Getpid()))
 	if err != nil {
@@ -81,10 +78,8 @@ func NewTransferMailbox(dir string) (*TransferMailbox, error) {
 	return m, nil
 }
 
-// Acknowledge signals that a durable result is ready for its requesting helper.
 func (m *TransferMailbox) Acknowledge() error { return windows.SetEvent(m.reply) }
 
-// Close stops and joins event delivery before releasing kernel resources.
 func (m *TransferMailbox) Close() {
 	close(m.canceled)
 	windows.SetEvent(m.stop)
@@ -94,10 +89,8 @@ func (m *TransferMailbox) Close() {
 	windows.CloseHandle(m.reply)
 }
 
-// TransferPeer addresses the recorded source owner and detects its process exit.
 type TransferPeer struct{ request, reply, process windows.Handle }
 
-// OpenTransferPeer opens only the named source owner's exchange events.
 func OpenTransferPeer(dir string, pid int) (*TransferPeer, error) {
 	reqName, resName, err := transferEventNames(dir, uint32(pid))
 	if err != nil {

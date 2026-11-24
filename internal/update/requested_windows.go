@@ -28,7 +28,6 @@ func startRequestedHelper(helper string, args []string, role, installationID, re
 		return fmt.Errorf("run the installed elevated tracker task, or use --update from a terminal")
 	}
 	cmd := exec.Command(helper, args...)
-	// A detached helper must survive Task Scheduler stopping the owner job.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x01000000 | 0x08000000}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting detached update helper: %w", err)

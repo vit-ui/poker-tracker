@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// waitForEvent blocks until an event arrives on ch or timeout elapses.
 func waitForEvent(t *testing.T, ch <-chan FileEvent, timeout time.Duration) (FileEvent, bool) {
 	t.Helper()
 	select {
@@ -18,13 +17,6 @@ func waitForEvent(t *testing.T, ch <-chan FileEvent, timeout time.Duration) (Fil
 	}
 }
 
-// TestWatch_DetectsFileTypeByDirectory exercises Watch against two real temp
-// directories with a real fsnotify watcher (no mocks): writing a .txt file
-// into the hand history directory produces a "cash" event, writing one into
-// the tournament directory produces a "tournament" event, a non-.txt file in
-// either directory produces no event at all, and closing done stops Watch.
-// The 2-second debounce means each assertion needs a timeout comfortably
-// above that.
 func TestWatch_DetectsFileTypeByDirectory(t *testing.T) {
 	handDir := t.TempDir()
 	tourneyDir := t.TempDir()
@@ -37,8 +29,6 @@ func TestWatch_DetectsFileTypeByDirectory(t *testing.T) {
 		watchErr <- Watch(done, handDir, tourneyDir, sessionChan)
 	}()
 
-	// Give fsnotify a moment to register the watches before writing files —
-	// otherwise a write could race the Add() calls inside Watch.
 	time.Sleep(100 * time.Millisecond)
 
 	handFile := filepath.Join(handDir, "session1.txt")
@@ -71,7 +61,6 @@ func TestWatch_DetectsFileTypeByDirectory(t *testing.T) {
 		t.Errorf("Type = %q, want tournament", ev.Type)
 	}
 
-	// A non-.txt file must never produce an event.
 	otherFile := filepath.Join(handDir, "notes.json")
 	if err := os.WriteFile(otherFile, []byte("{}"), 0644); err != nil {
 		t.Fatalf("writing non-.txt file: %v", err)
@@ -91,8 +80,6 @@ func TestWatch_DetectsFileTypeByDirectory(t *testing.T) {
 	}
 }
 
-// TestWatch_DebouncesRapidWrites confirms multiple rapid writes to the same
-// file within the 2-second debounce window collapse into a single event.
 func TestWatch_DebouncesRapidWrites(t *testing.T) {
 	handDir := t.TempDir()
 	tourneyDir := t.TempDir()
@@ -122,8 +109,6 @@ func TestWatch_DebouncesRapidWrites(t *testing.T) {
 	}
 }
 
-// TestWatch_ConstructionError confirms Watch returns an error (rather than
-// blocking or panicking) when asked to watch a directory that doesn't exist.
 func TestWatch_ConstructionError(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)

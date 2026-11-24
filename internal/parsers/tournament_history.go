@@ -9,8 +9,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/money"
 )
 
-// TournamentFinish is the evidence for a result in a completed hand. A nil
-// amount means the hand history does not establish that amount.
 type TournamentFinish struct {
 	Position       int
 	HandID         string

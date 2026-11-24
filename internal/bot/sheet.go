@@ -1,9 +1,5 @@
 package bot
 
-// The /sheet, /credentials, and /screenname commands: Google Sheet and
-// service-account swapping (with the self-restart machinery /sheet needs)
-// and screen-name changes.
-
 import (
 	"encoding/json"
 	"errors"
@@ -18,19 +14,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
-// handleSheetCommand implements /sheet. With no argument, replies with the
-// current sheet's URL (the original, only behavior). With an argument
-// (a sheet name or a pasted URL — same resolveSheetInput branch RunSetup
-// uses), switches to a different Google Sheet: validates
-// with sheets.NewClient (which also creates any missing tabs on the new
-// sheet) before saving, so an unreachable sheet is never persisted.
-//
-// This only updates config.json — it deliberately does not attempt to swap
-// the already-running store for the rest of this process's life (the store
-// is a required non-nil dependency threaded through goroutines that are
-// already running, and hot-swapping it would need a much larger refactor
-// for what's a rare, deliberate action). The worker drains collection before
-// saving the new sheet ID and restarting the owning installation's service.
 func (b *Bot) handleSheetCommand(chatID int64, args string) {
 	cfg, err := config.LoadConfig(b.configPath)
 	if err != nil {
@@ -80,8 +63,6 @@ func (b *Bot) handleSheetCommand(chatID int64, args string) {
 	}, func() {})
 }
 
-// handleScreenNameCommand implements /screenname. With no argument, replies
-// with the last PC-confirmed name and pending edits. An argument queues a PC change.
 func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 	args = strings.TrimSpace(args)
 	if args != "" {
@@ -106,13 +87,6 @@ func (b *Bot) handleScreenNameCommand(chatID int64, args string) {
 	send(b.tg, chatID, text+"\n\n"+collectorSettingsExplanation)
 }
 
-// startCredentialsFlow implements /credentials: swaps the Google service
-// account JSON used to authenticate to Sheets/Drive. Unlike the four
-// config flows (paths/alerts/hardstop/schedule), this one expects a file
-// upload rather than a plain-text reply — see handleCredentialsDocument.
-// Deliberately not gated to the sheets backend like /sheet is: on a sqlite
-// install this is how the credentials /storage needs to migrate to
-// Google Sheets get onto the machine in the first place.
 func (b *Bot) startCredentialsFlow(chatID int64) {
 	b.reset()
 	b.flow = "credentials"
@@ -120,9 +94,6 @@ func (b *Bot) startCredentialsFlow(chatID int64) {
 	send(b.tg, chatID, "Send your google_service_account.json file now as an attachment, or type skip to keep the current one.")
 }
 
-// handleCredentialsTextReply handles a plain-text reply during the
-// /credentials flow — the only valid one is "skip"; anything else
-// re-prompts, since a real reply here is a file, not text.
 func (b *Bot) handleCredentialsTextReply(chatID int64, text string) {
 	if strings.EqualFold(strings.TrimSpace(text), "skip") {
 		b.reset()
@@ -132,8 +103,6 @@ func (b *Bot) handleCredentialsTextReply(chatID int64, text string) {
 	send(b.tg, chatID, "Send the google_service_account.json file as an attachment, or type skip.")
 }
 
-// handleCredentialsDocument validates an owned staged upload before replacing
-// the live key. Sheets keeps its selected sheet and old key on validation failure.
 func (b *Bot) handleCredentialsDocument(chatID int64, fileID string) {
 	if err := os.MkdirAll(filepath.Dir(b.serviceAccountPath), 0755); err != nil {
 		send(b.tg, chatID, "Could not prepare credentials storage. Check logs.")

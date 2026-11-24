@@ -50,8 +50,6 @@ func activeDesktopHome() (string, error) {
 	if active == nil {
 		return "", fmt.Errorf("no active desktop session")
 	}
-	// An interactively launched collector can use its own token only when it
-	// belongs to that active desktop. A SYSTEM task must use the desktop token.
 	var ownSession uint32
 	if err := windows.ProcessIdToSessionId(uint32(os.Getpid()), &ownSession); err == nil && ownSession == active.SessionID {
 		token := windows.GetCurrentProcessToken()

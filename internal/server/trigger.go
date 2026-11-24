@@ -15,7 +15,6 @@ func automaticEnforcement(cfg *config.Config, now time.Time, cash *parsers.CashS
 	return func(reason string, duration int) {
 		id, err := hardstop.AutomaticTriggerID(reason, duration, cfg, now, cash, tournament, ledger, day)
 		if err != nil {
-			// An identity error must never suppress a genuine safety decision.
 			slog.Error("identifying hard-stop decision", "err", err)
 			id = "hardstop:unidentified:" + rand.Text()
 		}

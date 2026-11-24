@@ -28,7 +28,6 @@ func TestConcurrentCompleteFrames(t *testing.T) {
 			errs <- conn.write(frame{Command: &Command{Kind: fmt.Sprintf("%d:%s", i, strings.Repeat("payload", 1024))}})
 		}(i)
 	}
-	// A broken frame must fail the test rather than leave a pipe read blocked.
 	if err := reader.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +71,6 @@ func TestReconnectReplayWithCommandPressure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The upload proves the connection has become current. Its replay and the
-		// normal writer still share the same framed write path.
 		next.Uploads <- Upload{FileID: fmt.Sprint(round)}
 		recvUpload(t, server)
 		const count = 32
@@ -111,7 +108,6 @@ func TestListenerShutdownClosesCollectorWithBlockedUpload(t *testing.T) {
 	}
 	defer listener.Close()
 	server := NewLink()
-	// No worker consumes uploads; shutdown must release a reader blocked here.
 	server.Uploads = make(chan Upload)
 	stopped := make(chan struct{})
 	go func() { Serve(listener, "shutdown-token", server); close(stopped) }()
@@ -128,8 +124,6 @@ func TestListenerShutdownClosesCollectorWithBlockedUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	collector.Uploads <- Upload{FileID: "blocked"}
-	// A returned command proves authentication completed, without consuming the
-	// blocked upload or relying on a sleep to order shutdown against setup.
 	server.Commands <- Command{Kind: CommandLock, Lock: &config.LockFile{ExpiresAt: time.Now().Add(time.Hour)}}
 	recvCommand(t, collector)
 	if err := listener.Close(); err != nil {
@@ -161,8 +155,6 @@ func TestConnectionCloseInterruptsFrameWriter(t *testing.T) {
 	if _, err := io.ReadFull(reader, header[:]); err != nil {
 		t.Fatal(err)
 	}
-	// The frame body cannot complete while the peer stops reading. Closing must
-	// bypass writeMu so replacing this collector can release the blocked writer.
 	closed := make(chan struct{})
 	go func() { conn.close(); close(closed) }()
 	select {

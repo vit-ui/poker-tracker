@@ -7,7 +7,6 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
-// ScanTally counts recorded rows and omissions from a silent scan.
 type ScanTally struct {
 	Cash, Tournaments, TournamentHistories, Skipped, Failed int
 	NewCashHands, RecordedCashHands, MissingResults         int
@@ -34,7 +33,6 @@ func (t ScanTally) String() string {
 	return msg
 }
 
-// RecordHandHistory applies one parsed group on the storage owner.
 func (t *ScanTally) RecordHandHistory(store Store, session *parsers.CashSession, hands []parsers.CashHand, tournament *parsers.TournamentHandStats, err error) error {
 	if err == nil {
 		if session != nil {

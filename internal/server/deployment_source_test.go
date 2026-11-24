@@ -69,7 +69,6 @@ func TestDeploymentPreparationRequiresDurableProtection(t *testing.T) {
 				awaitPendingCash(t, filepath.Join(root, "pending_cash.json"), func(entries []config.PendingCash) bool { return len(entries) == 1 })
 			}
 			if tc.unsaved {
-				// Force finalization to retain an intent only in worker memory.
 				if err := os.Mkdir(journal+".tmp", 0700); err != nil {
 					t.Fatal(err)
 				}
@@ -121,7 +120,6 @@ func TestDeploymentPreparationRequiresDurableProtection(t *testing.T) {
 					}
 				}
 				link.Uploads <- transport.Upload{LockReply: &transport.LockReply{TriggerID: lock.TriggerID, Lock: &lock}}
-				// A subsequent preparation can succeed only after a saved receipt.
 				worker.Operations <- storage.Operation{PrepareMigration: true, RequireConfirmedProtection: true, Release: release, Resumed: resumed, Reply: reply, Apply: func(source storage.Store) storage.OperationResult {
 					copied = true
 					return storage.OperationResult{}

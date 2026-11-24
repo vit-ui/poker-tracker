@@ -6,8 +6,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// AcquireTransferLock refuses concurrent installer helpers for this installation.
-// It does not wait or retry; a crashed helper releases its kernel mutex.
 func AcquireTransferLock(dir string) (func(), error) {
 	base, err := shutdownEvent(dir, 0)
 	if err != nil {

@@ -110,7 +110,6 @@ func TestCollectorSettingsReplaceDrainAndRollbackOverBothLinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			time.Sleep(100 * time.Millisecond)
-			// A concurrent server edit must survive the collector's field-only save.
 			if _, err := config.UpdateConfig(path, func(cfg *config.Config) error { hour := 9; cfg.Schedule.DayStartHour = &hour; return nil }); err != nil {
 				t.Fatal(err)
 			}
@@ -141,7 +140,6 @@ func TestCollectorSettingsReplaceDrainAndRollbackOverBothLinks(t *testing.T) {
 			if reply.Error == "" || !reply.Watching || *reply.Settings.HandHistory != nextHH {
 				t.Fatalf("invalid path changed active settings: %+v", reply)
 			}
-			// Fail the actual atomic config replacement after the new watcher is ready.
 			rollbackHH, _ := collectionFolders(t, filepath.Join(root, "rollback"), nextName)
 			if err := os.Mkdir(path+".tmp", 0700); err != nil {
 				t.Fatal(err)
@@ -154,7 +152,6 @@ func TestCollectorSettingsReplaceDrainAndRollbackOverBothLinks(t *testing.T) {
 			if err := os.Remove(path + ".tmp"); err != nil {
 				t.Fatal(err)
 			}
-			// Repeated desired values are idempotent, and queries return PC-owned data.
 			link.Commands <- transport.Command{Kind: transport.CommandCollectorConfig, RequestID: "repeat", Settings: &patch}
 			if reply := collectionReply(t, link, "repeat"); reply.Error != "" || !reply.Watching {
 				t.Fatalf("replay: %+v", reply)
@@ -198,7 +195,6 @@ func TestCollectorStaysConnectedWithMissingFoldersAndAcceptsCorrection(t *testin
 	if up.Status == nil || up.Status.Watching || up.Status.CollectionError == "" || up.Status.Settings == nil {
 		t.Fatalf("missing folders not reported inactive: %+v", up)
 	}
-	// An expired lock exercises command handling without terminating any process.
 	expired := config.LockFile{TriggerID: "expired-safe-check", ExpiresAt: time.Now().Add(-time.Hour)}
 	link.Commands <- transport.Command{Kind: transport.CommandLock, Lock: &expired}
 	if up := collectionUpload(t, link); up.LockReply == nil || up.LockReply.TriggerID != expired.TriggerID || up.LockReply.Error != "" {
@@ -210,7 +206,6 @@ func TestCollectorStaysConnectedWithMissingFoldersAndAcceptsCorrection(t *testin
 	if reply.Error != "" || !reply.Watching || reply.CollectionError != "" {
 		t.Fatalf("queued correction did not recover collection: %+v", reply)
 	}
-	// Re-applying identical settings also repairs a watcher missing at startup.
 	disconnectFile := filepath.Join(hh, name, "recovered.txt")
 	if err := os.WriteFile(disconnectFile, []byte("recovered"), 0600); err != nil {
 		t.Fatal(err)

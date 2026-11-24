@@ -33,7 +33,6 @@ func restartAndConfirm(service *serviceState, version string) error {
 	if err := service.restore(); err != nil {
 		return err
 	}
-	// This checks process/service exit, not a startup timeout or a folder scan.
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	readState := true
