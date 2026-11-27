@@ -48,6 +48,13 @@ entries below use the version labels in effect when those changes shipped.
 - Support custom Linux service paths with spaces and systemd special characters.
   Preserve the Google service-account key during silent Windows uninstall.
 
+## [5.1.2](https://github.com/vit-ui/poker-tracker/compare/v5.1.1...v5.1.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* hide superseded update receipts from Telegram ([db58b86](https://github.com/vit-ui/poker-tracker/commit/db58b865c51c85ff87cc9fd3aa57da821159ae88))
+
 ## [5.1.1](https://github.com/vit-ui/poker-tracker/compare/v5.1.0...v5.1.1) (2026-11-24)
 
 
