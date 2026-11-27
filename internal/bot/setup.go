@@ -65,6 +65,15 @@ func RunSetup(token, configPath, serviceAccountPath string) error {
 		send(tgBot, chatID, "Hi! I'm your Poker Tracker bot. Let's get you set up.")
 	}
 
+	saveSetupProgress := func() error {
+		err := config.SaveConfig(configPath, cfg)
+		if err != nil {
+			slog.Error("saving config", "err", err)
+			send(tgBot, chatID, "Something went wrong. Check logs.")
+		}
+		return err
+	}
+
 	var backendName string
 	if cfg.Setup.StorageBackend != nil {
 		backendName = *cfg.Setup.StorageBackend
@@ -79,81 +88,78 @@ func RunSetup(token, configPath, serviceAccountPath string) error {
 		sendWithKeyboard(tgBot, chatID, "How do you want to store your data?", markup)
 		backendName = strings.TrimPrefix(waitForCallbackChoice(tgBot, updates, chatID, "storage:sheets", "storage:sqlite"), "storage:")
 		cfg.Setup.StorageBackend = &backendName
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			slog.Error("saving config", "err", err)
-			send(tgBot, chatID, "Something went wrong. Check logs.")
+		if err := saveSetupProgress(); err != nil {
 			return err
 		}
 		send(tgBot, chatID, "✅ Storage backend saved.")
 	}
 
-	if backendName == "sqlite" {
-	} else if credentialsErr == nil {
-		send(tgBot, chatID, "✅ Keeping existing credentials file.")
-	} else {
-		send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip if it's already in place.")
-		for {
-			text, fileID := readReplyOrDocument(tgBot, updates, chatID)
-			if fileID != "" {
-				if err := downloadTelegramFile(tgBot, fileID, serviceAccountPath); err != nil {
-					slog.Error("downloading credentials file", "err", err)
-					send(tgBot, chatID, "Couldn't download that file. Try again, or type skip.")
-					continue
+	if backendName != "sqlite" {
+		if credentialsErr == nil {
+			send(tgBot, chatID, "✅ Keeping existing credentials file.")
+		} else {
+			send(tgBot, chatID, "Send your google_service_account.json file now as an attachment, or type skip if it's already in place.")
+			for {
+				text, fileID := readReplyOrDocument(tgBot, updates, chatID)
+				if fileID != "" {
+					if err := downloadTelegramFile(tgBot, fileID, serviceAccountPath); err != nil {
+						slog.Error("downloading credentials file", "err", err)
+						send(tgBot, chatID, "Couldn't download that file. Try again, or type skip.")
+						continue
+					}
+					send(tgBot, chatID, "✅ Credentials file saved.")
+					break
 				}
-				send(tgBot, chatID, "✅ Credentials file saved.")
-				break
-			}
-			if strings.EqualFold(strings.TrimSpace(text), "skip") {
-				if _, err := os.Stat(serviceAccountPath); err != nil {
-					send(tgBot, chatID, "No credentials file found at the expected location yet. Send it as an attachment now, or place it correctly before typing skip again.")
-					continue
+				if strings.EqualFold(strings.TrimSpace(text), "skip") {
+					if _, err := os.Stat(serviceAccountPath); err != nil {
+						send(tgBot, chatID, "No credentials file found at the expected location yet. Send it as an attachment now, or place it correctly before typing skip again.")
+						continue
+					}
+					break
 				}
-				break
+				send(tgBot, chatID, "Send the file as an attachment, or type skip.")
 			}
-			send(tgBot, chatID, "Send the file as an attachment, or type skip.")
 		}
-	}
 
-	if backendName == "sqlite" {
-	} else if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
-		if err := backend.ResolveSheetsSetup(cfg, serviceAccountPath); err != nil {
-			send(tgBot, chatID, err.Error())
-			return err
-		}
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			send(tgBot, chatID, err.Error())
-			return err
-		}
-		send(tgBot, chatID, "✅ Keeping existing Google Sheet.")
-	} else {
-		send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
-		for {
-			reply := readReply(tgBot, updates, chatID)
-			if looksLikeCommand(reply) {
-				send(tgBot, chatID, "Commands aren't available until setup finishes — send your Google Sheet name or paste its URL to continue.")
-				continue
-			}
-			name, id, err := resolveSheetInput(serviceAccountPath, reply)
-			if err != nil {
-				send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
-				continue
-			}
-
-			if _, err := sheets.NewClient(serviceAccountPath, id, ""); err != nil {
-				send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
-				continue
-			}
-
-			cfg.Setup.GoogleSheetName = name
-			cfg.Setup.GoogleSheetID = &id
-			if err := config.SaveConfig(configPath, cfg); err != nil {
-				slog.Error("saving config", "err", err)
-				send(tgBot, chatID, "Something went wrong. Check logs.")
+		if cfg.Setup.GoogleSheetName != nil || cfg.Setup.GoogleSheetID != nil {
+			if err := backend.ResolveSheetsSetup(cfg, serviceAccountPath); err != nil {
+				send(tgBot, chatID, err.Error())
 				return err
 			}
-			send(tgBot, chatID, "✅ Connected to sheet.")
-			break
+			if err := config.SaveConfig(configPath, cfg); err != nil {
+				send(tgBot, chatID, err.Error())
+				return err
+			}
+			send(tgBot, chatID, "✅ Keeping existing Google Sheet.")
+		} else {
+			send(tgBot, chatID, "What is the name of your Google Sheet, or paste its full URL?\n(Create a blank sheet and share it with the service account before answering)")
+			for {
+				reply := readReply(tgBot, updates, chatID)
+				if looksLikeCommand(reply) {
+					send(tgBot, chatID, "Commands aren't available until setup finishes — send your Google Sheet name or paste its URL to continue.")
+					continue
+				}
+				name, id, err := resolveSheetInput(serviceAccountPath, reply)
+				if err != nil {
+					send(tgBot, chatID, fmt.Sprintf("%v\nTry again — send the sheet name or its URL.", err))
+					continue
+				}
+
+				if _, err := sheets.NewClient(serviceAccountPath, id, ""); err != nil {
+					send(tgBot, chatID, fmt.Sprintf("Couldn't connect to that sheet: %v\nMake sure it's shared with the service account (Editor access), then try again.", err))
+					continue
+				}
+
+				cfg.Setup.GoogleSheetName = name
+				cfg.Setup.GoogleSheetID = &id
+				if err := saveSetupProgress(); err != nil {
+					return err
+				}
+				send(tgBot, chatID, "✅ Connected to sheet.")
+				break
+			}
 		}
+
 	}
 
 	var screenName string
@@ -174,9 +180,7 @@ func RunSetup(token, configPath, serviceAccountPath string) error {
 			send(tgBot, chatID, "Screen name can't be empty. Send your exact PokerStars screen name.")
 		}
 		cfg.Setup.PokerStarsScreenName = &screenName
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			slog.Error("saving config", "err", err)
-			send(tgBot, chatID, "Something went wrong. Check logs.")
+		if err := saveSetupProgress(); err != nil {
 			return err
 		}
 		send(tgBot, chatID, "✅ Screen name saved.")
@@ -187,9 +191,7 @@ func RunSetup(token, configPath, serviceAccountPath string) error {
 	} else {
 		handHistory := setupResolvePath(tgBot, updates, chatID, "Hand History", `AppData\Local\PokerStars\HandHistory`, screenName)
 		cfg.Paths.HandHistory = &handHistory
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			slog.Error("saving config", "err", err)
-			send(tgBot, chatID, "Something went wrong. Check logs.")
+		if err := saveSetupProgress(); err != nil {
 			return err
 		}
 	}
@@ -199,9 +201,7 @@ func RunSetup(token, configPath, serviceAccountPath string) error {
 	} else {
 		tournamentSummary := setupResolvePath(tgBot, updates, chatID, "Tournament Summary", `AppData\Local\PokerStars\TournamentSummaries`, screenName)
 		cfg.Paths.TournamentSummary = &tournamentSummary
-		if err := config.SaveConfig(configPath, cfg); err != nil {
-			slog.Error("saving config", "err", err)
-			send(tgBot, chatID, "Something went wrong. Check logs.")
+		if err := saveSetupProgress(); err != nil {
 			return err
 		}
 	}
