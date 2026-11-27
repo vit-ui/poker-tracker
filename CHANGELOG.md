@@ -5,6 +5,8 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Share the Sheets partial tournament row layout between live collection and storage migration.
+
 - Reuse the durable file replacement code for Windows updates and configuration,
   and save update recovery journals through the shared update-state writer.
 

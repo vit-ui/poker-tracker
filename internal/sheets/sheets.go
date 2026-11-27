@@ -254,6 +254,25 @@ func (c *Client) findTournamentRow(tournamentID string) (rowIndex int, found boo
 	return c.findRowByColumnValue("Tournaments", "C", tournamentID)
 }
 
+const (
+	tournamentDateColumn = iota
+	tournamentTypeColumn
+	tournamentIDColumn
+	tournamentBuyInColumn
+	tournamentPrizePoolColumn
+	tournamentMultiplierColumn
+	tournamentFinishColumn
+	tournamentFieldSizeColumn
+	tournamentNetColumn
+	tournamentVPIPColumn
+	tournamentPFRColumn
+	tournamentBountyColumn
+	tournamentPrizeWonColumn
+	tournamentHandsColumn
+	tournamentResultSourceColumn
+	tournamentResultHandIDColumn
+)
+
 type tournamentRowSnapshot struct {
 	date        time.Time
 	typeVal     string
@@ -274,30 +293,30 @@ func (c *Client) readTournamentRow(rowIndex int) (tournamentRowSnapshot, error) 
 	}
 	row := resp.Values[0]
 	var snap tournamentRowSnapshot
-	snap.hands = parseInt(cell(row, 13))
-	if len(row) > 0 {
-		if date, err := parseSheetDate(row[0]); err == nil {
+	snap.hands = parseInt(cell(row, tournamentHandsColumn))
+	if len(row) > tournamentDateColumn {
+		if date, err := parseSheetDate(row[tournamentDateColumn]); err == nil {
 			snap.date = date
 		}
 	}
-	if len(row) > 1 {
-		snap.typeVal = fmt.Sprint(row[1])
+	if len(row) > tournamentTypeColumn {
+		snap.typeVal = fmt.Sprint(row[tournamentTypeColumn])
 	}
-	if len(row) > 3 {
-		snap.buyInCents, err = parseMoney(row[3])
+	if len(row) > tournamentBuyInColumn {
+		snap.buyInCents, err = parseMoney(row[tournamentBuyInColumn])
 		if err != nil {
 			return tournamentRowSnapshot{}, err
 		}
 	}
-	if len(row) > 8 && fmt.Sprint(row[8]) != "" {
+	if len(row) > tournamentNetColumn && fmt.Sprint(row[tournamentNetColumn]) != "" {
 		snap.hasNetUSD = true
-		snap.netCents, err = parseMoney(row[8])
+		snap.netCents, err = parseMoney(row[tournamentNetColumn])
 		if err != nil {
 			return tournamentRowSnapshot{}, err
 		}
 	}
-	if len(row) > 11 {
-		snap.bountyCents, err = parseMoney(row[11])
+	if len(row) > tournamentBountyColumn {
+		snap.bountyCents, err = parseMoney(row[tournamentBountyColumn])
 		if err != nil {
 			return tournamentRowSnapshot{}, err
 		}
@@ -325,9 +344,9 @@ func (c *Client) rawAppendTournament(t parsers.Tournament) (money.Cents, error) 
 	t.NetCents = netCents
 	values := tournamentResultCells(t)
 	writes := []gridWrite{
-		{"Tournaments", row - 1, 0, [][]interface{}{values}},
-		{"Tournaments", row - 1, 12, [][]interface{}{{prizeWonCents}}},
-		{"Tournaments", row - 1, 14, [][]interface{}{{t.ResultSource, t.ResultHandID}}},
+		{"Tournaments", row - 1, tournamentDateColumn, [][]interface{}{values}},
+		{"Tournaments", row - 1, tournamentPrizeWonColumn, [][]interface{}{{prizeWonCents}}},
+		{"Tournaments", row - 1, tournamentResultSourceColumn, [][]interface{}{{t.ResultSource, t.ResultHandID}}},
 	}
 	err = c.writeResults(writes, []storage.LedgerEntry{{Date: t.Date, Type: "tournament", AmountCents: netCents, SessionID: t.TournamentID}})
 	return netCents, err
@@ -343,22 +362,11 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 		if isKnockout {
 			typeCell = storage.KnockoutPlaceholder
 		}
-		return c.appendRow("Tournaments", []interface{}{
-			"",
-			typeCell,
-			tournamentID,
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			vpip,
-			pfr,
-			bountyCents,
-			"",
-			hands,
-		})
+		partial := storage.TournamentRecord{
+			Tournament:     parsers.Tournament{Type: typeCell, TournamentID: tournamentID, VPIP: &vpip, PFR: &pfr, Hands: &hands},
+			BountyWonCents: bountyCents,
+		}
+		return c.appendRow("Tournaments", partialTournamentRow(partial))
 	}
 
 	snap, err := c.readTournamentRow(rowIndex)
@@ -374,12 +382,12 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 	if isKnockout {
 		typeOut = storage.AppendKnockoutSuffix(snap.typeVal)
 	}
-	writes := []gridWrite{{"Tournaments", rowIndex - 1, 11, [][]interface{}{{bountyCents}}}}
+	writes := []gridWrite{{"Tournaments", rowIndex - 1, tournamentBountyColumn, [][]interface{}{{bountyCents}}}}
 	if storage.UseTournamentSample(preserveBounty, hands, snap.hands) {
-		writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, 9, [][]interface{}{{vpip, pfr}}}, gridWrite{"Tournaments", rowIndex - 1, 13, [][]interface{}{{hands}}})
+		writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, tournamentVPIPColumn, [][]interface{}{{vpip, pfr}}}, gridWrite{"Tournaments", rowIndex - 1, tournamentHandsColumn, [][]interface{}{{hands}}})
 	}
 	if typeOut != snap.typeVal {
-		writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, 1, [][]interface{}{{typeOut}}})
+		writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, tournamentTypeColumn, [][]interface{}{{typeOut}}})
 	}
 	if !snap.hasNetUSD {
 		data := make([]valueRange, 0, len(writes))
@@ -395,7 +403,7 @@ func (c *Client) rawUpdateTournamentHandStats(tournamentID string, vpip, pfr flo
 	if err != nil {
 		return err
 	}
-	writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, 8, [][]interface{}{{netCents}}}, gridWrite{"Tournaments", rowIndex - 1, 12, [][]interface{}{{prizeWonCents}}})
+	writes = append(writes, gridWrite{"Tournaments", rowIndex - 1, tournamentNetColumn, [][]interface{}{{netCents}}}, gridWrite{"Tournaments", rowIndex - 1, tournamentPrizeWonColumn, [][]interface{}{{prizeWonCents}}})
 	return c.writeResults(writes, []storage.LedgerEntry{{Date: snap.date, Type: "tournament", AmountCents: netCents, SessionID: tournamentID}})
 }
 
@@ -953,54 +961,54 @@ func (c *Client) queryTournaments(since time.Time) ([]storage.TournamentRecord, 
 }
 
 func parseTournamentRow(row []interface{}) (rec storage.TournamentRecord, hasDate bool, err error) {
-	rec.Type = fmt.Sprint(cell(row, 1))
-	rec.TournamentID = fmt.Sprint(cell(row, 2))
-	rec.ResultSource = fmt.Sprint(cell(row, 14))
-	rec.ResultHandID = fmt.Sprint(cell(row, 15))
-	if date, err := parseSheetDate(cell(row, 0)); err == nil {
+	rec.Type = fmt.Sprint(cell(row, tournamentTypeColumn))
+	rec.TournamentID = fmt.Sprint(cell(row, tournamentIDColumn))
+	rec.ResultSource = fmt.Sprint(cell(row, tournamentResultSourceColumn))
+	rec.ResultHandID = fmt.Sprint(cell(row, tournamentResultHandIDColumn))
+	if date, err := parseSheetDate(cell(row, tournamentDateColumn)); err == nil {
 		rec.Date = date
 		hasDate = true
 	}
-	rec.BuyInCents, err = parseMoney(cell(row, 3))
+	rec.BuyInCents, err = parseMoney(cell(row, tournamentBuyInColumn))
 	if err != nil {
 		return rec, false, err
 	}
-	if desc, ok := cell(row, 4).(string); ok && desc != "" {
+	if desc, ok := cell(row, tournamentPrizePoolColumn).(string); ok && desc != "" {
 		rec.PrizePoolDescription = desc
 	} else {
-		rec.PrizePoolCents, err = parseMoney(cell(row, 4))
+		rec.PrizePoolCents, err = parseMoney(cell(row, tournamentPrizePoolColumn))
 		if err != nil {
 			return rec, false, err
 		}
 	}
-	if mult := fmt.Sprint(cell(row, 5)); mult != "" {
-		m := parseFloat(cell(row, 5))
+	if mult := fmt.Sprint(cell(row, tournamentMultiplierColumn)); mult != "" {
+		m := parseFloat(cell(row, tournamentMultiplierColumn))
 		rec.Multiplier = &m
 	}
-	rec.FinishPos = parseInt(cell(row, 6))
-	rec.TotalPlayers = parseInt(cell(row, 7))
-	rec.NetCents, err = parseMoney(cell(row, 8))
+	rec.FinishPos = parseInt(cell(row, tournamentFinishColumn))
+	rec.TotalPlayers = parseInt(cell(row, tournamentFieldSizeColumn))
+	rec.NetCents, err = parseMoney(cell(row, tournamentNetColumn))
 	if err != nil {
 		return rec, false, err
 	}
-	if v := fmt.Sprint(cell(row, 9)); v != "" {
-		f := parseFloat(cell(row, 9))
+	if v := fmt.Sprint(cell(row, tournamentVPIPColumn)); v != "" {
+		f := parseFloat(cell(row, tournamentVPIPColumn))
 		rec.VPIP = &f
 	}
-	if p := fmt.Sprint(cell(row, 10)); p != "" {
-		f := parseFloat(cell(row, 10))
+	if p := fmt.Sprint(cell(row, tournamentPFRColumn)); p != "" {
+		f := parseFloat(cell(row, tournamentPFRColumn))
 		rec.PFR = &f
 	}
-	rec.BountyWonCents, err = parseMoney(cell(row, 11))
+	rec.BountyWonCents, err = parseMoney(cell(row, tournamentBountyColumn))
 	if err != nil {
 		return rec, false, err
 	}
-	rec.PrizeWonCents, err = parseMoney(cell(row, 12))
+	rec.PrizeWonCents, err = parseMoney(cell(row, tournamentPrizeWonColumn))
 	if err != nil {
 		return rec, false, err
 	}
-	if h := fmt.Sprint(cell(row, 13)); h != "" {
-		n := parseInt(cell(row, 13))
+	if h := fmt.Sprint(cell(row, tournamentHandsColumn)); h != "" {
+		n := parseInt(cell(row, tournamentHandsColumn))
 		rec.Hands = &n
 	}
 	return rec, hasDate, nil
@@ -1133,10 +1141,7 @@ func buildTournamentRows(tournaments []storage.TournamentRecord) [][]interface{}
 	rows := make([][]interface{}, len(tournaments))
 	for i, t := range tournaments {
 		if t.Date.IsZero() {
-			rows[i] = []interface{}{
-				"", t.Type, t.TournamentID, "", "", "", "", "", "",
-				floatCell(t.VPIP), floatCell(t.PFR), t.BountyWonCents, "", intCell(t.Hands),
-			}
+			rows[i] = partialTournamentRow(t)
 			continue
 		}
 		rows[i] = append(tournamentResultCells(t.Tournament),
@@ -1144,6 +1149,25 @@ func buildTournamentRows(tournaments []storage.TournamentRecord) [][]interface{}
 		)
 	}
 	return rows
+}
+
+func partialTournamentRow(t storage.TournamentRecord) []interface{} {
+	return []interface{}{
+		tournamentDateColumn:       "",
+		tournamentTypeColumn:       t.Type,
+		tournamentIDColumn:         t.TournamentID,
+		tournamentBuyInColumn:      "",
+		tournamentPrizePoolColumn:  "",
+		tournamentMultiplierColumn: "",
+		tournamentFinishColumn:     "",
+		tournamentFieldSizeColumn:  "",
+		tournamentNetColumn:        "",
+		tournamentVPIPColumn:       floatCell(t.VPIP),
+		tournamentPFRColumn:        floatCell(t.PFR),
+		tournamentBountyColumn:     t.BountyWonCents,
+		tournamentPrizeWonColumn:   "",
+		tournamentHandsColumn:      intCell(t.Hands),
+	}
 }
 
 func tournamentResultCells(t parsers.Tournament) []interface{} {

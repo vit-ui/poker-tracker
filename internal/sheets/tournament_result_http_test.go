@@ -1,6 +1,9 @@
 package sheets
 
 import (
+	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,4 +95,27 @@ func TestSheetsTournamentResultAndLedgerCorrectionsAreAtomic(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandHistoryBeforeSummaryAppendsOnlyKnownTournamentCells(t *testing.T) {
+	fake := &fakeSheets{}
+	client := newTestClient(t, fake)
+	if err := client.UpdateTournamentHandStats("partial-hand-history", 24, 12, 50, 125, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range fake.calls() {
+		if !strings.HasSuffix(call.path, "Tournaments!A1:append") {
+			continue
+		}
+		var body valueRange
+		if err := json.Unmarshal([]byte(call.body), &body); err != nil {
+			t.Fatal(err)
+		}
+		want := [][]interface{}{{"", "ko", "partial-hand-history", "", "", "", "", "", "", 24.0, 12.0, 1.25, "", 50.0}}
+		if !reflect.DeepEqual(body.Values, want) {
+			t.Fatalf("partial row = %v, want %v", body.Values, want)
+		}
+		return
+	}
+	t.Fatal("missing tournament append")
 }
