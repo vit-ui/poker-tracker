@@ -202,7 +202,7 @@ func (c *Client) getLastRunningTotal() (money.Cents, error) {
 }
 
 func CashSessionID(date time.Time, firstHandID string) string {
-	return storage.CashSessionIdentities(date, firstHandID)[1]
+	return storage.CashSessionIdentities(date, firstHandID).LegacySheets
 }
 
 func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex int, found bool, err error) {
@@ -222,8 +222,8 @@ func (c *Client) findRowByColumnValue(tab, columnLetter, want string) (rowIndex 
 }
 
 func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
-	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
-	id := keys[0]
+	identities := storage.CashSessionIdentities(session.Date, session.FirstHandID)
+	id := identities.Canonical
 	response, err := c.svc.valuesGet(c.spreadsheetID, "Cash Sessions!J:J")
 	if err != nil {
 		return fmt.Errorf("resolving cash identity: %w", err)
@@ -234,7 +234,7 @@ func (c *Client) rawAppendCashSession(session parsers.CashSession) error {
 			continue
 		}
 		value := fmt.Sprint(row[0])
-		if value == keys[0] || value == keys[1] {
+		if identities.Matches(value) {
 			if rowIndex != 0 {
 				return fmt.Errorf("cash session has conflicting legacy identities")
 			}

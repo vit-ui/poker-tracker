@@ -162,7 +162,7 @@ func (s *Store) Close() error {
 }
 
 func cashSessionID(date time.Time, firstHandID string) string {
-	return storage.CashSessionIdentities(date, firstHandID)[0]
+	return storage.CashSessionIdentities(date, firstHandID).Canonical
 }
 
 func (s *Store) write(apply func(*sql.Tx) error) error {
@@ -188,9 +188,9 @@ func (s *Store) AppendCashSession(session parsers.CashSession) error {
 }
 
 func (s *Store) appendCashSession(tx *sql.Tx, session parsers.CashSession) error {
-	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
-	id := keys[0]
-	rows, err := tx.Query("SELECT session_id FROM cash_sessions WHERE session_id IN (?,?)", keys[0], keys[1])
+	identities := storage.CashSessionIdentities(session.Date, session.FirstHandID)
+	id := identities.Canonical
+	rows, err := tx.Query("SELECT session_id FROM cash_sessions WHERE session_id IN (?,?)", identities.Canonical, identities.LegacySheets)
 	if err != nil {
 		return fmt.Errorf("resolving cash identity: %w", err)
 	}
@@ -219,7 +219,7 @@ func (s *Store) appendCashSession(tx *sql.Tx, session parsers.CashSession) error
 
 func (s *Store) RecordCashHands(session parsers.CashSession, hands []parsers.CashHand, liveSource string) (storage.CashWrite, error) {
 	var result storage.CashWrite
-	keys := storage.CashSessionIdentities(session.Date, session.FirstHandID)
+	identities := storage.CashSessionIdentities(session.Date, session.FirstHandID)
 	ids, err := json.Marshal(storage.CashHandIDs(hands))
 	if err != nil {
 		return result, err
@@ -227,7 +227,7 @@ func (s *Store) RecordCashHands(session parsers.CashSession, hands []parsers.Cas
 	err = s.write(func(tx *sql.Tx) error {
 		rows, err := tx.Query(cashRowsQuery+` WHERE session_id IN (?,?) OR EXISTS (
 			SELECT 1 FROM json_each(cash_sessions.hand_details) h WHERE json_extract(h.value, '$.id') IN (SELECT value FROM json_each(?))
-		) ORDER BY id`, keys[0], keys[1], string(ids))
+		) ORDER BY id`, identities.Canonical, identities.LegacySheets, string(ids))
 		if err != nil {
 			return fmt.Errorf("looking up cash hand owners: %w", err)
 		}

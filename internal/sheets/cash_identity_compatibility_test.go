@@ -5,12 +5,11 @@ import (
 	"time"
 
 	"github.com/vit-ui/self-tracker/internal/parsers"
-	"github.com/vit-ui/self-tracker/internal/storage"
 )
 
 func TestCashCorrectionRetainsBothHistoricalIdentityFormats(t *testing.T) {
 	date := time.Date(2026, 1, 2, 12, 0, 15, 0, time.UTC)
-	for _, id := range storage.CashSessionIdentities(date, "owned-hand") {
+	for _, id := range []string{"23f9b48c169f", "435bbe1740b2"} {
 		t.Run(id, func(t *testing.T) {
 			fake := &fakeSheets{getBody: func(rng string) valueRange {
 				switch rng {

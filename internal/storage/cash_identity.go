@@ -10,12 +10,21 @@ import (
 	"github.com/vit-ui/self-tracker/internal/parsers"
 )
 
-func CashSessionIdentities(date time.Time, firstHandID string) [2]string {
+type CashSessionIDs struct {
+	Canonical    string
+	LegacySheets string
+}
+
+func (ids CashSessionIDs) Matches(id string) bool {
+	return id == ids.Canonical || id == ids.LegacySheets
+}
+
+func CashSessionIdentities(date time.Time, firstHandID string) CashSessionIDs {
 	hash := func(clock string) string {
 		sum := sha256.Sum256([]byte(clock + "|" + firstHandID))
 		return hex.EncodeToString(sum[:])[:12]
 	}
-	return [2]string{hash(date.UTC().Format(time.RFC3339)), hash(date.Format("2006-01-02 15:04"))}
+	return CashSessionIDs{Canonical: hash(date.UTC().Format(time.RFC3339)), LegacySheets: hash(date.Format("2006-01-02 15:04"))}
 }
 
 type CashWrite struct {
@@ -32,10 +41,10 @@ func CashHandIDs(hands []parsers.CashHand) []string {
 
 func ReconcileCashHands(rows []CashSessionRecord, session parsers.CashSession, hands []parsers.CashHand, liveSource string) ([]CashSessionRecord, CashWrite, error) {
 	var result CashWrite
-	keys := CashSessionIdentities(session.Date, session.FirstHandID)
+	identities := CashSessionIdentities(session.Date, session.FirstHandID)
 	target := -1
 	for i, row := range rows {
-		if row.SessionID == keys[0] || row.SessionID == keys[1] {
+		if identities.Matches(row.SessionID) {
 			if target >= 0 {
 				return nil, result, fmt.Errorf("cash session has conflicting legacy identities")
 			}
@@ -123,10 +132,10 @@ func ReconcileCashHands(rows []CashSessionRecord, session parsers.CashSession, h
 		}
 		if target < 0 {
 			target = len(rows)
-			id := CashSessionIdentities(hand.At, hand.ID)[0]
+			id := CashSessionIdentities(hand.At, hand.ID).Canonical
 			date := hand.At
 			if result.Recorded == 0 {
-				id, date = keys[0], session.Date
+				id, date = identities.Canonical, session.Date
 			}
 			rows = append(rows, CashSessionRecord{
 				CashSession: parsers.CashSession{Date: date, Stake: session.Stake},

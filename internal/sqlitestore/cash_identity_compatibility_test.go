@@ -17,7 +17,7 @@ func TestCashCorrectionPreservesImportedLegacySheetsIdentity(t *testing.T) {
 	defer store.Close()
 	date := time.Date(2026, 1, 2, 12, 0, 15, 0, time.UTC)
 	session := parsers.CashSession{Date: date, FirstHandID: "owned-hand", NetCents: -100, BuyInCents: 200, Hands: 2}
-	legacy := storage.CashSessionIdentities(date, session.FirstHandID)[1]
+	const legacy = "435bbe1740b2"
 	snapshot := storage.Snapshot{CashSessions: []storage.CashSessionRecord{{CashSession: session, SessionID: legacy}}, Ledger: []storage.LedgerEntry{
 		{Date: date, Type: "cash_session", SessionID: legacy, AmountCents: -100, RunningTotalCents: -100},
 		{Date: date, Type: "deposit", SessionID: "money:later", AmountCents: 200, RunningTotalCents: 100},
