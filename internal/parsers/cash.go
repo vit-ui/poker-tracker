@@ -2,6 +2,7 @@ package parsers
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +46,7 @@ func CashHands(path, screenName string) ([]CashHand, error) {
 	}
 	defer f.Close()
 	var hands []CashHand
-	_, _, _, err, _ = parseCash(f, path, screenName, cashAgg{}, 0, false, &hands)
+	_, _, _, err = parseCash(f, path, screenName, cashAgg{}, 0, false, &hands)
 	return hands, err
 }
 
@@ -129,20 +130,19 @@ func ParseCashFile(path, screenName string) (session *CashSession, tourneyStats 
 }
 
 func ParseCashFileFrom(path, screenName string, prior *ParseState) (*CashSession, *TournamentHandStats, *ParseState, error) {
-	if prior != nil {
-		session, stats, st, err, ok := parseCashFrom(path, screenName, prior)
-		if ok {
-			return session, stats, st, err
-		}
+	session, stats, nextState, err := parseCashFrom(path, screenName, prior)
+	if err == errInvalidCashResumeOffset {
+		return parseCashFrom(path, screenName, nil)
 	}
-	session, stats, st, err, _ := parseCashFrom(path, screenName, nil)
-	return session, stats, st, err
+	return session, stats, nextState, err
 }
 
-func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
+var errInvalidCashResumeOffset = errors.New("saved offset no longer starts a hand")
+
+func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *TournamentHandStats, *ParseState, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("opening %s: %w", path, err), true
+		return nil, nil, nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -153,13 +153,13 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 	if prior != nil {
 		info, err := f.Stat()
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("stat %s: %w", path, err), true
+			return nil, nil, nil, fmt.Errorf("stat %s: %w", path, err)
 		}
 		if prior.consumedOffset > info.Size() {
-			return nil, nil, nil, nil, false
+			return nil, nil, nil, errInvalidCashResumeOffset
 		}
 		if _, err := f.Seek(prior.consumedOffset, io.SeekStart); err != nil {
-			return nil, nil, nil, nil, false
+			return nil, nil, nil, errInvalidCashResumeOffset
 		}
 		startOffset = prior.consumedOffset
 		base = prior.agg
@@ -168,12 +168,12 @@ func parseCashFrom(path, screenName string, prior *ParseState) (*CashSession, *T
 	return parseCash(f, path, screenName, base, startOffset, prior != nil, nil)
 }
 
-func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset int64, resuming bool, details *[]CashHand) (*CashSession, *TournamentHandStats, *ParseState, error, bool) {
+func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset int64, resuming bool, details *[]CashHand) (*CashSession, *TournamentHandStats, *ParseState, error) {
 	r := bufio.NewReader(in)
 
-	st := base
-	committed := base
-	newConsumedOffset := startOffset
+	aggregate := base
+	beforeLastHand := base
+	lastHandOffset := startOffset
 
 	var (
 		handID             string
@@ -193,12 +193,12 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 		handRakeCents      money.Cents
 	)
 
-	ap := screenName + ": "
-	dealtPfx := "Dealt to " + screenName + " ["
-	collectedPfx := screenName + " collected "
-	uncalledPfx := "Uncalled bet ("
-	uncalledSfx := ") returned to " + screenName
-	bountyWinPfx := screenName + " wins $"
+	actionPrefix := screenName + ": "
+	dealtPrefix := "Dealt to " + screenName + " ["
+	collectedPrefix := screenName + " collected "
+	uncalledPrefix := "Uncalled bet ("
+	uncalledSuffix := ") returned to " + screenName
+	bountyWinPrefix := screenName + " wins $"
 	const bountySeatMarker = " bounty)"
 
 	var amountErr error
@@ -218,18 +218,18 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 		if !handActive {
 			return
 		}
-		if !st.isTournament && !handHasSummary {
-			st = committed
+		if !aggregate.isTournament && !handHasSummary {
+			aggregate = beforeLastHand
 			playerDealt = false
 			sawUnfinishedCash = true
 		}
-		if st.isTournament {
+		if aggregate.isTournament {
 			if playerDealt {
-				st.lastPlayedHandID = finish.HandID
-				st.finish = TournamentFinish{}
+				aggregate.lastPlayedHandID = finish.HandID
+				aggregate.finish = TournamentFinish{}
 			}
 			if handHasSummary && finish.Position > 0 {
-				st.finish = finish
+				aggregate.finish = finish
 			}
 		}
 		if playerDealt {
@@ -237,14 +237,14 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 			if err == nil {
 				handNetCents, err = money.Subtract(handNetCents, handInvestedCents)
 			}
-			hand := CashHand{ID: handID, At: handAt, NetCents: handNetCents, RakeCents: handRakeCents, BigBlindCents: st.bigBlindCents, VPIP: playerVPIP, PFR: playerPFR}
+			hand := CashHand{ID: handID, At: handAt, NetCents: handNetCents, RakeCents: handRakeCents, BigBlindCents: aggregate.bigBlindCents, VPIP: playerVPIP, PFR: playerPFR}
 			if err == nil {
-				err = st.addCashHand(hand)
+				err = aggregate.addCashHand(hand)
 			}
 			if err != nil && amountErr == nil {
 				amountErr = err
 			}
-			if details != nil && !st.isTournament {
+			if details != nil && !aggregate.isTournament {
 				*details = append(*details, hand)
 			}
 		}
@@ -276,27 +276,27 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 			}
 
 			if firstLine && resuming && !isHandHeader(line) {
-				return nil, nil, nil, nil, false
+				return nil, nil, nil, errInvalidCashResumeOffset
 			}
 			firstLine = false
 
 			switch {
 			case isHandHeader(line):
 				finalizeHand()
-				committed = st
-				newConsumedOffset = lineStart
+				beforeLastHand = aggregate
+				lastHandOffset = lineStart
 
 				if strings.Contains(line, "Tournament #") {
-					if !st.isTournament {
-						st.isTournament = true
-						st.tournamentID = handTournamentID(line)
-						st.tournamentDate = handTime(line)
-						st.spinAndGo = strings.Contains(strings.ToLower(line), "spin & go")
+					if !aggregate.isTournament {
+						aggregate.isTournament = true
+						aggregate.tournamentID = handTournamentID(line)
+						aggregate.tournamentDate = handTime(line)
+						aggregate.spinAndGo = strings.Contains(strings.ToLower(line), "spin & go")
 					}
 					finish.HandID = extractHandID(line)
 					finish.At = handTime(line)
-					if finish.At.After(st.lastActivity) {
-						st.lastActivity = finish.At
+					if finish.At.After(aggregate.lastActivity) {
+						aggregate.lastActivity = finish.At
 					}
 					finish.EntryCents = tournamentEntry(line)
 				} else {
@@ -304,17 +304,17 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 						handID = extractHandID(line)
 						handAt = handTime(line)
 					}
-					if st.bigBlindCents == 0 {
-						st.firstHandID = extractHandID(line)
+					if aggregate.bigBlindCents == 0 {
+						aggregate.firstHandID = extractHandID(line)
 
 						parenIdx := strings.Index(line, "($")
 						if parenIdx == -1 {
-							return nil, nil, nil, fmt.Errorf("no blinds in header: %s", line), true
+							return nil, nil, nil, fmt.Errorf("no blinds in header: %s", line)
 						}
 						afterParen := line[parenIdx+2:]
 						slashIdx := strings.Index(afterParen, "/")
 						if slashIdx == -1 {
-							return nil, nil, nil, fmt.Errorf("no / in blinds: %s", line), true
+							return nil, nil, nil, fmt.Errorf("no / in blinds: %s", line)
 						}
 						bbStr := afterParen[slashIdx+1:]
 						if len(bbStr) > 0 && bbStr[0] == '$' {
@@ -322,17 +322,17 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 						}
 						bbCents, ok := parseAmount(bbStr)
 						if !ok {
-							return nil, nil, nil, fmt.Errorf("bad BB in header: %s", line), true
+							return nil, nil, nil, fmt.Errorf("bad BB in header: %s", line)
 						}
-						st.bigBlindCents = bbCents
-						st.stake = "NL" + strconv.FormatInt(int64(bbCents), 10)
+						aggregate.bigBlindCents = bbCents
+						aggregate.stake = "NL" + strconv.FormatInt(int64(bbCents), 10)
 					}
 
 					if t := handTime(line); !t.IsZero() {
-						if st.firstTime.IsZero() {
-							st.firstTime = t
+						if aggregate.firstTime.IsZero() {
+							aggregate.firstTime = t
 						}
-						st.lastTime = t
+						aggregate.lastTime = t
 					}
 				}
 
@@ -341,15 +341,15 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 			case line == "*** HOLE CARDS ***":
 				inPreflop = true
 
-			case strings.HasPrefix(line, dealtPfx):
+			case strings.HasPrefix(line, dealtPrefix):
 				playerDealt = true
 
 			case strings.HasPrefix(line, "Seat ") && strings.Contains(line, bountySeatMarker):
-				st.isKnockout = true
+				aggregate.isKnockout = true
 
-			case strings.HasPrefix(line, bountyWinPfx):
-				if amtCents, ok := parseAmount(line[len(bountyWinPfx):]); ok {
-					add(&st.bountyCents, amtCents)
+			case strings.HasPrefix(line, bountyWinPrefix):
+				if amtCents, ok := parseAmount(line[len(bountyWinPrefix):]); ok {
+					add(&aggregate.bountyCents, amtCents)
 				}
 
 			case strings.HasPrefix(line, "*** FLOP ***"):
@@ -369,8 +369,8 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 				handHasSummary = true
 				inPreflop = false
 
-			case strings.HasPrefix(line, ap+"posts "):
-				rest := line[len(ap+"posts "):]
+			case strings.HasPrefix(line, actionPrefix+"posts "):
+				rest := line[len(actionPrefix+"posts "):]
 				dollarIdx := strings.Index(rest, "$")
 				if dollarIdx >= 0 {
 					if amtCents, ok := parseAmount(rest[dollarIdx+1:]); ok {
@@ -379,8 +379,8 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 					}
 				}
 
-			case strings.HasPrefix(line, ap+"calls "):
-				if amtCents, ok := parseAmount(line[len(ap+"calls "):]); ok {
+			case strings.HasPrefix(line, actionPrefix+"calls "):
+				if amtCents, ok := parseAmount(line[len(actionPrefix+"calls "):]); ok {
 					add(&handInvestedCents, amtCents)
 					add(&streetTotalCents, amtCents)
 					if inPreflop {
@@ -388,13 +388,13 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 					}
 				}
 
-			case strings.HasPrefix(line, ap+"bets "):
-				if amtCents, ok := parseAmount(line[len(ap+"bets "):]); ok {
+			case strings.HasPrefix(line, actionPrefix+"bets "):
+				if amtCents, ok := parseAmount(line[len(actionPrefix+"bets "):]); ok {
 					add(&handInvestedCents, amtCents)
 					add(&streetTotalCents, amtCents)
 				}
 
-			case strings.HasPrefix(line, ap+"raises "):
+			case strings.HasPrefix(line, actionPrefix+"raises "):
 				toIdx := strings.Index(line, " to ")
 				if toIdx >= 0 {
 					if totalCents, ok := parseAmount(line[toIdx+4:]); ok {
@@ -411,19 +411,19 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 					}
 				}
 
-			case st.isTournament && handActive && strings.HasPrefix(line, screenName+" ") && !strings.HasPrefix(line, collectedPfx):
+			case aggregate.isTournament && handActive && strings.HasPrefix(line, screenName+" ") && !strings.HasPrefix(line, collectedPrefix):
 				finish.readLine(strings.TrimPrefix(line, screenName+" "))
 
-			case strings.HasPrefix(line, uncalledPfx) && strings.HasSuffix(line, uncalledSfx):
+			case strings.HasPrefix(line, uncalledPrefix) && strings.HasSuffix(line, uncalledSuffix):
 				closeIdx := strings.Index(line, ")")
-				if closeIdx > len(uncalledPfx) {
-					if amtCents, ok := parseAmount(line[len(uncalledPfx):closeIdx]); ok {
+				if closeIdx > len(uncalledPrefix) {
+					if amtCents, ok := parseAmount(line[len(uncalledPrefix):closeIdx]); ok {
 						add(&handUncalledCents, amtCents)
 					}
 				}
 
-			case strings.HasPrefix(line, collectedPfx):
-				if amtCents, ok := parseAmount(line[len(collectedPfx):]); ok {
+			case strings.HasPrefix(line, collectedPrefix):
+				if amtCents, ok := parseAmount(line[len(collectedPrefix):]); ok {
 					add(&handCollectedCents, amtCents)
 				}
 
@@ -437,7 +437,7 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 
 		if readErr != nil {
 			if readErr != io.EOF {
-				return nil, nil, nil, fmt.Errorf("scanning %s: %w", path, readErr), true
+				return nil, nil, nil, fmt.Errorf("scanning %s: %w", path, readErr)
 			}
 			break
 		}
@@ -446,40 +446,40 @@ func parseCash(in io.Reader, path, screenName string, base cashAgg, startOffset 
 	finalizeHand()
 
 	if amountErr != nil {
-		return nil, nil, nil, fmt.Errorf("accumulating hand amounts: %w", amountErr), true
+		return nil, nil, nil, fmt.Errorf("accumulating hand amounts: %w", amountErr)
 	}
-	newState := &ParseState{agg: committed, consumedOffset: newConsumedOffset}
-	if st.hands == 0 && sawUnfinishedCash {
-		return nil, nil, newState, nil, true
+	newState := &ParseState{agg: beforeLastHand, consumedOffset: lastHandOffset}
+	if aggregate.hands == 0 && sawUnfinishedCash {
+		return nil, nil, newState, nil
 	}
-	if st.hands == 0 && st.finish.Position == 0 {
-		return nil, nil, nil, fmt.Errorf("no dealt hands found in %s", path), true
+	if aggregate.hands == 0 && aggregate.finish.Position == 0 {
+		return nil, nil, nil, fmt.Errorf("no dealt hands found in %s", path)
 	}
 
-	if st.isTournament {
-		if st.tournamentID == "" {
-			return nil, nil, nil, fmt.Errorf("could not extract tournament ID from %s", path), true
+	if aggregate.isTournament {
+		if aggregate.tournamentID == "" {
+			return nil, nil, nil, fmt.Errorf("could not extract tournament ID from %s", path)
 		}
 		var result *TournamentFinish
-		if st.finish.Position > 0 && !st.finish.At.IsZero() {
-			result = &st.finish
+		if aggregate.finish.Position > 0 && !aggregate.finish.At.IsZero() {
+			result = &aggregate.finish
 		}
 		stats := &TournamentHandStats{
-			TournamentID: st.tournamentID, LastPlayedHandID: st.lastPlayedHandID, LastActivity: st.lastActivity, Date: st.tournamentDate,
-			Finish: result, SpinAndGo: st.spinAndGo, Hands: st.hands, BountyCents: st.bountyCents, IsKnockout: st.isKnockout,
+			TournamentID: aggregate.tournamentID, LastPlayedHandID: aggregate.lastPlayedHandID, LastActivity: aggregate.lastActivity, Date: aggregate.tournamentDate,
+			Finish: result, SpinAndGo: aggregate.spinAndGo, Hands: aggregate.hands, BountyCents: aggregate.bountyCents, IsKnockout: aggregate.isKnockout,
 		}
-		if st.hands > 0 {
-			stats.VPIP = float64(st.vpipCount) / float64(st.hands) * 100
-			stats.PFR = float64(st.pfrCount) / float64(st.hands) * 100
+		if aggregate.hands > 0 {
+			stats.VPIP = float64(aggregate.vpipCount) / float64(aggregate.hands) * 100
+			stats.PFR = float64(aggregate.pfrCount) / float64(aggregate.hands) * 100
 		}
-		return nil, stats, newState, nil, true
+		return nil, stats, newState, nil
 	}
 
-	session, err := st.session()
+	session, err := aggregate.session()
 	if err != nil {
-		return nil, nil, nil, err, true
+		return nil, nil, nil, err
 	}
-	return &session, nil, newState, nil, true
+	return &session, nil, newState, nil
 }
 
 func (st *cashAgg) addCashHand(hand CashHand) error {

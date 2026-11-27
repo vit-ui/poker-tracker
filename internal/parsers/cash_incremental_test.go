@@ -2,6 +2,7 @@ package parsers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -297,4 +298,12 @@ func readFixtureWithMultipleHands(t *testing.T) []byte {
 	}
 	t.Fatal("no multi-hand fixture found in testdata/hand_history/")
 	return nil
+}
+
+func TestResumingMissingCashFileReturnsOpenError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "removed.txt")
+	_, _, _, err := ParseCashFileFrom(path, testScreenName, &ParseState{consumedOffset: 12})
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resuming missing file: %v", err)
+	}
 }

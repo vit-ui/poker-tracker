@@ -98,7 +98,7 @@ func ScanHistoryFile(path, screenName string, visitHand func(*CashSession, []Cas
 			readers = append(readers, io.NewSectionReader(f, hand.offset, hand.bytes), strings.NewReader("\n"))
 		}
 		var details []CashHand
-		session, tournament, _, err, _ := parseCash(io.MultiReader(readers...), "scanned hand group", screenName, cashAgg{}, 0, false, &details)
+		session, tournament, _, err := parseCash(io.MultiReader(readers...), "scanned hand group", screenName, cashAgg{}, 0, false, &details)
 		if !visitHand(session, details, tournament, err) {
 			return nil
 		}

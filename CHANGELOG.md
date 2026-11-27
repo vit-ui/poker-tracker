@@ -5,6 +5,8 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Make the cash parser’s full-reparse decision explicit when a saved offset becomes invalid.
+
 - Share the Sheets partial tournament row layout between live collection and storage migration.
 
 - Reuse the durable file replacement code for Windows updates and configuration,
