@@ -1,6 +1,7 @@
 package hardstop
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -51,6 +52,28 @@ func TestAutomaticTriggerIdentityTracksFinancialBasis(t *testing.T) {
 			}
 			if changed == id {
 				t.Fatal("a new financial loss reused the previous trigger")
+			}
+		})
+	}
+}
+
+func TestDownswingResultsKeepLedgerOrderForTriggerReplay(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -30)
+	entries := []storage.LedgerEntry{
+		{Date: now, Type: "cash_session", AmountCents: -300},
+		{Date: cutoff, Type: "tournament", AmountCents: 4500},
+		{Date: cutoff.Add(time.Second), Type: "tournament", AmountCents: 900},
+	}
+	for _, movement := range []string{"deposit", "withdrawal", "reward"} {
+		t.Run(movement, func(t *testing.T) {
+			ledger := append(slices.Clone(entries), storage.LedgerEntry{Type: movement, Date: now, AmountCents: 10000})
+			if got := downswingResults(ledger, now); !slices.Equal(got, []storage.LedgerEntry{entries[0], entries[2]}) {
+				t.Fatalf("trigger results: %v", got)
+			}
+			peak, current := DownswingEquityCurve(ledger, now)
+			if peak != 900 || current != 600 {
+				t.Fatalf("equity curve peak=%d current=%d", peak, current)
 			}
 		})
 	}

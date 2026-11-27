@@ -37,7 +37,7 @@ func buildWeeklySummary(sc storage.Store, now time.Time) (string, money.Cents, e
 	}
 	var netCents money.Cents
 	for _, e := range rawLedger {
-		if e.Type == "cash_session" || e.Type == "tournament" {
+		if e.IsPokerResult() {
 			netCents += e.AmountCents
 		}
 	}
@@ -107,7 +107,7 @@ func buildMonthlySummary(sc storage.Store, now time.Time) (string, money.Cents, 
 	}
 	var totalNetCents money.Cents
 	for _, e := range rawLedger {
-		if e.Date.Before(firstOfThisMonth) && (e.Type == "cash_session" || e.Type == "tournament") {
+		if e.Date.Before(firstOfThisMonth) && e.IsPokerResult() {
 			totalNetCents += e.AmountCents
 		}
 	}

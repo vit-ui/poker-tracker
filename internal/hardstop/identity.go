@@ -48,12 +48,7 @@ func AutomaticTriggerID(reason string, duration int, cfg *config.Config, now tim
 		} else {
 			payload.BuyInCents = tournament.BuyInCents
 		}
-		cutoff := rollingWindowStart(now, 30*24*time.Hour)
-		for _, entry := range sessionOnly(ledger) {
-			if inRollingWindow(entry.Date, cutoff) {
-				relevant = append(relevant, entry)
-			}
-		}
+		relevant = downswingResults(ledger, now)
 	case "daily_loss_cents":
 		payload.Threshold = strconv.FormatInt(int64(*cfg.Hardstop.DailyLossCents), 10)
 		payload.Day = PokerDayStart(cfg, now).Format("2006-01-02 15:04")

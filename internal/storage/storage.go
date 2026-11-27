@@ -15,6 +15,10 @@ type LedgerEntry struct {
 	SessionID         string
 }
 
+func (entry LedgerEntry) IsPokerResult() bool {
+	return entry.Type == "cash_session" || entry.Type == "tournament"
+}
+
 type CashSessionRecord struct {
 	parsers.CashSession
 	SessionID   string

@@ -65,19 +65,18 @@ func consecutiveLossStreak(entries []storage.LedgerEntry) int {
 }
 
 func recentSessionRows(entries []storage.LedgerEntry, n int) []storage.LedgerEntry {
-	rows := chronologicalSessions(entries)
+	rows := sessionOnly(entries)
+	sortBySessionDate(rows)
 	if len(rows) > n {
 		rows = rows[len(rows)-n:]
 	}
 	return rows
 }
 
-func chronologicalSessions(entries []storage.LedgerEntry) []storage.LedgerEntry {
-	rows := sessionOnly(entries)
+func sortBySessionDate(rows []storage.LedgerEntry) {
 	slices.SortStableFunc(rows, func(a, b storage.LedgerEntry) int {
 		return a.Date.Compare(b.Date)
 	})
-	return rows
 }
 
 func PokerDayStart(cfg *config.Config, now time.Time) time.Time {
@@ -101,11 +100,11 @@ func PokerDaySessionEntries(entries []storage.LedgerEntry, cfg *config.Config, n
 	start := PokerDayStart(cfg, now)
 	var day []storage.LedgerEntry
 	for _, e := range entries {
-		if !e.Date.Before(start) {
+		if e.IsPokerResult() && !e.Date.Before(start) {
 			day = append(day, e)
 		}
 	}
-	return sessionOnly(day)
+	return day
 }
 
 func inRollingWindow(entryDate, cutoff time.Time) bool {
@@ -125,7 +124,7 @@ func SpingoOnly(tournaments []parsers.Tournament) []parsers.Tournament {
 func sessionOnly(entries []storage.LedgerEntry) []storage.LedgerEntry {
 	var result []storage.LedgerEntry
 	for _, e := range entries {
-		if e.Type == "cash_session" || e.Type == "tournament" {
+		if e.IsPokerResult() {
 			result = append(result, e)
 		}
 	}
@@ -144,14 +143,21 @@ func ComputeEquityCurve(rows []storage.LedgerEntry) (peakCents, currentCents mon
 }
 
 func DownswingEquityCurve(entries []storage.LedgerEntry, now time.Time) (peakCents, currentCents money.Cents) {
-	cutoff := rollingWindowStart(now, 30*24*time.Hour)
-	var windowed []storage.LedgerEntry
-	for _, e := range entries {
-		if inRollingWindow(e.Date, cutoff) {
-			windowed = append(windowed, e)
+	results := downswingResults(entries, now)
+	sortBySessionDate(results)
+	return ComputeEquityCurve(results)
+}
+
+func downswingResults(entries []storage.LedgerEntry, now time.Time) []storage.LedgerEntry {
+	const downswingWindow = 30 * 24 * time.Hour
+	cutoff := rollingWindowStart(now, downswingWindow)
+	var results []storage.LedgerEntry
+	for _, entry := range entries {
+		if entry.IsPokerResult() && inRollingWindow(entry.Date, cutoff) {
+			results = append(results, entry)
 		}
 	}
-	return ComputeEquityCurve(chronologicalSessions(windowed))
+	return results
 }
 
 func DownswingExceeds(peakCents, currentCents, buyInCents money.Cents, thresholdBuyins float64) bool {

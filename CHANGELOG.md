@@ -5,6 +5,8 @@ entries below use the version labels in effect when those changes shipped.
 
 ## Unreleased
 
+- Use one poker-result classification for summaries and hard stops, and share the downswing window with trigger deduplication.
+
 - Name canonical and historical Sheets cash-session IDs in both storage backends.
 
 - Make the cash parser’s full-reparse decision explicit when a saved offset becomes invalid.
