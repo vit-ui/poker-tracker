@@ -60,6 +60,18 @@ Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#CombinedTaskName}"" /F"; 
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#ServerTaskName}"" /F"; Flags: runhidden; RunOnceId: "DeleteServerTask"
 
 [Code]
+const
+  UnknownRole = -1;
+  KeepConfiguration = 0;
+  ChangeConfiguration = 1;
+  CombinedRole = 0;
+  CollectorRole = 1;
+  ServerRole = 2;
+  TelegramSetup = 0;
+  ManualSetup = 1;
+  SheetsBackend = 0;
+  SQLiteBackend = 1;
+
 var
   UpdateExtraction: Boolean;
   PageBackend: TInputOptionWizardPage;
@@ -94,14 +106,22 @@ var
   CredentialsAlreadySet: Boolean;
   AllFieldsAlreadySet: Boolean;
 
+function RoleIndex(const RoleName: String): Integer;
+begin
+  if RoleName = 'combined' then Result := CombinedRole
+  else if RoleName = 'client' then Result := CollectorRole
+  else if RoleName = 'server' then Result := ServerRole
+  else Result := UnknownRole;
+end;
+
 function IsClientMode(): Boolean;
 begin
-  Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = 1);
+  Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = CollectorRole);
 end;
 
 function IsServerMode(): Boolean;
 begin
-  Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = 2);
+  Result := Assigned(PageRole) and (PageRole.SelectedValueIndex = ServerRole);
 end;
 
 function IsCombinedMode(): Boolean;
@@ -111,7 +131,7 @@ end;
 
 function KeepExistingSettings(): Boolean;
 begin
-  Result := (ExistingRole >= 0) and (PageUpgrade.SelectedValueIndex = 0) and
+  Result := (ExistingRole <> UnknownRole) and (PageUpgrade.SelectedValueIndex = KeepConfiguration) and
     (PageRole.SelectedValueIndex = ExistingRole) and not IncompleteTransfer;
 end;
 
@@ -306,46 +326,46 @@ end;
 procedure ApplyTestAnswers();
 var
   Role, ServerMethod, Backend, Creds, Sheet, Answer: String;
+  SelectedRole: Integer;
 begin
   Role := ExpandConstant('{param:TESTROLE|}');
-  if Role <> '' then PageUpgrade.SelectedValueIndex := 1;
-  if Role = 'client' then PageRole.SelectedValueIndex := 1
-  else if Role = 'server' then PageRole.SelectedValueIndex := 2
-  else if Role = 'combined' then PageRole.SelectedValueIndex := 0;
+  if Role <> '' then PageUpgrade.SelectedValueIndex := ChangeConfiguration;
+  SelectedRole := RoleIndex(Role);
+  if SelectedRole <> UnknownRole then PageRole.SelectedValueIndex := SelectedRole;
 
   Answer := ExpandConstant('{param:TESTMETHOD|}');
   if Answer = 'telegram' then
   begin
-    PageMethod.SelectedValueIndex := 0;
+    PageMethod.SelectedValueIndex := TelegramSetup;
     UsingTelegram := True;
   end
   else if Answer = 'manual' then
   begin
-    PageMethod.SelectedValueIndex := 1;
+    PageMethod.SelectedValueIndex := ManualSetup;
     UsingTelegram := False;
   end;
 
   ServerMethod := ExpandConstant('{param:TESTSERVERMETHOD|}');
   if ServerMethod = 'telegram' then
   begin
-    PageServerMethod.SelectedValueIndex := 0;
+    PageServerMethod.SelectedValueIndex := TelegramSetup;
     ServerUseTelegram := True;
   end
   else if ServerMethod = 'here' then
   begin
-    PageServerMethod.SelectedValueIndex := 1;
+    PageServerMethod.SelectedValueIndex := ManualSetup;
     ServerUseTelegram := False;
   end;
 
   Backend := ExpandConstant('{param:TESTBACKEND|}');
   if Backend = 'sheets' then
   begin
-    PageBackend.SelectedValueIndex := 0;
+    PageBackend.SelectedValueIndex := SheetsBackend;
     UsingSQLite := False;
   end
   else if Backend = 'sqlite' then
   begin
-    PageBackend.SelectedValueIndex := 1;
+    PageBackend.SelectedValueIndex := SQLiteBackend;
     UsingSQLite := True;
   end;
 
@@ -596,7 +616,7 @@ var
   MethodDescription, BackendDescription, RoleOutput, RoleText, TransferState, ExistingExe, ConfigFile, Helper: String;
   RoleResult: Integer;
 begin
-  ExistingRole := -1;
+  ExistingRole := UnknownRole;
   ConfigFile := AddBackslash(WizardDirValue) + 'config.json';
   if FileExists(ConfigFile) then
   begin
@@ -621,19 +641,17 @@ begin
     if Exec(ExistingExe, '--role --role-output "' + RoleOutput + '"', '', SW_HIDE, ewWaitUntilTerminated, RoleResult) and (RoleResult = 0) then
     begin
       RoleText := Trim(ReadFileAsString(RoleOutput));
-      if RoleText = 'combined' then ExistingRole := 0
-      else if RoleText = 'client' then ExistingRole := 1
-      else if RoleText = 'server' then ExistingRole := 2;
-      ExistingCombined := (RoleText = 'combined');
-      ExistingRoleUnknown := (ExistingRole < 0) or
-        ((ExistingRole = 2) <> (ExtractFileName(ExistingExe) = 'tracker-server.exe'));
+      ExistingRole := RoleIndex(RoleText);
+      ExistingCombined := (ExistingRole = CombinedRole);
+      ExistingRoleUnknown := (ExistingRole = UnknownRole) or
+        ((ExistingRole = ServerRole) <> (ExtractFileName(ExistingExe) = 'tracker-server.exe'));
     end
     else ExistingRoleUnknown := True;
     DeleteFile(RoleOutput);
     if ExistingRoleUnknown then
       RejectExistingInstallation('Cannot identify the existing executable role in ' + WizardDirValue + '. Setup has not changed the installation.');
   end;
-  if (ExistingRole < 0) and FileExists(ConfigFile) then
+  if (ExistingRole = UnknownRole) and FileExists(ConfigFile) then
     RejectExistingInstallation('An existing configuration was found without its executable in ' + WizardDirValue + '. Restore the executable before upgrading so setup can identify its role.');
   TransferState := ReadFileAsString(AddBackslash(WizardDirValue) + 'source_transfer.json');
   RoleText := JSONExtractStringValue(TransferState, 'phase');
@@ -650,11 +668,11 @@ begin
   CredentialsAlreadySet := FileExists(AddBackslash(WizardDirValue) + 'credentials\google_service_account.json');
   AllFieldsAlreadySet := BackendAlreadySet and ScreenNameAlreadySet and HandHistoryAlreadySet and
                           TournamentAlreadySet and (UsingSQLite or (SheetAlreadySet and CredentialsAlreadySet));
-  if ExistingRole = 0 then ExistingComplete := AllFieldsAlreadySet
-  else if ExistingRole = 1 then
+  if ExistingRole = CombinedRole then ExistingComplete := AllFieldsAlreadySet
+  else if ExistingRole = CollectorRole then
     ExistingComplete := ScreenNameAlreadySet and HandHistoryAlreadySet and TournamentAlreadySet and
       (JSONExtractStringValue(ExistingConfigJSON, 'connection_string') <> '')
-  else if ExistingRole = 2 then
+  else if ExistingRole = ServerRole then
     ExistingComplete := BackendAlreadySet and (UsingSQLite or (SheetAlreadySet and CredentialsAlreadySet)) and
       (JSONExtractStringValue(ExistingConfigJSON, 'pair_token') <> '') and
       FileExists(AddBackslash(WizardDirValue) + 'server_cert.pem') and
@@ -682,7 +700,7 @@ begin
     'Upgrade keeps your existing role, configuration and history. Missing settings will be requested if setup is incomplete.', True, False);
   PageUpgrade.Add('Upgrade existing installation (recommended)');
   PageUpgrade.Add('Change configuration or role');
-  PageUpgrade.SelectedValueIndex := 0;
+  PageUpgrade.SelectedValueIndex := KeepConfiguration;
 
   PageRole := CreateInputOptionPage(PageUpgrade.ID,
     'Setup Type',
@@ -692,12 +710,12 @@ begin
   PageRole.Add('Run everything on this PC (recommended)');
   PageRole.Add('Connect to a server (this PC is the poker PC)');
   PageRole.Add('Run a server on this PC (stores data, runs the bot)');
-  PageRole.SelectedValueIndex := 0;
-  if ExistingRole >= 0 then
+  PageRole.SelectedValueIndex := CombinedRole;
+  if ExistingRole <> UnknownRole then
   begin
     PageRole.SelectedValueIndex := ExistingRole;
-    if ExistingRole = 0 then RoleText := 'All-local'
-    else if ExistingRole = 1 then RoleText := 'Collector (connects to a server)'
+    if ExistingRole = CombinedRole then RoleText := 'All-local'
+    else if ExistingRole = CollectorRole then RoleText := 'Collector (connects to a server)'
     else RoleText := 'Server';
     PageUpgrade.SubCaptionLabel.Caption := 'Detected role: ' + RoleText + #13#10 +
       'Installation folder: ' + WizardDirValue + #13#10 +
@@ -718,7 +736,7 @@ begin
     True, False);
   PageServerMethod.Add('From Telegram on my phone (recommended)');
   PageServerMethod.Add('Set storage here now');
-  PageServerMethod.SelectedValueIndex := 0;
+  PageServerMethod.SelectedValueIndex := TelegramSetup;
 
   PageMethod := CreateInputOptionPage(wpSelectDir,
     'Setup Method',
@@ -727,7 +745,7 @@ begin
     True, False);
   PageMethod.Add('Yes, use Telegram');
   PageMethod.Add('No, set up manually');
-  PageMethod.SelectedValueIndex := 0;
+  PageMethod.SelectedValueIndex := TelegramSetup;
 
   PageBackend := CreateInputOptionPage(PageMethod.ID,
     'Storage Backend',
@@ -736,7 +754,7 @@ begin
     True, False);
   PageBackend.Add('Google Sheets');
   PageBackend.Add('Local file (no Google account needed)');
-  PageBackend.SelectedValueIndex := 0;
+  PageBackend.SelectedValueIndex := SheetsBackend;
 
   PageCredentials := CreateInputFilePage(PageBackend.ID,
     'Google Service Account',
@@ -790,7 +808,7 @@ function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
   if PageID = PageUpgrade.ID then
-  begin Result := (ExistingRole < 0) or IncompleteTransfer; Exit; end;
+  begin Result := (ExistingRole = UnknownRole) or IncompleteTransfer; Exit; end;
   if PageID = PageRole.ID then
   begin Result := KeepExistingSettings(); Exit; end;
   if UpgradeOnly() then
@@ -1146,7 +1164,7 @@ begin
 
   if CurPageID = PageUpgrade.ID then
   begin
-    if PageUpgrade.SelectedValueIndex = 0 then
+    if PageUpgrade.SelectedValueIndex = KeepConfiguration then
     begin
       PageRole.SelectedValueIndex := ExistingRole;
       UsingTelegram := False;
@@ -1154,13 +1172,13 @@ begin
     end;
   end
   else if CurPageID = PageBackend.ID then
-    UsingSQLite := (PageBackend.SelectedValueIndex = 1)
+    UsingSQLite := (PageBackend.SelectedValueIndex = SQLiteBackend)
 
   else if CurPageID = PageServerMethod.ID then
-    ServerUseTelegram := (PageServerMethod.SelectedValueIndex = 0)
+    ServerUseTelegram := (PageServerMethod.SelectedValueIndex = TelegramSetup)
 
   else if CurPageID = PageMethod.ID then
-    UsingTelegram := (PageMethod.SelectedValueIndex = 0)
+    UsingTelegram := (PageMethod.SelectedValueIndex = TelegramSetup)
 
   else if CurPageID = wpReady then
   begin
